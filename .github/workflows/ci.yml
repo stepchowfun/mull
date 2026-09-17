@@ -158,9 +158,7 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v7.0.1
-    - env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
+    - run: |
         # Make Bash log commands and not silently ignore errors.
         set -euxo pipefail
 
@@ -179,9 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7.0.1
-    - env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
+    - run: |
         # Make Bash log commands and not silently ignore errors.
         set -euxo pipefail
 
