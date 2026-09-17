@@ -170,7 +170,7 @@ jobs:
           # Run the installed binary.
           /tmp/mull --help
         else
-          echo "No release found; installer verification skipped."
+          echo 'No release found; installer verification skipped.'
         fi
   install-ubuntu:
     name: Install on Ubuntu
@@ -189,7 +189,7 @@ jobs:
           # Run the installed binary.
           /tmp/mull --help
         else
-          echo "No release found; installer verification skipped."
+          echo 'No release found; installer verification skipped.'
         fi
   publish-release:
     name: Publish a release if applicable
