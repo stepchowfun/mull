@@ -1,5 +1,5 @@
 use crate::document::{Document, Node};
-use std::collections::hash_map::Entry;
+use std::collections::{HashSet, hash_map::Entry};
 
 // Add a completed node to the document while rejecting duplicate titles.
 fn insert_node(
@@ -11,11 +11,53 @@ fn insert_node(
     // Strip whitespace around the content while preserving its internal formatting.
     let content = content_lines.join("\n").trim().to_owned();
 
+    // Collect the titles enclosed in square brackets while enforcing delimiter pairing.
+    let mut links = HashSet::<String>::new();
+    let mut link_start = None::<usize>;
+    let mut previous_was_backslash = false;
+    for (index, character) in content.char_indices() {
+        let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
+        previous_was_backslash = character == '\\';
+        if is_escaped_delimiter {
+            continue;
+        }
+
+        match character {
+            '[' => {
+                if link_start.is_some() {
+                    return Err(format!(
+                        "Unexpected opening link delimiter in node {title:?}.",
+                    ));
+                }
+                link_start = Some(index + character.len_utf8());
+            }
+            ']' => {
+                let Some(start) = link_start.take() else {
+                    return Err(format!(
+                        "Unexpected closing link delimiter in node {title:?}.",
+                    ));
+                };
+                let link = content[start..index].trim();
+                links.insert(link.replace("\\[", "[").replace("\\]", "]"));
+            }
+            _ => {}
+        }
+    }
+
+    // Reject an opening delimiter that has no closing delimiter.
+    if link_start.is_some() {
+        return Err(format!("Unclosed link in node {title:?}."));
+    }
+
     // Insert the node unless its title has already been used.
     match document.nodes.entry(title.clone()) {
         Entry::Occupied(_) => Err(format!("Duplicate title {title:?} on line {title_line}.")),
         Entry::Vacant(entry) => {
-            entry.insert(Node { title, content });
+            entry.insert(Node {
+                title,
+                content,
+                links,
+            });
             Ok(())
         }
     }
@@ -60,6 +102,22 @@ pub fn parse(contents: &str) -> Result<Document, String> {
         insert_node(&mut document, title, title_line, &content_lines)?;
     }
 
+    // Validate links deterministically after every node is available.
+    let mut nodes = document.nodes.values().collect::<Vec<_>>();
+    nodes.sort_by_key(|node| &node.title);
+    for node in nodes {
+        let mut links = node.links.iter().collect::<Vec<_>>();
+        links.sort();
+        for link in links {
+            if !document.nodes.contains_key(link) {
+                return Err(format!(
+                    "Node {:?} links to missing node {link:?}.",
+                    node.title,
+                ));
+            }
+        }
+    }
+
     // Parsing succeeded.
     Ok(document)
 }
@@ -67,6 +125,7 @@ pub fn parse(contents: &str) -> Result<Document, String> {
 #[cfg(test)]
 mod tests {
     use super::parse;
+    use std::collections::HashSet;
 
     // Parse titles and multiline content while stripping surrounding whitespace.
     #[test]
@@ -79,7 +138,89 @@ mod tests {
         assert_eq!(document.nodes.len(), 2);
         assert_eq!(document.nodes["Home"].title, "Home");
         assert_eq!(document.nodes["Home"].content, "Check out the [Greeting].");
+        assert_eq!(
+            document.nodes["Home"].links,
+            HashSet::from(["Greeting".to_owned()]),
+        );
         assert_eq!(document.nodes["Greeting"].content, "Hello,\nworld!");
+    }
+
+    // Parse distinct links while stripping their surrounding whitespace.
+    #[test]
+    fn links() {
+        let document = parse(concat!(
+            "# Home\nSee [Greeting], [ About ], and [Greeting].",
+            "\n# About\n# Greeting",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            document.nodes["Home"].links,
+            HashSet::from(["About".to_owned(), "Greeting".to_owned()]),
+        );
+    }
+
+    // Treat escaped square brackets as literal link-title characters.
+    #[test]
+    fn escaped_link_delimiters() {
+        let document = parse(
+            r"# Home
+See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
+# Four
+# One]Two
+# [Three",
+        )
+        .unwrap();
+
+        assert_eq!(
+            document.nodes["Home"].links,
+            HashSet::from(["Four".to_owned(), "One]Two".to_owned(), "[Three".to_owned()]),
+        );
+    }
+
+    // Reject links that do not correspond to any node in the document.
+    #[test]
+    fn missing_link() {
+        assert_eq!(
+            parse("# Home\nSee [Zulu] and [Alpha].").unwrap_err(),
+            "Node \"Home\" links to missing node \"Alpha\".",
+        );
+    }
+
+    // Parse an empty link and reject it because node titles cannot be empty.
+    #[test]
+    fn empty_link() {
+        assert_eq!(
+            parse("# Home\nSee [].").unwrap_err(),
+            "Node \"Home\" links to missing node \"\".",
+        );
+    }
+
+    // Reject opening link delimiters that are not closed.
+    #[test]
+    fn unclosed_link() {
+        assert_eq!(
+            parse("# Home\nSee [Greeting.").unwrap_err(),
+            "Unclosed link in node \"Home\".",
+        );
+    }
+
+    // Reject unescaped opening delimiters inside links.
+    #[test]
+    fn unexpected_opening_delimiter() {
+        assert_eq!(
+            parse("# Home\nSee [nested[Greeting].").unwrap_err(),
+            "Unexpected opening link delimiter in node \"Home\".",
+        );
+    }
+
+    // Reject unescaped closing delimiters outside links.
+    #[test]
+    fn unexpected_closing_delimiter() {
+        assert_eq!(
+            parse("# Home\nSee Greeting].").unwrap_err(),
+            "Unexpected closing link delimiter in node \"Home\".",
+        );
     }
 
     // Treat hashes without the required trailing space as ordinary content.
