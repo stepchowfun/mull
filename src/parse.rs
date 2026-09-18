@@ -80,6 +80,7 @@ fn insert_node(
                 title,
                 content,
                 links,
+                depth: None,
             });
             Ok(())
         }

@@ -18,6 +18,7 @@ pub struct Node {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
     pub links: HashSet<Link>,
+    pub depth: Option<usize>, // Minimum text-link distance from Home, populated by validation
 }
 
 // This struct represents a parsed document.
@@ -38,12 +39,12 @@ impl fmt::Display for Node {
     }
 }
 
-// Render nodes deterministically in title order.
+// Render nodes deterministically in depth order with titles breaking ties.
 impl fmt::Display for Document {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort the nodes by their map keys so rendering does not depend on hash iteration order.
+        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
         let mut nodes = self.nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, _node)| *title);
+        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
 
         // Add one line break between nodes because each node already ends with one.
         for (index, (_title, node)) in nodes.into_iter().enumerate() {
@@ -70,6 +71,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: "Hello, world!".to_owned(),
             links: HashSet::new(),
+            depth: None,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
@@ -82,6 +84,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: String::new(),
             links: HashSet::new(),
+            depth: None,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n");
@@ -97,6 +100,7 @@ mod tests {
                     title: "Greeting".to_owned(),
                     content: String::new(),
                     links: HashSet::new(),
+                    depth: None,
                 },
             )]),
         };
@@ -104,7 +108,7 @@ mod tests {
         assert_eq!(document.to_string(), "# Greeting\n");
     }
 
-    // Ensure documents are rendered deterministically with blank lines between nodes.
+    // Render nodes by depth and title, placing nodes without a depth last.
     #[test]
     fn document_display() {
         let document = Document {
@@ -115,6 +119,7 @@ mod tests {
                         title: "Greeting".to_owned(),
                         content: "Hello, world!".to_owned(),
                         links: HashSet::new(),
+                        depth: Some(1),
                     },
                 ),
                 (
@@ -123,6 +128,16 @@ mod tests {
                         title: "Home".to_owned(),
                         content: "Check out the [Greeting].".to_owned(),
                         links: HashSet::new(),
+                        depth: Some(0),
+                    },
+                ),
+                (
+                    "Orphan".to_owned(),
+                    Node {
+                        title: "Orphan".to_owned(),
+                        content: String::new(),
+                        links: HashSet::new(),
+                        depth: None,
                     },
                 ),
             ]),
@@ -130,7 +145,11 @@ mod tests {
 
         assert_eq!(
             document.to_string(),
-            "# Greeting\n\nHello, world!\n\n# Home\n\nCheck out the [Greeting].\n",
+            concat!(
+                "# Home\n\nCheck out the [Greeting].\n\n",
+                "# Greeting\n\nHello, world!\n\n",
+                "# Orphan\n",
+            ),
         );
     }
 
