@@ -51,8 +51,12 @@ fn find_document() -> Result<PathBuf, String> {
 
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
-        let entries = fs::read_dir(directory)
-            .map_err(|error| format!("Failed to read {}: {error}", directory.display()))?;
+        let entries = fs::read_dir(directory).map_err(|error| {
+            format!(
+                "Failed to read {}: {error}",
+                directory.to_string_lossy().code_str(),
+            )
+        })?;
         let mut documents = Vec::<PathBuf>::new();
 
         // Inspect each directory entry and retain regular documents.
@@ -60,7 +64,7 @@ fn find_document() -> Result<PathBuf, String> {
             let entry = entry.map_err(|error| {
                 format!(
                     "Failed to read an entry in {}: {error}",
-                    directory.display(),
+                    directory.to_string_lossy().code_str(),
                 )
             })?;
             let path = entry.path();
@@ -69,8 +73,12 @@ fn find_document() -> Result<PathBuf, String> {
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case(DOCUMENT_EXTENSION));
             if has_document_extension {
-                let metadata = fs::metadata(&path)
-                    .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "Failed to inspect {}: {error}",
+                        path.to_string_lossy().code_str(),
+                    )
+                })?;
                 if metadata.is_file() {
                     documents.push(path);
                 }
@@ -83,12 +91,12 @@ fn find_document() -> Result<PathBuf, String> {
             let file_names = documents
                 .iter()
                 .filter_map(|path| path.file_name())
-                .map(|file_name| file_name.to_string_lossy().into_owned())
+                .map(|file_name| file_name.to_string_lossy().code_str().to_string())
                 .collect::<Vec<String>>()
                 .join(", ");
             return Err(format!(
                 "Found multiple documents in {}: {file_names}",
-                directory.display(),
+                directory.to_string_lossy().code_str(),
             ));
         }
 
@@ -101,7 +109,7 @@ fn find_document() -> Result<PathBuf, String> {
     // Report that the search completed without finding a document.
     Err(format!(
         "No document found in {} or its ancestors.",
-        current_directory.display(),
+        current_directory.to_string_lossy().code_str(),
     ))
 }
 
@@ -119,22 +127,34 @@ fn entry() -> Result<(), String> {
     let display_path = relative_path(&current_directory, &document_path).to_owned();
 
     // Load the document and require its contents to be valid UTF-8.
-    let document_bytes = fs::read(&document_path)
-        .map_err(|error| format!("Failed to read {}: {error}", display_path.display()))?;
+    let document_bytes = fs::read(&document_path).map_err(|error| {
+        format!(
+            "Failed to read {}: {error}",
+            display_path.to_string_lossy().code_str(),
+        )
+    })?;
     let document_contents = String::from_utf8(document_bytes).map_err(|error| {
         format!(
             "Document {} is not valid UTF-8: {error}",
-            display_path.display(),
+            display_path.to_string_lossy().code_str(),
         )
     })?;
 
     // Parse the document.
-    let mut document = parse::parse(&document_contents)
-        .map_err(|error| format!("Failed to parse {}: {error}", display_path.display()))?;
+    let mut document = parse::parse(&document_contents).map_err(|error| {
+        format!(
+            "Failed to parse {}: {error}",
+            display_path.to_string_lossy().code_str(),
+        )
+    })?;
 
     // Validate the node graph and surrounding filesystem while populating node depths.
-    validate::validate(&mut document, &document_path)
-        .map_err(|error| format!("Failed to validate {}:\n{error}", display_path.display()))?;
+    validate::validate(&mut document, &document_path).map_err(|error| {
+        format!(
+            "Failed to validate {}:\n{error}",
+            display_path.to_string_lossy().code_str(),
+        )
+    })?;
 
     // Render the document once for checking or fixing.
     let rendered_document = document.to_string();
@@ -149,8 +169,9 @@ fn entry() -> Result<(), String> {
                     .header("document", "rendered")
                     .to_string();
                 return Err(format!(
-                    "Document {} is not formatted correctly:\n\n{diff}\n`mull fix` can fix it.",
-                    display_path.display(),
+                    "Document {} is not formatted correctly:\n\n{diff}\n{} can fix it.",
+                    display_path.to_string_lossy().code_str(),
+                    "mull fix".code_str(),
                 ));
             }
 
@@ -169,7 +190,10 @@ fn entry() -> Result<(), String> {
                 );
             } else {
                 fs::write(&document_path, rendered_document).map_err(|error| {
-                    format!("Failed to write {}: {error}", display_path.display())
+                    format!(
+                        "Failed to write {}: {error}",
+                        display_path.to_string_lossy().code_str(),
+                    )
                 })?;
 
                 // Report that the document was fixed.
@@ -186,7 +210,7 @@ fn entry() -> Result<(), String> {
 fn main() {
     // Jump to the entrypoint and handle any resulting errors.
     if let Err(e) = entry() {
-        eprintln!("{}", e.red());
+        eprintln!("{} {}", "[Error]".red().bold(), e);
         exit(1);
     }
 }
