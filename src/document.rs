@@ -3,8 +3,8 @@ use std::{collections::HashMap, fmt};
 // This struct represents a node in a document.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub title: String,
-    pub content: String,
+    pub title: String, // No leading or trailing whitespace
+    pub content: String, // No leading or trailing whitespace
 }
 
 // This struct represents a parsed document.
@@ -16,7 +16,12 @@ pub struct Document {
 // Render nodes in the document's heading-and-content format.
 impl fmt::Display for Node {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "# {}\n\n{}", self.title, self.content)
+        // Omit the content separator when there is no content.
+        if self.content.is_empty() {
+            writeln!(formatter, "# {}", self.title)
+        } else {
+            writeln!(formatter, "# {}\n\n{}", self.title, self.content)
+        }
     }
 }
 
@@ -27,20 +32,16 @@ impl fmt::Display for Document {
         let mut nodes = self.nodes.iter().collect::<Vec<_>>();
         nodes.sort_by_key(|(title, _node)| *title);
 
-        // Separate adjacent nodes with one blank line.
+        // Add one line break between nodes because each node already ends with one.
         for (index, (_title, node)) in nodes.into_iter().enumerate() {
             if index > 0 {
-                write!(formatter, "\n\n")?;
+                writeln!(formatter)?;
             }
             write!(formatter, "{node}")?;
         }
 
-        // End a non-empty document with a line break.
-        if self.nodes.is_empty() {
-            Ok(())
-        } else {
-            writeln!(formatter)
-        }
+        // Rendering succeeded.
+        Ok(())
     }
 }
 
@@ -57,7 +58,34 @@ mod tests {
             content: "Hello, world!".to_owned(),
         };
 
-        assert_eq!(node.to_string(), "# Greeting\n\nHello, world!");
+        assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
+    }
+
+    // Ensure empty nodes do not contain a redundant content separator.
+    #[test]
+    fn empty_node_display() {
+        let node = Node {
+            title: "Greeting".to_owned(),
+            content: String::new(),
+        };
+
+        assert_eq!(node.to_string(), "# Greeting\n");
+    }
+
+    // Ensure a document containing an empty node has only its trailing line break.
+    #[test]
+    fn empty_node_document_display() {
+        let document = Document {
+            nodes: HashMap::from([(
+                "Greeting".to_owned(),
+                Node {
+                    title: "Greeting".to_owned(),
+                    content: String::new(),
+                },
+            )]),
+        };
+
+        assert_eq!(document.to_string(), "# Greeting\n");
     }
 
     // Ensure documents are rendered deterministically with blank lines between nodes.
