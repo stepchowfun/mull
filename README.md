@@ -29,6 +29,12 @@ Options:
   -h, --help         Print help
 ```
 
+## Document format
+
+Each node starts with `# ` followed by its title. Its content continues until the next title. A text link such as `[Greeting]` refers to another node. Every document must contain a node called `Home`, and every node must be transitively reachable from it through text links.
+
+File links such as [file:README.md] and directory links such as [dir:src] refer to paths relative to the directory containing the document. A directory link implicitly references everything recursively contained within that directory. Mull checks that these targets exist and that every other non-ignored file and directory alongside the document is referenced. Ignore files such as `.gitignore` and `.ignore` are respected; hidden entries are otherwise included.
+
 ## Installation instructions
 
 ### Installation on macOS or Linux (AArch64 or x86-64)
