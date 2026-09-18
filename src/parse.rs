@@ -12,7 +12,7 @@ fn insert_node(
     // Strip whitespace around the content while preserving its internal formatting.
     let original_content = content_lines.join("\n").trim().to_owned();
 
-    // Collect link titles and rebuild the content with their surrounding whitespace stripped.
+    // Collect link targets and rebuild the content with their surrounding whitespace stripped.
     let mut content = String::new();
     let mut copied_through = 0;
     let mut links = HashSet::<Link>::new();
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(document.nodes["Greeting"].content, "Hello,\nworld!");
     }
 
-    // Parse distinct links while stripping their surrounding whitespace.
+    // Parse distinct text links while stripping their surrounding whitespace.
     #[test]
     fn links() {
         let document = parse(concat!(
