@@ -30,13 +30,13 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
         }
     };
     let resolved_document_path = match fs::canonicalize(document_path) {
-        Ok(document_path) => Some(document_path),
+        Ok(document_path) => document_path,
         Err(error) => {
             errors.push(format!(
                 "Failed to resolve {}: {error}",
                 document_path.display(),
             ));
-            None
+            return errors_to_result(&errors);
         }
     };
 
@@ -48,7 +48,7 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
     // Collect walk and unreferenced-entry errors for deterministic reporting.
     errors.extend(find_unreferenced_entries(
         &document_directory,
-        resolved_document_path.as_deref(),
+        &resolved_document_path,
         &referenced_files,
         &referenced_directories,
     ));
@@ -89,12 +89,18 @@ fn validate_filesystem_links(
                 }
                 Err(error) => {
                     errors.push(error);
-                    record_existing_target(
-                        document_directory,
-                        path,
-                        &mut referenced_files,
-                        &mut referenced_directories,
-                    );
+
+                    // Prevent a wrong-type link from also producing an unreferenced-entry error.
+                    let target = document_directory.join(path);
+                    if let Ok(metadata) = fs::metadata(&target)
+                        && let Ok(target) = fs::canonicalize(target)
+                    {
+                        if metadata.is_file() {
+                            referenced_files.insert(target);
+                        } else if metadata.is_dir() {
+                            referenced_directories.insert(target);
+                        }
+                    }
                 }
             }
         }
@@ -104,34 +110,10 @@ fn validate_filesystem_links(
     (referenced_files, referenced_directories, errors)
 }
 
-// Record an existing target even when its link declared the wrong entry type.
-fn record_existing_target(
-    document_directory: &Path,
-    path: &Path,
-    referenced_files: &mut HashSet<PathBuf>,
-    referenced_directories: &mut HashSet<PathBuf>,
-) {
-    // Ignore inaccessible targets because their validation error already explains the failure.
-    let target = document_directory.join(path);
-    let Ok(metadata) = fs::metadata(&target) else {
-        return;
-    };
-    let Ok(target) = fs::canonicalize(target) else {
-        return;
-    };
-
-    // Prevent a wrong-type link from also producing a misleading unreferenced-entry error.
-    if metadata.is_file() {
-        referenced_files.insert(target);
-    } else if metadata.is_dir() {
-        referenced_directories.insert(target);
-    }
-}
-
 // Find every walked filesystem entry that is not covered by a link.
 fn find_unreferenced_entries(
     document_directory: &Path,
-    document_path: Option<&Path>,
+    document_path: &Path,
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
 ) -> Vec<String> {
@@ -167,7 +149,7 @@ fn find_unreferenced_entries(
             }
         };
         let path = entry.path();
-        if path == document_directory || document_path == Some(path) {
+        if path == document_directory || path == document_path {
             continue;
         }
         let Some(file_type) = entry.file_type() else {
@@ -388,6 +370,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
+    }
+
+    // Preserve graph errors when the document path cannot be resolved.
+    #[test]
+    fn missing_document_path() {
+        let directory = TestDirectory::new();
+        let document_path = directory.document_path();
+        fs::remove_file(&document_path).unwrap();
+        let mut document = parse("# Elsewhere").unwrap();
+
+        let error = validate(&mut document, &document_path).unwrap_err();
+        let mut errors = error.lines();
+        assert_eq!(
+            errors.next(),
+            Some("Document does not contain a \"Home\" node."),
+        );
+        assert!(
+            errors
+                .next()
+                .unwrap()
+                .starts_with(&format!("Failed to resolve {}:", document_path.display())),
+        );
+        assert_eq!(errors.next(), None);
     }
 
     // Report unreferenced entries throughout the document directory tree.
