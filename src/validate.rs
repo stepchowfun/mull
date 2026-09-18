@@ -113,7 +113,7 @@ fn validate_text_links(document: &mut Document) -> Result<(), String> {
         return Err("Document does not contain a \"Home\" node.".to_owned());
     }
 
-    // Validate text links deterministically after every node is available.
+    // Validate text-link targets deterministically.
     let mut nodes = document.nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
@@ -372,7 +372,7 @@ mod tests {
         );
     }
 
-    // Accept nodes reached through multiple levels of text links.
+    // Populate depths for nodes reached through multiple levels of text links.
     #[test]
     fn transitive_text_links() {
         let directory = TestDirectory::new();

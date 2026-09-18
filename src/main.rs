@@ -131,7 +131,7 @@ fn entry() -> Result<(), String> {
     let mut document = parse::parse(&document_contents)
         .map_err(|error| format!("Failed to parse {}: {error}", display_path.display()))?;
 
-    // Validate links against the parsed document and its surrounding filesystem.
+    // Validate the node graph and surrounding filesystem while populating node depths.
     validate::validate(&mut document, &document_path)
         .map_err(|error| format!("Failed to validate {}:\n{error}", display_path.display()))?;
 
