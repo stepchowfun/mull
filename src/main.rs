@@ -1,9 +1,10 @@
 mod document;
+mod format;
 mod parse;
 mod path_util;
 mod validate;
 
-use crate::{document::DOCUMENT_EXTENSION, path_util::relative_path};
+use crate::{document::DOCUMENT_EXTENSION, format::CodeStr, path_util::relative_path};
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
 use similar::TextDiff;
@@ -154,19 +155,25 @@ fn entry() -> Result<(), String> {
             }
 
             // Report that the document passed the check.
-            println!("Document {} looks good.", display_path.display());
+            println!(
+                "Document {} looks good.",
+                display_path.to_string_lossy().code_str(),
+            );
         }
         Subcommand::Fix => {
             // Avoid rewriting a document that already has its canonical rendering.
             if document_contents == rendered_document {
-                println!("Document {} looks good.", display_path.display());
+                println!(
+                    "Document {} looks good.",
+                    display_path.to_string_lossy().code_str(),
+                );
             } else {
                 fs::write(&document_path, rendered_document).map_err(|error| {
                     format!("Failed to write {}: {error}", display_path.display())
                 })?;
 
                 // Report that the document was fixed.
-                println!("Fixed {}.", display_path.display());
+                println!("Fixed {}.", display_path.to_string_lossy().code_str());
             }
         }
     }
