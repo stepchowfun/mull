@@ -3,7 +3,7 @@ mod parse;
 mod path_util;
 mod validate;
 
-use crate::path_util::relative_path;
+use crate::{document::DOCUMENT_EXTENSION, path_util::relative_path};
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
 use similar::TextDiff;
@@ -66,7 +66,7 @@ fn find_document() -> Result<PathBuf, String> {
             let has_document_extension = path
                 .extension()
                 .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("mull"));
+                .is_some_and(|extension| extension.eq_ignore_ascii_case(DOCUMENT_EXTENSION));
             if has_document_extension {
                 let metadata = fs::metadata(&path)
                     .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
