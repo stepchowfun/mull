@@ -60,7 +60,7 @@ fn find_mull_document() -> Result<PathBuf, String> {
             let entry = entry.map_err(|error| {
                 format!(
                     "Failed to read an entry in {}: {error}",
-                    directory.display()
+                    directory.display(),
                 )
             })?;
             let path = entry.path();
@@ -119,7 +119,7 @@ fn entry() -> Result<(), String> {
     let document = String::from_utf8(document_bytes).map_err(|error| {
         format!(
             "Mull document {} is not valid UTF-8: {error}",
-            mull_document.display()
+            mull_document.display(),
         )
     })?;
 
