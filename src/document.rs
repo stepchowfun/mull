@@ -21,9 +21,9 @@ pub enum Link {
     Directory(PathBuf),
 }
 
-// This struct represents a node in a document.
+// This struct represents a text node in a document.
 #[derive(Clone, Debug)]
-pub struct Node {
+pub struct TextNode {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
     pub links: HashSet<Link>,
@@ -33,11 +33,11 @@ pub struct Node {
 // This struct represents a parsed document.
 #[derive(Clone, Debug, Default)]
 pub struct Document {
-    pub nodes: HashMap<String, Node>,
+    pub text_nodes: HashMap<String, TextNode>,
 }
 
 // Render nodes in the document's heading-and-content format.
-impl fmt::Display for Node {
+impl fmt::Display for TextNode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omit the content separator when there is no content.
         if self.content.is_empty() {
@@ -57,7 +57,7 @@ impl fmt::Display for Node {
 impl fmt::Display for Document {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
-        let mut nodes = self.nodes.iter().collect::<Vec<_>>();
+        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
         nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
 
         // Add one line break between nodes because each node already ends with one.
@@ -75,13 +75,13 @@ impl fmt::Display for Document {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, Node};
+    use super::{Document, TextNode};
     use std::collections::{HashMap, HashSet};
 
     // Ensure nodes are rendered in the document's source format.
     #[test]
     fn node_display() {
-        let node = Node {
+        let node = TextNode {
             title: "Greeting".to_owned(),
             content: "Hello, world!".to_owned(),
             links: HashSet::new(),
@@ -94,7 +94,7 @@ mod tests {
     // Ensure empty nodes do not contain a redundant content separator.
     #[test]
     fn empty_node_display() {
-        let node = Node {
+        let node = TextNode {
             title: "Greeting".to_owned(),
             content: String::new(),
             links: HashSet::new(),
@@ -108,9 +108,9 @@ mod tests {
     #[test]
     fn empty_node_document_display() {
         let document = Document {
-            nodes: HashMap::from([(
+            text_nodes: HashMap::from([(
                 "Greeting".to_owned(),
-                Node {
+                TextNode {
                     title: "Greeting".to_owned(),
                     content: String::new(),
                     links: HashSet::new(),
@@ -126,10 +126,10 @@ mod tests {
     #[test]
     fn document_display() {
         let document = Document {
-            nodes: HashMap::from([
+            text_nodes: HashMap::from([
                 (
                     "Greeting".to_owned(),
-                    Node {
+                    TextNode {
                         title: "Greeting".to_owned(),
                         content: "Hello, world!".to_owned(),
                         links: HashSet::new(),
@@ -138,7 +138,7 @@ mod tests {
                 ),
                 (
                     "Home".to_owned(),
-                    Node {
+                    TextNode {
                         title: "Home".to_owned(),
                         content: "Check out the [Greeting].".to_owned(),
                         links: HashSet::new(),
@@ -147,7 +147,7 @@ mod tests {
                 ),
                 (
                     "Orphan".to_owned(),
-                    Node {
+                    TextNode {
                         title: "Orphan".to_owned(),
                         content: String::new(),
                         links: HashSet::new(),
