@@ -131,29 +131,39 @@ fn entry() -> Result<(), String> {
     let document = parse::parse(&document_contents)
         .map_err(|error| format!("Failed to parse {}: {error}", display_path.display()))?;
 
+    // Render the document once for checking or fixing.
+    let rendered_document = document.to_string();
+
     // Use the fix command when no subcommand is provided and report the selected document.
     match cli.command.unwrap_or(Subcommand::Fix) {
         Subcommand::Check => {
             // Compare the original document with its canonical rendering.
-            let rendered_document = document.to_string();
             if document_contents != rendered_document {
                 let diff = TextDiff::from_lines(&document_contents, &rendered_document)
                     .unified_diff()
                     .header("document", "rendered")
                     .to_string();
                 return Err(format!(
-                    "Document {} is not formatted correctly:\n\n{diff}",
+                    "Document {} is not formatted correctly:\n\n{diff}\n`mull fix` can fix it.",
                     display_path.display(),
                 ));
             }
+
+            // Report that the document passed the check.
+            println!("Document {} looks good.", display_path.display());
         }
         Subcommand::Fix => {
-            // Write the canonical rendering back to the selected document.
-            fs::write(&document_path, document.to_string())
-                .map_err(|error| format!("Failed to write {}: {error}", display_path.display()))?;
+            // Avoid rewriting a document that already has its canonical rendering.
+            if document_contents == rendered_document {
+                println!("Document {} looks good.", display_path.display());
+            } else {
+                fs::write(&document_path, rendered_document).map_err(|error| {
+                    format!("Failed to write {}: {error}", display_path.display())
+                })?;
 
-            // Report that the document was fixed.
-            println!("Fixed {}.", display_path.display());
+                // Report that the document was fixed.
+                println!("Fixed {}.", display_path.display());
+            }
         }
     }
 
