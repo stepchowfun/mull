@@ -22,11 +22,7 @@ struct Cli {
     #[arg(short, long, help = "Print version", action = ArgAction::Version)]
     _version: Option<bool>,
 
-    #[arg(
-        long,
-        value_name = "PATH",
-        help = "Specify the path to the document"
-    )]
+    #[arg(long, value_name = "PATH", help = "Specify the path to the document")]
     path: Option<PathBuf>,
 
     #[command(subcommand)]

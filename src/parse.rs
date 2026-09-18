@@ -78,10 +78,7 @@ mod tests {
 
         assert_eq!(document.nodes.len(), 2);
         assert_eq!(document.nodes["Home"].title, "Home");
-        assert_eq!(
-            document.nodes["Home"].content,
-            "Check out the [Greeting].",
-        );
+        assert_eq!(document.nodes["Home"].content, "Check out the [Greeting].");
         assert_eq!(document.nodes["Greeting"].content, "Hello,\nworld!");
     }
 
@@ -90,10 +87,7 @@ mod tests {
     fn non_title_hashes() {
         let document = parse("# Home\n\n## Subtitle\n#not a title").unwrap();
 
-        assert_eq!(
-            document.nodes["Home"].content,
-            "## Subtitle\n#not a title",
-        );
+        assert_eq!(document.nodes["Home"].content, "## Subtitle\n#not a title");
     }
 
     // Accept empty and whitespace-only documents.
