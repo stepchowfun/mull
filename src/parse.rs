@@ -9,17 +9,24 @@ fn insert_node(
     content_lines: &[&str],
 ) -> Result<(), String> {
     // Strip whitespace around the content while preserving its internal formatting.
-    let content = content_lines.join("\n").trim().to_owned();
+    let original_content = content_lines.join("\n").trim().to_owned();
 
-    // Collect the titles enclosed in square brackets while enforcing delimiter pairing.
+    // Collect link titles and rebuild the content with their surrounding whitespace stripped.
+    let mut content = String::new();
+    let mut copied_through = 0;
     let mut links = HashSet::<String>::new();
     let mut link_start = None::<usize>;
     let mut previous_was_backslash = false;
-    for (index, character) in content.char_indices() {
+    for (index, character) in original_content.char_indices() {
         let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
         previous_was_backslash = character == '\\';
         if is_escaped_delimiter {
             continue;
+        }
+
+        // Links must fit on a single line.
+        if character == '\n' && link_start.is_some() {
+            return Err(format!("Link in node {title:?} contains a line break."));
         }
 
         match character {
@@ -37,8 +44,13 @@ fn insert_node(
                         "Unexpected closing link delimiter in node {title:?}.",
                     ));
                 };
-                let link = content[start..index].trim();
+                let original_link = &original_content[start..index];
+                let link = original_link.trim();
                 links.insert(link.replace("\\[", "[").replace("\\]", "]"));
+                content.push_str(&original_content[copied_through..start]);
+                content.push_str(link);
+                content.push(']');
+                copied_through = index + character.len_utf8();
             }
             _ => {}
         }
@@ -48,6 +60,9 @@ fn insert_node(
     if link_start.is_some() {
         return Err(format!("Unclosed link in node {title:?}."));
     }
+
+    // Retain the content following the final link.
+    content.push_str(&original_content[copied_through..]);
 
     // Insert the node unless its title has already been used.
     match document.nodes.entry(title.clone()) {
@@ -158,6 +173,10 @@ mod tests {
             document.nodes["Home"].links,
             HashSet::from(["About".to_owned(), "Greeting".to_owned()]),
         );
+        assert_eq!(
+            document.nodes["Home"].content,
+            "See [Greeting], [About], and [Greeting].",
+        );
     }
 
     // Treat escaped square brackets as literal link-title characters.
@@ -202,6 +221,15 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_eq!(
             parse("# Home\nSee [Greeting.").unwrap_err(),
             "Unclosed link in node \"Home\".",
+        );
+    }
+
+    // Reject links that span multiple lines.
+    #[test]
+    fn link_with_line_break() {
+        assert_eq!(
+            parse("# Home\nSee [Greeting\ncontinued].").unwrap_err(),
+            "Link in node \"Home\" contains a line break.",
         );
     }
 
