@@ -16,11 +16,17 @@ mull
 Here are the supported command-line options:
 
 ```
-Usage: mull
+Usage: mull [OPTIONS] [COMMAND]
+
+Commands:
+  check  Check a Mull document
+  fix    Fix a Mull document (default)
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -v, --version  Print version
-  -h, --help     Print help
+  -v, --version      Print version
+      --path <PATH>  Specify the path to the Mull document
+  -h, --help         Print help
 ```
 
 ## Installation instructions
