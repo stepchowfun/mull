@@ -5,14 +5,14 @@ use crate::{
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
 
 // Validate every link and ensure every walked filesystem entry is referenced.
-pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), String> {
-    // Collect graph errors while populating node depths where possible.
+pub fn validate(document: &Document, document_path: &Path) -> Result<(), String> {
+    // Collect errors in the parsed text-link graph.
     let mut errors = validate_text_links(document);
 
     // Resolve the directory and document to stable absolute paths.
@@ -179,7 +179,7 @@ fn find_unreferenced_entries(
 }
 
 // Validate text-link targets and the graph rooted at the special home node.
-fn validate_text_links(document: &mut Document) -> Vec<String> {
+fn validate_text_links(document: &Document) -> Vec<String> {
     // Accumulate graph errors in deterministic order.
     let mut errors = Vec::<String>::new();
 
@@ -212,37 +212,6 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
                     node.title.code_str(),
                     text_link.code_str(),
                 ));
-            }
-        }
-    }
-
-    // Reset depths before finding minimum distances from the root with breadth-first traversal.
-    for node in document.text_nodes.values_mut() {
-        node.depth = None;
-    }
-    let mut pending_titles = VecDeque::<String>::new();
-    if let Some(home) = document.text_nodes.get_mut(HOME_TITLE) {
-        home.depth = Some(0);
-        pending_titles.push_back(HOME_TITLE.to_owned());
-    }
-    while let Some(title) = pending_titles.pop_front() {
-        let depth = document.text_nodes[&title]
-            .depth
-            .expect("queued nodes should have a depth");
-        let text_links = document.text_nodes[&title]
-            .links
-            .iter()
-            .filter_map(|link| match link {
-                Link::Text(text_link) => Some(text_link.clone()),
-                Link::File(_) | Link::Directory(_) => None,
-            })
-            .collect::<Vec<_>>();
-        for text_link in text_links {
-            if let Some(target) = document.text_nodes.get_mut(&text_link)
-                && target.depth.is_none()
-            {
-                target.depth = Some(depth + 1);
-                pending_titles.push_back(text_link);
             }
         }
     }
@@ -325,7 +294,7 @@ fn validate_target(
 #[cfg(test)]
 mod tests {
     use super::validate;
-    use crate::parse::parse;
+    use crate::parser::parse;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -375,7 +344,7 @@ mod tests {
         fs::write(directory.path().join("ignored.txt"), "ignored").unwrap();
         fs::create_dir(directory.path().join("images")).unwrap();
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
-        let mut document = parse(concat!(
+        let document = parse(concat!(
             "# Home\n[",
             "file:.gitignore] [",
             "file:.secret] [",
@@ -383,7 +352,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
     }
 
     // Preserve graph errors when the document path cannot be resolved.
@@ -392,9 +361,9 @@ mod tests {
         let directory = TestDirectory::new();
         let document_path = directory.document_path();
         fs::remove_file(&document_path).unwrap();
-        let mut document = parse("# Elsewhere").unwrap();
+        let document = parse("# Elsewhere").unwrap();
 
-        let error = validate(&mut document, &document_path).unwrap_err();
+        let error = validate(&document, &document_path).unwrap_err();
         let mut errors = error.lines();
         assert_eq!(
             errors.next(),
@@ -415,9 +384,9 @@ mod tests {
         let directory = TestDirectory::new();
         fs::create_dir(directory.path().join("images")).unwrap();
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
-        let mut document = parse("# Home").unwrap();
+        let document = parse("# Home").unwrap();
 
-        let error = validate(&mut document, &directory.document_path()).unwrap_err();
+        let error = validate(&document, &directory.document_path()).unwrap_err();
         assert!(error.contains("Directory `images` is not referenced."));
         assert!(error.contains(&format!(
             "`{}`",
@@ -430,10 +399,10 @@ mod tests {
     fn wrong_target_type() {
         let directory = TestDirectory::new();
         fs::create_dir(directory.path().join("images")).unwrap();
-        let mut document = parse(concat!("# Home\n[", "file:images]")).unwrap();
+        let document = parse(concat!("# Home\n[", "file:images]")).unwrap();
 
         assert_eq!(
-            validate(&mut document, &directory.document_path()).unwrap_err(),
+            validate(&document, &directory.document_path()).unwrap_err(),
             "Node `Home` links to `images`, which is not a file.",
         );
     }
@@ -442,10 +411,10 @@ mod tests {
     #[test]
     fn missing_text_link() {
         let directory = TestDirectory::new();
-        let mut document = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
+        let document = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
 
         assert_eq!(
-            validate(&mut document, &directory.document_path()).unwrap_err(),
+            validate(&document, &directory.document_path()).unwrap_err(),
             concat!(
                 "Node `Home` links to missing node `Alpha`.\n",
                 "Node `Home` links to missing node `Zulu`.",
@@ -458,14 +427,14 @@ mod tests {
     fn multiple_validation_errors() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("unreferenced.txt"), "content").unwrap();
-        let mut document = parse(concat!(
+        let document = parse(concat!(
             "# Home\nSee [Missing] and [",
             "file:missing.txt].\n",
             "# Orphan",
         ))
         .unwrap();
 
-        let error = validate(&mut document, &directory.document_path()).unwrap_err();
+        let error = validate(&document, &directory.document_path()).unwrap_err();
         assert!(error.contains("Node `Home` links to missing node `Missing`."));
         assert!(error.contains("Node `Orphan` is not reachable from `Home`."));
         assert!(error.contains("Node `Home` links to inaccessible path `missing.txt`:"));
@@ -477,10 +446,10 @@ mod tests {
     #[test]
     fn empty_text_link() {
         let directory = TestDirectory::new();
-        let mut document = parse("# Home\nSee [].").unwrap();
+        let document = parse("# Home\nSee [].").unwrap();
 
         assert_eq!(
-            validate(&mut document, &directory.document_path()).unwrap_err(),
+            validate(&document, &directory.document_path()).unwrap_err(),
             "Node `Home` links to missing node ``.",
         );
     }
@@ -489,10 +458,10 @@ mod tests {
     #[test]
     fn missing_home() {
         let directory = TestDirectory::new();
-        let mut document = parse("# Elsewhere").unwrap();
+        let document = parse("# Elsewhere").unwrap();
 
         assert_eq!(
-            validate(&mut document, &directory.document_path()).unwrap_err(),
+            validate(&document, &directory.document_path()).unwrap_err(),
             "Document does not contain a `Home` node.",
         );
     }
@@ -501,44 +470,14 @@ mod tests {
     #[test]
     fn unreachable_nodes() {
         let directory = TestDirectory::new();
-        let mut document = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
+        let document = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
 
         assert_eq!(
-            validate(&mut document, &directory.document_path()).unwrap_err(),
+            validate(&document, &directory.document_path()).unwrap_err(),
             concat!(
                 "Node `Alpha` is not reachable from `Home`.\n",
                 "Node `Zulu` is not reachable from `Home`.",
             ),
         );
-    }
-
-    // Populate depths for nodes reached through multiple levels of text links.
-    #[test]
-    fn transitive_text_links() {
-        let directory = TestDirectory::new();
-        let mut document = parse("# Home\nSee [Middle].\n# Middle\nSee [End].\n# End").unwrap();
-
-        assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
-        assert_eq!(document.text_nodes["Home"].depth, Some(0));
-        assert_eq!(document.text_nodes["Middle"].depth, Some(1));
-        assert_eq!(document.text_nodes["End"].depth, Some(2));
-    }
-
-    // Choose the shortest distance when a node is reachable through multiple paths.
-    #[test]
-    fn minimum_depth() {
-        let directory = TestDirectory::new();
-        let mut document = parse(concat!(
-            "# Home\nSee [Left] and [Target].\n",
-            "# Left\nSee [Middle].\n",
-            "# Middle\nSee [Target].\n",
-            "# Target",
-        ))
-        .unwrap();
-
-        assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
-        assert_eq!(document.text_nodes["Left"].depth, Some(1));
-        assert_eq!(document.text_nodes["Middle"].depth, Some(2));
-        assert_eq!(document.text_nodes["Target"].depth, Some(1));
     }
 }

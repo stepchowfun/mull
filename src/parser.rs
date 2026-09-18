@@ -1,6 +1,7 @@
 use crate::{
     document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode},
     format::CodeStr,
+    scoring::populate_depths,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -160,6 +161,8 @@ pub fn parse(contents: &str) -> Result<Document, String> {
 
     // Return all node errors together after parsing every node.
     if errors.is_empty() {
+        // Populate minimum distances from the home node in the parsed document.
+        populate_depths(&mut document);
         Ok(document)
     } else {
         Err(errors.join("\n"))
