@@ -1,5 +1,6 @@
-use crate::document::{Document, Node};
+use crate::document::{Document, Link, Node};
 use std::collections::{HashSet, hash_map::Entry};
+use std::path::PathBuf;
 
 // Add a completed node to the document while rejecting duplicate titles.
 fn insert_node(
@@ -14,7 +15,7 @@ fn insert_node(
     // Collect link titles and rebuild the content with their surrounding whitespace stripped.
     let mut content = String::new();
     let mut copied_through = 0;
-    let mut links = HashSet::<String>::new();
+    let mut links = HashSet::<Link>::new();
     let mut link_start = None::<usize>;
     let mut previous_was_backslash = false;
     for (index, character) in original_content.char_indices() {
@@ -45,10 +46,17 @@ fn insert_node(
                     ));
                 };
                 let original_link = &original_content[start..index];
-                let link = original_link.trim();
-                links.insert(link.replace("\\[", "[").replace("\\]", "]"));
+                let trimmed_link = original_link.trim();
+                let link = trimmed_link.replace("\\[", "[").replace("\\]", "]");
+                if let Some(path) = link.strip_prefix("file:") {
+                    links.insert(Link::File(PathBuf::from(path)));
+                } else if let Some(path) = link.strip_prefix("dir:") {
+                    links.insert(Link::Directory(PathBuf::from(path)));
+                } else {
+                    links.insert(Link::Text(link));
+                }
                 content.push_str(&original_content[copied_through..start]);
-                content.push_str(link);
+                content.push_str(trimmed_link);
                 content.push(']');
                 copied_through = index + character.len_utf8();
             }
@@ -117,22 +125,6 @@ pub fn parse(contents: &str) -> Result<Document, String> {
         insert_node(&mut document, title, title_line, &content_lines)?;
     }
 
-    // Validate links deterministically after every node is available.
-    let mut nodes = document.nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
-    for node in nodes {
-        let mut links = node.links.iter().collect::<Vec<_>>();
-        links.sort();
-        for link in links {
-            if !document.nodes.contains_key(link) {
-                return Err(format!(
-                    "Node {:?} links to missing node {link:?}.",
-                    node.title,
-                ));
-            }
-        }
-    }
-
     // Parsing succeeded.
     Ok(document)
 }
@@ -140,7 +132,9 @@ pub fn parse(contents: &str) -> Result<Document, String> {
 #[cfg(test)]
 mod tests {
     use super::parse;
+    use crate::document::Link;
     use std::collections::HashSet;
+    use std::path::PathBuf;
 
     // Parse titles and multiline content while stripping surrounding whitespace.
     #[test]
@@ -155,7 +149,7 @@ mod tests {
         assert_eq!(document.nodes["Home"].content, "Check out the [Greeting].");
         assert_eq!(
             document.nodes["Home"].links,
-            HashSet::from(["Greeting".to_owned()]),
+            HashSet::from([Link::Text("Greeting".to_owned())]),
         );
         assert_eq!(document.nodes["Greeting"].content, "Hello,\nworld!");
     }
@@ -171,7 +165,10 @@ mod tests {
 
         assert_eq!(
             document.nodes["Home"].links,
-            HashSet::from(["About".to_owned(), "Greeting".to_owned()]),
+            HashSet::from([
+                Link::Text("About".to_owned()),
+                Link::Text("Greeting".to_owned()),
+            ]),
         );
         assert_eq!(
             document.nodes["Home"].content,
@@ -193,25 +190,30 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
 
         assert_eq!(
             document.nodes["Home"].links,
-            HashSet::from(["Four".to_owned(), "One]Two".to_owned(), "[Three".to_owned()]),
+            HashSet::from([
+                Link::Text("Four".to_owned()),
+                Link::Text("One]Two".to_owned()),
+                Link::Text("[Three".to_owned()),
+            ]),
         );
     }
 
-    // Reject links that do not correspond to any node in the document.
+    // Parse file and directory links separately from text links.
     #[test]
-    fn missing_link() {
-        assert_eq!(
-            parse("# Home\nSee [Zulu] and [Alpha].").unwrap_err(),
-            "Node \"Home\" links to missing node \"Alpha\".",
-        );
-    }
+    fn filesystem_links() {
+        let document = parse(concat!(
+            "# Home\nSee [",
+            "file:notes.txt] and [",
+            "dir:images].",
+        ))
+        .unwrap();
 
-    // Parse an empty link and reject it because node titles cannot be empty.
-    #[test]
-    fn empty_link() {
         assert_eq!(
-            parse("# Home\nSee [].").unwrap_err(),
-            "Node \"Home\" links to missing node \"\".",
+            document.nodes["Home"].links,
+            HashSet::from([
+                Link::File(PathBuf::from("notes.txt")),
+                Link::Directory(PathBuf::from("images")),
+            ]),
         );
     }
 

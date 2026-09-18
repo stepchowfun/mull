@@ -1,5 +1,6 @@
 mod document;
 mod parse;
+mod validate;
 
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
@@ -130,6 +131,10 @@ fn entry() -> Result<(), String> {
     // Parse the document.
     let document = parse::parse(&document_contents)
         .map_err(|error| format!("Failed to parse {}: {error}", display_path.display()))?;
+
+    // Validate links against the parsed document and its surrounding filesystem.
+    validate::validate(&document, &document_path)
+        .map_err(|error| format!("Failed to validate {}:\n{error}", display_path.display()))?;
 
     // Render the document once for checking or fixing.
     let rendered_document = document.to_string();

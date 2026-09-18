@@ -1,14 +1,23 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    path::PathBuf,
 };
+
+// These are the targets that a node can reference.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Link {
+    Text(String),
+    File(PathBuf),
+    Directory(PathBuf),
+}
 
 // This struct represents a node in a document.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
-    pub links: HashSet<String>, // Node titles
+    pub links: HashSet<Link>,
 }
 
 // This struct represents a parsed document.

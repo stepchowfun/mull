@@ -1,7 +1,24 @@
+# Files
+
+[dir:.github]
+[dir:src]
+[file:.gitignore]
+[file:CHANGELOG.md]
+[file:CODE_OF_CONDUCT.md]
+[file:CONTRIBUTING.md]
+[file:Cargo.lock]
+[file:Cargo.toml]
+[file:install.sh]
+[file:LICENSE.md]
+[file:MAINTAINERS.md]
+[file:README.md]
+[file:tagref.yml]
+[file:toast.yml]
+
 # Greeting
 
 Hello, world!
 
 # Home
 
-Check out the [Greeting].
+Check out [Files] and [Greeting].
