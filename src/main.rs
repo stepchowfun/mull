@@ -141,7 +141,7 @@ fn entry() -> Result<(), String> {
         )
     })?;
 
-    // Parse the document.
+    // Parse and score the document.
     let document = parser::parse(&document_contents).map_err(|error| {
         format!(
             "Failed to parse {}: {error}",
