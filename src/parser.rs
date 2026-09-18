@@ -112,7 +112,7 @@ fn insert_node(
     }
 }
 
-// Parse source contents into a document.
+// Parse source contents into a scored document.
 pub fn parse(contents: &str) -> Result<Document, String> {
     // Accumulate the parsed document, node errors, and the node currently being read.
     let mut document = Document::default();
@@ -159,7 +159,7 @@ pub fn parse(contents: &str) -> Result<Document, String> {
         errors.push(error);
     }
 
-    // Return all node errors together after parsing every node.
+    // Return all node errors together, or score and return the parsed document.
     if errors.is_empty() {
         // Populate minimum distances from the home node in the parsed document.
         populate_depths(&mut document);

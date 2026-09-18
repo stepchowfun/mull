@@ -27,7 +27,7 @@ pub struct TextNode {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
     pub links: HashSet<Link>,
-    pub depth: Option<usize>, // Minimum text-link distance from the root, populated by scoring
+    pub depth: Option<usize>, // Minimum text-link distance from the root
 }
 
 // This struct represents a parsed document.
