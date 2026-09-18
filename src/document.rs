@@ -35,8 +35,12 @@ impl fmt::Display for Document {
             write!(formatter, "{node}")?;
         }
 
-        // End the document with a line break.
-        writeln!(formatter)
+        // End a non-empty document with a line break.
+        if self.nodes.is_empty() {
+            Ok(())
+        } else {
+            writeln!(formatter)
+        }
     }
 }
 
@@ -84,9 +88,9 @@ mod tests {
         );
     }
 
-    // Ensure even an empty document ends with a line break.
+    // Ensure an empty document has no output.
     #[test]
     fn empty_document_display() {
-        assert_eq!(Document::default().to_string(), "\n");
+        assert_eq!(Document::default().to_string(), "");
     }
 }
