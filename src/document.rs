@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt};
 // This struct represents a node in a document.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub title: String, // No leading or trailing whitespace
+    pub title: String,   // No leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
 }
 
