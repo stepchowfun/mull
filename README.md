@@ -1,4 +1,4 @@
-# Mull
+# Mull 🍇
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
@@ -19,13 +19,13 @@ Here are the supported command-line options:
 Usage: mull [OPTIONS] [COMMAND]
 
 Commands:
-  check  Check a Mull document
-  fix    Fix a Mull document (default)
+  check  Check a document
+  fix    Fix a document (default)
   help   Print this message or the help of the given subcommand(s)
 
 Options:
   -v, --version      Print version
-      --path <PATH>  Specify the path to the Mull document
+      --path <PATH>  Specify the path to the document
   -h, --help         Print help
 ```
 
