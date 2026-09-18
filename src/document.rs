@@ -1,10 +1,14 @@
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 // This struct represents a node in a document.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub title: String,   // Non-empty and no leading or trailing whitespace
+    pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
+    pub links: HashSet<String>, // Node titles
 }
 
 // This struct represents a parsed document.
@@ -48,7 +52,7 @@ impl fmt::Display for Document {
 #[cfg(test)]
 mod tests {
     use super::{Document, Node};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     // Ensure nodes are rendered in the document's source format.
     #[test]
@@ -56,6 +60,7 @@ mod tests {
         let node = Node {
             title: "Greeting".to_owned(),
             content: "Hello, world!".to_owned(),
+            links: HashSet::new(),
         };
 
         assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
@@ -67,6 +72,7 @@ mod tests {
         let node = Node {
             title: "Greeting".to_owned(),
             content: String::new(),
+            links: HashSet::new(),
         };
 
         assert_eq!(node.to_string(), "# Greeting\n");
@@ -81,6 +87,7 @@ mod tests {
                 Node {
                     title: "Greeting".to_owned(),
                     content: String::new(),
+                    links: HashSet::new(),
                 },
             )]),
         };
@@ -98,6 +105,7 @@ mod tests {
                     Node {
                         title: "Greeting".to_owned(),
                         content: "Hello, world!".to_owned(),
+                        links: HashSet::new(),
                     },
                 ),
                 (
@@ -105,6 +113,7 @@ mod tests {
                     Node {
                         title: "Home".to_owned(),
                         content: "Check out the [Greeting].".to_owned(),
+                        links: HashSet::new(),
                     },
                 ),
             ]),
