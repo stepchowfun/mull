@@ -1,5 +1,6 @@
 use crate::{
     document::{Document, HOME_TITLE, Link},
+    format::CodeStr,
     path_util::relative_path,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -24,7 +25,7 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
         Err(error) => {
             errors.push(format!(
                 "Failed to resolve document directory {}: {error}",
-                original_document_directory.display(),
+                original_document_directory.to_string_lossy().code_str(),
             ));
             return errors_to_result(&errors);
         }
@@ -34,7 +35,7 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
         Err(error) => {
             errors.push(format!(
                 "Failed to resolve {}: {error}",
-                document_path.display(),
+                document_path.to_string_lossy().code_str(),
             ));
             return errors_to_result(&errors);
         }
@@ -158,12 +159,16 @@ fn find_unreferenced_entries(
         if file_type.is_file() && !referenced_files.contains(path) {
             errors.push(format!(
                 "File {} is not referenced.",
-                relative_path(document_directory, path).display(),
+                relative_path(document_directory, path)
+                    .to_string_lossy()
+                    .code_str(),
             ));
         } else if file_type.is_dir() {
             errors.push(format!(
                 "Directory {} is not referenced.",
-                relative_path(document_directory, path).display(),
+                relative_path(document_directory, path)
+                    .to_string_lossy()
+                    .code_str(),
             ));
         }
     }
@@ -181,7 +186,10 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
     // Require the root node from which every other node must be reachable.
     let has_home = document.nodes.contains_key(HOME_TITLE);
     if !has_home {
-        errors.push(format!("Document does not contain a {HOME_TITLE:?} node."));
+        errors.push(format!(
+            "Document does not contain a {} node.",
+            HOME_TITLE.code_str(),
+        ));
     }
 
     // Validate text-link targets deterministically.
@@ -200,8 +208,9 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
         for text_link in text_links {
             if !document.nodes.contains_key(text_link) {
                 errors.push(format!(
-                    "Node {:?} links to missing node {text_link:?}.",
-                    node.title,
+                    "Node {} links to missing node {}.",
+                    node.title.code_str(),
+                    text_link.code_str(),
                 ));
             }
         }
@@ -247,11 +256,13 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
             .map(|node| &node.title)
             .collect::<Vec<_>>();
         unreachable_titles.sort();
-        errors.extend(
-            unreachable_titles
-                .into_iter()
-                .map(|title| format!("Node {title:?} is not reachable from {HOME_TITLE:?}.")),
-        );
+        errors.extend(unreachable_titles.into_iter().map(|title| {
+            format!(
+                "Node {} is not reachable from {}.",
+                title.code_str(),
+                HOME_TITLE.code_str(),
+            )
+        }));
     }
 
     // Return every text-link graph error.
@@ -278,8 +289,9 @@ fn validate_target(
     let target = document_directory.join(path);
     let metadata = fs::metadata(&target).map_err(|error| {
         format!(
-            "Node {node_title:?} links to inaccessible path {}: {error}",
-            path.display(),
+            "Node {} links to inaccessible path {}: {error}",
+            node_title.code_str(),
+            path.to_string_lossy().code_str(),
         )
     })?;
     let has_expected_type = if expect_directory {
@@ -294,16 +306,18 @@ fn validate_target(
             "file"
         };
         return Err(format!(
-            "Node {node_title:?} links to {}, which is not a {expected_type}.",
-            path.display(),
+            "Node {} links to {}, which is not a {expected_type}.",
+            node_title.code_str(),
+            path.to_string_lossy().code_str(),
         ));
     }
 
     // Canonicalize the validated target for comparison with walked entries.
     fs::canonicalize(&target).map_err(|error| {
         format!(
-            "Failed to resolve path {} linked from node {node_title:?}: {error}",
-            path.display(),
+            "Failed to resolve path {} linked from node {}: {error}",
+            path.to_string_lossy().code_str(),
+            node_title.code_str(),
         )
     })
 }
@@ -384,13 +398,13 @@ mod tests {
         let mut errors = error.lines();
         assert_eq!(
             errors.next(),
-            Some("Document does not contain a \"Home\" node."),
+            Some("Document does not contain a `Home` node."),
         );
         assert!(
             errors
                 .next()
                 .unwrap()
-                .starts_with(&format!("Failed to resolve {}:", document_path.display())),
+                .starts_with(&format!("Failed to resolve `{}`:", document_path.display())),
         );
         assert_eq!(errors.next(), None);
     }
@@ -404,8 +418,11 @@ mod tests {
         let mut document = parse("# Home").unwrap();
 
         let error = validate(&mut document, &directory.document_path()).unwrap_err();
-        assert!(error.contains("Directory images is not referenced."));
-        assert!(error.contains("photo.jpg"));
+        assert!(error.contains("Directory `images` is not referenced."));
+        assert!(error.contains(&format!(
+            "`{}`",
+            Path::new("images").join("photo.jpg").display(),
+        )));
     }
 
     // Reject a filesystem link whose target has the wrong type.
@@ -417,7 +434,7 @@ mod tests {
 
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
-            "Node \"Home\" links to images, which is not a file.",
+            "Node `Home` links to `images`, which is not a file.",
         );
     }
 
@@ -430,8 +447,8 @@ mod tests {
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
             concat!(
-                "Node \"Home\" links to missing node \"Alpha\".\n",
-                "Node \"Home\" links to missing node \"Zulu\".",
+                "Node `Home` links to missing node `Alpha`.\n",
+                "Node `Home` links to missing node `Zulu`.",
             ),
         );
     }
@@ -449,10 +466,10 @@ mod tests {
         .unwrap();
 
         let error = validate(&mut document, &directory.document_path()).unwrap_err();
-        assert!(error.contains("Node \"Home\" links to missing node \"Missing\"."));
-        assert!(error.contains("Node \"Orphan\" is not reachable from \"Home\"."));
-        assert!(error.contains("Node \"Home\" links to inaccessible path missing.txt:"));
-        assert!(error.contains("File unreferenced.txt is not referenced."));
+        assert!(error.contains("Node `Home` links to missing node `Missing`."));
+        assert!(error.contains("Node `Orphan` is not reachable from `Home`."));
+        assert!(error.contains("Node `Home` links to inaccessible path `missing.txt`:"));
+        assert!(error.contains("File `unreferenced.txt` is not referenced."));
         assert_eq!(error.lines().count(), 4);
     }
 
@@ -464,7 +481,7 @@ mod tests {
 
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
-            "Node \"Home\" links to missing node \"\".",
+            "Node `Home` links to missing node ``.",
         );
     }
 
@@ -476,7 +493,7 @@ mod tests {
 
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
-            "Document does not contain a \"Home\" node.",
+            "Document does not contain a `Home` node.",
         );
     }
 
@@ -489,8 +506,8 @@ mod tests {
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
             concat!(
-                "Node \"Alpha\" is not reachable from \"Home\".\n",
-                "Node \"Zulu\" is not reachable from \"Home\".",
+                "Node `Alpha` is not reachable from `Home`.\n",
+                "Node `Zulu` is not reachable from `Home`.",
             ),
         );
     }

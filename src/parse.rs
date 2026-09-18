@@ -1,5 +1,6 @@
-use crate::document::{
-    DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, Node, TITLE_PREFIX,
+use crate::{
+    document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, Node, TITLE_PREFIX},
+    format::CodeStr,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,7 +32,10 @@ fn insert_node(
 
         // Links must fit on a single line.
         if character == '\n' && link_start.is_some() && !link_has_line_break {
-            errors.push(format!("Link in node {title:?} contains a line break."));
+            errors.push(format!(
+                "Link in node {} contains a line break.",
+                title.code_str(),
+            ));
             link_has_line_break = true;
         }
 
@@ -39,7 +43,8 @@ fn insert_node(
             '[' => {
                 if link_start.is_some() {
                     errors.push(format!(
-                        "Unexpected opening link delimiter in node {title:?}.",
+                        "Unexpected opening link delimiter in node {}.",
+                        title.code_str(),
                     ));
                 } else {
                     link_start = Some(index + character.len_utf8());
@@ -64,7 +69,8 @@ fn insert_node(
                     copied_through = index + character.len_utf8();
                 } else {
                     errors.push(format!(
-                        "Unexpected closing link delimiter in node {title:?}.",
+                        "Unexpected closing link delimiter in node {}.",
+                        title.code_str(),
                     ));
                 }
             }
@@ -74,7 +80,7 @@ fn insert_node(
 
     // Reject an opening delimiter that has no closing delimiter.
     if link_start.is_some() {
-        errors.push(format!("Unclosed link in node {title:?}."));
+        errors.push(format!("Unclosed link in node {}.", title.code_str()));
     }
 
     // Retain the content following the final link.
@@ -82,7 +88,10 @@ fn insert_node(
 
     // Reject a title that has already been used.
     if document.nodes.contains_key(&title) {
-        errors.push(format!("Duplicate title {title:?} on line {title_line}."));
+        errors.push(format!(
+            "Duplicate title {} on line {title_line}.",
+            title.code_str(),
+        ));
     }
 
     // Insert only nodes that parsed without errors.
@@ -250,7 +259,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unclosed_link() {
         assert_eq!(
             parse("# Home\nSee [Greeting.").unwrap_err(),
-            "Unclosed link in node \"Home\".",
+            "Unclosed link in node `Home`.",
         );
     }
 
@@ -259,7 +268,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn link_with_line_break() {
         assert_eq!(
             parse("# Home\nSee [Greeting\ncontinued].").unwrap_err(),
-            "Link in node \"Home\" contains a line break.",
+            "Link in node `Home` contains a line break.",
         );
     }
 
@@ -268,7 +277,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unexpected_opening_delimiter() {
         assert_eq!(
             parse("# Home\nSee [nested[Greeting].").unwrap_err(),
-            "Unexpected opening link delimiter in node \"Home\".",
+            "Unexpected opening link delimiter in node `Home`.",
         );
     }
 
@@ -277,7 +286,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unexpected_closing_delimiter() {
         assert_eq!(
             parse("# Home\nSee Greeting].").unwrap_err(),
-            "Unexpected closing link delimiter in node \"Home\".",
+            "Unexpected closing link delimiter in node `Home`.",
         );
     }
 
@@ -344,7 +353,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn duplicate_title() {
         assert_eq!(
             parse("# Home\nFirst\n# Home\nSecond").unwrap_err(),
-            "Duplicate title \"Home\" on line 3.",
+            "Duplicate title `Home` on line 3.",
         );
     }
 
@@ -354,8 +363,8 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_eq!(
             parse("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err(),
             concat!(
-                "Unexpected closing link delimiter in node \"First\".\n",
-                "Unclosed link in node \"Second\".",
+                "Unexpected closing link delimiter in node `First`.\n",
+                "Unclosed link in node `Second`.",
             ),
         );
     }
@@ -366,9 +375,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_eq!(
             parse("# Home\nUnexpected] and [nested[link.").unwrap_err(),
             concat!(
-                "Unexpected closing link delimiter in node \"Home\".\n",
-                "Unexpected opening link delimiter in node \"Home\".\n",
-                "Unclosed link in node \"Home\".",
+                "Unexpected closing link delimiter in node `Home`.\n",
+                "Unexpected opening link delimiter in node `Home`.\n",
+                "Unclosed link in node `Home`.",
             ),
         );
     }
@@ -390,8 +399,8 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             concat!(
                 "Content appears before the first title on line 1.\n",
                 "Title on line 2 is empty.\n",
-                "Unexpected closing link delimiter in node \"First\".\n",
-                "Unclosed link in node \"Second\".",
+                "Unexpected closing link delimiter in node `First`.\n",
+                "Unclosed link in node `Second`.",
             ),
         );
     }
