@@ -1,5 +1,5 @@
 use crate::{
-    document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, Node, TITLE_PREFIX},
+    document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode},
     format::CodeStr,
 };
 use std::collections::HashSet;
@@ -87,7 +87,7 @@ fn insert_node(
     content.push_str(&original_content[copied_through..]);
 
     // Reject a title that has already been used.
-    if document.nodes.contains_key(&title) {
+    if document.text_nodes.contains_key(&title) {
         errors.push(format!(
             "Duplicate title {} on line {title_line}.",
             title.code_str(),
@@ -96,9 +96,9 @@ fn insert_node(
 
     // Insert only nodes that parsed without errors.
     if errors.is_empty() {
-        document.nodes.insert(
+        document.text_nodes.insert(
             title.clone(),
-            Node {
+            TextNode {
                 title,
                 content,
                 links,
@@ -181,14 +181,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(document.nodes.len(), 2);
-        assert_eq!(document.nodes["Home"].title, "Home");
-        assert_eq!(document.nodes["Home"].content, "Check out the [Greeting].");
+        assert_eq!(document.text_nodes.len(), 2);
+        assert_eq!(document.text_nodes["Home"].title, "Home");
         assert_eq!(
-            document.nodes["Home"].links,
+            document.text_nodes["Home"].content,
+            "Check out the [Greeting].",
+        );
+        assert_eq!(
+            document.text_nodes["Home"].links,
             HashSet::from([Link::Text("Greeting".to_owned())]),
         );
-        assert_eq!(document.nodes["Greeting"].content, "Hello,\nworld!");
+        assert_eq!(document.text_nodes["Greeting"].content, "Hello,\nworld!");
     }
 
     // Parse distinct text links while stripping their surrounding whitespace.
@@ -201,14 +204,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            document.nodes["Home"].links,
+            document.text_nodes["Home"].links,
             HashSet::from([
                 Link::Text("About".to_owned()),
                 Link::Text("Greeting".to_owned()),
             ]),
         );
         assert_eq!(
-            document.nodes["Home"].content,
+            document.text_nodes["Home"].content,
             "See [Greeting], [About], and [Greeting].",
         );
     }
@@ -226,7 +229,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            document.nodes["Home"].links,
+            document.text_nodes["Home"].links,
             HashSet::from([
                 Link::Text("Four".to_owned()),
                 Link::Text("One]Two".to_owned()),
@@ -246,7 +249,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            document.nodes["Home"].links,
+            document.text_nodes["Home"].links,
             HashSet::from([
                 Link::File(PathBuf::from("notes.txt")),
                 Link::Directory(PathBuf::from("images")),
@@ -295,19 +298,26 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn non_title_hashes() {
         let document = parse("# Home\n\n## Subtitle\n#not a title").unwrap();
 
-        assert_eq!(document.nodes["Home"].content, "## Subtitle\n#not a title");
+        assert_eq!(
+            document.text_nodes["Home"].content,
+            "## Subtitle\n#not a title",
+        );
     }
 
     // Accept empty and whitespace-only documents.
     #[test]
     fn empty_document() {
-        assert!(parse(" \n\t\n").unwrap().nodes.is_empty());
+        assert!(parse(" \n\t\n").unwrap().text_nodes.is_empty());
     }
 
     // Accept empty node content.
     #[test]
     fn empty_content() {
-        assert!(parse("# Empty").unwrap().nodes["Empty"].content.is_empty());
+        assert!(
+            parse("# Empty").unwrap().text_nodes["Empty"]
+                .content
+                .is_empty(),
+        );
     }
 
     // Parse Windows line endings without retaining carriage returns.
@@ -315,7 +325,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn windows_line_endings() {
         let document = parse("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(document.nodes["Greeting"].content, "Hello, world!");
+        assert_eq!(document.text_nodes["Greeting"].content, "Hello, world!");
     }
 
     // Reject non-whitespace content before the first title.

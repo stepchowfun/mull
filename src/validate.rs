@@ -67,7 +67,7 @@ fn validate_filesystem_links(
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
     let mut errors = Vec::<String>::new();
-    let mut nodes = document.nodes.values().collect::<Vec<_>>();
+    let mut nodes = document.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in nodes {
         let mut links = node.links.iter().collect::<Vec<_>>();
@@ -184,7 +184,7 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
     let mut errors = Vec::<String>::new();
 
     // Require the root node from which every other node must be reachable.
-    let has_home = document.nodes.contains_key(HOME_TITLE);
+    let has_home = document.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
         errors.push(format!(
             "Document does not contain a {} node.",
@@ -193,7 +193,7 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
     }
 
     // Validate text-link targets deterministically.
-    let mut nodes = document.nodes.values().collect::<Vec<_>>();
+    let mut nodes = document.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
         let mut text_links = node
@@ -206,7 +206,7 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
             .collect::<Vec<_>>();
         text_links.sort();
         for text_link in text_links {
-            if !document.nodes.contains_key(text_link) {
+            if !document.text_nodes.contains_key(text_link) {
                 errors.push(format!(
                     "Node {} links to missing node {}.",
                     node.title.code_str(),
@@ -217,19 +217,19 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
     }
 
     // Reset depths before finding minimum distances from the root with breadth-first traversal.
-    for node in document.nodes.values_mut() {
+    for node in document.text_nodes.values_mut() {
         node.depth = None;
     }
     let mut pending_titles = VecDeque::<String>::new();
-    if let Some(home) = document.nodes.get_mut(HOME_TITLE) {
+    if let Some(home) = document.text_nodes.get_mut(HOME_TITLE) {
         home.depth = Some(0);
         pending_titles.push_back(HOME_TITLE.to_owned());
     }
     while let Some(title) = pending_titles.pop_front() {
-        let depth = document.nodes[&title]
+        let depth = document.text_nodes[&title]
             .depth
             .expect("queued nodes should have a depth");
-        let text_links = document.nodes[&title]
+        let text_links = document.text_nodes[&title]
             .links
             .iter()
             .filter_map(|link| match link {
@@ -238,7 +238,7 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
             })
             .collect::<Vec<_>>();
         for text_link in text_links {
-            if let Some(target) = document.nodes.get_mut(&text_link)
+            if let Some(target) = document.text_nodes.get_mut(&text_link)
                 && target.depth.is_none()
             {
                 target.depth = Some(depth + 1);
@@ -250,7 +250,7 @@ fn validate_text_links(document: &mut Document) -> Vec<String> {
     // Reject every node outside the graph rooted at the home node.
     if has_home {
         let mut unreachable_titles = document
-            .nodes
+            .text_nodes
             .values()
             .filter(|node| node.depth.is_none())
             .map(|node| &node.title)
@@ -519,9 +519,9 @@ mod tests {
         let mut document = parse("# Home\nSee [Middle].\n# Middle\nSee [End].\n# End").unwrap();
 
         assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
-        assert_eq!(document.nodes["Home"].depth, Some(0));
-        assert_eq!(document.nodes["Middle"].depth, Some(1));
-        assert_eq!(document.nodes["End"].depth, Some(2));
+        assert_eq!(document.text_nodes["Home"].depth, Some(0));
+        assert_eq!(document.text_nodes["Middle"].depth, Some(1));
+        assert_eq!(document.text_nodes["End"].depth, Some(2));
     }
 
     // Choose the shortest distance when a node is reachable through multiple paths.
@@ -537,8 +537,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(validate(&mut document, &directory.document_path()), Ok(()));
-        assert_eq!(document.nodes["Left"].depth, Some(1));
-        assert_eq!(document.nodes["Middle"].depth, Some(2));
-        assert_eq!(document.nodes["Target"].depth, Some(1));
+        assert_eq!(document.text_nodes["Left"].depth, Some(1));
+        assert_eq!(document.text_nodes["Middle"].depth, Some(2));
+        assert_eq!(document.text_nodes["Target"].depth, Some(1));
     }
 }
