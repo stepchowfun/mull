@@ -1,7 +1,9 @@
 mod document;
 mod parse;
+mod path_util;
 mod validate;
 
+use crate::path_util::relative_path;
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
 use similar::TextDiff;
@@ -113,10 +115,7 @@ fn entry() -> Result<(), String> {
     // Prefer a path relative to the current directory when the document is contained within it.
     let current_directory = env::current_dir()
         .map_err(|error| format!("Failed to determine the current directory: {error}"))?;
-    let display_path = document_path
-        .strip_prefix(current_directory)
-        .unwrap_or(&document_path)
-        .to_owned();
+    let display_path = relative_path(&current_directory, &document_path).to_owned();
 
     // Load the document and require its contents to be valid UTF-8.
     let document_bytes = fs::read(&document_path)
@@ -129,11 +128,11 @@ fn entry() -> Result<(), String> {
     })?;
 
     // Parse the document.
-    let document = parse::parse(&document_contents)
+    let mut document = parse::parse(&document_contents)
         .map_err(|error| format!("Failed to parse {}: {error}", display_path.display()))?;
 
     // Validate links against the parsed document and its surrounding filesystem.
-    validate::validate(&document, &document_path)
+    validate::validate(&mut document, &document_path)
         .map_err(|error| format!("Failed to validate {}:\n{error}", display_path.display()))?;
 
     // Render the document once for checking or fixing.
