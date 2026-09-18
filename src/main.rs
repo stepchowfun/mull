@@ -1,10 +1,9 @@
+mod node;
+mod parse;
+
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
 use std::{env, fs, path::PathBuf, process::exit};
-
-// Provide the Mull data model and parsing logic.
-pub mod node;
-pub mod parse;
 
 // This struct represents the command-line arguments.
 #[derive(Parser)]
