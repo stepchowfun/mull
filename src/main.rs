@@ -1,8 +1,9 @@
 mod document;
 mod format;
-mod parse;
+mod parser;
 mod path_util;
-mod validate;
+mod scoring;
+mod validator;
 
 use crate::{document::DOCUMENT_EXTENSION, format::CodeStr, path_util::relative_path};
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
@@ -141,15 +142,15 @@ fn entry() -> Result<(), String> {
     })?;
 
     // Parse the document.
-    let mut document = parse::parse(&document_contents).map_err(|error| {
+    let document = parser::parse(&document_contents).map_err(|error| {
         format!(
             "Failed to parse {}: {error}",
             display_path.to_string_lossy().code_str(),
         )
     })?;
 
-    // Validate the node graph and surrounding filesystem while populating node depths.
-    validate::validate(&mut document, &document_path).map_err(|error| {
+    // Validate the node graph and surrounding filesystem.
+    validator::validate(&document, &document_path).map_err(|error| {
         format!(
             "Failed to validate {}:\n{error}",
             display_path.to_string_lossy().code_str(),
