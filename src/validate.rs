@@ -1,5 +1,5 @@
 use crate::{
-    document::{Document, Link},
+    document::{Document, HOME_TITLE, Link},
     path_util::relative_path,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -11,74 +11,163 @@ use std::{
 
 // Validate every link and ensure every walked filesystem entry is referenced.
 pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), String> {
-    // Validate the graph formed by nodes and their text links.
-    validate_text_links(document)?;
+    // Collect graph errors while populating node depths where possible.
+    let mut errors = validate_text_links(document);
 
     // Resolve the directory and document to stable absolute paths.
-    let document_directory = document_path
+    let original_document_directory = document_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let document_directory = fs::canonicalize(document_directory).map_err(|error| {
-        format!(
-            "Failed to resolve document directory {}: {error}",
-            document_directory.display(),
-        )
-    })?;
-    let document_path = fs::canonicalize(document_path)
-        .map_err(|error| format!("Failed to resolve {}: {error}", document_path.display()))?;
+    let document_directory = match fs::canonicalize(original_document_directory) {
+        Ok(document_directory) => document_directory,
+        Err(error) => {
+            errors.push(format!(
+                "Failed to resolve document directory {}: {error}",
+                original_document_directory.display(),
+            ));
+            return errors_to_result(&errors);
+        }
+    };
+    let resolved_document_path = match fs::canonicalize(document_path) {
+        Ok(document_path) => Some(document_path),
+        Err(error) => {
+            errors.push(format!(
+                "Failed to resolve {}: {error}",
+                document_path.display()
+            ));
+            None
+        }
+    };
 
     // Validate filesystem links and collect their canonical targets.
+    let (referenced_files, referenced_directories, filesystem_link_errors) =
+        validate_filesystem_links(document, &document_directory);
+    errors.extend(filesystem_link_errors);
+
+    // Collect walk and unreferenced-entry errors for deterministic reporting.
+    errors.extend(find_unreferenced_entries(
+        &document_directory,
+        resolved_document_path.as_deref(),
+        &referenced_files,
+        &referenced_directories,
+    ));
+
+    // Report all validation errors together.
+    errors_to_result(&errors)
+}
+
+// Validate filesystem links and collect their targets and errors.
+fn validate_filesystem_links(
+    document: &Document,
+    document_directory: &Path,
+) -> (HashSet<PathBuf>, HashSet<PathBuf>, Vec<String>) {
+    // Visit nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
+    let mut errors = Vec::<String>::new();
     let mut nodes = document.nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in nodes {
         let mut links = node.links.iter().collect::<Vec<_>>();
         links.sort();
         for link in links {
-            match link {
-                Link::Text(_) => {}
-                Link::File(path) => {
-                    let target = validate_target(&document_directory, path, false, &node.title)?;
-                    referenced_files.insert(target);
+            let (path, expect_directory) = match link {
+                Link::Text(_) => continue,
+                Link::File(path) => (path, false),
+                Link::Directory(path) => (path, true),
+            };
+
+            // Retain valid targets and collect failures without stopping validation.
+            match validate_target(document_directory, path, expect_directory, &node.title) {
+                Ok(target) => {
+                    if expect_directory {
+                        referenced_directories.insert(target);
+                    } else {
+                        referenced_files.insert(target);
+                    }
                 }
-                Link::Directory(path) => {
-                    let target = validate_target(&document_directory, path, true, &node.title)?;
-                    referenced_directories.insert(target);
+                Err(error) => {
+                    errors.push(error);
+                    record_existing_target(
+                        document_directory,
+                        path,
+                        &mut referenced_files,
+                        &mut referenced_directories,
+                    );
                 }
             }
         }
     }
 
+    // Return every collected target and link error.
+    (referenced_files, referenced_directories, errors)
+}
+
+// Record an existing target even when its link declared the wrong entry type.
+fn record_existing_target(
+    document_directory: &Path,
+    path: &Path,
+    referenced_files: &mut HashSet<PathBuf>,
+    referenced_directories: &mut HashSet<PathBuf>,
+) {
+    // Ignore inaccessible targets because their validation error already explains the failure.
+    let target = document_directory.join(path);
+    let Ok(metadata) = fs::metadata(&target) else {
+        return;
+    };
+    let Ok(target) = fs::canonicalize(target) else {
+        return;
+    };
+
+    // Prevent a wrong-type link from also producing a misleading unreferenced-entry error.
+    if metadata.is_file() {
+        referenced_files.insert(target);
+    } else if metadata.is_dir() {
+        referenced_directories.insert(target);
+    }
+}
+
+// Find every walked filesystem entry that is not covered by a link.
+fn find_unreferenced_entries(
+    document_directory: &Path,
+    document_path: Option<&Path>,
+    referenced_files: &HashSet<PathBuf>,
+    referenced_directories: &HashSet<PathBuf>,
+) -> Vec<String> {
     // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
-    let mut overrides = OverrideBuilder::new(&document_directory);
+    let mut overrides = OverrideBuilder::new(document_directory);
     overrides
         .add("!.git/")
         .expect("the static .git override should be valid")
         .add("!.hg/")
         .expect("the static .hg override should be valid");
-    let overrides = overrides
-        .build()
-        .map_err(|error| format!("Failed to build filesystem ignore rules: {error}"))?;
+    let overrides = match overrides.build() {
+        Ok(overrides) => overrides,
+        Err(error) => return vec![format!("Failed to build filesystem ignore rules: {error}")],
+    };
     let pruned_directories = referenced_directories.clone();
-    let mut walker_builder = WalkBuilder::new(&document_directory);
+    let mut walker_builder = WalkBuilder::new(document_directory);
     walker_builder
-        .current_dir(&document_directory)
+        .current_dir(document_directory)
         .hidden(false)
         .parents(false)
         .require_git(false)
         .overrides(overrides)
         .filter_entry(move |entry| !pruned_directories.contains(entry.path()));
-    let walker = walker_builder.build();
 
-    // Collect every unreferenced file and directory for deterministic reporting.
+    // Collect walk and unreferenced-entry errors.
     let mut errors = Vec::<String>::new();
-    for result in walker {
-        let entry =
-            result.map_err(|error| format!("Failed to walk document directory: {error}"))?;
+    for result in walker_builder.build() {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(format!("Failed to walk document directory: {error}"));
+                continue;
+            }
+        };
         let path = entry.path();
-        if path == document_directory || path == document_path {
+        if path == document_directory || document_path == Some(path) {
             continue;
         }
         let Some(file_type) = entry.file_type() else {
@@ -87,30 +176,30 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
         if file_type.is_file() && !referenced_files.contains(path) {
             errors.push(format!(
                 "File {} is not referenced.",
-                relative_path(&document_directory, path).display(),
+                relative_path(document_directory, path).display(),
             ));
         } else if file_type.is_dir() {
             errors.push(format!(
                 "Directory {} is not referenced.",
-                relative_path(&document_directory, path).display(),
+                relative_path(document_directory, path).display(),
             ));
         }
     }
     errors.sort();
 
-    // Report every unreferenced entry together.
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
+    // Return every deterministic walk error.
+    errors
 }
 
-// Validate text-link targets and the graph rooted at Home.
-fn validate_text_links(document: &mut Document) -> Result<(), String> {
+// Validate text-link targets and the graph rooted at the special home node.
+fn validate_text_links(document: &mut Document) -> Vec<String> {
+    // Accumulate graph errors in deterministic order.
+    let mut errors = Vec::<String>::new();
+
     // Require the root node from which every other node must be reachable.
-    if !document.nodes.contains_key("Home") {
-        return Err("Document does not contain a \"Home\" node.".to_owned());
+    let has_home = document.nodes.contains_key(HOME_TITLE);
+    if !has_home {
+        errors.push(format!("Document does not contain a {HOME_TITLE:?} node."));
     }
 
     // Validate text-link targets deterministically.
@@ -128,7 +217,7 @@ fn validate_text_links(document: &mut Document) -> Result<(), String> {
         text_links.sort();
         for text_link in text_links {
             if !document.nodes.contains_key(text_link) {
-                return Err(format!(
+                errors.push(format!(
                     "Node {:?} links to missing node {text_link:?}.",
                     node.title,
                 ));
@@ -136,16 +225,15 @@ fn validate_text_links(document: &mut Document) -> Result<(), String> {
         }
     }
 
-    // Reset depths before finding minimum distances from Home with breadth-first traversal.
+    // Reset depths before finding minimum distances from the root with breadth-first traversal.
     for node in document.nodes.values_mut() {
         node.depth = None;
     }
-    document
-        .nodes
-        .get_mut("Home")
-        .expect("Home should already be present")
-        .depth = Some(0);
-    let mut pending_titles = VecDeque::from(["Home".to_owned()]);
+    let mut pending_titles = VecDeque::<String>::new();
+    if let Some(home) = document.nodes.get_mut(HOME_TITLE) {
+        home.depth = Some(0);
+        pending_titles.push_back(HOME_TITLE.to_owned());
+    }
     while let Some(title) = pending_titles.pop_front() {
         let depth = document.nodes[&title]
             .depth
@@ -159,35 +247,42 @@ fn validate_text_links(document: &mut Document) -> Result<(), String> {
             })
             .collect::<Vec<_>>();
         for text_link in text_links {
-            let target = document
-                .nodes
-                .get_mut(&text_link)
-                .expect("text-link targets should already be validated");
-            if target.depth.is_none() {
+            if let Some(target) = document.nodes.get_mut(&text_link)
+                && target.depth.is_none()
+            {
                 target.depth = Some(depth + 1);
                 pending_titles.push_back(text_link);
             }
         }
     }
 
-    // Reject every node outside the graph rooted at Home.
-    let mut unreachable_titles = document
-        .nodes
-        .values()
-        .filter(|node| node.depth.is_none())
-        .map(|node| &node.title)
-        .collect::<Vec<_>>();
-    unreachable_titles.sort();
-    if !unreachable_titles.is_empty() {
-        return Err(unreachable_titles
-            .into_iter()
-            .map(|title| format!("Node {title:?} is not reachable from \"Home\"."))
-            .collect::<Vec<_>>()
-            .join("\n"));
+    // Reject every node outside the graph rooted at the home node.
+    if has_home {
+        let mut unreachable_titles = document
+            .nodes
+            .values()
+            .filter(|node| node.depth.is_none())
+            .map(|node| &node.title)
+            .collect::<Vec<_>>();
+        unreachable_titles.sort();
+        errors.extend(
+            unreachable_titles
+                .into_iter()
+                .map(|title| format!("Node {title:?} is not reachable from {HOME_TITLE:?}.")),
+        );
     }
 
-    // The text-link graph is valid.
-    Ok(())
+    // Return every text-link graph error.
+    errors
+}
+
+// Convert collected validation errors into the public result type.
+fn errors_to_result(errors: &[String]) -> Result<(), String> {
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 // Validate one filesystem target and return its canonical path.
@@ -329,8 +424,31 @@ mod tests {
 
         assert_eq!(
             validate(&mut document, &directory.document_path()).unwrap_err(),
-            "Node \"Home\" links to missing node \"Alpha\".",
+            concat!(
+                "Node \"Home\" links to missing node \"Alpha\".\n",
+                "Node \"Home\" links to missing node \"Zulu\".",
+            ),
         );
+    }
+
+    // Report independent graph, filesystem-link, and unreferenced-entry errors together.
+    #[test]
+    fn multiple_validation_errors() {
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join("unreferenced.txt"), "content").unwrap();
+        let mut document = parse(concat!(
+            "# Home\nSee [Missing] and [",
+            "file:missing.txt].\n",
+            "# Orphan",
+        ))
+        .unwrap();
+
+        let error = validate(&mut document, &directory.document_path()).unwrap_err();
+        assert!(error.contains("Node \"Home\" links to missing node \"Missing\"."));
+        assert!(error.contains("Node \"Orphan\" is not reachable from \"Home\"."));
+        assert!(error.contains("Node \"Home\" links to inaccessible path missing.txt:"));
+        assert!(error.contains("File unreferenced.txt is not referenced."));
+        assert_eq!(error.lines().count(), 4);
     }
 
     // Reject an empty text link because node titles cannot be empty.

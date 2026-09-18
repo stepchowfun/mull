@@ -4,6 +4,15 @@ use std::{
     path::PathBuf,
 };
 
+// These strings define the document format's extension and structural markers.
+pub const DOCUMENT_EXTENSION: &str = "mull";
+pub const TITLE_PREFIX: &str = "# ";
+pub const FILE_LINK_PREFIX: &str = "file:";
+pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
+
+// This title identifies the root of every document's text-link graph.
+pub const HOME_TITLE: &str = "Home";
+
 // These are the targets that a node can reference.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Link {
@@ -18,7 +27,7 @@ pub struct Node {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
     pub links: HashSet<Link>,
-    pub depth: Option<usize>, // Minimum text-link distance from Home, populated by validation
+    pub depth: Option<usize>, // Minimum text-link distance from the root, populated by validation
 }
 
 // This struct represents a parsed document.
@@ -32,9 +41,13 @@ impl fmt::Display for Node {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omit the content separator when there is no content.
         if self.content.is_empty() {
-            writeln!(formatter, "# {}", self.title)
+            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
         } else {
-            writeln!(formatter, "# {}\n\n{}", self.title, self.content)
+            writeln!(
+                formatter,
+                "{TITLE_PREFIX}{}\n\n{}",
+                self.title, self.content,
+            )
         }
     }
 }

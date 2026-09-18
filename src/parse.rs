@@ -1,8 +1,10 @@
-use crate::document::{Document, Link, Node};
-use std::collections::{HashSet, hash_map::Entry};
+use crate::document::{
+    DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, Node, TITLE_PREFIX,
+};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-// Add a completed node to the document while rejecting duplicate titles.
+// Add a completed node after collecting all of its parsing errors.
 fn insert_node(
     document: &mut Document,
     title: String,
@@ -16,7 +18,9 @@ fn insert_node(
     let mut content = String::new();
     let mut copied_through = 0;
     let mut links = HashSet::<Link>::new();
+    let mut errors = Vec::<String>::new();
     let mut link_start = None::<usize>;
+    let mut link_has_line_break = false;
     let mut previous_was_backslash = false;
     for (index, character) in original_content.char_indices() {
         let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
@@ -26,39 +30,43 @@ fn insert_node(
         }
 
         // Links must fit on a single line.
-        if character == '\n' && link_start.is_some() {
-            return Err(format!("Link in node {title:?} contains a line break."));
+        if character == '\n' && link_start.is_some() && !link_has_line_break {
+            errors.push(format!("Link in node {title:?} contains a line break."));
+            link_has_line_break = true;
         }
 
         match character {
             '[' => {
                 if link_start.is_some() {
-                    return Err(format!(
+                    errors.push(format!(
                         "Unexpected opening link delimiter in node {title:?}.",
                     ));
+                } else {
+                    link_start = Some(index + character.len_utf8());
+                    link_has_line_break = false;
                 }
-                link_start = Some(index + character.len_utf8());
             }
             ']' => {
-                let Some(start) = link_start.take() else {
-                    return Err(format!(
+                if let Some(start) = link_start.take() {
+                    let original_link = &original_content[start..index];
+                    let trimmed_link = original_link.trim();
+                    let link = trimmed_link.replace("\\[", "[").replace("\\]", "]");
+                    if let Some(path) = link.strip_prefix(FILE_LINK_PREFIX) {
+                        links.insert(Link::File(PathBuf::from(path)));
+                    } else if let Some(path) = link.strip_prefix(DIRECTORY_LINK_PREFIX) {
+                        links.insert(Link::Directory(PathBuf::from(path)));
+                    } else {
+                        links.insert(Link::Text(link));
+                    }
+                    content.push_str(&original_content[copied_through..start]);
+                    content.push_str(trimmed_link);
+                    content.push(']');
+                    copied_through = index + character.len_utf8();
+                } else {
+                    errors.push(format!(
                         "Unexpected closing link delimiter in node {title:?}.",
                     ));
-                };
-                let original_link = &original_content[start..index];
-                let trimmed_link = original_link.trim();
-                let link = trimmed_link.replace("\\[", "[").replace("\\]", "]");
-                if let Some(path) = link.strip_prefix("file:") {
-                    links.insert(Link::File(PathBuf::from(path)));
-                } else if let Some(path) = link.strip_prefix("dir:") {
-                    links.insert(Link::Directory(PathBuf::from(path)));
-                } else {
-                    links.insert(Link::Text(link));
                 }
-                content.push_str(&original_content[copied_through..start]);
-                content.push_str(trimmed_link);
-                content.push(']');
-                copied_through = index + character.len_utf8();
             }
             _ => {}
         }
@@ -66,68 +74,87 @@ fn insert_node(
 
     // Reject an opening delimiter that has no closing delimiter.
     if link_start.is_some() {
-        return Err(format!("Unclosed link in node {title:?}."));
+        errors.push(format!("Unclosed link in node {title:?}."));
     }
 
     // Retain the content following the final link.
     content.push_str(&original_content[copied_through..]);
 
-    // Insert the node unless its title has already been used.
-    match document.nodes.entry(title.clone()) {
-        Entry::Occupied(_) => Err(format!("Duplicate title {title:?} on line {title_line}.")),
-        Entry::Vacant(entry) => {
-            entry.insert(Node {
+    // Reject a title that has already been used.
+    if document.nodes.contains_key(&title) {
+        errors.push(format!("Duplicate title {title:?} on line {title_line}."));
+    }
+
+    // Insert only nodes that parsed without errors.
+    if errors.is_empty() {
+        document.nodes.insert(
+            title.clone(),
+            Node {
                 title,
                 content,
                 links,
                 depth: None,
-            });
-            Ok(())
-        }
+            },
+        );
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
     }
 }
 
 // Parse source contents into a document.
 pub fn parse(contents: &str) -> Result<Document, String> {
-    // Accumulate the parsed document and the node currently being read.
+    // Accumulate the parsed document, node errors, and the node currently being read.
     let mut document = Document::default();
+    let mut errors = Vec::<String>::new();
     let mut current_title = None::<(String, usize)>;
     let mut content_lines = Vec::<&str>::new();
+    let mut reported_content_before_title = false;
 
     // Process title lines as boundaries and retain all other lines as content.
     for (line_index, line) in contents.lines().enumerate() {
         let line_number = line_index + 1;
-        if let Some(title) = line.strip_prefix("# ") {
+        if let Some(title) = line.strip_prefix(TITLE_PREFIX) {
             // Finish the preceding node before starting the next one.
             if let Some((title, title_line)) = current_title.take() {
-                insert_node(&mut document, title, title_line, &content_lines)?;
+                if let Err(error) = insert_node(&mut document, title, title_line, &content_lines) {
+                    errors.push(error);
+                }
                 content_lines.clear();
             }
 
             // Reject titles that are empty after surrounding whitespace is stripped.
             let title = title.trim();
             if title.is_empty() {
-                return Err(format!("Title on line {line_number} is empty."));
+                errors.push(format!("Title on line {line_number} is empty."));
+            } else {
+                current_title = Some((title.to_owned(), line_number));
             }
-            current_title = Some((title.to_owned(), line_number));
         } else if current_title.is_some() {
             // Preserve lines belonging to the current node until its content is finalized.
             content_lines.push(line);
-        } else if !line.trim().is_empty() {
-            // Non-whitespace content cannot appear before the first title.
-            return Err(format!(
+        } else if !reported_content_before_title && !line.trim().is_empty() {
+            // Report only the first non-whitespace content outside a valid node.
+            errors.push(format!(
                 "Content appears before the first title on line {line_number}.",
             ));
+            reported_content_before_title = true;
         }
     }
 
     // Finish the final node at the end of the document.
-    if let Some((title, title_line)) = current_title {
-        insert_node(&mut document, title, title_line, &content_lines)?;
+    if let Some((title, title_line)) = current_title
+        && let Err(error) = insert_node(&mut document, title, title_line, &content_lines)
+    {
+        errors.push(error);
     }
 
-    // Parsing succeeded.
-    Ok(document)
+    // Return all node errors together after parsing every node.
+    if errors.is_empty() {
+        Ok(document)
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -296,7 +323,19 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn empty_title() {
         assert_eq!(
             parse("#   \nContent").unwrap_err(),
-            "Title on line 1 is empty.",
+            concat!(
+                "Title on line 1 is empty.\n",
+                "Content appears before the first title on line 2.",
+            ),
+        );
+    }
+
+    // Report only the first occurrence of content before a valid title.
+    #[test]
+    fn repeated_content_before_title() {
+        assert_eq!(
+            parse("First\nSecond\n# Home").unwrap_err(),
+            "Content appears before the first title on line 1.",
         );
     }
 
@@ -306,6 +345,54 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_eq!(
             parse("# Home\nFirst\n# Home\nSecond").unwrap_err(),
             "Duplicate title \"Home\" on line 3.",
+        );
+    }
+
+    // Report errors from every invalid node in source order.
+    #[test]
+    fn multiple_node_errors() {
+        assert_eq!(
+            parse("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err(),
+            concat!(
+                "Unexpected closing link delimiter in node \"First\".\n",
+                "Unclosed link in node \"Second\".",
+            ),
+        );
+    }
+
+    // Report every delimiter error within one node.
+    #[test]
+    fn multiple_errors_in_node() {
+        assert_eq!(
+            parse("# Home\nUnexpected] and [nested[link.").unwrap_err(),
+            concat!(
+                "Unexpected closing link delimiter in node \"Home\".\n",
+                "Unexpected opening link delimiter in node \"Home\".\n",
+                "Unclosed link in node \"Home\".",
+            ),
+        );
+    }
+
+    // Report structural and node errors together in source order.
+    #[test]
+    fn multiple_error_types() {
+        assert_eq!(
+            parse(concat!(
+                "Introduction\n",
+                "#   \n",
+                "Content\n",
+                "# First\n",
+                "Unexpected].\n",
+                "# Second\n",
+                "Unclosed [link.",
+            ))
+            .unwrap_err(),
+            concat!(
+                "Content appears before the first title on line 1.\n",
+                "Title on line 2 is empty.\n",
+                "Unexpected closing link delimiter in node \"First\".\n",
+                "Unclosed link in node \"Second\".",
+            ),
         );
     }
 }
