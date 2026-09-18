@@ -46,7 +46,8 @@ impl fmt::Display for Node {
             writeln!(
                 formatter,
                 "{TITLE_PREFIX}{}\n\n{}",
-                self.title, self.content,
+                self.title,
+                self.content,
             )
         }
     }

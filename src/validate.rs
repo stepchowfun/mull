@@ -34,7 +34,7 @@ pub fn validate(document: &mut Document, document_path: &Path) -> Result<(), Str
         Err(error) => {
             errors.push(format!(
                 "Failed to resolve {}: {error}",
-                document_path.display()
+                document_path.display(),
             ));
             None
         }
