@@ -1,7 +1,7 @@
 use crate::{
     Errors,
     document::{Document, HOME_TITLE, Link},
-    format::CodeStr,
+    format::{CodePath, CodeStr},
     path_util::relative_path,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -29,7 +29,7 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors>
         Err(error) => {
             errors.push(format!(
                 "Failed to resolve document directory {}: {error}",
-                original_document_directory.to_string_lossy().code_str(),
+                original_document_directory.code_path(),
             ));
             return errors_to_result(errors);
         }
@@ -37,14 +37,14 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors>
     if let Err(error) = fs::metadata(document_path) {
         errors.push(format!(
             "Failed to resolve {}: {error}",
-            document_path.to_string_lossy().code_str(),
+            document_path.code_path(),
         ));
         return errors_to_result(errors);
     }
     let Some(document_file_name) = document_path.file_name() else {
         errors.push(format!(
             "Failed to determine the file name of {}.",
-            document_path.to_string_lossy().code_str(),
+            document_path.code_path(),
         ));
         return errors_to_result(errors);
     };
@@ -148,7 +148,7 @@ fn validate_filesystem_links(
                     errors.push(format!(
                         "Node {} links to inaccessible path {}: {error}",
                         node.title.code_str(),
-                        path.to_string_lossy().code_str(),
+                        path.code_path(),
                     ));
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;
@@ -168,12 +168,12 @@ fn validate_filesystem_links(
                 Link::File(_) => errors.push(format!(
                     "Node {} links to {}, which is not a file.",
                     node.title.code_str(),
-                    path.to_string_lossy().code_str(),
+                    path.code_path(),
                 )),
                 Link::Directory(_) => errors.push(format!(
                     "Node {} links to {}, which is not a directory.",
                     node.title.code_str(),
-                    path.to_string_lossy().code_str(),
+                    path.code_path(),
                 )),
                 Link::Text(_) => {
                     // Text links were skipped above [ref:skip_text_links].
@@ -267,9 +267,7 @@ fn find_unreferenced_filesystem_links(
         if file_type.is_file() && !referenced_files.contains(path) {
             errors.push(format!(
                 "File {} is not referenced.",
-                relative_path(document_directory, path)
-                    .to_string_lossy()
-                    .code_str(),
+                relative_path(document_directory, path).code_path(),
             ));
             if errors.len() >= maximum_errors {
                 break;

@@ -5,11 +5,19 @@ mod path_util;
 mod scoring;
 mod validator;
 
-use crate::{document::DOCUMENT_EXTENSION, format::CodeStr, path_util::relative_path};
+use crate::{
+    document::DOCUMENT_EXTENSION,
+    format::{CodePath, CodeStr},
+    path_util::relative_path,
+};
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
 use colored::Colorize;
 use similar::TextDiff;
-use std::{env, fs, path::PathBuf, process::exit};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::exit,
+};
 
 // Collect logical errors separately so their boundaries are preserved for presentation.
 type Errors = Vec<String>;
@@ -58,12 +66,8 @@ fn find_document() -> Result<PathBuf, Errors> {
 
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
-        let entries = fs::read_dir(directory).map_err(|error| {
-            vec![format!(
-                "Failed to read {}: {error}",
-                directory.to_string_lossy().code_str(),
-            )]
-        })?;
+        let entries = fs::read_dir(directory)
+            .map_err(|error| vec![format!("Failed to read {}: {error}", directory.code_path())])?;
         let mut documents = Vec::<PathBuf>::new();
 
         // Inspect each directory entry and retain regular documents.
@@ -71,7 +75,7 @@ fn find_document() -> Result<PathBuf, Errors> {
             let entry = entry.map_err(|error| {
                 vec![format!(
                     "Failed to read an entry in {}: {error}",
-                    directory.to_string_lossy().code_str(),
+                    directory.code_path(),
                 )]
             })?;
             let path = entry.path();
@@ -81,10 +85,7 @@ fn find_document() -> Result<PathBuf, Errors> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case(DOCUMENT_EXTENSION));
             if has_document_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
-                    vec![format!(
-                        "Failed to inspect {}: {error}",
-                        path.to_string_lossy().code_str(),
-                    )]
+                    vec![format!("Failed to inspect {}: {error}", path.code_path())]
                 })?;
                 if metadata.is_file() {
                     documents.push(path);
@@ -98,12 +99,12 @@ fn find_document() -> Result<PathBuf, Errors> {
             let file_names = documents
                 .iter()
                 .filter_map(|path| path.file_name())
-                .map(|file_name| file_name.to_string_lossy().code_str().to_string())
+                .map(|file_name| Path::new(file_name).code_path().to_string())
                 .collect::<Vec<String>>()
                 .join(", ");
             return Err(vec![format!(
                 "Found multiple documents in {}: {file_names}",
-                directory.to_string_lossy().code_str(),
+                directory.code_path(),
             )]);
         }
 
@@ -116,7 +117,7 @@ fn find_document() -> Result<PathBuf, Errors> {
     // Report that the search completed without finding a document.
     Err(vec![format!(
         "No document found in {} or its ancestors.",
-        current_directory.to_string_lossy().code_str(),
+        current_directory.code_path(),
     )])
 }
 
@@ -140,13 +141,13 @@ fn entry() -> Result<(), Errors> {
     let document_bytes = fs::read(&document_path).map_err(|error| {
         vec![format!(
             "Failed to read {}: {error}",
-            display_path.to_string_lossy().code_str(),
+            display_path.code_path(),
         )]
     })?;
     let document_contents = String::from_utf8(document_bytes).map_err(|error| {
         vec![format!(
             "Document {} is not valid UTF-8: {error}",
-            display_path.to_string_lossy().code_str(),
+            display_path.code_path(),
         )]
     })?;
 
@@ -154,12 +155,7 @@ fn entry() -> Result<(), Errors> {
     let document = parser::parse(&document_contents).map_err(|errors| {
         errors
             .into_iter()
-            .map(|error| {
-                format!(
-                    "Failed to parse {}: {error}",
-                    display_path.to_string_lossy().code_str(),
-                )
-            })
+            .map(|error| format!("Failed to parse {}: {error}", display_path.code_path()))
             .collect::<Errors>()
     })?;
 
@@ -167,12 +163,7 @@ fn entry() -> Result<(), Errors> {
     validator::validate(&document, &document_path).map_err(|errors| {
         errors
             .into_iter()
-            .map(|error| {
-                format!(
-                    "Failed to validate {}: {error}",
-                    display_path.to_string_lossy().code_str(),
-                )
-            })
+            .map(|error| format!("Failed to validate {}: {error}", display_path.code_path()))
             .collect::<Errors>()
     })?;
 
@@ -190,34 +181,28 @@ fn entry() -> Result<(), Errors> {
                     .to_string();
                 return Err(vec![format!(
                     "Document {} is not formatted correctly:\n\n{diff}\n{} can fix it.",
-                    display_path.to_string_lossy().code_str(),
+                    display_path.code_path(),
                     "mull fix".code_str(),
                 )]);
             }
 
             // Report that the document passed the check.
-            println!(
-                "Document {} looks good.",
-                display_path.to_string_lossy().code_str(),
-            );
+            println!("Document {} looks good.", display_path.code_path());
         }
         Subcommand::Fix => {
             // Avoid rewriting a document that already has its canonical rendering.
             if document_contents == rendered_document {
-                println!(
-                    "Document {} looks good.",
-                    display_path.to_string_lossy().code_str(),
-                );
+                println!("Document {} looks good.", display_path.code_path());
             } else {
                 fs::write(&document_path, rendered_document).map_err(|error| {
                     vec![format!(
                         "Failed to write {}: {error}",
-                        display_path.to_string_lossy().code_str(),
+                        display_path.code_path(),
                     )]
                 })?;
 
                 // Report that the document was fixed.
-                println!("Fixed {}.", display_path.to_string_lossy().code_str());
+                println!("Fixed {}.", display_path.code_path());
             }
         }
     }
