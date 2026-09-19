@@ -1,4 +1,5 @@
 use crate::{
+    Errors,
     document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode},
     format::CodeStr,
     scoring::populate_depths,
@@ -12,7 +13,7 @@ fn insert_node(
     title: String,
     title_line: usize,
     content_lines: &[&str],
-) -> Result<(), String> {
+) -> Result<(), Errors> {
     // Strip whitespace around the content while preserving its internal formatting.
     let original_content = content_lines.join("\n").trim().to_owned();
 
@@ -108,12 +109,12 @@ fn insert_node(
         );
         Ok(())
     } else {
-        Err(errors.join("\n"))
+        Err(errors)
     }
 }
 
 // Parse source contents into a scored document.
-pub fn parse(contents: &str) -> Result<Document, String> {
+pub fn parse(contents: &str) -> Result<Document, Errors> {
     // Accumulate the parsed document, node errors, and the node currently being read.
     let mut document = Document::default();
     let mut errors = Vec::<String>::new();
@@ -127,8 +128,10 @@ pub fn parse(contents: &str) -> Result<Document, String> {
         if let Some(title) = line.strip_prefix(TITLE_PREFIX) {
             // Finish the preceding node before starting the next one.
             if let Some((title, title_line)) = current_title.take() {
-                if let Err(error) = insert_node(&mut document, title, title_line, &content_lines) {
-                    errors.push(error);
+                if let Err(node_errors) =
+                    insert_node(&mut document, title, title_line, &content_lines)
+                {
+                    errors.extend(node_errors);
                 }
                 content_lines.clear();
             }
@@ -154,9 +157,9 @@ pub fn parse(contents: &str) -> Result<Document, String> {
 
     // Finish the final node at the end of the document.
     if let Some((title, title_line)) = current_title
-        && let Err(error) = insert_node(&mut document, title, title_line, &content_lines)
+        && let Err(node_errors) = insert_node(&mut document, title, title_line, &content_lines)
     {
-        errors.push(error);
+        errors.extend(node_errors);
     }
 
     // Return all node errors together, or score and return the parsed document.
@@ -165,7 +168,7 @@ pub fn parse(contents: &str) -> Result<Document, String> {
         populate_depths(&mut document);
         Ok(document)
     } else {
-        Err(errors.join("\n"))
+        Err(errors)
     }
 }
 
@@ -265,7 +268,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unclosed_link() {
         assert_eq!(
             parse("# Home\nSee [Greeting.").unwrap_err(),
-            "Unclosed link in node `Home`.",
+            vec!["Unclosed link in node `Home`.".to_owned()],
         );
     }
 
@@ -274,7 +277,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn link_with_line_break() {
         assert_eq!(
             parse("# Home\nSee [Greeting\ncontinued].").unwrap_err(),
-            "Link in node `Home` contains a line break.",
+            vec!["Link in node `Home` contains a line break.".to_owned()],
         );
     }
 
@@ -283,7 +286,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unexpected_opening_delimiter() {
         assert_eq!(
             parse("# Home\nSee [nested[Greeting].").unwrap_err(),
-            "Unexpected opening link delimiter in node `Home`.",
+            vec!["Unexpected opening link delimiter in node `Home`.".to_owned()],
         );
     }
 
@@ -292,7 +295,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unexpected_closing_delimiter() {
         assert_eq!(
             parse("# Home\nSee Greeting].").unwrap_err(),
-            "Unexpected closing link delimiter in node `Home`.",
+            vec!["Unexpected closing link delimiter in node `Home`.".to_owned()],
         );
     }
 
@@ -336,7 +339,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn content_before_title() {
         assert_eq!(
             parse("Introduction\n# Home").unwrap_err(),
-            "Content appears before the first title on line 1.",
+            vec!["Content appears before the first title on line 1.".to_owned()],
         );
     }
 
@@ -345,10 +348,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn empty_title() {
         assert_eq!(
             parse("#   \nContent").unwrap_err(),
-            concat!(
-                "Title on line 1 is empty.\n",
-                "Content appears before the first title on line 2.",
-            ),
+            vec![
+                "Title on line 1 is empty.".to_owned(),
+                "Content appears before the first title on line 2.".to_owned(),
+            ],
         );
     }
 
@@ -357,7 +360,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn repeated_content_before_title() {
         assert_eq!(
             parse("First\nSecond\n# Home").unwrap_err(),
-            "Content appears before the first title on line 1.",
+            vec!["Content appears before the first title on line 1.".to_owned()],
         );
     }
 
@@ -366,7 +369,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn duplicate_title() {
         assert_eq!(
             parse("# Home\nFirst\n# Home\nSecond").unwrap_err(),
-            "Duplicate title `Home` on line 3.",
+            vec!["Duplicate title `Home` on line 3.".to_owned()],
         );
     }
 
@@ -375,10 +378,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn multiple_node_errors() {
         assert_eq!(
             parse("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err(),
-            concat!(
-                "Unexpected closing link delimiter in node `First`.\n",
-                "Unclosed link in node `Second`.",
-            ),
+            vec![
+                "Unexpected closing link delimiter in node `First`.".to_owned(),
+                "Unclosed link in node `Second`.".to_owned(),
+            ],
         );
     }
 
@@ -387,11 +390,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn multiple_errors_in_node() {
         assert_eq!(
             parse("# Home\nUnexpected] and [nested[link.").unwrap_err(),
-            concat!(
-                "Unexpected closing link delimiter in node `Home`.\n",
-                "Unexpected opening link delimiter in node `Home`.\n",
-                "Unclosed link in node `Home`.",
-            ),
+            vec![
+                "Unexpected closing link delimiter in node `Home`.".to_owned(),
+                "Unexpected opening link delimiter in node `Home`.".to_owned(),
+                "Unclosed link in node `Home`.".to_owned(),
+            ],
         );
     }
 
@@ -409,12 +412,12 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 "Unclosed [link.",
             ))
             .unwrap_err(),
-            concat!(
-                "Content appears before the first title on line 1.\n",
-                "Title on line 2 is empty.\n",
-                "Unexpected closing link delimiter in node `First`.\n",
-                "Unclosed link in node `Second`.",
-            ),
+            vec![
+                "Content appears before the first title on line 1.".to_owned(),
+                "Title on line 2 is empty.".to_owned(),
+                "Unexpected closing link delimiter in node `First`.".to_owned(),
+                "Unclosed link in node `Second`.".to_owned(),
+            ],
         );
     }
 }

@@ -11,6 +11,9 @@ use colored::Colorize;
 use similar::TextDiff;
 use std::{env, fs, path::PathBuf, process::exit};
 
+// Collect logical errors separately so their boundaries are preserved for presentation.
+type Errors = Vec<String>;
+
 // This struct represents the command-line arguments.
 #[derive(Parser)]
 #[command(
@@ -45,28 +48,31 @@ enum Subcommand {
 }
 
 // Find the nearest document in the current directory or one of its ancestors.
-fn find_document() -> Result<PathBuf, String> {
+fn find_document() -> Result<PathBuf, Errors> {
     // Start the search in the current working directory.
-    let current_directory = env::current_dir()
-        .map_err(|error| format!("Failed to determine the current directory: {error}"))?;
+    let current_directory = env::current_dir().map_err(|error| {
+        vec![format!(
+            "Failed to determine the current directory: {error}",
+        )]
+    })?;
 
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
         let entries = fs::read_dir(directory).map_err(|error| {
-            format!(
+            vec![format!(
                 "Failed to read {}: {error}",
                 directory.to_string_lossy().code_str(),
-            )
+            )]
         })?;
         let mut documents = Vec::<PathBuf>::new();
 
         // Inspect each directory entry and retain regular documents.
         for entry in entries {
             let entry = entry.map_err(|error| {
-                format!(
+                vec![format!(
                     "Failed to read an entry in {}: {error}",
                     directory.to_string_lossy().code_str(),
-                )
+                )]
             })?;
             let path = entry.path();
             let has_document_extension = path
@@ -75,10 +81,10 @@ fn find_document() -> Result<PathBuf, String> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case(DOCUMENT_EXTENSION));
             if has_document_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
-                    format!(
+                    vec![format!(
                         "Failed to inspect {}: {error}",
                         path.to_string_lossy().code_str(),
-                    )
+                    )]
                 })?;
                 if metadata.is_file() {
                     documents.push(path);
@@ -95,10 +101,10 @@ fn find_document() -> Result<PathBuf, String> {
                 .map(|file_name| file_name.to_string_lossy().code_str().to_string())
                 .collect::<Vec<String>>()
                 .join(", ");
-            return Err(format!(
+            return Err(vec![format!(
                 "Found multiple documents in {}: {file_names}",
                 directory.to_string_lossy().code_str(),
-            ));
+            )]);
         }
 
         // Return the document in this directory, if one exists.
@@ -108,14 +114,14 @@ fn find_document() -> Result<PathBuf, String> {
     }
 
     // Report that the search completed without finding a document.
-    Err(format!(
+    Err(vec![format!(
         "No document found in {} or its ancestors.",
         current_directory.to_string_lossy().code_str(),
-    ))
+    )])
 }
 
 // Run the requested operation.
-fn entry() -> Result<(), String> {
+fn entry() -> Result<(), Errors> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
 
@@ -123,38 +129,51 @@ fn entry() -> Result<(), String> {
     let document_path = cli.path.map_or_else(find_document, Ok)?;
 
     // Prefer a path relative to the current directory when the document is contained within it.
-    let current_directory = env::current_dir()
-        .map_err(|error| format!("Failed to determine the current directory: {error}"))?;
+    let current_directory = env::current_dir().map_err(|error| {
+        vec![format!(
+            "Failed to determine the current directory: {error}",
+        )]
+    })?;
     let display_path = relative_path(&current_directory, &document_path).to_owned();
 
     // Load the document and require its contents to be valid UTF-8.
     let document_bytes = fs::read(&document_path).map_err(|error| {
-        format!(
+        vec![format!(
             "Failed to read {}: {error}",
             display_path.to_string_lossy().code_str(),
-        )
+        )]
     })?;
     let document_contents = String::from_utf8(document_bytes).map_err(|error| {
-        format!(
+        vec![format!(
             "Document {} is not valid UTF-8: {error}",
             display_path.to_string_lossy().code_str(),
-        )
+        )]
     })?;
 
     // Parse and score the document.
-    let document = parser::parse(&document_contents).map_err(|error| {
-        format!(
-            "Failed to parse {}: {error}",
-            display_path.to_string_lossy().code_str(),
-        )
+    let document = parser::parse(&document_contents).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| {
+                format!(
+                    "Failed to parse {}: {error}",
+                    display_path.to_string_lossy().code_str(),
+                )
+            })
+            .collect::<Errors>()
     })?;
 
     // Validate the node graph and surrounding filesystem.
-    validator::validate(&document, &document_path).map_err(|error| {
-        format!(
-            "Failed to validate {}:\n{error}",
-            display_path.to_string_lossy().code_str(),
-        )
+    validator::validate(&document, &document_path).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| {
+                format!(
+                    "Failed to validate {}: {error}",
+                    display_path.to_string_lossy().code_str(),
+                )
+            })
+            .collect::<Errors>()
     })?;
 
     // Render the document once for checking or fixing.
@@ -169,11 +188,11 @@ fn entry() -> Result<(), String> {
                     .unified_diff()
                     .header("document", "rendered")
                     .to_string();
-                return Err(format!(
+                return Err(vec![format!(
                     "Document {} is not formatted correctly:\n\n{diff}\n{} can fix it.",
                     display_path.to_string_lossy().code_str(),
                     "mull fix".code_str(),
-                ));
+                )]);
             }
 
             // Report that the document passed the check.
@@ -191,10 +210,10 @@ fn entry() -> Result<(), String> {
                 );
             } else {
                 fs::write(&document_path, rendered_document).map_err(|error| {
-                    format!(
+                    vec![format!(
                         "Failed to write {}: {error}",
                         display_path.to_string_lossy().code_str(),
-                    )
+                    )]
                 })?;
 
                 // Report that the document was fixed.
@@ -207,11 +226,18 @@ fn entry() -> Result<(), String> {
     Ok(())
 }
 
+// Print each logical error with one colored prefix, regardless of its number of lines.
+fn print_errors(errors: &[String]) {
+    for error in errors {
+        eprintln!("{} {error}", "[Error]".red().bold());
+    }
+}
+
 // Let the fun begin!
 fn main() {
     // Jump to the entrypoint and handle any resulting errors.
-    if let Err(e) = entry() {
-        eprintln!("{} {}", "[Error]".red().bold(), e);
+    if let Err(errors) = entry() {
+        print_errors(&errors);
         exit(1);
     }
 }
