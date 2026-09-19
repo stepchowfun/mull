@@ -1,4 +1,5 @@
 use crate::{
+    Errors,
     document::{Document, HOME_TITLE, Link},
     format::CodeStr,
     path_util::relative_path,
@@ -8,10 +9,11 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 // Validate every link and ensure every walked filesystem entry is referenced.
-pub fn validate(document: &Document, document_path: &Path) -> Result<(), String> {
+pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors> {
     // Collect errors in the parsed text-link graph.
     let mut errors = validate_text_links(document);
 
@@ -27,7 +29,7 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), String>
                 "Failed to resolve document directory {}: {error}",
                 original_document_directory.to_string_lossy().code_str(),
             ));
-            return errors_to_result(&errors);
+            return errors_to_result(errors);
         }
     };
     let resolved_document_path = match fs::canonicalize(document_path) {
@@ -37,7 +39,7 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), String>
                 "Failed to resolve {}: {error}",
                 document_path.to_string_lossy().code_str(),
             ));
-            return errors_to_result(&errors);
+            return errors_to_result(errors);
         }
     };
 
@@ -55,127 +57,7 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), String>
     ));
 
     // Report all validation errors together.
-    errors_to_result(&errors)
-}
-
-// Validate filesystem links and collect their targets and errors.
-fn validate_filesystem_links(
-    document: &Document,
-    document_directory: &Path,
-) -> (HashSet<PathBuf>, HashSet<PathBuf>, Vec<String>) {
-    // Visit nodes and links in deterministic order.
-    let mut referenced_files = HashSet::<PathBuf>::new();
-    let mut referenced_directories = HashSet::<PathBuf>::new();
-    let mut errors = Vec::<String>::new();
-    let mut nodes = document.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
-    for node in nodes {
-        let mut links = node.links.iter().collect::<Vec<_>>();
-        links.sort();
-        for link in links {
-            let (path, expect_directory) = match link {
-                Link::Text(_) => continue,
-                Link::File(path) => (path, false),
-                Link::Directory(path) => (path, true),
-            };
-
-            // Retain valid targets and collect failures without stopping validation.
-            match validate_target(document_directory, path, expect_directory, &node.title) {
-                Ok(target) => {
-                    if expect_directory {
-                        referenced_directories.insert(target);
-                    } else {
-                        referenced_files.insert(target);
-                    }
-                }
-                Err(error) => {
-                    errors.push(error);
-
-                    // Prevent a wrong-type link from also producing an unreferenced-entry error.
-                    let target = document_directory.join(path);
-                    if let Ok(metadata) = fs::metadata(&target)
-                        && let Ok(target) = fs::canonicalize(target)
-                    {
-                        if metadata.is_file() {
-                            referenced_files.insert(target);
-                        } else if metadata.is_dir() {
-                            referenced_directories.insert(target);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Return every collected target and link error.
-    (referenced_files, referenced_directories, errors)
-}
-
-// Find every walked filesystem entry that is not covered by a link.
-fn find_unreferenced_entries(
-    document_directory: &Path,
-    document_path: &Path,
-    referenced_files: &HashSet<PathBuf>,
-    referenced_directories: &HashSet<PathBuf>,
-) -> Vec<String> {
-    // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
-    let mut overrides = OverrideBuilder::new(document_directory);
-    overrides
-        .add("!.git/")
-        .expect("the static .git override should be valid")
-        .add("!.hg/")
-        .expect("the static .hg override should be valid");
-    let overrides = match overrides.build() {
-        Ok(overrides) => overrides,
-        Err(error) => return vec![format!("Failed to build filesystem ignore rules: {error}")],
-    };
-    let pruned_directories = referenced_directories.clone();
-    let mut walker_builder = WalkBuilder::new(document_directory);
-    walker_builder
-        .current_dir(document_directory)
-        .hidden(false)
-        .parents(false)
-        .require_git(false)
-        .overrides(overrides)
-        .filter_entry(move |entry| !pruned_directories.contains(entry.path()));
-
-    // Collect walk and unreferenced-entry errors.
-    let mut errors = Vec::<String>::new();
-    for result in walker_builder.build() {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(error) => {
-                errors.push(format!("Failed to walk document directory: {error}"));
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path == document_directory || path == document_path {
-            continue;
-        }
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_file() && !referenced_files.contains(path) {
-            errors.push(format!(
-                "File {} is not referenced.",
-                relative_path(document_directory, path)
-                    .to_string_lossy()
-                    .code_str(),
-            ));
-        } else if file_type.is_dir() {
-            errors.push(format!(
-                "Directory {} is not referenced.",
-                relative_path(document_directory, path)
-                    .to_string_lossy()
-                    .code_str(),
-            ));
-        }
-    }
-    errors.sort();
-
-    // Return every deterministic walk error.
-    errors
+    errors_to_result(errors)
 }
 
 // Validate text-link targets and the graph rooted at the special home node.
@@ -238,12 +120,161 @@ fn validate_text_links(document: &Document) -> Vec<String> {
     errors
 }
 
+// Validate filesystem links and collect their targets and errors.
+fn validate_filesystem_links(
+    document: &Document,
+    document_directory: &Path,
+) -> (HashSet<PathBuf>, HashSet<PathBuf>, Vec<String>) {
+    // Visit nodes and links in deterministic order.
+    let mut referenced_files = HashSet::<PathBuf>::new();
+    let mut referenced_directories = HashSet::<PathBuf>::new();
+    let mut errors = Vec::<String>::new();
+    let mut nodes = document.text_nodes.values().collect::<Vec<_>>();
+    nodes.sort_by_key(|node| &node.title);
+    for node in nodes {
+        let mut links = node.links.iter().collect::<Vec<_>>();
+        links.sort();
+        for link in links {
+            let (path, expect_directory) = match link {
+                Link::Text(_) => continue,
+                Link::File(path) => (path, false),
+                Link::Directory(path) => (path, true),
+            };
+
+            // Retain valid targets and collect failures without stopping validation.
+            match validate_target(document_directory, path, expect_directory, &node.title) {
+                Ok(target) => {
+                    if expect_directory {
+                        referenced_directories.insert(target);
+                    } else {
+                        referenced_files.insert(target);
+                    }
+                }
+                Err(error) => {
+                    errors.push(error);
+
+                    // Prevent a wrong-type link from also producing an unreferenced-entry error.
+                    let target = document_directory.join(path);
+                    if let Ok(metadata) = fs::metadata(&target)
+                        && let Ok(target) = fs::canonicalize(target)
+                    {
+                        if metadata.is_file() {
+                            referenced_files.insert(target);
+                        } else if metadata.is_dir() {
+                            referenced_directories.insert(target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Return every collected target and link error.
+    (referenced_files, referenced_directories, errors)
+}
+
+// Find unreferenced entries while pruning directories once they are reported.
+fn find_unreferenced_entries(
+    document_directory: &Path,
+    document_path: &Path,
+    referenced_files: &HashSet<PathBuf>,
+    referenced_directories: &HashSet<PathBuf>,
+) -> Vec<String> {
+    // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
+    let mut overrides = OverrideBuilder::new(document_directory);
+    overrides
+        .add("!.git/")
+        .expect("the static .git override should be valid")
+        .add("!.hg/")
+        .expect("the static .hg override should be valid");
+    let overrides = match overrides.build() {
+        Ok(overrides) => overrides,
+        Err(error) => return vec![format!("Failed to build filesystem ignore rules: {error}")],
+    };
+    let referenced_directories = referenced_directories.clone();
+    let unreferenced_directories = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let recorded_unreferenced_directories = Arc::clone(&unreferenced_directories);
+    let mut walker_builder = WalkBuilder::new(document_directory);
+    walker_builder
+        .current_dir(document_directory)
+        .hidden(false)
+        .parents(false)
+        .require_git(false)
+        .overrides(overrides)
+        .filter_entry(move |entry| {
+            // Referenced directories and their contents are already covered by their links.
+            if referenced_directories.contains(entry.path()) {
+                return false;
+            }
+
+            // Record each unreferenced directory once and avoid redundant errors for its contents.
+            if entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_dir())
+            {
+                recorded_unreferenced_directories
+                    .lock()
+                    .expect("the unreferenced-directory lock should not be poisoned")
+                    .push(entry.path().to_owned());
+                return false;
+            }
+
+            // Continue walking for nondirectory entries.
+            true
+        });
+
+    // Collect walk and unreferenced-entry errors.
+    let mut errors = Vec::<String>::new();
+    for result in walker_builder.build() {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(format!("Failed to walk document directory: {error}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path == document_directory || path == document_path {
+            continue;
+        }
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() && !referenced_files.contains(path) {
+            errors.push(format!(
+                "File {} is not referenced.",
+                relative_path(document_directory, path)
+                    .to_string_lossy()
+                    .code_str(),
+            ));
+        }
+    }
+
+    // Report each directory whose subtree was pruned by the walk filter.
+    for path in unreferenced_directories
+        .lock()
+        .expect("the unreferenced-directory lock should not be poisoned")
+        .iter()
+    {
+        errors.push(format!(
+            "Directory {} is not referenced.",
+            relative_path(document_directory, path)
+                .to_string_lossy()
+                .code_str(),
+        ));
+    }
+    errors.sort();
+
+    // Return every deterministic walk error.
+    errors
+}
+
 // Convert collected validation errors into the public result type.
-fn errors_to_result(errors: &[String]) -> Result<(), String> {
+fn errors_to_result(errors: Errors) -> Result<(), Errors> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(errors.join("\n"))
+        Err(errors)
     }
 }
 
@@ -363,22 +394,15 @@ mod tests {
         fs::remove_file(&document_path).unwrap();
         let document = parse("# Elsewhere").unwrap();
 
-        let error = validate(&document, &document_path).unwrap_err();
-        let mut errors = error.lines();
-        assert_eq!(
-            errors.next(),
-            Some("Document does not contain a `Home` node."),
-        );
+        let errors = validate(&document, &document_path).unwrap_err();
+        assert_eq!(errors[0], "Document does not contain a `Home` node.");
         assert!(
-            errors
-                .next()
-                .unwrap()
-                .starts_with(&format!("Failed to resolve `{}`:", document_path.display())),
+            errors[1].starts_with(&format!("Failed to resolve `{}`:", document_path.display())),
         );
-        assert_eq!(errors.next(), None);
+        assert_eq!(errors.len(), 2);
     }
 
-    // Report unreferenced entries throughout the document directory tree.
+    // Report an unreferenced directory without reporting its recursive contents.
     #[test]
     fn unreferenced_entries() {
         let directory = TestDirectory::new();
@@ -386,12 +410,11 @@ mod tests {
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
         let document = parse("# Home").unwrap();
 
-        let error = validate(&document, &directory.document_path()).unwrap_err();
-        assert!(error.contains("Directory `images` is not referenced."));
-        assert!(error.contains(&format!(
-            "`{}`",
-            Path::new("images").join("photo.jpg").display(),
-        )));
+        let errors = validate(&document, &directory.document_path()).unwrap_err();
+        assert_eq!(
+            errors,
+            vec!["Directory `images` is not referenced.".to_owned()],
+        );
     }
 
     // Reject a filesystem link whose target has the wrong type.
@@ -403,7 +426,7 @@ mod tests {
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            "Node `Home` links to `images`, which is not a file.",
+            vec!["Node `Home` links to `images`, which is not a file.".to_owned()],
         );
     }
 
@@ -415,10 +438,10 @@ mod tests {
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            concat!(
-                "Node `Home` links to missing node `Alpha`.\n",
-                "Node `Home` links to missing node `Zulu`.",
-            ),
+            vec![
+                "Node `Home` links to missing node `Alpha`.".to_owned(),
+                "Node `Home` links to missing node `Zulu`.".to_owned(),
+            ],
         );
     }
 
@@ -434,12 +457,26 @@ mod tests {
         ))
         .unwrap();
 
-        let error = validate(&document, &directory.document_path()).unwrap_err();
-        assert!(error.contains("Node `Home` links to missing node `Missing`."));
-        assert!(error.contains("Node `Orphan` is not reachable from `Home`."));
-        assert!(error.contains("Node `Home` links to inaccessible path `missing.txt`:"));
-        assert!(error.contains("File `unreferenced.txt` is not referenced."));
-        assert_eq!(error.lines().count(), 4);
+        let errors = validate(&document, &directory.document_path()).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "Node `Home` links to missing node `Missing`."),
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "Node `Orphan` is not reachable from `Home`."),
+        );
+        assert!(errors.iter().any(|error| {
+            error.starts_with("Node `Home` links to inaccessible path `missing.txt`:")
+        }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "File `unreferenced.txt` is not referenced."),
+        );
+        assert_eq!(errors.len(), 4);
     }
 
     // Reject an empty text link because node titles cannot be empty.
@@ -450,7 +487,7 @@ mod tests {
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            "Node `Home` links to missing node ``.",
+            vec!["Node `Home` links to missing node ``.".to_owned()],
         );
     }
 
@@ -462,7 +499,7 @@ mod tests {
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            "Document does not contain a `Home` node.",
+            vec!["Document does not contain a `Home` node.".to_owned()],
         );
     }
 
@@ -474,10 +511,10 @@ mod tests {
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            concat!(
-                "Node `Alpha` is not reachable from `Home`.\n",
-                "Node `Zulu` is not reachable from `Home`.",
-            ),
+            vec![
+                "Node `Alpha` is not reachable from `Home`.".to_owned(),
+                "Node `Zulu` is not reachable from `Home`.".to_owned(),
+            ],
         );
     }
 }
