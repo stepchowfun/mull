@@ -1,7 +1,7 @@
 use crate::{
     Errors,
     document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode},
-    format::CodeStr,
+    format::{CodePath, CodeStr},
     scoring::populate_depths,
 };
 use std::{
@@ -16,7 +16,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
     if parsed_path.as_os_str().is_empty() {
         return Err(format!(
             "Filesystem link path {} in node {} is empty.",
-            parsed_path.to_string_lossy().code_str(),
+            parsed_path.code_path(),
             node_title.code_str(),
         ));
     }
@@ -34,7 +34,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
                 "Filesystem link path {} in node {} must be relative to the document directory ",
                 "without using {}.",
             ),
-            parsed_path.to_string_lossy().code_str(),
+            parsed_path.code_path(),
             node_title.code_str(),
             "..".code_str(),
         ));
