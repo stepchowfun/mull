@@ -11,20 +11,28 @@ use std::{
 
 // Parse a filesystem link path while keeping it inside the document's logical tree.
 fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String> {
-    // Require the document directory or an entry below it without parent or absolute components.
+    // Reject an empty path before inspecting its components.
     let parsed_path = Path::new(path);
+    if parsed_path.as_os_str().is_empty() {
+        return Err(format!(
+            "Filesystem link path {} in node {} is empty.",
+            parsed_path.to_string_lossy().code_str(),
+            node_title.code_str(),
+        ));
+    }
+
+    // Reject components that escape the logical document tree [tag:filesystem_path_components].
     let has_invalid_component = parsed_path.components().any(|component| {
         matches!(
             component,
             Component::ParentDir | Component::RootDir | Component::Prefix(_),
         )
     });
-    let is_valid = !parsed_path.as_os_str().is_empty() && !has_invalid_component;
-    if !is_valid {
+    if has_invalid_component {
         return Err(format!(
             concat!(
-                "Filesystem link path {} in node {} must identify the document directory or an ",
-                "entry below it without using {}.",
+                "Filesystem link path {} in node {} must be relative to the document directory ",
+                "without using {}.",
             ),
             parsed_path.to_string_lossy().code_str(),
             node_title.code_str(),
@@ -39,6 +47,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
             Component::Normal(component) => Some(component),
             Component::CurDir => None,
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                // Escaping components were rejected above [ref:filesystem_path_components].
                 unreachable!("filesystem link path components were already validated")
             }
         })
@@ -327,19 +336,15 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             ))
             .unwrap_err(),
             vec![
+                "Filesystem link path `` in node `Home` is empty.".to_owned(),
                 concat!(
-                    "Filesystem link path `` in node `Home` must identify the document directory ",
-                    "or an entry below it without using `..`.",
+                    "Filesystem link path `../notes.txt` in node `Home` must be relative to the ",
+                    "document directory without using `..`.",
                 )
                 .to_owned(),
                 concat!(
-                    "Filesystem link path `../notes.txt` in node `Home` must identify the ",
-                    "document directory or an entry below it without using `..`.",
-                )
-                .to_owned(),
-                concat!(
-                    "Filesystem link path `/images` in node `Home` must identify the document ",
-                    "directory or an entry below it without using `..`.",
+                    "Filesystem link path `/images` in node `Home` must be relative to the ",
+                    "document directory without using `..`.",
                 )
                 .to_owned(),
             ],

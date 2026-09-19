@@ -14,9 +14,9 @@ use std::{
 // Limit filesystem diagnostics so pathological documents and directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
-// Validate every link and ensure every walked file is referenced.
+// Check text links, reachability, filesystem links, and filesystem coverage.
 pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors> {
-    // Collect errors in the parsed text-link graph.
+    // Preserve graph errors if resolving the document later fails.
     let mut errors = validate_text_links(document);
 
     // Resolve the directory to a stable path and confirm that the document is accessible.
@@ -50,20 +50,18 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors>
     };
     let logical_document_path = document_directory.join(document_file_name);
 
-    // Collect filesystem-link and unreferenced-file errors.
+    // Check the filesystem relative to the resolved document directory.
     errors.extend(validate_filesystem_links(
         document,
         &document_directory,
         &logical_document_path,
     ));
-
-    // Report all validation errors together.
     errors_to_result(errors)
 }
 
-// Validate text-link targets and the graph rooted at the special home node.
+// Validate text-link targets and reachability from the home node.
 fn validate_text_links(document: &Document) -> Vec<String> {
-    // Accumulate graph errors in deterministic order.
+    // Keep graph diagnostics deterministic.
     let mut errors = Vec::<String>::new();
 
     // Require the root node from which every other node must be reachable.
@@ -117,17 +115,16 @@ fn validate_text_links(document: &Document) -> Vec<String> {
         }));
     }
 
-    // Return every text-link graph error.
     errors
 }
 
-// Validate filesystem links and ensure every walked file is referenced.
+// Validate filesystem links and coverage within a bounded error budget.
 fn validate_filesystem_links(
     document: &Document,
     document_directory: &Path,
     document_path: &Path,
 ) -> Vec<String> {
-    // Visit nodes and links in deterministic order.
+    // Track valid targets while visiting nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
     let mut errors = Vec::<String>::new();
@@ -137,13 +134,13 @@ fn validate_filesystem_links(
         let mut links = node.links.iter().collect::<Vec<_>>();
         links.sort();
         for link in links {
-            // Skip text links after extracting the path from each filesystem link.
+            // Skip text links before matching on the link again below [tag:skip_text_links].
             let path = match link {
                 Link::Text(_) => continue,
                 Link::File(path) | Link::Directory(path) => path,
             };
 
-            // Load target metadata while following symbolic links.
+            // Follow symbolic links when classifying each target.
             let target = document_directory.join(path);
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
@@ -178,7 +175,10 @@ fn validate_filesystem_links(
                     node.title.code_str(),
                     path.to_string_lossy().code_str(),
                 )),
-                Link::Text(_) => unreachable!("text links were already skipped"),
+                Link::Text(_) => {
+                    // Text links were skipped above [ref:skip_text_links].
+                    unreachable!("text links were already skipped")
+                }
             }
             if errors.len() >= MAX_FILESYSTEM_ERRORS {
                 break 'nodes;
@@ -186,12 +186,12 @@ fn validate_filesystem_links(
         }
     }
 
-    // Stop before walking the filesystem when link validation exhausted the error budget.
+    // Avoid a directory walk when link validation exhausted the error budget.
     if errors.len() >= MAX_FILESYSTEM_ERRORS {
         return errors;
     }
 
-    // Collect walk and unreferenced-file errors using the validated targets.
+    // Spend the remaining error budget on uncovered filesystem entries.
     let remaining_error_capacity = MAX_FILESYSTEM_ERRORS - errors.len();
     errors.extend(find_unreferenced_filesystem_links(
         document_directory,
@@ -201,11 +201,10 @@ fn validate_filesystem_links(
         remaining_error_capacity,
     ));
 
-    // Return every filesystem validation error.
     errors
 }
 
-// Find unreferenced files while pruning explicitly referenced directories.
+// Find unreferenced files within a budget while pruning covered directories.
 fn find_unreferenced_filesystem_links(
     document_directory: &Path,
     document_path: &Path,
@@ -213,7 +212,7 @@ fn find_unreferenced_filesystem_links(
     referenced_directories: &HashSet<PathBuf>,
     maximum_errors: usize,
 ) -> Vec<String> {
-    // Skip the walk because the root is not subject to the entry filter below.
+    // Handle a link to the document directory because the walk root bypasses the entry filter.
     if referenced_directories.contains(document_directory) {
         return Vec::new();
     }
@@ -248,7 +247,7 @@ fn find_unreferenced_filesystem_links(
             }
         });
 
-    // Collect walk and unreferenced-file errors.
+    // Stop traversing once the remaining error budget is exhausted.
     let mut errors = Vec::<String>::new();
     for result in walker_builder.build() {
         let entry = match result {
@@ -278,10 +277,8 @@ fn find_unreferenced_filesystem_links(
         }
     }
 
-    // Make filesystem errors deterministic regardless of traversal order.
+    // Present the collected walk errors in deterministic order.
     errors.sort();
-
-    // Return every deterministic walk error.
     errors
 }
 
