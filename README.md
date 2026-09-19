@@ -33,7 +33,7 @@ Options:
 
 Each node starts with `# ` followed by its title. Its content continues until the next title. A text link such as `[Greeting]` refers to another node. Every document must contain a node called `Home`, and every node must be transitively reachable from it through text links.
 
-File links such as [file:README.md] and directory links such as [dir:src] refer to paths relative to the directory containing the document. A directory link implicitly references everything recursively contained within that directory. Mull checks that these targets exist and that every other non-ignored file and directory alongside the document is referenced. Ignore files such as `.gitignore` and `.ignore` are respected; hidden entries are otherwise included.
+File links such as [file:README.md] and directory links such as [dir:src] use relative paths that identify entries below the directory containing the document without using `..` components. A directory link implicitly references everything recursively contained within that directory. Otherwise, every non-ignored file must be referenced individually; a directory is implicitly referenced when all its contents are referenced, so empty directories need no link. Symbolic links are followed and treated as files or directories according to their targets, which may lie outside the document tree, but different symbolic-link paths remain distinct even when they share a target. Ignore files such as `.gitignore` and `.ignore` are respected; hidden entries are otherwise included.
 
 ## Installation instructions
 
