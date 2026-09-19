@@ -9,15 +9,14 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
-// Validate every link and ensure every walked filesystem entry is referenced.
+// Validate every link and ensure every walked file is referenced.
 pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors> {
     // Collect errors in the parsed text-link graph.
     let mut errors = validate_text_links(document);
 
-    // Resolve the directory and document to stable absolute paths.
+    // Resolve the directory to a stable path and confirm that the document is accessible.
     let original_document_directory = document_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -32,22 +31,27 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors>
             return errors_to_result(errors);
         }
     };
-    let resolved_document_path = match fs::canonicalize(document_path) {
-        Ok(document_path) => document_path,
-        Err(error) => {
-            errors.push(format!(
-                "Failed to resolve {}: {error}",
-                document_path.to_string_lossy().code_str(),
-            ));
-            return errors_to_result(errors);
-        }
+    if let Err(error) = fs::metadata(document_path) {
+        errors.push(format!(
+            "Failed to resolve {}: {error}",
+            document_path.to_string_lossy().code_str(),
+        ));
+        return errors_to_result(errors);
+    }
+    let Some(document_file_name) = document_path.file_name() else {
+        errors.push(format!(
+            "Failed to determine the file name of {}.",
+            document_path.to_string_lossy().code_str(),
+        ));
+        return errors_to_result(errors);
     };
+    let logical_document_path = document_directory.join(document_file_name);
 
-    // Collect filesystem-link and unreferenced-entry errors.
+    // Collect filesystem-link and unreferenced-file errors.
     errors.extend(validate_filesystem_links(
         document,
         &document_directory,
-        &resolved_document_path,
+        &logical_document_path,
     ));
 
     // Report all validation errors together.
@@ -114,7 +118,7 @@ fn validate_text_links(document: &Document) -> Vec<String> {
     errors
 }
 
-// Validate filesystem links and ensure every walked entry is referenced.
+// Validate filesystem links and ensure every walked file is referenced.
 fn validate_filesystem_links(
     document: &Document,
     document_directory: &Path,
@@ -130,42 +134,50 @@ fn validate_filesystem_links(
         let mut links = node.links.iter().collect::<Vec<_>>();
         links.sort();
         for link in links {
-            let (path, expect_directory) = match link {
+            // Skip text links after extracting the path from each filesystem link.
+            let path = match link {
                 Link::Text(_) => continue,
-                Link::File(path) => (path, false),
-                Link::Directory(path) => (path, true),
+                Link::File(path) | Link::Directory(path) => path,
             };
 
-            // Retain valid targets and collect failures without stopping validation.
-            match validate_filesystem_link(document_directory, path, expect_directory, &node.title)
-            {
-                Ok(target) => {
-                    if expect_directory {
-                        referenced_directories.insert(target);
-                    } else {
-                        referenced_files.insert(target);
-                    }
-                }
+            // Load target metadata while following symbolic links.
+            let target = document_directory.join(path);
+            let metadata = match fs::metadata(&target) {
+                Ok(metadata) => metadata,
                 Err(error) => {
-                    errors.push(error);
-
-                    // Prevent a wrong-type link from also producing an unreferenced-entry error.
-                    let target = document_directory.join(path);
-                    if let Ok(metadata) = fs::metadata(&target)
-                        && let Ok(target) = fs::canonicalize(target)
-                    {
-                        if metadata.is_file() {
-                            referenced_files.insert(target);
-                        } else if metadata.is_dir() {
-                            referenced_directories.insert(target);
-                        }
-                    }
+                    errors.push(format!(
+                        "Node {} links to inaccessible path {}: {error}",
+                        node.title.code_str(),
+                        path.to_string_lossy().code_str(),
+                    ));
+                    continue;
                 }
+            };
+
+            // Retain correctly typed targets and report links with the wrong type.
+            match link {
+                Link::File(_) if metadata.is_file() => {
+                    referenced_files.insert(target);
+                }
+                Link::Directory(_) if metadata.is_dir() => {
+                    referenced_directories.insert(target);
+                }
+                Link::File(_) => errors.push(format!(
+                    "Node {} links to {}, which is not a file.",
+                    node.title.code_str(),
+                    path.to_string_lossy().code_str(),
+                )),
+                Link::Directory(_) => errors.push(format!(
+                    "Node {} links to {}, which is not a directory.",
+                    node.title.code_str(),
+                    path.to_string_lossy().code_str(),
+                )),
+                Link::Text(_) => unreachable!("text links were already skipped"),
             }
         }
     }
 
-    // Collect walk and unreferenced-entry errors using the validated targets.
+    // Collect walk and unreferenced-file errors using the validated targets.
     errors.extend(find_unreferenced_filesystem_links(
         document_directory,
         document_path,
@@ -177,13 +189,18 @@ fn validate_filesystem_links(
     errors
 }
 
-// Find unreferenced entries while pruning directories once they are reported.
+// Find unreferenced files while pruning explicitly referenced directories.
 fn find_unreferenced_filesystem_links(
     document_directory: &Path,
     document_path: &Path,
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
 ) -> Vec<String> {
+    // Skip the walk because the root is not subject to the entry filter below.
+    if referenced_directories.contains(document_directory) {
+        return Vec::new();
+    }
+
     // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
     let mut overrides = OverrideBuilder::new(document_directory);
     overrides
@@ -195,39 +212,26 @@ fn find_unreferenced_filesystem_links(
         Ok(overrides) => overrides,
         Err(error) => return vec![format!("Failed to build filesystem ignore rules: {error}")],
     };
-    let referenced_directories = referenced_directories.clone();
-    let unreferenced_directories = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
-    let recorded_unreferenced_directories = Arc::clone(&unreferenced_directories);
+
+    // Follow directory symlinks while pruning subtrees covered by explicit directory links.
     let mut walker_builder = WalkBuilder::new(document_directory);
     walker_builder
         .current_dir(document_directory)
+        .follow_links(true)
         .hidden(false)
         .parents(false)
         .require_git(false)
         .overrides(overrides)
-        .filter_entry(move |entry| {
-            // Referenced directories and their contents are already covered by their links.
-            if referenced_directories.contains(entry.path()) {
-                return false;
+        .filter_entry({
+            let document_path = document_path.to_owned();
+            let referenced_directories = referenced_directories.clone();
+            move |entry| {
+                // Exclude the document and prune directories already covered by their links.
+                entry.path() != document_path && !referenced_directories.contains(entry.path())
             }
-
-            // Record each unreferenced directory once and avoid redundant errors for its contents.
-            if entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_dir())
-            {
-                recorded_unreferenced_directories
-                    .lock()
-                    .expect("the unreferenced-directory lock should not be poisoned")
-                    .push(entry.path().to_owned());
-                return false;
-            }
-
-            // Continue walking for nondirectory entries.
-            true
         });
 
-    // Collect walk and unreferenced-entry errors.
+    // Collect walk and unreferenced-file errors.
     let mut errors = Vec::<String>::new();
     for result in walker_builder.build() {
         let entry = match result {
@@ -238,9 +242,6 @@ fn find_unreferenced_filesystem_links(
             }
         };
         let path = entry.path();
-        if path == document_directory || path == document_path {
-            continue;
-        }
         let Some(file_type) = entry.file_type() else {
             continue;
         };
@@ -254,67 +255,11 @@ fn find_unreferenced_filesystem_links(
         }
     }
 
-    // Report each directory whose subtree was pruned by the walk filter.
-    for path in unreferenced_directories
-        .lock()
-        .expect("the unreferenced-directory lock should not be poisoned")
-        .iter()
-    {
-        errors.push(format!(
-            "Directory {} is not referenced.",
-            relative_path(document_directory, path)
-                .to_string_lossy()
-                .code_str(),
-        ));
-    }
+    // Make filesystem errors deterministic regardless of traversal order.
     errors.sort();
 
     // Return every deterministic walk error.
     errors
-}
-
-// Validate one filesystem target and return its canonical path.
-fn validate_filesystem_link(
-    document_directory: &Path,
-    path: &Path,
-    expect_directory: bool,
-    node_title: &str,
-) -> Result<PathBuf, String> {
-    // Resolve the link relative to the document directory.
-    let target = document_directory.join(path);
-    let metadata = fs::metadata(&target).map_err(|error| {
-        format!(
-            "Node {} links to inaccessible path {}: {error}",
-            node_title.code_str(),
-            path.to_string_lossy().code_str(),
-        )
-    })?;
-    let has_expected_type = if expect_directory {
-        metadata.is_dir()
-    } else {
-        metadata.is_file()
-    };
-    if !has_expected_type {
-        let expected_type = if expect_directory {
-            "directory"
-        } else {
-            "file"
-        };
-        return Err(format!(
-            "Node {} links to {}, which is not a {expected_type}.",
-            node_title.code_str(),
-            path.to_string_lossy().code_str(),
-        ));
-    }
-
-    // Canonicalize the validated target for comparison with walked entries.
-    fs::canonicalize(&target).map_err(|error| {
-        format!(
-            "Failed to resolve path {} linked from node {}: {error}",
-            path.to_string_lossy().code_str(),
-            node_title.code_str(),
-        )
-    })
 }
 
 // Convert collected validation errors into the public result type.
@@ -390,6 +335,16 @@ mod tests {
         assert_eq!(validate(&document, &directory.document_path()), Ok(()));
     }
 
+    // Allow a document-directory link to cover every surrounding filesystem entry.
+    #[test]
+    fn document_directory_link() {
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join("unmanaged.txt"), "content").unwrap();
+        let document = parse(concat!("# Home\n[", "dir:.]")).unwrap();
+
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
+    }
+
     // Preserve graph errors when the document path cannot be resolved.
     #[test]
     fn missing_document_path() {
@@ -406,7 +361,7 @@ mod tests {
         assert_eq!(errors.len(), 2);
     }
 
-    // Report an unreferenced directory without reporting its recursive contents.
+    // Report unreferenced files within directories instead of requiring directory links.
     #[test]
     fn unreferenced_entries() {
         let directory = TestDirectory::new();
@@ -415,9 +370,152 @@ mod tests {
         let document = parse("# Home").unwrap();
 
         let errors = validate(&document, &directory.document_path()).unwrap_err();
+        let photo_path = Path::new("images").join("photo.jpg");
         assert_eq!(
             errors,
-            vec!["Directory `images` is not referenced.".to_owned()],
+            vec![format!(
+                "File `{}` is not referenced.",
+                photo_path.display(),
+            )],
+        );
+    }
+
+    // Infer references to directories whose files are all explicitly referenced.
+    #[test]
+    fn implicitly_referenced_directories() {
+        let directory = TestDirectory::new();
+        fs::create_dir(directory.path().join("notes")).unwrap();
+        fs::create_dir(directory.path().join("notes/archive")).unwrap();
+        fs::write(directory.path().join("notes/current.txt"), "current").unwrap();
+        fs::write(directory.path().join("notes/archive/old.txt"), "old").unwrap();
+        let document = parse(concat!(
+            "# Home\n[",
+            "file:notes/current.txt] [",
+            "file:notes/archive/old.txt]",
+        ))
+        .unwrap();
+
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
+    }
+
+    // Consider empty directories referenced because all their contents are referenced.
+    #[test]
+    fn empty_directories() {
+        let directory = TestDirectory::new();
+        fs::create_dir(directory.path().join("empty")).unwrap();
+        fs::create_dir(directory.path().join("empty/nested")).unwrap();
+        let document = parse("# Home").unwrap();
+
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
+    }
+
+    // Preserve symlink aliases as distinct filesystem paths while following their targets.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join("target.txt"), "content").unwrap();
+        symlink("target.txt", directory.path().join("first.txt")).unwrap();
+        symlink("target.txt", directory.path().join("second.txt")).unwrap();
+        let document = parse(concat!(
+            "# Home\n[",
+            "file:target.txt] [",
+            "file:first.txt]",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            validate(&document, &directory.document_path()).unwrap_err(),
+            vec!["File `second.txt` is not referenced.".to_owned()],
+        );
+    }
+
+    // Follow an unlinked directory symlink and validate files through its logical path.
+    #[cfg(unix)]
+    #[test]
+    fn directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        fs::create_dir(directory.path().join("target")).unwrap();
+        fs::write(directory.path().join("target/file.txt"), "content").unwrap();
+        symlink("target", directory.path().join("alias")).unwrap();
+        let document = parse(concat!(
+            "# Home\n[",
+            "dir:target] [",
+            "file:alias/file.txt]",
+        ))
+        .unwrap();
+
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
+    }
+
+    // Allow directory symlinks outside the document tree and validate their logical contents.
+    #[cfg(unix)]
+    #[test]
+    fn external_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        let external_directory = TestDirectory::new();
+        symlink(external_directory.path(), directory.path().join("external")).unwrap();
+        let document = parse(concat!("# Home\n[", "file:external/document.mull]")).unwrap();
+
+        assert_eq!(validate(&document, &directory.document_path()), Ok(()));
+    }
+
+    // Exclude a document symlink by its logical path instead of its resolved target.
+    #[cfg(unix)]
+    #[test]
+    fn document_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        let document_path = directory.document_path();
+        let target_path = directory.path().join("document.txt");
+        fs::rename(&document_path, &target_path).unwrap();
+        fs::write(&target_path, concat!("# Home\n[", "file:document.txt]")).unwrap();
+        symlink("document.txt", &document_path).unwrap();
+        let document = parse(concat!("# Home\n[", "file:document.txt]")).unwrap();
+
+        assert_eq!(validate(&document, &document_path), Ok(()));
+    }
+
+    // Report a broken symlink because its target cannot be classified.
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        symlink("missing", directory.path().join("broken")).unwrap();
+        let document = parse("# Home").unwrap();
+
+        assert!(
+            validate(&document, &directory.document_path())
+                .unwrap_err()
+                .iter()
+                .any(|error| error.starts_with("Failed to walk document directory:")),
+        );
+    }
+
+    // Report a directory symlink cycle instead of recursing indefinitely.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_cycle() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        symlink(".", directory.path().join("cycle")).unwrap();
+        let document = parse("# Home").unwrap();
+
+        assert!(
+            validate(&document, &directory.document_path())
+                .unwrap_err()
+                .iter()
+                .any(|error| error.starts_with("Failed to walk document directory:")),
         );
     }
 
@@ -426,11 +524,16 @@ mod tests {
     fn wrong_target_type() {
         let directory = TestDirectory::new();
         fs::create_dir(directory.path().join("images")).unwrap();
+        fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
         let document = parse(concat!("# Home\n[", "file:images]")).unwrap();
+        let photo_path = Path::new("images").join("photo.jpg");
 
         assert_eq!(
             validate(&document, &directory.document_path()).unwrap_err(),
-            vec!["Node `Home` links to `images`, which is not a file.".to_owned()],
+            vec![
+                "Node `Home` links to `images`, which is not a file.".to_owned(),
+                format!("File `{}` is not referenced.", photo_path.display()),
+            ],
         );
     }
 

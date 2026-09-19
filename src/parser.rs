@@ -4,8 +4,46 @@ use crate::{
     format::CodeStr,
     scoring::populate_depths,
 };
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::{
+    collections::HashSet,
+    path::{Component, Path, PathBuf},
+};
+
+// Parse a filesystem link path while keeping it inside the document's logical tree.
+fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String> {
+    // Require the document directory or an entry below it without parent or absolute components.
+    let parsed_path = Path::new(path);
+    let has_invalid_component = parsed_path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_),
+        )
+    });
+    let is_valid = !parsed_path.as_os_str().is_empty() && !has_invalid_component;
+    if !is_valid {
+        return Err(format!(
+            concat!(
+                "Filesystem link path {} in node {} must identify the document directory or an ",
+                "entry below it without using {}.",
+            ),
+            parsed_path.to_string_lossy().code_str(),
+            node_title.code_str(),
+            "..".code_str(),
+        ));
+    }
+
+    // Normalize harmless current-directory components without resolving symlinks.
+    Ok(parsed_path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(component) => Some(component),
+            Component::CurDir => None,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                unreachable!("filesystem link path components were already validated")
+            }
+        })
+        .collect())
+}
 
 // Add a completed node after collecting all of its parsing errors.
 fn insert_node(
@@ -59,9 +97,19 @@ fn insert_node(
                     let trimmed_link = original_link.trim();
                     let link = trimmed_link.replace("\\[", "[").replace("\\]", "]");
                     if let Some(path) = link.strip_prefix(FILE_LINK_PREFIX) {
-                        links.insert(Link::File(PathBuf::from(path)));
+                        match parse_filesystem_path(path, &title) {
+                            Ok(path) => {
+                                links.insert(Link::File(path));
+                            }
+                            Err(error) => errors.push(error),
+                        }
                     } else if let Some(path) = link.strip_prefix(DIRECTORY_LINK_PREFIX) {
-                        links.insert(Link::Directory(PathBuf::from(path)));
+                        match parse_filesystem_path(path, &title) {
+                            Ok(path) => {
+                                links.insert(Link::Directory(path));
+                            }
+                            Err(error) => errors.push(error),
+                        }
                     } else {
                         links.insert(Link::Text(link));
                     }
@@ -249,8 +297,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn filesystem_links() {
         let document = parse(concat!(
             "# Home\nSee [",
-            "file:notes.txt] and [",
-            "dir:images].",
+            "file:./notes.txt], [",
+            "dir:images], and [",
+            "dir:images/./raw], plus [",
+            "dir:.].",
         ))
         .unwrap();
 
@@ -258,8 +308,41 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             document.text_nodes["Home"].links,
             HashSet::from([
                 Link::File(PathBuf::from("notes.txt")),
+                Link::Directory(PathBuf::new()),
                 Link::Directory(PathBuf::from("images")),
+                Link::Directory(PathBuf::from("images/raw")),
             ]),
+        );
+    }
+
+    // Reject filesystem links that are empty, absolute, or contain parents.
+    #[test]
+    fn invalid_filesystem_link_paths() {
+        assert_eq!(
+            parse(concat!(
+                "# Home\n[",
+                "file:] [",
+                "file:../notes.txt] [",
+                "dir:/images]",
+            ))
+            .unwrap_err(),
+            vec![
+                concat!(
+                    "Filesystem link path `` in node `Home` must identify the document directory ",
+                    "or an entry below it without using `..`.",
+                )
+                .to_owned(),
+                concat!(
+                    "Filesystem link path `../notes.txt` in node `Home` must identify the ",
+                    "document directory or an entry below it without using `..`.",
+                )
+                .to_owned(),
+                concat!(
+                    "Filesystem link path `/images` in node `Home` must identify the document ",
+                    "directory or an entry below it without using `..`.",
+                )
+                .to_owned(),
+            ],
         );
     }
 
