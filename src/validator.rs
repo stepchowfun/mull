@@ -43,17 +43,11 @@ pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors>
         }
     };
 
-    // Validate filesystem links and collect their canonical targets.
-    let (referenced_files, referenced_directories, filesystem_link_errors) =
-        validate_filesystem_links(document, &document_directory);
-    errors.extend(filesystem_link_errors);
-
-    // Collect walk and unreferenced-entry errors for deterministic reporting.
-    errors.extend(find_unreferenced_entries(
+    // Collect filesystem-link and unreferenced-entry errors.
+    errors.extend(validate_filesystem_links(
+        document,
         &document_directory,
         &resolved_document_path,
-        &referenced_files,
-        &referenced_directories,
     ));
 
     // Report all validation errors together.
@@ -120,11 +114,12 @@ fn validate_text_links(document: &Document) -> Vec<String> {
     errors
 }
 
-// Validate filesystem links and collect their targets and errors.
+// Validate filesystem links and ensure every walked entry is referenced.
 fn validate_filesystem_links(
     document: &Document,
     document_directory: &Path,
-) -> (HashSet<PathBuf>, HashSet<PathBuf>, Vec<String>) {
+    document_path: &Path,
+) -> Vec<String> {
     // Visit nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
@@ -142,7 +137,8 @@ fn validate_filesystem_links(
             };
 
             // Retain valid targets and collect failures without stopping validation.
-            match validate_target(document_directory, path, expect_directory, &node.title) {
+            match validate_filesystem_link(document_directory, path, expect_directory, &node.title)
+            {
                 Ok(target) => {
                     if expect_directory {
                         referenced_directories.insert(target);
@@ -169,12 +165,20 @@ fn validate_filesystem_links(
         }
     }
 
-    // Return every collected target and link error.
-    (referenced_files, referenced_directories, errors)
+    // Collect walk and unreferenced-entry errors using the validated targets.
+    errors.extend(find_unreferenced_filesystem_links(
+        document_directory,
+        document_path,
+        &referenced_files,
+        &referenced_directories,
+    ));
+
+    // Return every filesystem validation error.
+    errors
 }
 
 // Find unreferenced entries while pruning directories once they are reported.
-fn find_unreferenced_entries(
+fn find_unreferenced_filesystem_links(
     document_directory: &Path,
     document_path: &Path,
     referenced_files: &HashSet<PathBuf>,
@@ -269,17 +273,8 @@ fn find_unreferenced_entries(
     errors
 }
 
-// Convert collected validation errors into the public result type.
-fn errors_to_result(errors: Errors) -> Result<(), Errors> {
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
 // Validate one filesystem target and return its canonical path.
-fn validate_target(
+fn validate_filesystem_link(
     document_directory: &Path,
     path: &Path,
     expect_directory: bool,
@@ -320,6 +315,15 @@ fn validate_target(
             node_title.code_str(),
         )
     })
+}
+
+// Convert collected validation errors into the public result type.
+fn errors_to_result(errors: Errors) -> Result<(), Errors> {
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 #[cfg(test)]
