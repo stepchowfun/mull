@@ -11,6 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// Limit filesystem diagnostics so pathological documents and directories remain manageable.
+const MAX_FILESYSTEM_ERRORS: usize = 50;
+
 // Validate every link and ensure every walked file is referenced.
 pub fn validate(document: &Document, document_path: &Path) -> Result<(), Errors> {
     // Collect errors in the parsed text-link graph.
@@ -130,7 +133,7 @@ fn validate_filesystem_links(
     let mut errors = Vec::<String>::new();
     let mut nodes = document.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
-    for node in nodes {
+    'nodes: for node in nodes {
         let mut links = node.links.iter().collect::<Vec<_>>();
         links.sort();
         for link in links {
@@ -150,6 +153,9 @@ fn validate_filesystem_links(
                         node.title.code_str(),
                         path.to_string_lossy().code_str(),
                     ));
+                    if errors.len() >= MAX_FILESYSTEM_ERRORS {
+                        break 'nodes;
+                    }
                     continue;
                 }
             };
@@ -174,15 +180,25 @@ fn validate_filesystem_links(
                 )),
                 Link::Text(_) => unreachable!("text links were already skipped"),
             }
+            if errors.len() >= MAX_FILESYSTEM_ERRORS {
+                break 'nodes;
+            }
         }
     }
 
+    // Stop before walking the filesystem when link validation exhausted the error budget.
+    if errors.len() >= MAX_FILESYSTEM_ERRORS {
+        return errors;
+    }
+
     // Collect walk and unreferenced-file errors using the validated targets.
+    let remaining_error_capacity = MAX_FILESYSTEM_ERRORS - errors.len();
     errors.extend(find_unreferenced_filesystem_links(
         document_directory,
         document_path,
         &referenced_files,
         &referenced_directories,
+        remaining_error_capacity,
     ));
 
     // Return every filesystem validation error.
@@ -195,6 +211,7 @@ fn find_unreferenced_filesystem_links(
     document_path: &Path,
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
+    maximum_errors: usize,
 ) -> Vec<String> {
     // Skip the walk because the root is not subject to the entry filter below.
     if referenced_directories.contains(document_directory) {
@@ -238,6 +255,9 @@ fn find_unreferenced_filesystem_links(
             Ok(entry) => entry,
             Err(error) => {
                 errors.push(format!("Failed to walk document directory: {error}"));
+                if errors.len() >= maximum_errors {
+                    break;
+                }
                 continue;
             }
         };
@@ -252,6 +272,9 @@ fn find_unreferenced_filesystem_links(
                     .to_string_lossy()
                     .code_str(),
             ));
+            if errors.len() >= maximum_errors {
+                break;
+            }
         }
     }
 
@@ -273,7 +296,7 @@ fn errors_to_result(errors: Errors) -> Result<(), Errors> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate;
+    use super::{MAX_FILESYSTEM_ERRORS, validate};
     use crate::parser::parse;
     use std::{
         fs,
@@ -377,6 +400,48 @@ mod tests {
                 "File `{}` is not referenced.",
                 photo_path.display(),
             )],
+        );
+    }
+
+    // Stop validating explicit filesystem links after reaching the diagnostic limit.
+    #[test]
+    fn filesystem_link_error_limit() {
+        let directory = TestDirectory::new();
+        let links = (0..=MAX_FILESYSTEM_ERRORS)
+            .map(|index| format!(concat!("[", "file:missing-{}.txt]"), index))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let document = parse(&format!("# Home\n{links}")).unwrap();
+
+        let errors = validate(&document, &directory.document_path()).unwrap_err();
+        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.starts_with("Node `Home` links to inaccessible path `missing-")),
+        );
+    }
+
+    // Share the diagnostic limit between link validation and the filesystem walk.
+    #[test]
+    fn unreferenced_file_error_limit() {
+        let directory = TestDirectory::new();
+        for index in 0..=MAX_FILESYSTEM_ERRORS {
+            fs::write(
+                directory.path().join(format!("unreferenced-{index}.txt")),
+                "",
+            )
+            .unwrap();
+        }
+        let document = parse(concat!("# Home\n[", "file:missing.txt]")).unwrap();
+
+        let errors = validate(&document, &directory.document_path()).unwrap_err();
+        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
+        assert!(errors[0].starts_with("Node `Home` links to inaccessible path `missing.txt`:"));
+        assert!(
+            errors[1..]
+                .iter()
+                .all(|error| error.starts_with("File `unreferenced-")),
         );
     }
 
