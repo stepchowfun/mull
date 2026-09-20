@@ -1,6 +1,5 @@
 mod assertions;
 mod error;
-mod error_merger;
 mod format;
 mod parser;
 mod path_util;
@@ -9,8 +8,7 @@ mod validator;
 mod wiki;
 
 use crate::{
-    error::{Error, throw},
-    error_merger::merge_errors,
+    error::{Error, merge_errors, throw},
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
