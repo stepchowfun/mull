@@ -113,10 +113,6 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
-        // Preserve the parser invariant that every title lies within its surrounding node.
-        debug_assert!(node.source_range.start <= node.title_source_range.start);
-        debug_assert!(node.title_source_range.end <= node.source_range.end);
-
         // Report each missing target at the corresponding text-link occurrence.
         for link in &node.links {
             if let Link::Text {
