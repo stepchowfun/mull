@@ -2,7 +2,9 @@ use crate::{
     error::{Error, SourceRange, listing, throw},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
-    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode, Wiki},
+    wiki::{
+        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
+    },
 };
 use std::path::{Component, Path, PathBuf};
 
@@ -328,7 +330,13 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             end: line_start + line.len(),
         };
 
-        if let Some(raw_title) = line.strip_prefix(TITLE_PREFIX) {
+        // Recognize a title marker followed by either a space or the end of the line.
+        let raw_title = if line == TITLE_MARKER {
+            Some("")
+        } else {
+            line.strip_prefix(TITLE_PREFIX)
+        };
+        if let Some(raw_title) = raw_title {
             // Finish the preceding node before starting the next one.
             if let Some(previous_node) = pending_node.take()
                 && let Err(node_errors) = insert_node(
@@ -346,7 +354,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             let title_source_range = trim_source_range(
                 source_contents,
                 SourceRange {
-                    start: line_start + TITLE_PREFIX.len(),
+                    start: line_source_range.end - raw_title.len(),
                     end: line_source_range.end,
                 },
             );
@@ -601,7 +609,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(errors[0].to_string().contains("2 \u{2502} See Greeting]."));
     }
 
-    // Treat hashes without the required trailing space as ordinary content.
+    // Treat non-title hash prefixes as ordinary content.
     #[test]
     fn non_title_hashes() {
         let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
@@ -654,6 +662,16 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 .to_string()
                 .contains("Content appears before the first title."),
         );
+    }
+
+    // Recognize a bare title marker so it can be reported as an empty title.
+    #[test]
+    fn bare_empty_title() {
+        let errors = parse_test("#").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("Title is empty."));
+        assert!(errors[0].to_string().contains("1 │ #"));
     }
 
     // Report only the first occurrence of content before a valid title.
