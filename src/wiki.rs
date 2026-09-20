@@ -1,8 +1,5 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    path::PathBuf,
-};
+use crate::error::SourceRange;
+use std::{collections::HashMap, fmt, path::PathBuf};
 
 // These strings define the wiki format's extension and structural markers.
 pub const WIKI_EXTENSION: &str = "mull";
@@ -13,12 +10,21 @@ pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
-// These are the targets that a node can reference.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+// These are the source occurrences through which a node can reference a target.
+#[derive(Clone, Debug)]
 pub enum Link {
-    Text(String),
-    File(PathBuf),
-    Directory(PathBuf),
+    Text {
+        title: String,
+        source_range: SourceRange,
+    },
+    File {
+        path: PathBuf,
+        source_range: SourceRange,
+    },
+    Directory {
+        path: PathBuf,
+        source_range: SourceRange,
+    },
 }
 
 // This struct represents a text node in a wiki.
@@ -26,8 +32,14 @@ pub enum Link {
 pub struct TextNode {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
     pub content: String, // No leading or trailing whitespace
-    pub links: HashSet<Link>,
+    pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
+    #[allow(
+        dead_code,
+        reason = "Retained for diagnostics covering a complete text node."
+    )]
+    pub source_range: SourceRange, // The complete node
+    pub title_source_range: SourceRange, // The trimmed title text
 }
 
 // This struct represents a parsed wiki.
@@ -76,7 +88,11 @@ impl fmt::Display for Wiki {
 #[cfg(test)]
 mod tests {
     use super::{TextNode, Wiki};
-    use std::collections::{HashMap, HashSet};
+    use crate::error::SourceRange;
+    use std::collections::HashMap;
+
+    // Use a harmless range when testing rendering, which does not inspect source locations.
+    const SOURCE_RANGE: SourceRange = SourceRange { start: 0, end: 0 };
 
     // Ensure nodes are rendered in the wiki's source format.
     #[test]
@@ -84,8 +100,10 @@ mod tests {
         let node = TextNode {
             title: "Greeting".to_owned(),
             content: "Hello, world!".to_owned(),
-            links: HashSet::new(),
+            links: Vec::new(),
             depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
@@ -97,8 +115,10 @@ mod tests {
         let node = TextNode {
             title: "Greeting".to_owned(),
             content: String::new(),
-            links: HashSet::new(),
+            links: Vec::new(),
             depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n");
@@ -113,8 +133,10 @@ mod tests {
                 TextNode {
                     title: "Greeting".to_owned(),
                     content: String::new(),
-                    links: HashSet::new(),
+                    links: Vec::new(),
                     depth: None,
+                    source_range: SOURCE_RANGE,
+                    title_source_range: SOURCE_RANGE,
                 },
             )]),
         };
@@ -132,8 +154,10 @@ mod tests {
                     TextNode {
                         title: "Greeting".to_owned(),
                         content: "Hello, world!".to_owned(),
-                        links: HashSet::new(),
+                        links: Vec::new(),
                         depth: Some(1),
+                        source_range: SOURCE_RANGE,
+                        title_source_range: SOURCE_RANGE,
                     },
                 ),
                 (
@@ -141,8 +165,10 @@ mod tests {
                     TextNode {
                         title: "Home".to_owned(),
                         content: "Check out the [Greeting].".to_owned(),
-                        links: HashSet::new(),
+                        links: Vec::new(),
                         depth: Some(0),
+                        source_range: SOURCE_RANGE,
+                        title_source_range: SOURCE_RANGE,
                     },
                 ),
                 (
@@ -150,8 +176,10 @@ mod tests {
                     TextNode {
                         title: "Orphan".to_owned(),
                         content: String::new(),
-                        links: HashSet::new(),
+                        links: Vec::new(),
                         depth: None,
+                        source_range: SOURCE_RANGE,
+                        title_source_range: SOURCE_RANGE,
                     },
                 ),
             ]),

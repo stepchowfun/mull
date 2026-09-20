@@ -1,23 +1,74 @@
 use crate::{
-    Errors,
+    error::{Error, SourceRange, listing, throw},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
     wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode, Wiki},
 };
-use std::{
-    collections::HashSet,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
+
+// This struct retains the source information needed to finish a node at its next boundary.
+struct PendingNode {
+    title: String,
+    source_start: usize,
+    content_start: usize,
+    title_source_range: SourceRange,
+}
+
+// Construct a source-aware error with a listing of the relevant wiki text.
+fn source_error(
+    message: &str,
+    source_path: &Path,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Error {
+    throw::<Error>(
+        message,
+        Some(source_path),
+        Some(&listing(source_contents, source_range)),
+        None,
+    )
+}
+
+// Remove surrounding whitespace from a source range without losing its original coordinates.
+fn trim_source_range(source_contents: &str, source_range: SourceRange) -> SourceRange {
+    // Find the trimmed start relative to the original source.
+    let source = &source_contents[source_range.start..source_range.end];
+    let start_trimmed = source.trim_start();
+    let start = source_range.start + source.len() - start_trimmed.len();
+
+    // Find the trimmed end relative to the adjusted start.
+    let trimmed = start_trimmed.trim_end();
+    SourceRange {
+        start,
+        end: start + trimmed.len(),
+    }
+}
+
+// Append source text while normalizing Windows line endings to the wiki's canonical form.
+fn push_normalized(target: &mut String, source: &str) {
+    target.push_str(&source.replace("\r\n", "\n"));
+}
 
 // Parse a filesystem link path while keeping it inside the wiki's logical tree.
-fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String> {
+fn parse_filesystem_path(
+    path: &str,
+    node_title: &str,
+    source_path: &Path,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Result<PathBuf, Error> {
     // Reject an empty path before inspecting its components.
     let parsed_path = Path::new(path);
     if parsed_path.as_os_str().is_empty() {
-        return Err(format!(
-            "Filesystem link path {} in node {} is empty.",
-            parsed_path.code_path(),
-            node_title.code_str(),
+        return Err(source_error(
+            &format!(
+                "Filesystem link path {} in node {} is empty.",
+                parsed_path.code_path(),
+                node_title.code_str(),
+            ),
+            source_path,
+            source_contents,
+            source_range,
         ));
     }
 
@@ -29,14 +80,19 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
         )
     });
     if has_invalid_component {
-        return Err(format!(
-            concat!(
-                "Filesystem link path {} in node {} must be relative to the wiki directory ",
-                "without using {}.",
+        return Err(source_error(
+            &format!(
+                concat!(
+                    "Filesystem link path {} in node {} must be relative to the wiki directory ",
+                    "without using {}.",
+                ),
+                parsed_path.code_path(),
+                node_title.code_str(),
+                "..".code_str(),
             ),
-            parsed_path.code_path(),
-            node_title.code_str(),
-            "..".code_str(),
+            source_path,
+            source_contents,
+            source_range,
         ));
     }
 
@@ -54,21 +110,43 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
         .collect())
 }
 
-// Add a completed node after collecting all of its parsing errors.
-fn insert_node(
-    wiki: &mut Wiki,
-    title: String,
-    title_line: usize,
-    content_lines: &[&str],
-) -> Result<(), Errors> {
-    // Strip whitespace around the content while preserving its internal formatting.
-    let original_content = content_lines.join("\n").trim().to_owned();
+// Convert the contents of a closed delimiter pair into a typed link occurrence.
+fn parse_link(
+    target: &str,
+    node_title: &str,
+    source_path: &Path,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Result<Link, Error> {
+    // Unescape delimiters before converting the target into its semantic link type.
+    let target = target.replace("\\[", "[").replace("\\]", "]");
+    if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
+        parse_filesystem_path(path, node_title, source_path, source_contents, source_range)
+            .map(|path| Link::File { path, source_range })
+    } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
+        parse_filesystem_path(path, node_title, source_path, source_contents, source_range)
+            .map(|path| Link::Directory { path, source_range })
+    } else {
+        Ok(Link::Text {
+            title: target,
+            source_range,
+        })
+    }
+}
 
-    // Collect link targets and rebuild the content with their surrounding whitespace stripped.
+// Parse link occurrences and produce the normalized content stored on a text node.
+fn parse_content(
+    title: &str,
+    source_path: &Path,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> (String, Vec<Link>, Vec<Error>) {
+    // Traverse the original content while retaining indices for copying and diagnostics.
+    let original_content = &source_contents[source_range.start..source_range.end];
     let mut content = String::new();
     let mut copied_through = 0;
-    let mut links = HashSet::<Link>::new();
-    let mut errors = Vec::<String>::new();
+    let mut links = Vec::<Link>::new();
+    let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
     let mut link_has_line_break = false;
     let mut previous_was_backslash = false;
@@ -79,77 +157,134 @@ fn insert_node(
             continue;
         }
 
-        // Links must fit on a single line.
-        if character == '\n' && link_start.is_some() && !link_has_line_break {
-            errors.push(format!(
-                "Link in node {} contains a line break.",
-                title.code_str(),
+        // Report the first line break within each link.
+        if character == '\n'
+            && let Some(start) = link_start
+            && !link_has_line_break
+        {
+            errors.push(source_error(
+                &format!("Link in node {} contains a line break.", title.code_str()),
+                source_path,
+                source_contents,
+                SourceRange {
+                    start: source_range.start + start,
+                    end: source_range.start + index + character.len_utf8(),
+                },
             ));
             link_has_line_break = true;
         }
 
+        // Interpret unescaped square brackets as link delimiters.
         match character {
+            '[' if link_start.is_some() => errors.push(source_error(
+                &format!(
+                    "Unexpected opening link delimiter in node {}.",
+                    title.code_str(),
+                ),
+                source_path,
+                source_contents,
+                SourceRange {
+                    start: source_range.start + index,
+                    end: source_range.start + index + character.len_utf8(),
+                },
+            )),
             '[' => {
-                if link_start.is_some() {
-                    errors.push(format!(
-                        "Unexpected opening link delimiter in node {}.",
-                        title.code_str(),
-                    ));
-                } else {
-                    link_start = Some(index + character.len_utf8());
-                    link_has_line_break = false;
-                }
+                link_start = Some(index);
+                link_has_line_break = false;
             }
+            ']' if link_start.is_none() => errors.push(source_error(
+                &format!(
+                    "Unexpected closing link delimiter in node {}.",
+                    title.code_str(),
+                ),
+                source_path,
+                source_contents,
+                SourceRange {
+                    start: source_range.start + index,
+                    end: source_range.start + index + character.len_utf8(),
+                },
+            )),
             ']' => {
-                if let Some(start) = link_start.take() {
-                    let original_link = &original_content[start..index];
-                    let trimmed_link = original_link.trim();
-                    let link = trimmed_link.replace("\\[", "[").replace("\\]", "]");
-                    if let Some(path) = link.strip_prefix(FILE_LINK_PREFIX) {
-                        match parse_filesystem_path(path, &title) {
-                            Ok(path) => {
-                                links.insert(Link::File(path));
-                            }
-                            Err(error) => errors.push(error),
-                        }
-                    } else if let Some(path) = link.strip_prefix(DIRECTORY_LINK_PREFIX) {
-                        match parse_filesystem_path(path, &title) {
-                            Ok(path) => {
-                                links.insert(Link::Directory(path));
-                            }
-                            Err(error) => errors.push(error),
-                        }
-                    } else {
-                        links.insert(Link::Text(link));
-                    }
-                    content.push_str(&original_content[copied_through..start]);
-                    content.push_str(trimmed_link);
-                    content.push(']');
-                    copied_through = index + character.len_utf8();
-                } else {
-                    errors.push(format!(
-                        "Unexpected closing link delimiter in node {}.",
-                        title.code_str(),
-                    ));
+                let start = link_start.take().expect("the link start was checked above");
+                let inner_start = start + '['.len_utf8();
+                let trimmed_target = original_content[inner_start..index].trim();
+                let link_source_range = SourceRange {
+                    start: source_range.start + start,
+                    end: source_range.start + index + character.len_utf8(),
+                };
+                match parse_link(
+                    trimmed_target,
+                    title,
+                    source_path,
+                    source_contents,
+                    link_source_range,
+                ) {
+                    Ok(link) => links.push(link),
+                    Err(error) => errors.push(error),
                 }
+                push_normalized(&mut content, &original_content[copied_through..inner_start]);
+                content.push_str(trimmed_target);
+                content.push(']');
+                copied_through = index + character.len_utf8();
             }
             _ => {}
         }
     }
 
     // Reject an opening delimiter that has no closing delimiter.
-    if link_start.is_some() {
-        errors.push(format!("Unclosed link in node {}.", title.code_str()));
+    if let Some(start) = link_start {
+        errors.push(source_error(
+            &format!("Unclosed link in node {}.", title.code_str()),
+            source_path,
+            source_contents,
+            SourceRange {
+                start: source_range.start + start,
+                end: source_range.start + start + '['.len_utf8(),
+            },
+        ));
     }
 
     // Retain the content following the final link.
-    content.push_str(&original_content[copied_through..]);
+    push_normalized(&mut content, &original_content[copied_through..]);
+    (content, links, errors)
+}
+
+// Add a completed node after collecting all of its parsing errors.
+fn insert_node(
+    wiki: &mut Wiki,
+    pending_node: PendingNode,
+    source_end: usize,
+    source_path: &Path,
+    source_contents: &str,
+) -> Result<(), Vec<Error>> {
+    // Locate the node and its trimmed content in the original source.
+    let PendingNode {
+        title,
+        source_start,
+        content_start,
+        title_source_range,
+    } = pending_node;
+    let source_range = SourceRange {
+        start: source_start,
+        end: source_end,
+    };
+    let content_source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: content_start,
+            end: source_end,
+        },
+    );
+    let (content, links, mut errors) =
+        parse_content(&title, source_path, source_contents, content_source_range);
 
     // Reject a title that has already been used.
     if wiki.text_nodes.contains_key(&title) {
-        errors.push(format!(
-            "Duplicate title {} on line {title_line}.",
-            title.code_str(),
+        errors.push(source_error(
+            &format!("Duplicate title {}.", title.code_str()),
+            source_path,
+            source_contents,
+            title_source_range,
         ));
     }
 
@@ -162,6 +297,8 @@ fn insert_node(
                 content,
                 links,
                 depth: None,
+                source_range,
+                title_source_range,
             },
         );
         Ok(())
@@ -170,57 +307,97 @@ fn insert_node(
     }
 }
 
-// Parse source contents into a scored wiki.
-pub fn parse(contents: &str) -> Result<Wiki, Errors> {
-    // Accumulate the parsed wiki, node errors, and the node currently being read.
+// Parse source contents into a scored wiki with source ranges for every node and link.
+pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Error>> {
+    // Accumulate parsed nodes, errors, and the node currently being read.
     let mut wiki = Wiki::default();
-    let mut errors = Vec::<String>::new();
-    let mut current_title = None::<(String, usize)>;
-    let mut content_lines = Vec::<&str>::new();
+    let mut errors = Vec::<Error>::new();
+    let mut pending_node = None::<PendingNode>;
     let mut reported_content_before_title = false;
+    let mut line_start = 0;
 
-    // Process title lines as boundaries and retain all other lines as content.
-    for (line_index, line) in contents.lines().enumerate() {
-        let line_number = line_index + 1;
-        if let Some(title) = line.strip_prefix(TITLE_PREFIX) {
+    // Process ranged source lines as boundaries while retaining their original byte offsets.
+    for raw_line in source_contents.split_inclusive('\n') {
+        let next_line_start = line_start + raw_line.len();
+        let line_with_possible_carriage_return = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line_with_possible_carriage_return
+            .strip_suffix('\r')
+            .unwrap_or(line_with_possible_carriage_return);
+        let line_source_range = SourceRange {
+            start: line_start,
+            end: line_start + line.len(),
+        };
+
+        if let Some(raw_title) = line.strip_prefix(TITLE_PREFIX) {
             // Finish the preceding node before starting the next one.
-            if let Some((title, title_line)) = current_title.take() {
-                if let Err(node_errors) = insert_node(&mut wiki, title, title_line, &content_lines)
-                {
-                    errors.extend(node_errors);
-                }
-                content_lines.clear();
+            if let Some(previous_node) = pending_node.take()
+                && let Err(node_errors) = insert_node(
+                    &mut wiki,
+                    previous_node,
+                    line_start,
+                    source_path,
+                    source_contents,
+                )
+            {
+                errors.extend(node_errors);
             }
 
             // Reject titles that are empty after surrounding whitespace is stripped.
-            let title = title.trim();
+            let title_source_range = trim_source_range(
+                source_contents,
+                SourceRange {
+                    start: line_start + TITLE_PREFIX.len(),
+                    end: line_source_range.end,
+                },
+            );
+            let title = raw_title.trim();
             if title.is_empty() {
-                errors.push(format!("Title on line {line_number} is empty."));
+                errors.push(source_error(
+                    "Title is empty.",
+                    source_path,
+                    source_contents,
+                    line_source_range,
+                ));
             } else {
-                current_title = Some((title.to_owned(), line_number));
+                pending_node = Some(PendingNode {
+                    title: title.to_owned(),
+                    source_start: line_start,
+                    content_start: next_line_start,
+                    title_source_range,
+                });
             }
-        } else if current_title.is_some() {
-            // Preserve lines belonging to the current node until its content is finalized.
-            content_lines.push(line);
-        } else if !reported_content_before_title && !line.trim().is_empty() {
+        } else if pending_node.is_none()
+            && !reported_content_before_title
+            && !line.trim().is_empty()
+        {
             // Report only the first non-whitespace content outside a valid node.
-            errors.push(format!(
-                "Content appears before the first title on line {line_number}.",
+            errors.push(source_error(
+                "Content appears before the first title.",
+                source_path,
+                source_contents,
+                trim_source_range(source_contents, line_source_range),
             ));
             reported_content_before_title = true;
         }
+
+        line_start = next_line_start;
     }
 
     // Finish the final node at the end of the wiki.
-    if let Some((title, title_line)) = current_title
-        && let Err(node_errors) = insert_node(&mut wiki, title, title_line, &content_lines)
+    if let Some(final_node) = pending_node
+        && let Err(node_errors) = insert_node(
+            &mut wiki,
+            final_node,
+            source_contents.len(),
+            source_path,
+            source_contents,
+        )
     {
         errors.extend(node_errors);
     }
 
     // Return all node errors together, or score and return the parsed wiki.
     if errors.is_empty() {
-        // Populate minimum distances from the home node in the parsed wiki.
         populate_depths(&mut wiki);
         Ok(wiki)
     } else {
@@ -231,43 +408,70 @@ pub fn parse(contents: &str) -> Result<Wiki, Errors> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::wiki::Link;
-    use std::collections::HashSet;
-    use std::path::PathBuf;
+    use crate::{
+        assert_fails,
+        error::Error,
+        wiki::{Link, Wiki},
+    };
+    use std::{
+        fmt::Write,
+        path::{Path, PathBuf},
+    };
 
-    // Parse titles and multiline content while stripping surrounding whitespace.
+    // Parse test sources using a stable path for diagnostic assertions.
+    fn parse_test(source_contents: &str) -> Result<Wiki, Vec<Error>> {
+        parse(Path::new("test.mull"), source_contents)
+    }
+
+    // Describe link targets without coupling semantic assertions to their source ranges.
+    fn link_targets(links: &[Link]) -> Vec<String> {
+        links
+            .iter()
+            .map(|link| match link {
+                Link::Text { title, .. } => format!("text:{title}"),
+                Link::File { path, .. } => format!("file:{}", path.display()),
+                Link::Directory { path, .. } => format!("dir:{}", path.display()),
+            })
+            .collect()
+    }
+
+    // Parse titles and multiline content while retaining exact source ranges.
     #[test]
     fn nodes() {
-        let wiki = parse(
-            "  \n#   Home  \n\n Check out the [Greeting]. \n\n# Greeting\n Hello,\nworld! \n",
-        )
-        .unwrap();
+        let source =
+            "  \n#   Home  \n\n Check out the [Greeting]. \n\n# Greeting\n Hello,\nworld! \n";
+        let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.text_nodes.len(), 2);
         assert_eq!(wiki.text_nodes["Home"].title, "Home");
         assert_eq!(wiki.text_nodes["Home"].content, "Check out the [Greeting].");
         assert_eq!(
-            wiki.text_nodes["Home"].links,
-            HashSet::from([Link::Text("Greeting".to_owned())]),
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec!["text:Greeting"],
         );
         assert_eq!(wiki.text_nodes["Greeting"].content, "Hello,\nworld!");
+        assert_eq!(wiki.text_nodes["Home"].title_source_range.start, 7);
+        assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 11);
+        assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
+        assert_eq!(wiki.text_nodes["Home"].source_range.end, 44);
+        let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
+            panic!("the parsed link should be a text link");
+        };
+        assert_eq!(&source[source_range.start..source_range.end], "[Greeting]");
     }
 
-    // Parse distinct text links while stripping their surrounding whitespace.
+    // Preserve duplicate links as distinct source occurrences while normalizing their text.
     #[test]
     fn links() {
-        let wiki = parse(concat!(
+        let wiki = parse_test(concat!(
             "# Home\nSee [Greeting], [ About ], and [Greeting].",
             "\n# About\n# Greeting",
         ))
         .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].links,
-            HashSet::from([
-                Link::Text("About".to_owned()),
-                Link::Text("Greeting".to_owned()),
-            ]),
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec!["text:Greeting", "text:About", "text:Greeting"],
         );
         assert_eq!(
             wiki.text_nodes["Home"].content,
@@ -275,10 +479,27 @@ mod tests {
         );
     }
 
+    // Keep source ranges on UTF-8 boundaries when titles and links contain multibyte characters.
+    #[test]
+    fn unicode_source_ranges() {
+        let source = "# Home\nSee [Grüße].\n# Grüße";
+        let wiki = parse_test(source).unwrap();
+        let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
+            panic!("the parsed link should be a text link");
+        };
+
+        assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
+        assert_eq!(
+            &source[wiki.text_nodes["Grüße"].title_source_range.start
+                ..wiki.text_nodes["Grüße"].title_source_range.end],
+            "Grüße",
+        );
+    }
+
     // Treat escaped square brackets as literal link-title characters.
     #[test]
     fn escaped_link_delimiters() {
-        let wiki = parse(
+        let wiki = parse_test(
             r"# Home
 See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
 # Four
@@ -288,19 +509,15 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].links,
-            HashSet::from([
-                Link::Text("Four".to_owned()),
-                Link::Text("One]Two".to_owned()),
-                Link::Text("[Three".to_owned()),
-            ]),
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec!["text:One]Two", "text:[Three", "text:Four"],
         );
     }
 
     // Parse file and directory links separately from text links.
     #[test]
     fn filesystem_links() {
-        let wiki = parse(concat!(
+        let wiki = parse_test(concat!(
             "# Home\nSee [",
             "file:./notes.txt], [",
             "dir:images], and [",
@@ -310,83 +527,84 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].links,
-            HashSet::from([
-                Link::File(PathBuf::from("notes.txt")),
-                Link::Directory(PathBuf::new()),
-                Link::Directory(PathBuf::from("images")),
-                Link::Directory(PathBuf::from("images/raw")),
-            ]),
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec![
+                format!("file:{}", PathBuf::from("notes.txt").display()),
+                format!("dir:{}", PathBuf::from("images").display()),
+                format!("dir:{}", PathBuf::from("images").join("raw").display()),
+                "dir:".to_owned(),
+            ],
         );
     }
 
     // Reject filesystem links that are empty, absolute, or contain parents.
     #[test]
     fn invalid_filesystem_link_paths() {
-        assert_eq!(
-            parse(concat!(
-                "# Home\n[",
-                "file:] [",
-                "file:../notes.txt] [",
-                "dir:/images]",
-            ))
-            .unwrap_err(),
-            vec![
-                "Filesystem link path `` in node `Home` is empty.".to_owned(),
-                concat!(
-                    "Filesystem link path `../notes.txt` in node `Home` must be relative to the ",
-                    "wiki directory without using `..`.",
-                )
-                .to_owned(),
-                concat!(
-                    "Filesystem link path `/images` in node `Home` must be relative to the ",
-                    "wiki directory without using `..`.",
-                )
-                .to_owned(),
-            ],
+        let result = parse_test(concat!(
+            "# Home\n[",
+            "file:] [",
+            "file:../notes.txt] [",
+            "dir:/images]",
+        ));
+
+        assert_fails!(
+            result.clone(),
+            "Filesystem link path `` in node `Home` is empty.",
+        );
+        assert_fails!(
+            result.clone(),
+            "Filesystem link path `../notes.txt` in node `Home` must be relative",
+        );
+        assert_fails!(
+            result,
+            "Filesystem link path `/images` in node `Home` must be relative",
         );
     }
 
     // Reject opening link delimiters that are not closed.
     #[test]
     fn unclosed_link() {
-        assert_eq!(
-            parse("# Home\nSee [Greeting.").unwrap_err(),
-            vec!["Unclosed link in node `Home`.".to_owned()],
+        assert_fails!(
+            parse_test("# Home\nSee [Greeting."),
+            "Unclosed link in node `Home`.",
         );
     }
 
     // Reject links that span multiple lines.
     #[test]
     fn link_with_line_break() {
-        assert_eq!(
-            parse("# Home\nSee [Greeting\ncontinued].").unwrap_err(),
-            vec!["Link in node `Home` contains a line break.".to_owned()],
+        assert_fails!(
+            parse_test("# Home\nSee [Greeting\ncontinued]."),
+            "Link in node `Home` contains a line break.",
         );
     }
 
     // Reject unescaped opening delimiters inside links.
     #[test]
     fn unexpected_opening_delimiter() {
-        assert_eq!(
-            parse("# Home\nSee [nested[Greeting].").unwrap_err(),
-            vec!["Unexpected opening link delimiter in node `Home`.".to_owned()],
+        assert_fails!(
+            parse_test("# Home\nSee [nested[Greeting]."),
+            "Unexpected opening link delimiter in node `Home`.",
         );
     }
 
     // Reject unescaped closing delimiters outside links.
     #[test]
     fn unexpected_closing_delimiter() {
-        assert_eq!(
-            parse("# Home\nSee Greeting].").unwrap_err(),
-            vec!["Unexpected closing link delimiter in node `Home`.".to_owned()],
+        let errors = parse_test("# Home\nSee Greeting].").unwrap_err();
+
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Unexpected closing link delimiter"),
         );
+        assert!(errors[0].to_string().contains("2 \u{2502} See Greeting]."));
     }
 
     // Treat hashes without the required trailing space as ordinary content.
     #[test]
     fn non_title_hashes() {
-        let wiki = parse("# Home\n\n## Subtitle\n#not a title").unwrap();
+        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
 
         assert_eq!(wiki.text_nodes["Home"].content, "## Subtitle\n#not a title");
     }
@@ -394,14 +612,14 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Accept empty and whitespace-only wikis.
     #[test]
     fn empty_wiki() {
-        assert!(parse(" \n\t\n").unwrap().text_nodes.is_empty());
+        assert!(parse_test(" \n\t\n").unwrap().text_nodes.is_empty());
     }
 
     // Accept empty node content.
     #[test]
     fn empty_content() {
         assert!(
-            parse("# Empty").unwrap().text_nodes["Empty"]
+            parse_test("# Empty").unwrap().text_nodes["Empty"]
                 .content
                 .is_empty(),
         );
@@ -410,7 +628,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Parse Windows line endings without retaining carriage returns.
     #[test]
     fn windows_line_endings() {
-        let wiki = parse("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
+        let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
         assert_eq!(wiki.text_nodes["Greeting"].content, "Hello, world!");
     }
@@ -418,87 +636,108 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Reject non-whitespace content before the first title.
     #[test]
     fn content_before_title() {
-        assert_eq!(
-            parse("Introduction\n# Home").unwrap_err(),
-            vec!["Content appears before the first title on line 1.".to_owned()],
+        assert_fails!(
+            parse_test("Introduction\n# Home"),
+            "Content appears before the first title.",
         );
     }
 
     // Reject titles that are empty after whitespace is stripped.
     #[test]
     fn empty_title() {
-        assert_eq!(
-            parse("#   \nContent").unwrap_err(),
-            vec![
-                "Title on line 1 is empty.".to_owned(),
-                "Content appears before the first title on line 2.".to_owned(),
-            ],
+        let errors = parse_test("#   \nContent").unwrap_err();
+
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].to_string().contains("Title is empty."));
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("Content appears before the first title."),
         );
     }
 
     // Report only the first occurrence of content before a valid title.
     #[test]
     fn repeated_content_before_title() {
-        assert_eq!(
-            parse("First\nSecond\n# Home").unwrap_err(),
-            vec!["Content appears before the first title on line 1.".to_owned()],
+        let errors = parse_test("First\nSecond\n# Home").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Content appears before the first title."),
         );
     }
 
-    // Reject duplicate titles rather than silently replacing a node.
+    // Reject duplicate titles and identify the later declaration.
     #[test]
     fn duplicate_title() {
-        assert_eq!(
-            parse("# Home\nFirst\n# Home\nSecond").unwrap_err(),
-            vec!["Duplicate title `Home` on line 3.".to_owned()],
-        );
+        let errors = parse_test("# Home\nFirst\n# Home\nSecond").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("Duplicate title `Home`."));
+        assert!(errors[0].to_string().contains("3 \u{2502} # Home"));
     }
 
     // Report errors from every invalid node in source order.
     #[test]
     fn multiple_node_errors() {
-        assert_eq!(
-            parse("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err(),
-            vec![
-                "Unexpected closing link delimiter in node `First`.".to_owned(),
-                "Unclosed link in node `Second`.".to_owned(),
-            ],
+        let errors = parse_test("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err();
+
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Unexpected closing link delimiter"),
         );
+        assert!(errors[1].to_string().contains("Unclosed link"));
     }
 
     // Report every delimiter error within one node.
     #[test]
     fn multiple_errors_in_node() {
-        assert_eq!(
-            parse("# Home\nUnexpected] and [nested[link.").unwrap_err(),
-            vec![
-                "Unexpected closing link delimiter in node `Home`.".to_owned(),
-                "Unexpected opening link delimiter in node `Home`.".to_owned(),
-                "Unclosed link in node `Home`.".to_owned(),
-            ],
+        let errors = parse_test("# Home\nUnexpected] and [nested[link.").unwrap_err();
+
+        assert_eq!(errors.len(), 3);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Unexpected closing link delimiter"),
         );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("Unexpected opening link delimiter"),
+        );
+        assert!(errors[2].to_string().contains("Unclosed link"));
     }
 
     // Report structural and node errors together in source order.
     #[test]
     fn multiple_error_types() {
-        assert_eq!(
-            parse(concat!(
-                "Introduction\n",
-                "#   \n",
-                "Content\n",
-                "# First\n",
-                "Unexpected].\n",
-                "# Second\n",
-                "Unclosed [link.",
-            ))
-            .unwrap_err(),
-            vec![
-                "Content appears before the first title on line 1.".to_owned(),
-                "Title on line 2 is empty.".to_owned(),
-                "Unexpected closing link delimiter in node `First`.".to_owned(),
-                "Unclosed link in node `Second`.".to_owned(),
-            ],
+        let errors = parse_test(concat!(
+            "Introduction\n",
+            "#   \n",
+            "Content\n",
+            "# First\n",
+            "Unexpected].\n",
+            "# Second\n",
+            "Unclosed [link.",
+        ))
+        .unwrap_err();
+
+        assert_eq!(errors.len(), 4);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Content appears before the first title"),
         );
+        assert!(errors[1].to_string().contains("Title is empty"));
+        assert!(
+            errors[2]
+                .to_string()
+                .contains("Unexpected closing link delimiter"),
+        );
+        assert!(errors[3].to_string().contains("Unclosed link"));
     }
 }

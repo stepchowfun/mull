@@ -1,5 +1,5 @@
 use crate::{
-    Errors,
+    error::{Error, SourceRange, listing, throw},
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
@@ -14,10 +14,30 @@ use std::{
 // Limit filesystem diagnostics so pathological wikis and directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
+// Construct a source-aware error with a listing of the relevant wiki text.
+fn source_error(
+    message: &str,
+    source_path: &Path,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Error {
+    throw::<Error>(
+        message,
+        Some(source_path),
+        Some(&listing(source_contents, source_range)),
+        None,
+    )
+}
+
 // Check text links, reachability, filesystem links, and filesystem coverage.
-pub fn validate(wiki: &Wiki, wiki_path: &Path) -> Result<(), Errors> {
+pub fn validate(
+    wiki: &Wiki,
+    wiki_path: &Path,
+    source_path: &Path,
+    source_contents: &str,
+) -> Result<(), Vec<Error>> {
     // Preserve graph errors if resolving the wiki later fails.
-    let mut errors = validate_text_links(wiki);
+    let mut errors = validate_text_links(wiki, source_path, source_contents);
 
     // Resolve the directory to a stable path and confirm that the wiki is accessible.
     let original_wiki_directory = wiki_path
@@ -27,24 +47,36 @@ pub fn validate(wiki: &Wiki, wiki_path: &Path) -> Result<(), Errors> {
     let wiki_directory = match fs::canonicalize(original_wiki_directory) {
         Ok(wiki_directory) => wiki_directory,
         Err(error) => {
-            errors.push(format!(
-                "Failed to resolve wiki directory {}: {error}",
-                original_wiki_directory.code_path(),
+            errors.push(throw(
+                &format!(
+                    "Failed to resolve wiki directory {}.",
+                    original_wiki_directory.code_path(),
+                ),
+                Some(source_path),
+                None,
+                Some(error),
             ));
             return errors_to_result(errors);
         }
     };
     if let Err(error) = fs::metadata(wiki_path) {
-        errors.push(format!(
-            "Failed to resolve {}: {error}",
-            wiki_path.code_path(),
+        errors.push(throw(
+            &format!("Failed to resolve {}.", wiki_path.code_path()),
+            Some(source_path),
+            None,
+            Some(error),
         ));
         return errors_to_result(errors);
     }
     let Some(wiki_file_name) = wiki_path.file_name() else {
-        errors.push(format!(
-            "Failed to determine the file name of {}.",
-            wiki_path.code_path(),
+        errors.push(throw::<Error>(
+            &format!(
+                "Failed to determine the file name of {}.",
+                wiki_path.code_path(),
+            ),
+            Some(source_path),
+            None,
+            None,
         ));
         return errors_to_result(errors);
     };
@@ -55,21 +87,25 @@ pub fn validate(wiki: &Wiki, wiki_path: &Path) -> Result<(), Errors> {
         wiki,
         &wiki_directory,
         &logical_wiki_path,
+        source_path,
+        source_contents,
     ));
     errors_to_result(errors)
 }
 
 // Validate text-link targets and reachability from the home node.
-fn validate_text_links(wiki: &Wiki) -> Vec<String> {
+fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -> Vec<Error> {
     // Keep graph diagnostics deterministic.
-    let mut errors = Vec::<String>::new();
+    let mut errors = Vec::<Error>::new();
 
     // Require the root node from which every other node must be reachable.
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
-        errors.push(format!(
-            "Wiki does not contain a {} node.",
-            HOME_TITLE.code_str(),
+        errors.push(throw::<Error>(
+            &format!("Wiki does not contain a {} node.", HOME_TITLE.code_str()),
+            Some(source_path),
+            None,
+            None,
         ));
     }
 
@@ -77,21 +113,23 @@ fn validate_text_links(wiki: &Wiki) -> Vec<String> {
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
-        let mut text_links = node
-            .links
-            .iter()
-            .filter_map(|link| match link {
-                Link::Text(title) => Some(title),
-                Link::File(_) | Link::Directory(_) => None,
-            })
-            .collect::<Vec<_>>();
-        text_links.sort();
-        for text_link in text_links {
-            if !wiki.text_nodes.contains_key(text_link) {
-                errors.push(format!(
-                    "Node {} links to missing node {}.",
-                    node.title.code_str(),
-                    text_link.code_str(),
+        // Report each missing target at the corresponding text-link occurrence.
+        for link in &node.links {
+            if let Link::Text {
+                title,
+                source_range,
+            } = link
+                && !wiki.text_nodes.contains_key(title)
+            {
+                errors.push(source_error(
+                    &format!(
+                        "Node {} links to missing node {}.",
+                        node.title.code_str(),
+                        title.code_str(),
+                    ),
+                    source_path,
+                    source_contents,
+                    *source_range,
                 ));
             }
         }
@@ -103,14 +141,19 @@ fn validate_text_links(wiki: &Wiki) -> Vec<String> {
             .text_nodes
             .values()
             .filter(|node| node.depth.is_none())
-            .map(|node| &node.title)
+            .map(|node| (&node.title, node.title_source_range))
             .collect::<Vec<_>>();
-        unreachable_titles.sort();
-        errors.extend(unreachable_titles.into_iter().map(|title| {
-            format!(
-                "Node {} is not reachable from {}.",
-                title.code_str(),
-                HOME_TITLE.code_str(),
+        unreachable_titles.sort_by_key(|(title, _source_range)| *title);
+        errors.extend(unreachable_titles.into_iter().map(|(title, source_range)| {
+            source_error(
+                &format!(
+                    "Node {} is not reachable from {}.",
+                    title.code_str(),
+                    HOME_TITLE.code_str(),
+                ),
+                source_path,
+                source_contents,
+                source_range,
             )
         }));
     }
@@ -119,21 +162,27 @@ fn validate_text_links(wiki: &Wiki) -> Vec<String> {
 }
 
 // Validate filesystem links and coverage within a bounded error budget.
-fn validate_filesystem_links(wiki: &Wiki, wiki_directory: &Path, wiki_path: &Path) -> Vec<String> {
+fn validate_filesystem_links(
+    wiki: &Wiki,
+    wiki_directory: &Path,
+    wiki_path: &Path,
+    source_path: &Path,
+    source_contents: &str,
+) -> Vec<Error> {
     // Track valid targets while visiting nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
-    let mut errors = Vec::<String>::new();
+    let mut errors = Vec::<Error>::new();
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     'nodes: for node in nodes {
-        let mut links = node.links.iter().collect::<Vec<_>>();
-        links.sort();
-        for link in links {
-            // Skip text links before matching on the link again below [tag:skip_text_links].
-            let path = match link {
-                Link::Text(_) => continue,
-                Link::File(path) | Link::Directory(path) => path,
+        for link in &node.links {
+            // Skip text links and retain each filesystem link's source information.
+            let (path, source_range) = match link {
+                Link::Text { .. } => continue,
+                Link::File { path, source_range } | Link::Directory { path, source_range } => {
+                    (path, *source_range)
+                }
             };
 
             // Follow symbolic links when classifying each target.
@@ -141,10 +190,15 @@ fn validate_filesystem_links(wiki: &Wiki, wiki_directory: &Path, wiki_path: &Pat
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    errors.push(format!(
-                        "Node {} links to inaccessible path {}: {error}",
-                        node.title.code_str(),
-                        path.code_path(),
+                    errors.push(throw(
+                        &format!(
+                            "Node {} links to inaccessible path {}.",
+                            node.title.code_str(),
+                            path.code_path(),
+                        ),
+                        Some(source_path),
+                        Some(&listing(source_contents, source_range)),
+                        Some(error),
                     ));
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;
@@ -155,24 +209,34 @@ fn validate_filesystem_links(wiki: &Wiki, wiki_directory: &Path, wiki_path: &Pat
 
             // Retain correctly typed targets and report links with the wrong type.
             match link {
-                Link::File(_) if metadata.is_file() => {
+                Link::File { .. } if metadata.is_file() => {
                     referenced_files.insert(target);
                 }
-                Link::Directory(_) if metadata.is_dir() => {
+                Link::Directory { .. } if metadata.is_dir() => {
                     referenced_directories.insert(target);
                 }
-                Link::File(_) => errors.push(format!(
-                    "Node {} links to {}, which is not a file.",
-                    node.title.code_str(),
-                    path.code_path(),
+                Link::File { .. } => errors.push(source_error(
+                    &format!(
+                        "Node {} links to {}, which is not a file.",
+                        node.title.code_str(),
+                        path.code_path(),
+                    ),
+                    source_path,
+                    source_contents,
+                    source_range,
                 )),
-                Link::Directory(_) => errors.push(format!(
-                    "Node {} links to {}, which is not a directory.",
-                    node.title.code_str(),
-                    path.code_path(),
+                Link::Directory { .. } => errors.push(source_error(
+                    &format!(
+                        "Node {} links to {}, which is not a directory.",
+                        node.title.code_str(),
+                        path.code_path(),
+                    ),
+                    source_path,
+                    source_contents,
+                    source_range,
                 )),
-                Link::Text(_) => {
-                    // Text links were skipped above [ref:skip_text_links].
+                Link::Text { .. } => {
+                    // Text links were skipped above.
                     unreachable!("text links were already skipped")
                 }
             }
@@ -195,6 +259,7 @@ fn validate_filesystem_links(wiki: &Wiki, wiki_directory: &Path, wiki_path: &Pat
         &referenced_files,
         &referenced_directories,
         remaining_error_capacity,
+        source_path,
     ));
 
     errors
@@ -207,7 +272,8 @@ fn find_unreferenced_filesystem_links(
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
     maximum_errors: usize,
-) -> Vec<String> {
+    source_path: &Path,
+) -> Vec<Error> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
     if referenced_directories.contains(wiki_directory) {
         return Vec::new();
@@ -222,7 +288,14 @@ fn find_unreferenced_filesystem_links(
         .expect("the static .hg override should be valid");
     let overrides = match overrides.build() {
         Ok(overrides) => overrides,
-        Err(error) => return vec![format!("Failed to build filesystem ignore rules: {error}")],
+        Err(error) => {
+            return vec![throw(
+                "Failed to build filesystem ignore rules.",
+                Some(source_path),
+                None,
+                Some(error),
+            )];
+        }
     };
 
     // Follow directory symlinks while pruning subtrees covered by explicit directory links.
@@ -244,12 +317,17 @@ fn find_unreferenced_filesystem_links(
         });
 
     // Stop traversing once the remaining error budget is exhausted.
-    let mut errors = Vec::<String>::new();
+    let mut errors = Vec::<Error>::new();
     for result in walker_builder.build() {
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                errors.push(format!("Failed to walk wiki directory: {error}"));
+                errors.push(throw(
+                    "Failed to walk wiki directory.",
+                    Some(source_path),
+                    None,
+                    Some(error),
+                ));
                 if errors.len() >= maximum_errors {
                     break;
                 }
@@ -261,9 +339,14 @@ fn find_unreferenced_filesystem_links(
             continue;
         };
         if file_type.is_file() && !referenced_files.contains(path) {
-            errors.push(format!(
-                "File {} is not referenced.",
-                relative_path(wiki_directory, path).code_path(),
+            errors.push(throw::<Error>(
+                &format!(
+                    "File {} is not referenced.",
+                    relative_path(wiki_directory, path).code_path(),
+                ),
+                Some(source_path),
+                None,
+                None,
             ));
             if errors.len() >= maximum_errors {
                 break;
@@ -272,12 +355,12 @@ fn find_unreferenced_filesystem_links(
     }
 
     // Present the collected walk errors in deterministic order.
-    errors.sort();
+    errors.sort_by_key(ToString::to_string);
     errors
 }
 
 // Convert collected validation errors into the public result type.
-fn errors_to_result(errors: Errors) -> Result<(), Errors> {
+fn errors_to_result(errors: Vec<Error>) -> Result<(), Vec<Error>> {
     if errors.is_empty() {
         Ok(())
     } else {
@@ -287,8 +370,8 @@ fn errors_to_result(errors: Errors) -> Result<(), Errors> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_FILESYSTEM_ERRORS, validate};
-    use crate::parser::parse;
+    use super::{MAX_FILESYSTEM_ERRORS, validate as validate_wiki};
+    use crate::{error::Error, parser::parse as parse_wiki, wiki::Wiki};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -301,6 +384,37 @@ mod tests {
 
     // This guard owns a temporary directory and removes it after a test.
     struct TestDirectory(PathBuf);
+
+    // This fixture keeps parsed nodes together with the source their ranges address.
+    struct TestWiki {
+        wiki: Wiki,
+        source_contents: String,
+    }
+
+    // Parse a test wiki while retaining its source for validation listings.
+    fn parse(source_contents: &str) -> Result<TestWiki, Vec<Error>> {
+        parse_wiki(Path::new("test.mull"), source_contents).map(|wiki| TestWiki {
+            wiki,
+            source_contents: source_contents.to_owned(),
+        })
+    }
+
+    // Validate a fixture using a stable display path for deterministic diagnostics.
+    fn validate(wiki: &TestWiki, wiki_path: &Path) -> Result<(), Vec<Error>> {
+        validate_wiki(
+            &wiki.wiki,
+            wiki_path,
+            Path::new("test.mull"),
+            &wiki.source_contents,
+        )
+    }
+
+    // Check rendered diagnostics without coupling tests to their complete listings.
+    fn contains_error(errors: &[Error], message: &str) -> bool {
+        errors
+            .iter()
+            .any(|error| error.to_string().contains(message))
+    }
 
     // Create an isolated directory containing a wiki.
     impl TestDirectory {
@@ -346,7 +460,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Allow a wiki-directory link to cover every surrounding filesystem entry.
@@ -356,7 +470,7 @@ mod tests {
         fs::write(directory.path().join("unmanaged.txt"), "content").unwrap();
         let wiki = parse(concat!("# Home\n[", "dir:.]")).unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Preserve graph errors when the wiki path cannot be resolved.
@@ -368,9 +482,17 @@ mod tests {
         let wiki = parse("# Elsewhere").unwrap();
 
         let errors = validate(&wiki, &wiki_path).unwrap_err();
-        assert_eq!(errors[0], "Wiki does not contain a `Home` node.");
-        assert!(errors[1].starts_with(&format!("Failed to resolve `{}`:", wiki_path.display())));
         assert_eq!(errors.len(), 2);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Wiki does not contain a `Home` node."),
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains(&format!("Failed to resolve `{}`.", wiki_path.display())),
+        );
     }
 
     // Report unreferenced files within directories instead of requiring directory links.
@@ -383,13 +505,11 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         let photo_path = Path::new("images").join("photo.jpg");
-        assert_eq!(
-            errors,
-            vec![format!(
-                "File `{}` is not referenced.",
-                photo_path.display(),
-            )],
-        );
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains(&format!(
+            "File `{}` is not referenced.",
+            photo_path.display(),
+        )));
     }
 
     // Stop validating explicit filesystem links after reaching the diagnostic limit.
@@ -404,11 +524,11 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
-        assert!(
-            errors
-                .iter()
-                .all(|error| error.starts_with("Node `Home` links to inaccessible path `missing-")),
-        );
+        assert!(errors.iter().all(|error| {
+            error
+                .to_string()
+                .contains("Node `Home` links to inaccessible path `missing-")
+        }));
     }
 
     // Share the diagnostic limit between link validation and the filesystem walk.
@@ -426,11 +546,15 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
-        assert!(errors[0].starts_with("Node `Home` links to inaccessible path `missing.txt`:"));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Node `Home` links to inaccessible path `missing.txt`."),
+        );
         assert!(
             errors[1..]
                 .iter()
-                .all(|error| error.starts_with("File `unreferenced-")),
+                .all(|error| error.to_string().contains("File `unreferenced-")),
         );
     }
 
@@ -449,7 +573,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Consider empty directories referenced because all their contents are referenced.
@@ -460,7 +584,7 @@ mod tests {
         fs::create_dir(directory.path().join("empty/nested")).unwrap();
         let wiki = parse("# Home").unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Preserve symlink aliases as distinct filesystem paths while following their targets.
@@ -480,10 +604,12 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec!["File `second.txt` is not referenced.".to_owned()],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "File `second.txt` is not referenced.",
+        ));
     }
 
     // Follow an unlinked directory symlink and validate files through its logical path.
@@ -503,7 +629,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Allow directory symlinks outside the wiki tree and validate their logical contents.
@@ -517,7 +643,7 @@ mod tests {
         symlink(external_directory.path(), directory.path().join("external")).unwrap();
         let wiki = parse(concat!("# Home\n[", "file:external/wiki.mull]")).unwrap();
 
-        assert_eq!(validate(&wiki, &directory.wiki_path()), Ok(()));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Exclude a wiki symlink by its logical path instead of its resolved target.
@@ -534,7 +660,7 @@ mod tests {
         symlink("wiki.txt", &wiki_path).unwrap();
         let wiki = parse(concat!("# Home\n[", "file:wiki.txt]")).unwrap();
 
-        assert_eq!(validate(&wiki, &wiki_path), Ok(()));
+        assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
     // Report a broken symlink because its target cannot be classified.
@@ -551,7 +677,7 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.starts_with("Failed to walk wiki directory:")),
+                .any(|error| error.to_string().contains("Failed to walk wiki directory.")),
         );
     }
 
@@ -569,7 +695,7 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.starts_with("Failed to walk wiki directory:")),
+                .any(|error| error.to_string().contains("Failed to walk wiki directory.")),
         );
     }
 
@@ -582,13 +708,16 @@ mod tests {
         let wiki = parse(concat!("# Home\n[", "file:images]")).unwrap();
         let photo_path = Path::new("images").join("photo.jpg");
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec![
-                "Node `Home` links to `images`, which is not a file.".to_owned(),
-                format!("File `{}` is not referenced.", photo_path.display()),
-            ],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to `images`, which is not a file.",
+        ));
+        assert!(contains_error(
+            &errors,
+            &format!("File `{}` is not referenced.", photo_path.display()),
+        ));
     }
 
     // Reject text links that do not correspond to any node in the wiki.
@@ -597,13 +726,32 @@ mod tests {
         let directory = TestDirectory::new();
         let wiki = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec![
-                "Node `Home` links to missing node `Alpha`.".to_owned(),
-                "Node `Home` links to missing node `Zulu`.".to_owned(),
-            ],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to missing node `Zulu`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to missing node `Alpha`.",
+        ));
+    }
+
+    // Report repeated invalid links at each distinct source occurrence.
+    #[test]
+    fn repeated_missing_text_link() {
+        let directory = TestDirectory::new();
+        let wiki = parse("# Home\nSee [Missing] and [Missing].").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|error| {
+            error
+                .to_string()
+                .contains("links to missing node `Missing`")
+        }));
+        assert_ne!(errors[0].to_string(), errors[1].to_string());
     }
 
     // Report independent graph, filesystem-link, and unreferenced-entry errors together.
@@ -619,25 +767,23 @@ mod tests {
         .unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error == "Node `Home` links to missing node `Missing`."),
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|error| error == "Node `Orphan` is not reachable from `Home`."),
-        );
-        assert!(errors.iter().any(|error| {
-            error.starts_with("Node `Home` links to inaccessible path `missing.txt`:")
-        }));
-        assert!(
-            errors
-                .iter()
-                .any(|error| error == "File `unreferenced.txt` is not referenced."),
-        );
         assert_eq!(errors.len(), 4);
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to missing node `Missing`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Node `Orphan` is not reachable from `Home`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to inaccessible path `missing.txt`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "File `unreferenced.txt` is not referenced.",
+        ));
     }
 
     // Reject an empty text link because node titles cannot be empty.
@@ -646,10 +792,12 @@ mod tests {
         let directory = TestDirectory::new();
         let wiki = parse("# Home\nSee [].").unwrap();
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec!["Node `Home` links to missing node ``.".to_owned()],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "Node `Home` links to missing node ``.",
+        ));
     }
 
     // Require every wiki to contain its special root node.
@@ -658,10 +806,12 @@ mod tests {
         let directory = TestDirectory::new();
         let wiki = parse("# Elsewhere").unwrap();
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec!["Wiki does not contain a `Home` node.".to_owned()],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "Wiki does not contain a `Home` node.",
+        ));
     }
 
     // Reject nodes that cannot be reached transitively from Home.
@@ -670,12 +820,15 @@ mod tests {
         let directory = TestDirectory::new();
         let wiki = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
 
-        assert_eq!(
-            validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            vec![
-                "Node `Alpha` is not reachable from `Home`.".to_owned(),
-                "Node `Zulu` is not reachable from `Home`.".to_owned(),
-            ],
-        );
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "Node `Alpha` is not reachable from `Home`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Node `Zulu` is not reachable from `Home`.",
+        ));
     }
 }

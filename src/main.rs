@@ -1,3 +1,6 @@
+mod assertions;
+mod error;
+mod error_merger;
 mod format;
 mod parser;
 mod path_util;
@@ -6,21 +9,19 @@ mod validator;
 mod wiki;
 
 use crate::{
+    error::{Error, throw},
+    error_merger::merge_errors,
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
-use colored::Colorize;
 use similar::TextDiff;
 use std::{
     env, fs,
     path::{Path, PathBuf},
     process::exit,
 };
-
-// Collect logical errors separately so their boundaries are preserved for presentation.
-type Errors = Vec<String>;
 
 // This struct represents the command-line arguments.
 #[derive(Parser)]
@@ -56,27 +57,38 @@ enum Subcommand {
 }
 
 // Find the nearest wiki in the current directory or one of its ancestors.
-fn find_wiki() -> Result<PathBuf, Errors> {
+fn find_wiki() -> Result<PathBuf, Error> {
     // Start the search in the current working directory.
     let current_directory = env::current_dir().map_err(|error| {
-        vec![format!(
-            "Failed to determine the current directory: {error}",
-        )]
+        throw(
+            "Failed to determine the current directory.",
+            None,
+            None,
+            Some(error),
+        )
     })?;
 
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
-        let entries = fs::read_dir(directory)
-            .map_err(|error| vec![format!("Failed to read {}: {error}", directory.code_path())])?;
+        let entries = fs::read_dir(directory).map_err(|error| {
+            throw(
+                &format!("Failed to read {}.", directory.code_path()),
+                None,
+                None,
+                Some(error),
+            )
+        })?;
         let mut wikis = Vec::<PathBuf>::new();
 
         // Inspect each directory entry and retain regular wikis.
         for entry in entries {
             let entry = entry.map_err(|error| {
-                vec![format!(
-                    "Failed to read an entry in {}: {error}",
-                    directory.code_path(),
-                )]
+                throw(
+                    &format!("Failed to read an entry in {}.", directory.code_path()),
+                    None,
+                    None,
+                    Some(error),
+                )
             })?;
             let path = entry.path();
             let has_wiki_extension = path
@@ -85,7 +97,12 @@ fn find_wiki() -> Result<PathBuf, Errors> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION));
             if has_wiki_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
-                    vec![format!("Failed to inspect {}: {error}", path.code_path())]
+                    throw(
+                        &format!("Failed to inspect {}.", path.code_path()),
+                        None,
+                        None,
+                        Some(error),
+                    )
                 })?;
                 if metadata.is_file() {
                     wikis.push(path);
@@ -102,10 +119,15 @@ fn find_wiki() -> Result<PathBuf, Errors> {
                 .map(|file_name| Path::new(file_name).code_path().to_string())
                 .collect::<Vec<String>>()
                 .join(", ");
-            return Err(vec![format!(
-                "Found multiple wikis in {}: {file_names}",
-                directory.code_path(),
-            )]);
+            return Err(throw::<Error>(
+                &format!(
+                    "Found multiple wikis in {}: {file_names}",
+                    directory.code_path(),
+                ),
+                None,
+                None,
+                None,
+            ));
         }
 
         // Return the wiki in this directory, if one exists.
@@ -115,14 +137,19 @@ fn find_wiki() -> Result<PathBuf, Errors> {
     }
 
     // Report that the search completed without finding a wiki.
-    Err(vec![format!(
-        "No wiki found in {} or its ancestors.",
-        current_directory.code_path(),
-    )])
+    Err(throw::<Error>(
+        &format!(
+            "No wiki found in {} or its ancestors.",
+            current_directory.code_path(),
+        ),
+        None,
+        None,
+        None,
+    ))
 }
 
 // Run the requested operation.
-fn entry() -> Result<(), Errors> {
+fn entry() -> Result<(), Error> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
 
@@ -131,41 +158,40 @@ fn entry() -> Result<(), Errors> {
 
     // Prefer a path relative to the current directory when the wiki is contained within it.
     let current_directory = env::current_dir().map_err(|error| {
-        vec![format!(
-            "Failed to determine the current directory: {error}",
-        )]
+        throw(
+            "Failed to determine the current directory.",
+            None,
+            None,
+            Some(error),
+        )
     })?;
     let display_path = relative_path(&current_directory, &wiki_path).to_owned();
 
     // Load the wiki and require its contents to be valid UTF-8.
     let wiki_bytes = fs::read(&wiki_path).map_err(|error| {
-        vec![format!(
-            "Failed to read {}: {error}",
-            display_path.code_path(),
-        )]
+        throw(
+            "Failed to read the wiki.",
+            Some(&display_path),
+            None,
+            Some(error),
+        )
     })?;
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
-        vec![format!(
-            "Wiki {} is not valid UTF-8: {error}",
-            display_path.code_path(),
-        )]
+        throw(
+            "The wiki is not valid UTF-8.",
+            Some(&display_path),
+            None,
+            Some(error),
+        )
     })?;
 
     // Parse and score the wiki.
-    let wiki = parser::parse(&wiki_contents).map_err(|errors| {
-        errors
-            .into_iter()
-            .map(|error| format!("Failed to parse {}: {error}", display_path.code_path()))
-            .collect::<Errors>()
-    })?;
+    let wiki =
+        parser::parse(&display_path, &wiki_contents).map_err(|errors| merge_errors(&errors))?;
 
     // Validate the node graph and surrounding filesystem.
-    validator::validate(&wiki, &wiki_path).map_err(|errors| {
-        errors
-            .into_iter()
-            .map(|error| format!("Failed to validate {}: {error}", display_path.code_path()))
-            .collect::<Errors>()
-    })?;
+    validator::validate(&wiki, &wiki_path, &display_path, &wiki_contents)
+        .map_err(|errors| merge_errors(&errors))?;
 
     // Render the wiki once for checking or fixing.
     let rendered_wiki = wiki.to_string();
@@ -179,11 +205,15 @@ fn entry() -> Result<(), Errors> {
                     .unified_diff()
                     .header("wiki", "rendered")
                     .to_string();
-                return Err(vec![format!(
-                    "Wiki {} is not formatted correctly:\n\n{diff}\n{} can fix it.",
-                    display_path.code_path(),
-                    "mull fix".code_str(),
-                )]);
+                return Err(throw::<Error>(
+                    &format!(
+                        "The wiki is not formatted correctly. {} can fix it.",
+                        "mull fix".code_str(),
+                    ),
+                    Some(&display_path),
+                    Some(&diff),
+                    None,
+                ));
             }
 
             // Report that the wiki passed the check.
@@ -195,10 +225,12 @@ fn entry() -> Result<(), Errors> {
                 println!("Wiki {} looks good.", display_path.code_path());
             } else {
                 fs::write(&wiki_path, rendered_wiki).map_err(|error| {
-                    vec![format!(
-                        "Failed to write {}: {error}",
-                        display_path.code_path(),
-                    )]
+                    throw(
+                        "Failed to write the wiki.",
+                        Some(&display_path),
+                        None,
+                        Some(error),
+                    )
                 })?;
 
                 // Report that the wiki was fixed.
@@ -211,18 +243,11 @@ fn entry() -> Result<(), Errors> {
     Ok(())
 }
 
-// Print each logical error with one colored prefix, regardless of its number of lines.
-fn print_errors(errors: &[String]) {
-    for error in errors {
-        eprintln!("{} {error}", "[Error]".red().bold());
-    }
-}
-
 // Let the fun begin!
 fn main() {
     // Jump to the entrypoint and handle any resulting errors.
-    if let Err(errors) = entry() {
-        print_errors(&errors);
+    if let Err(error) = entry() {
+        eprintln!("{error}");
         exit(1);
     }
 }

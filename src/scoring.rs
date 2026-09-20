@@ -24,8 +24,8 @@ pub fn populate_depths(wiki: &mut Wiki) {
             .links
             .iter()
             .filter_map(|link| match link {
-                Link::Text(text_link) => Some(text_link.clone()),
-                Link::File(_) | Link::Directory(_) => None,
+                Link::Text { title, .. } => Some(title.clone()),
+                Link::File { .. } | Link::Directory { .. } => None,
             })
             .collect::<Vec<_>>();
         for text_link in text_links {
@@ -43,11 +43,16 @@ pub fn populate_depths(wiki: &mut Wiki) {
 mod tests {
     use super::populate_depths;
     use crate::parser::parse;
+    use std::path::Path;
 
     // Populate depths for nodes reached through multiple levels of text links.
     #[test]
     fn transitive_text_links() {
-        let mut wiki = parse("# Home\nSee [Middle].\n# Middle\nSee [End].\n# End").unwrap();
+        let mut wiki = parse(
+            Path::new("test.mull"),
+            "# Home\nSee [Middle].\n# Middle\nSee [End].\n# End",
+        )
+        .unwrap();
 
         populate_depths(&mut wiki);
 
@@ -59,12 +64,15 @@ mod tests {
     // Choose the shortest distance when a node is reachable through multiple paths.
     #[test]
     fn minimum_depth() {
-        let mut wiki = parse(concat!(
-            "# Home\nSee [Left] and [Target].\n",
-            "# Left\nSee [Middle].\n",
-            "# Middle\nSee [Target].\n",
-            "# Target",
-        ))
+        let mut wiki = parse(
+            Path::new("test.mull"),
+            concat!(
+                "# Home\nSee [Left] and [Target].\n",
+                "# Left\nSee [Middle].\n",
+                "# Middle\nSee [Target].\n",
+                "# Target",
+            ),
+        )
         .unwrap();
 
         populate_depths(&mut wiki);
