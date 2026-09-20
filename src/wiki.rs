@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt, path::PathBuf};
 
 // These strings define the wiki format's extension and structural markers.
 pub const WIKI_EXTENSION: &str = "mull";
+pub const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILE_LINK_PREFIX: &str = "file:";
 pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
