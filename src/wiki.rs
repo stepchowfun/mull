@@ -4,13 +4,13 @@ use std::{
     path::PathBuf,
 };
 
-// These strings define the document format's extension and structural markers.
-pub const DOCUMENT_EXTENSION: &str = "mull";
+// These strings define the wiki format's extension and structural markers.
+pub const WIKI_EXTENSION: &str = "mull";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILE_LINK_PREFIX: &str = "file:";
 pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
 
-// This title identifies the root of every document's text-link graph.
+// This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
 // These are the targets that a node can reference.
@@ -21,7 +21,7 @@ pub enum Link {
     Directory(PathBuf),
 }
 
-// This struct represents a text node in a document.
+// This struct represents a text node in a wiki.
 #[derive(Clone, Debug)]
 pub struct TextNode {
     pub title: String, // Non-empty, no line breaks, and no leading or trailing whitespace
@@ -30,13 +30,13 @@ pub struct TextNode {
     pub depth: Option<usize>, // Minimum text-link distance from the root
 }
 
-// This struct represents a parsed document.
+// This struct represents a parsed wiki.
 #[derive(Clone, Debug, Default)]
-pub struct Document {
+pub struct Wiki {
     pub text_nodes: HashMap<String, TextNode>,
 }
 
-// Render nodes in the document's heading-and-content format.
+// Render nodes in the wiki's heading-and-content format.
 impl fmt::Display for TextNode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omit the content separator when there is no content.
@@ -54,7 +54,7 @@ impl fmt::Display for TextNode {
 }
 
 // Render nodes deterministically in depth order with titles breaking ties.
-impl fmt::Display for Document {
+impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
         let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
@@ -75,10 +75,10 @@ impl fmt::Display for Document {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, TextNode};
+    use super::{TextNode, Wiki};
     use std::collections::{HashMap, HashSet};
 
-    // Ensure nodes are rendered in the document's source format.
+    // Ensure nodes are rendered in the wiki's source format.
     #[test]
     fn node_display() {
         let node = TextNode {
@@ -104,10 +104,10 @@ mod tests {
         assert_eq!(node.to_string(), "# Greeting\n");
     }
 
-    // Ensure a document containing an empty node has only its trailing line break.
+    // Ensure a wiki containing an empty node has only its trailing line break.
     #[test]
-    fn empty_node_document_display() {
-        let document = Document {
+    fn empty_node_wiki_display() {
+        let wiki = Wiki {
             text_nodes: HashMap::from([(
                 "Greeting".to_owned(),
                 TextNode {
@@ -119,13 +119,13 @@ mod tests {
             )]),
         };
 
-        assert_eq!(document.to_string(), "# Greeting\n");
+        assert_eq!(wiki.to_string(), "# Greeting\n");
     }
 
     // Render nodes by depth and title, placing nodes without a depth last.
     #[test]
-    fn document_display() {
-        let document = Document {
+    fn wiki_display() {
+        let wiki = Wiki {
             text_nodes: HashMap::from([
                 (
                     "Greeting".to_owned(),
@@ -158,7 +158,7 @@ mod tests {
         };
 
         assert_eq!(
-            document.to_string(),
+            wiki.to_string(),
             concat!(
                 "# Home\n\nCheck out the [Greeting].\n\n",
                 "# Greeting\n\nHello, world!\n\n",
@@ -167,9 +167,9 @@ mod tests {
         );
     }
 
-    // Ensure an empty document has no output.
+    // Ensure an empty wiki has no output.
     #[test]
-    fn empty_document_display() {
-        assert_eq!(Document::default().to_string(), "");
+    fn empty_wiki_display() {
+        assert_eq!(Wiki::default().to_string(), "");
     }
 }

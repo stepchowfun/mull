@@ -2,12 +2,11 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-Organize your knowledge.
+*Mull* is a tool for managing a local personal knowledge base. A Mull *wiki* is a plain text file containing *nodes* with *links* between them. Nodes can also link to files and directories, so the knowledge graph serves as an index of the local file tree.
 
 ## Usage
 
-Once Mull is [installed](#installation-instructions), you can run it from the command line as
-follows:
+Once Mull is [installed](#installation-instructions), you can run it from the command line as follows:
 
 ```sh
 mull
@@ -19,21 +18,15 @@ Here are the supported command-line options:
 Usage: mull [OPTIONS] [COMMAND]
 
 Commands:
-  check  Check a document
-  fix    Fix a document (default)
+  check  Check a wiki
+  fix    Fix a wiki (default)
   help   Print this message or the help of the given subcommand(s)
 
 Options:
   -v, --version      Print version
-      --path <PATH>  Specify the path to the document
+      --path <PATH>  Specify the path to the wiki
   -h, --help         Print help
 ```
-
-## Document format
-
-Each node starts with `# ` followed by its title. Its content continues until the next title. A text link such as `[Greeting]` refers to another node. Every document must contain a node called `Home`, and every node must be transitively reachable from it through text links.
-
-File links such as [file:README.md] and directory links such as [dir:src] use relative paths that identify entries below the directory containing the document without using `..` components. A directory link implicitly references everything recursively contained within that directory. Otherwise, every non-ignored file must be referenced individually; a directory is implicitly referenced when all its contents are referenced, so empty directories need no link. Symbolic links are followed and treated as files or directories according to their targets, which may lie outside the document tree, but different symbolic-link paths remain distinct even when they share a target. Ignore files such as `.gitignore` and `.ignore` are respected; hidden entries are otherwise included.
 
 ## Installation instructions
 

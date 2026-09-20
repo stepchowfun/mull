@@ -1,15 +1,15 @@
 use crate::{
     Errors,
-    document::{DIRECTORY_LINK_PREFIX, Document, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
+    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode, Wiki},
 };
 use std::{
     collections::HashSet,
     path::{Component, Path, PathBuf},
 };
 
-// Parse a filesystem link path while keeping it inside the document's logical tree.
+// Parse a filesystem link path while keeping it inside the wiki's logical tree.
 fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String> {
     // Reject an empty path before inspecting its components.
     let parsed_path = Path::new(path);
@@ -21,7 +21,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
         ));
     }
 
-    // Reject components that escape the logical document tree [tag:filesystem_path_components].
+    // Reject components that escape the logical wiki tree [tag:filesystem_path_components].
     let has_invalid_component = parsed_path.components().any(|component| {
         matches!(
             component,
@@ -31,7 +31,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
     if has_invalid_component {
         return Err(format!(
             concat!(
-                "Filesystem link path {} in node {} must be relative to the document directory ",
+                "Filesystem link path {} in node {} must be relative to the wiki directory ",
                 "without using {}.",
             ),
             parsed_path.code_path(),
@@ -56,7 +56,7 @@ fn parse_filesystem_path(path: &str, node_title: &str) -> Result<PathBuf, String
 
 // Add a completed node after collecting all of its parsing errors.
 fn insert_node(
-    document: &mut Document,
+    wiki: &mut Wiki,
     title: String,
     title_line: usize,
     content_lines: &[&str],
@@ -146,7 +146,7 @@ fn insert_node(
     content.push_str(&original_content[copied_through..]);
 
     // Reject a title that has already been used.
-    if document.text_nodes.contains_key(&title) {
+    if wiki.text_nodes.contains_key(&title) {
         errors.push(format!(
             "Duplicate title {} on line {title_line}.",
             title.code_str(),
@@ -155,7 +155,7 @@ fn insert_node(
 
     // Insert only nodes that parsed without errors.
     if errors.is_empty() {
-        document.text_nodes.insert(
+        wiki.text_nodes.insert(
             title.clone(),
             TextNode {
                 title,
@@ -170,10 +170,10 @@ fn insert_node(
     }
 }
 
-// Parse source contents into a scored document.
-pub fn parse(contents: &str) -> Result<Document, Errors> {
-    // Accumulate the parsed document, node errors, and the node currently being read.
-    let mut document = Document::default();
+// Parse source contents into a scored wiki.
+pub fn parse(contents: &str) -> Result<Wiki, Errors> {
+    // Accumulate the parsed wiki, node errors, and the node currently being read.
+    let mut wiki = Wiki::default();
     let mut errors = Vec::<String>::new();
     let mut current_title = None::<(String, usize)>;
     let mut content_lines = Vec::<&str>::new();
@@ -185,8 +185,7 @@ pub fn parse(contents: &str) -> Result<Document, Errors> {
         if let Some(title) = line.strip_prefix(TITLE_PREFIX) {
             // Finish the preceding node before starting the next one.
             if let Some((title, title_line)) = current_title.take() {
-                if let Err(node_errors) =
-                    insert_node(&mut document, title, title_line, &content_lines)
+                if let Err(node_errors) = insert_node(&mut wiki, title, title_line, &content_lines)
                 {
                     errors.extend(node_errors);
                 }
@@ -212,18 +211,18 @@ pub fn parse(contents: &str) -> Result<Document, Errors> {
         }
     }
 
-    // Finish the final node at the end of the document.
+    // Finish the final node at the end of the wiki.
     if let Some((title, title_line)) = current_title
-        && let Err(node_errors) = insert_node(&mut document, title, title_line, &content_lines)
+        && let Err(node_errors) = insert_node(&mut wiki, title, title_line, &content_lines)
     {
         errors.extend(node_errors);
     }
 
-    // Return all node errors together, or score and return the parsed document.
+    // Return all node errors together, or score and return the parsed wiki.
     if errors.is_empty() {
-        // Populate minimum distances from the home node in the parsed document.
-        populate_depths(&mut document);
-        Ok(document)
+        // Populate minimum distances from the home node in the parsed wiki.
+        populate_depths(&mut wiki);
+        Ok(wiki)
     } else {
         Err(errors)
     }
@@ -232,49 +231,46 @@ pub fn parse(contents: &str) -> Result<Document, Errors> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use crate::document::Link;
+    use crate::wiki::Link;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
     // Parse titles and multiline content while stripping surrounding whitespace.
     #[test]
     fn nodes() {
-        let document = parse(
+        let wiki = parse(
             "  \n#   Home  \n\n Check out the [Greeting]. \n\n# Greeting\n Hello,\nworld! \n",
         )
         .unwrap();
 
-        assert_eq!(document.text_nodes.len(), 2);
-        assert_eq!(document.text_nodes["Home"].title, "Home");
+        assert_eq!(wiki.text_nodes.len(), 2);
+        assert_eq!(wiki.text_nodes["Home"].title, "Home");
+        assert_eq!(wiki.text_nodes["Home"].content, "Check out the [Greeting].");
         assert_eq!(
-            document.text_nodes["Home"].content,
-            "Check out the [Greeting].",
-        );
-        assert_eq!(
-            document.text_nodes["Home"].links,
+            wiki.text_nodes["Home"].links,
             HashSet::from([Link::Text("Greeting".to_owned())]),
         );
-        assert_eq!(document.text_nodes["Greeting"].content, "Hello,\nworld!");
+        assert_eq!(wiki.text_nodes["Greeting"].content, "Hello,\nworld!");
     }
 
     // Parse distinct text links while stripping their surrounding whitespace.
     #[test]
     fn links() {
-        let document = parse(concat!(
+        let wiki = parse(concat!(
             "# Home\nSee [Greeting], [ About ], and [Greeting].",
             "\n# About\n# Greeting",
         ))
         .unwrap();
 
         assert_eq!(
-            document.text_nodes["Home"].links,
+            wiki.text_nodes["Home"].links,
             HashSet::from([
                 Link::Text("About".to_owned()),
                 Link::Text("Greeting".to_owned()),
             ]),
         );
         assert_eq!(
-            document.text_nodes["Home"].content,
+            wiki.text_nodes["Home"].content,
             "See [Greeting], [About], and [Greeting].",
         );
     }
@@ -282,7 +278,7 @@ mod tests {
     // Treat escaped square brackets as literal link-title characters.
     #[test]
     fn escaped_link_delimiters() {
-        let document = parse(
+        let wiki = parse(
             r"# Home
 See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
 # Four
@@ -292,7 +288,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            document.text_nodes["Home"].links,
+            wiki.text_nodes["Home"].links,
             HashSet::from([
                 Link::Text("Four".to_owned()),
                 Link::Text("One]Two".to_owned()),
@@ -304,7 +300,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Parse file and directory links separately from text links.
     #[test]
     fn filesystem_links() {
-        let document = parse(concat!(
+        let wiki = parse(concat!(
             "# Home\nSee [",
             "file:./notes.txt], [",
             "dir:images], and [",
@@ -314,7 +310,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            document.text_nodes["Home"].links,
+            wiki.text_nodes["Home"].links,
             HashSet::from([
                 Link::File(PathBuf::from("notes.txt")),
                 Link::Directory(PathBuf::new()),
@@ -339,12 +335,12 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 "Filesystem link path `` in node `Home` is empty.".to_owned(),
                 concat!(
                     "Filesystem link path `../notes.txt` in node `Home` must be relative to the ",
-                    "document directory without using `..`.",
+                    "wiki directory without using `..`.",
                 )
                 .to_owned(),
                 concat!(
                     "Filesystem link path `/images` in node `Home` must be relative to the ",
-                    "document directory without using `..`.",
+                    "wiki directory without using `..`.",
                 )
                 .to_owned(),
             ],
@@ -390,17 +386,14 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Treat hashes without the required trailing space as ordinary content.
     #[test]
     fn non_title_hashes() {
-        let document = parse("# Home\n\n## Subtitle\n#not a title").unwrap();
+        let wiki = parse("# Home\n\n## Subtitle\n#not a title").unwrap();
 
-        assert_eq!(
-            document.text_nodes["Home"].content,
-            "## Subtitle\n#not a title",
-        );
+        assert_eq!(wiki.text_nodes["Home"].content, "## Subtitle\n#not a title");
     }
 
-    // Accept empty and whitespace-only documents.
+    // Accept empty and whitespace-only wikis.
     #[test]
-    fn empty_document() {
+    fn empty_wiki() {
         assert!(parse(" \n\t\n").unwrap().text_nodes.is_empty());
     }
 
@@ -417,9 +410,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Parse Windows line endings without retaining carriage returns.
     #[test]
     fn windows_line_endings() {
-        let document = parse("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
+        let wiki = parse("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(document.text_nodes["Greeting"].content, "Hello, world!");
+        assert_eq!(wiki.text_nodes["Greeting"].content, "Hello, world!");
     }
 
     // Reject non-whitespace content before the first title.
