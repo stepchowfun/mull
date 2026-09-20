@@ -147,7 +147,7 @@ tasks:
       - artifacts
       - target
     command: |
-      # Check the example document.
+      # Check the example wiki.
       cargo-offline run -- --path example.mull check
 
       # Check references with Tagref.

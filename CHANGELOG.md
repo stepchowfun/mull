@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.2] - 2026-09-20
 
 ### Changed
-- Reported distinct errors for empty filesystem link paths and paths that escape the document tree.
+- Reported distinct errors for empty filesystem link paths and paths that escape the wiki tree.
 - Documented unreachable filesystem-link branches and clarified filesystem validation comments.
 
 ## [0.6.1] - 2026-09-20
@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Formatted code-like values distinctly in command output and diagnostics.
-- Separated document parsing, scoring, and validation into dedicated modules.
+- Separated wiki parsing, scoring, and validation into dedicated modules.
 
 ## [0.5.0] - 2026-09-18
 
@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.1] - 2026-09-18
 
 ### Changed
-- Improved command feedback and avoided rewriting documents that already look good.
+- Improved command feedback and avoided rewriting wikis that already look good.
 
 ## [0.2.0] - 2026-09-18
 
@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-09-18
 
 ### Added
-- Added document discovery, parsing, format checking, and automatic fixing.
+- Added wiki discovery, parsing, format checking, and automatic fixing.
 
 ## [0.0.0] - 2026-09-17
 
