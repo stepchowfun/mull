@@ -18,9 +18,10 @@ Here are the supported command-line options:
 Usage: mull [OPTIONS] [COMMAND]
 
 Commands:
-  check  Check a wiki
-  fix    Fix a wiki (default)
-  help   Print this message or the help of the given subcommand(s)
+  check            Check a wiki
+  fix              Fix a wiki (default)
+  language-server  Start the language server
+  help             Print this message or the help of the given subcommand(s)
 
 Options:
   -v, --version      Print version

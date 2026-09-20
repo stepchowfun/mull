@@ -1,6 +1,7 @@
 mod assertions;
 mod error;
 mod format;
+mod language_server;
 mod parser;
 mod path_util;
 mod scoring;
@@ -52,6 +53,9 @@ enum Subcommand {
 
     #[command(about = "Fix a wiki (default)")]
     Fix,
+
+    #[command(about = "Start the language server")]
+    LanguageServer,
 }
 
 // Find the nearest wiki in the current directory or one of its ancestors.
@@ -147,9 +151,19 @@ fn find_wiki() -> Result<PathBuf, Error> {
 }
 
 // Run the requested operation.
-fn entry() -> Result<(), Error> {
+async fn entry() -> Result<(), Error> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
+
+    // Start the language server without requiring a wiki, or select the requested wiki operation.
+    let should_fix = match cli.command.unwrap_or(Subcommand::Fix) {
+        Subcommand::Check => false,
+        Subcommand::Fix => true,
+        Subcommand::LanguageServer => {
+            language_server::run().await;
+            return Ok(());
+        }
+    };
 
     // Use the requested wiki or search for one when no path was supplied.
     let wiki_path = cli.path.map_or_else(find_wiki, Ok)?;
@@ -194,47 +208,43 @@ fn entry() -> Result<(), Error> {
     // Render the wiki once for checking or fixing.
     let rendered_wiki = wiki.to_string();
 
-    // Use the fix command when no subcommand is provided and report the selected wiki.
-    match cli.command.unwrap_or(Subcommand::Fix) {
-        Subcommand::Check => {
-            // Compare the original wiki with its canonical rendering.
-            if wiki_contents != rendered_wiki {
-                let diff = TextDiff::from_lines(&wiki_contents, &rendered_wiki)
-                    .unified_diff()
-                    .header("wiki", "rendered")
-                    .to_string();
-                return Err(throw::<Error>(
-                    &format!(
-                        "The wiki is not formatted correctly. {} can fix it.",
-                        "mull fix".code_str(),
-                    ),
-                    Some(&display_path),
-                    Some(&diff),
-                    None,
-                ));
-            }
-
-            // Report that the wiki passed the check.
+    // Fix the wiki when requested, avoiding a rewrite when it is already canonical.
+    if should_fix {
+        if wiki_contents == rendered_wiki {
             println!("Wiki {} looks good.", display_path.code_path());
-        }
-        Subcommand::Fix => {
-            // Avoid rewriting a wiki that already has its canonical rendering.
-            if wiki_contents == rendered_wiki {
-                println!("Wiki {} looks good.", display_path.code_path());
-            } else {
-                fs::write(&wiki_path, rendered_wiki).map_err(|error| {
-                    throw(
-                        "Failed to write the wiki.",
-                        Some(&display_path),
-                        None,
-                        Some(error),
-                    )
-                })?;
+        } else {
+            fs::write(&wiki_path, rendered_wiki).map_err(|error| {
+                throw(
+                    "Failed to write the wiki.",
+                    Some(&display_path),
+                    None,
+                    Some(error),
+                )
+            })?;
 
-                // Report that the wiki was fixed.
-                println!("Fixed {}.", display_path.code_path());
-            }
+            // Report that the wiki was fixed.
+            println!("Fixed {}.", display_path.code_path());
         }
+    } else {
+        // Compare the original wiki with its canonical rendering.
+        if wiki_contents != rendered_wiki {
+            let diff = TextDiff::from_lines(&wiki_contents, &rendered_wiki)
+                .unified_diff()
+                .header("wiki", "rendered")
+                .to_string();
+            return Err(throw::<Error>(
+                &format!(
+                    "The wiki is not formatted correctly. {} can fix it.",
+                    "mull fix".code_str(),
+                ),
+                Some(&display_path),
+                Some(&diff),
+                None,
+            ));
+        }
+
+        // Report that the wiki passed the check.
+        println!("Wiki {} looks good.", display_path.code_path());
     }
 
     // Everything succeeded.
@@ -242,9 +252,10 @@ fn entry() -> Result<(), Error> {
 }
 
 // Let the fun begin!
-fn main() {
+#[tokio::main]
+async fn main() {
     // Jump to the entrypoint and handle any resulting errors.
-    if let Err(error) = entry() {
+    if let Err(error) = entry().await {
         eprintln!("{error}");
         exit(1);
     }
@@ -271,6 +282,12 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["mull", "fix"]).unwrap().command,
             Some(Subcommand::Fix),
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["mull", "language-server"])
+                .unwrap()
+                .command,
+            Some(Subcommand::LanguageServer),
         ));
     }
 
