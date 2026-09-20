@@ -531,7 +531,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             vec![
                 format!("file:{}", PathBuf::from("notes.txt").display()),
                 format!("dir:{}", PathBuf::from("images").display()),
-                format!("dir:{}", PathBuf::from("images/raw").display()),
+                format!("dir:{}", PathBuf::from("images").join("raw").display()),
                 "dir:".to_owned(),
             ],
         );
