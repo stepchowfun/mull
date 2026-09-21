@@ -11,7 +11,7 @@ mod wiki;
 
 use crate::{
     checker::{analyze, check},
-    error::{Error, format_errors, throw},
+    error::{Error, format_errors},
     format::CodePath,
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
@@ -21,6 +21,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::exit,
+    rc::Rc,
 };
 
 // This struct represents the command-line arguments.
@@ -63,22 +64,22 @@ enum Subcommand {
 fn find_wiki() -> Result<PathBuf, Error> {
     // Start the search in the current working directory.
     let current_directory = env::current_dir().map_err(|error| {
-        throw(
+        Error::new(
             "Failed to determine the current directory.",
             None,
             None,
-            Some(error),
+            Some(Rc::new(error)),
         )
     })?;
 
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
         let entries = fs::read_dir(directory).map_err(|error| {
-            throw(
+            Error::new(
                 &format!("Failed to read {}.", directory.code_path()),
                 None,
                 None,
-                Some(error),
+                Some(Rc::new(error)),
             )
         })?;
         let mut wikis = Vec::<PathBuf>::new();
@@ -86,11 +87,11 @@ fn find_wiki() -> Result<PathBuf, Error> {
         // Inspect each directory entry and retain regular wikis.
         for entry in entries {
             let entry = entry.map_err(|error| {
-                throw(
+                Error::new(
                     &format!("Failed to read an entry in {}.", directory.code_path()),
                     None,
                     None,
-                    Some(error),
+                    Some(Rc::new(error)),
                 )
             })?;
             let path = entry.path();
@@ -100,11 +101,11 @@ fn find_wiki() -> Result<PathBuf, Error> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION));
             if has_wiki_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
-                    throw(
+                    Error::new(
                         &format!("Failed to inspect {}.", path.code_path()),
                         None,
                         None,
-                        Some(error),
+                        Some(Rc::new(error)),
                     )
                 })?;
                 if metadata.is_file() {
@@ -122,7 +123,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
                 .map(|file_name| Path::new(file_name).code_path().to_string())
                 .collect::<Vec<String>>()
                 .join(", ");
-            return Err(throw::<Error>(
+            return Err(Error::new(
                 &format!(
                     "Found multiple wikis in {}: {file_names}",
                     directory.code_path(),
@@ -140,7 +141,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
     }
 
     // Report that the search completed without finding a wiki.
-    Err(throw::<Error>(
+    Err(Error::new(
         &format!(
             "No wiki found in {} or its ancestors.",
             current_directory.code_path(),
@@ -174,30 +175,30 @@ async fn entry() -> Result<(), Vec<Error>> {
 
     // Prefer a path relative to the current directory when the wiki is contained within it.
     let current_directory = env::current_dir().map_err(|error| {
-        vec![throw(
+        vec![Error::new(
             "Failed to determine the current directory.",
             None,
             None,
-            Some(error),
+            Some(Rc::new(error)),
         )]
     })?;
     let display_path = relative_path(&current_directory, &wiki_path).to_owned();
 
     // Load the wiki and require its contents to be valid UTF-8.
     let wiki_bytes = fs::read(&wiki_path).map_err(|error| {
-        vec![throw(
+        vec![Error::new(
             "Failed to read the wiki.",
             Some(&display_path),
             None,
-            Some(error),
+            Some(Rc::new(error)),
         )]
     })?;
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
-        vec![throw(
+        vec![Error::new(
             "The wiki is not valid UTF-8.",
             Some(&display_path),
             None,
-            Some(error),
+            Some(Rc::new(error)),
         )]
     })?;
 
@@ -217,11 +218,11 @@ async fn entry() -> Result<(), Vec<Error>> {
             println!("Wiki {} looks good.", display_path.code_path());
         } else {
             fs::write(&wiki_path, rendered_wiki).map_err(|error| {
-                vec![throw(
+                vec![Error::new(
                     "Failed to write the wiki.",
                     Some(&display_path),
                     None,
-                    Some(error),
+                    Some(Rc::new(error)),
                 )]
             })?;
 

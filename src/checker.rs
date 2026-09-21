@@ -1,9 +1,4 @@
-use crate::{
-    error::{Error, throw},
-    format::CodeStr,
-    parser, validator,
-    wiki::Wiki,
-};
+use crate::{error::Error, format::CodeStr, parser, validator, wiki::Wiki};
 use similar::TextDiff;
 use std::path::Path;
 
@@ -33,13 +28,13 @@ pub fn check(
             .unified_diff()
             .header("wiki", "rendered")
             .to_string();
-        return Err(vec![throw::<Error>(
+        return Err(vec![Error::new(
             &format!(
-                "The wiki is not formatted correctly. {} can fix it.",
+                "The wiki is not formatted correctly. {} can fix it.\n\n{diff}",
                 "mull fix".code_str(),
             ),
             Some(source_path),
-            Some(&diff),
+            None,
             None,
         )]);
     }

@@ -1,5 +1,5 @@
 use crate::{
-    error::{Error, source_error, source_error_with_reason, throw},
+    error::Error,
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
@@ -9,6 +9,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 // Limit filesystem diagnostics so pathological wikis and directories remain manageable.
@@ -32,29 +33,29 @@ pub fn validate(
     let wiki_directory = match fs::canonicalize(original_wiki_directory) {
         Ok(wiki_directory) => wiki_directory,
         Err(error) => {
-            errors.push(throw(
+            errors.push(Error::new(
                 &format!(
                     "Failed to resolve wiki directory {}.",
                     original_wiki_directory.code_path(),
                 ),
                 Some(source_path),
                 None,
-                Some(error),
+                Some(Rc::new(error)),
             ));
             return errors_to_result(errors);
         }
     };
     if let Err(error) = fs::metadata(wiki_path) {
-        errors.push(throw(
+        errors.push(Error::new(
             &format!("Failed to resolve {}.", wiki_path.code_path()),
             Some(source_path),
             None,
-            Some(error),
+            Some(Rc::new(error)),
         ));
         return errors_to_result(errors);
     }
     let Some(wiki_file_name) = wiki_path.file_name() else {
-        errors.push(throw::<Error>(
+        errors.push(Error::new(
             &format!(
                 "Failed to determine the file name of {}.",
                 wiki_path.code_path(),
@@ -86,7 +87,7 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
     // Require the root node from which every other node must be reachable.
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
-        errors.push(throw::<Error>(
+        errors.push(Error::new(
             &format!("Wiki does not contain a {} node.", HOME_TITLE.code_str()),
             Some(source_path),
             None,
@@ -106,15 +107,15 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
             } = link
                 && !wiki.text_nodes.contains_key(title)
             {
-                errors.push(source_error(
+                errors.push(Error::new(
                     &format!(
                         "Node {} links to missing node {}.",
                         node.title.code_str(),
                         title.code_str(),
                     ),
-                    source_path,
-                    source_contents,
-                    *source_range,
+                    Some(source_path),
+                    Some((source_contents, *source_range)),
+                    None,
                 ));
             }
         }
@@ -130,15 +131,15 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
             .collect::<Vec<_>>();
         unreachable_titles.sort_by_key(|(title, _source_range)| *title);
         errors.extend(unreachable_titles.into_iter().map(|(title, source_range)| {
-            source_error(
+            Error::new(
                 &format!(
                     "Node {} is not reachable from {}.",
                     title.code_str(),
                     HOME_TITLE.code_str(),
                 ),
-                source_path,
-                source_contents,
-                source_range,
+                Some(source_path),
+                Some((source_contents, source_range)),
+                None,
             )
         }));
     }
@@ -175,16 +176,15 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    errors.push(source_error_with_reason(
+                    errors.push(Error::new(
                         &format!(
                             "Node {} links to inaccessible path {}.",
                             node.title.code_str(),
                             path.code_path(),
                         ),
-                        source_path,
-                        source_contents,
-                        source_range,
-                        error,
+                        Some(source_path),
+                        Some((source_contents, source_range)),
+                        Some(Rc::new(error)),
                     ));
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;
@@ -201,25 +201,25 @@ fn validate_filesystem_links(
                 Link::Directory { .. } if metadata.is_dir() => {
                     referenced_directories.insert(target);
                 }
-                Link::File { .. } => errors.push(source_error(
+                Link::File { .. } => errors.push(Error::new(
                     &format!(
                         "Node {} links to {}, which is not a file.",
                         node.title.code_str(),
                         path.code_path(),
                     ),
-                    source_path,
-                    source_contents,
-                    source_range,
+                    Some(source_path),
+                    Some((source_contents, source_range)),
+                    None,
                 )),
-                Link::Directory { .. } => errors.push(source_error(
+                Link::Directory { .. } => errors.push(Error::new(
                     &format!(
                         "Node {} links to {}, which is not a directory.",
                         node.title.code_str(),
                         path.code_path(),
                     ),
-                    source_path,
-                    source_contents,
-                    source_range,
+                    Some(source_path),
+                    Some((source_contents, source_range)),
+                    None,
                 )),
                 Link::Text { .. } => {
                     // Text links were skipped above.
@@ -275,11 +275,11 @@ fn find_unreferenced_filesystem_links(
     let overrides = match overrides.build() {
         Ok(overrides) => overrides,
         Err(error) => {
-            return vec![throw(
+            return vec![Error::new(
                 "Failed to build filesystem ignore rules.",
                 Some(source_path),
                 None,
-                Some(error),
+                Some(Rc::new(error)),
             )];
         }
     };
@@ -308,11 +308,11 @@ fn find_unreferenced_filesystem_links(
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                errors.push(throw(
+                errors.push(Error::new(
                     "Failed to walk wiki directory.",
                     Some(source_path),
                     None,
-                    Some(error),
+                    Some(Rc::new(error)),
                 ));
                 if errors.len() >= maximum_errors {
                     break;
@@ -325,7 +325,7 @@ fn find_unreferenced_filesystem_links(
             continue;
         };
         if file_type.is_file() && !referenced_files.contains(path) {
-            errors.push(throw::<Error>(
+            errors.push(Error::new(
                 &format!(
                     "File {} is not referenced.",
                     relative_path(wiki_directory, path).code_path(),
