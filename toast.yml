@@ -146,6 +146,7 @@ tasks:
       # [tag:excluded_input_paths] Keep this in sync with [file:.gitignore].
       - artifacts
       - target
+      - vscode-extension/node_modules
     command: |
       # Check the example wiki.
       cargo-offline run -- --path example.mull check
