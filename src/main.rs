@@ -65,7 +65,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
     // Start the search in the current working directory.
     let current_directory = env::current_dir().map_err(|error| {
         Error::new(
-            "Failed to determine the current directory.",
+            "Unable to determine the current directory.",
             None,
             None,
             Some(Rc::new(error)),
@@ -76,7 +76,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
     for directory in current_directory.ancestors() {
         let entries = fs::read_dir(directory).map_err(|error| {
             Error::new(
-                &format!("Failed to read {}.", directory.code_path()),
+                &format!("Unable to read {}.", directory.code_path()),
                 None,
                 None,
                 Some(Rc::new(error)),
@@ -88,7 +88,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
         for entry in entries {
             let entry = entry.map_err(|error| {
                 Error::new(
-                    &format!("Failed to read an entry in {}.", directory.code_path()),
+                    &format!("Unable to read an entry in {}.", directory.code_path()),
                     None,
                     None,
                     Some(Rc::new(error)),
@@ -102,7 +102,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
             if has_wiki_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
                     Error::new(
-                        &format!("Failed to inspect {}.", path.code_path()),
+                        &format!("Unable to inspect {}.", path.code_path()),
                         None,
                         None,
                         Some(Rc::new(error)),
@@ -176,7 +176,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Prefer a path relative to the current directory when the wiki is contained within it.
     let current_directory = env::current_dir().map_err(|error| {
         vec![Error::new(
-            "Failed to determine the current directory.",
+            "Unable to determine the current directory.",
             None,
             None,
             Some(Rc::new(error)),
@@ -187,7 +187,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Load the wiki and require its contents to be valid UTF-8.
     let wiki_bytes = fs::read(&wiki_path).map_err(|error| {
         vec![Error::new(
-            "Failed to read the wiki.",
+            "Unable to read the wiki.",
             Some(&display_path),
             None,
             Some(Rc::new(error)),
@@ -219,7 +219,7 @@ async fn entry() -> Result<(), Vec<Error>> {
         } else {
             fs::write(&wiki_path, rendered_wiki).map_err(|error| {
                 vec![Error::new(
-                    "Failed to write the wiki.",
+                    "Unable to write the wiki.",
                     Some(&display_path),
                     None,
                     Some(Rc::new(error)),

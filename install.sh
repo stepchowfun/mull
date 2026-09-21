@@ -80,7 +80,7 @@
   if command -v restorecon > /dev/null 2>&1; then
     restorecon "$DESTINATION" > /dev/null 2>&1 ||
     sudo restorecon "$DESTINATION" < /dev/tty ||
-    fail 'Failed to set SELinux attributes on the binary.'
+    fail 'Unable to set SELinux attributes on the binary.'
   fi
 
   # Let the user know if the installation was successful.

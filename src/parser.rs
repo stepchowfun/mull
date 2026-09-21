@@ -47,7 +47,7 @@ fn parse_filesystem_path(
     let parsed_path = Path::new(path);
     if parsed_path.as_os_str().is_empty() {
         return Err(Error::new(
-            "Filesystem link path is empty.",
+            "This link is missing a path.",
             Some(source_path),
             Some((source_contents, source_range)),
             None,
@@ -65,7 +65,7 @@ fn parse_filesystem_path(
         return Err(Error::new(
             &format!(
                 concat!(
-                    "Filesystem link path {} must be relative to the wiki directory ",
+                    "Path {} must be relative to the wiki directory ",
                     "without using {}.",
                 ),
                 parsed_path.code_path(),
@@ -153,7 +153,7 @@ fn parse_content(
                 end: source_range.start + index + character.len_utf8(),
             };
             errors.push(Error::new(
-                "Link contains a line break.",
+                "This link contains a line break.",
                 Some(source_path),
                 Some((source_contents, link_source_range)),
                 None,
@@ -288,6 +288,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
     let mut wiki = Wiki::default();
     let mut errors = Vec::<Error>::new();
     let mut pending_node = None::<PendingNode>;
+    let mut has_seen_title_marker = false;
     let mut reported_content_before_title = false;
     let mut line_start = 0;
 
@@ -310,6 +311,9 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             line.strip_prefix(TITLE_PREFIX)
         };
         if let Some(raw_title) = raw_title {
+            // Treat invalid titles as structural boundaries for subsequent content.
+            has_seen_title_marker = true;
+
             // Finish the preceding node before starting the next one.
             if let Some(previous_node) = pending_node.take()
                 && let Err(node_errors) = insert_node(
@@ -334,7 +338,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             let title = raw_title.trim();
             if title.is_empty() {
                 errors.push(Error::new(
-                    "Title is empty.",
+                    "This title is empty.",
                     Some(source_path),
                     Some((source_contents, line_source_range)),
                     None,
@@ -347,13 +351,13 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
                     title_source_range,
                 });
             }
-        } else if pending_node.is_none()
+        } else if !has_seen_title_marker
             && !reported_content_before_title
             && !line.trim().is_empty()
         {
             // Report only the first non-whitespace content outside a valid node.
             errors.push(Error::new(
-                "Content appears before the first title.",
+                "This content is not in any node.",
                 Some(source_path),
                 Some((
                     source_contents,
@@ -531,12 +535,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             "dir:/images]",
         ));
 
-        assert_fails!(result.clone(), "Filesystem link path is empty.");
-        assert_fails!(
-            result.clone(),
-            "Filesystem link path `../notes.txt` must be relative",
-        );
-        assert_fails!(result, "Filesystem link path `/images` must be relative");
+        assert_fails!(result.clone(), "This link is missing a path.");
+        assert_fails!(result.clone(), "Path `../notes.txt` must be relative");
+        assert_fails!(result, "Path `/images` must be relative");
     }
 
     // Reject opening link delimiters that are not closed.
@@ -550,7 +551,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn link_with_line_break() {
         assert_fails!(
             parse_test("# Home\nSee [Greeting\ncontinued]."),
-            "Link contains a line break.",
+            "This link contains a line break.",
         );
     }
 
@@ -613,7 +614,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn content_before_title() {
         assert_fails!(
             parse_test("Introduction\n# Home"),
-            "Content appears before the first title.",
+            "This content is not in any node.",
         );
     }
 
@@ -622,13 +623,17 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn empty_title() {
         let errors = parse_test("#   \nContent").unwrap_err();
 
-        assert_eq!(errors.len(), 2);
-        assert!(errors[0].to_string().contains("Title is empty."));
-        assert!(
-            errors[1]
-                .to_string()
-                .contains("Content appears before the first title."),
-        );
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("This title is empty."));
+    }
+
+    // Do not reinterpret content after an invalid title as content before the first title.
+    #[test]
+    fn content_after_empty_title() {
+        let errors = parse_test("# Home\n\nfoo\n\n#\n\nbar").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].to_string().contains("This title is empty."));
     }
 
     // Recognize a bare title marker so it can be reported as an empty title.
@@ -637,7 +642,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("#").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("Title is empty."));
+        assert!(errors[0].to_string().contains("This title is empty."));
         assert!(errors[0].to_string().contains("1 │ #"));
     }
 
@@ -650,7 +655,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("Content appears before the first title."),
+                .contains("This content is not in any node."),
         );
     }
 
@@ -715,9 +720,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("Content appears before the first title"),
+                .contains("This content is not in any node"),
         );
-        assert!(errors[1].to_string().contains("Title is empty"));
+        assert!(errors[1].to_string().contains("This title is empty"));
         assert!(
             errors[2]
                 .to_string()
