@@ -6,6 +6,9 @@
 			"include": "#titles"
 		},
 		{
+			"include": "#secondary-headings"
+		},
+		{
 			"include": "#links"
 		},
 		{
@@ -24,6 +27,55 @@
 					"name": "entity.name.section.mull"
 				}
 			}
+		},
+		"secondary-headings": {
+			"patterns": [
+				{
+					"name": "markup.italic.heading.2.mull",
+					"match": "^(##)(?: .*)?$",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.heading.mull"
+						}
+					}
+				},
+				{
+					"name": "markup.italic.heading.3.mull",
+					"match": "^(###)(?: .*)?$",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.heading.mull"
+						}
+					}
+				},
+				{
+					"name": "markup.italic.heading.4.mull",
+					"match": "^(####)(?: .*)?$",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.heading.mull"
+						}
+					}
+				},
+				{
+					"name": "markup.italic.heading.5.mull",
+					"match": "^(#####)(?: .*)?$",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.heading.mull"
+						}
+					}
+				},
+				{
+					"name": "markup.italic.heading.6.mull",
+					"match": "^(######)(?: .*)?$",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.heading.mull"
+						}
+					}
+				}
+			]
 		},
 		"links": {
 			"name": "meta.link.mull",
