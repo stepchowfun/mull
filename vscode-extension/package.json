@@ -1,0 +1,25 @@
+{
+  "name": "mull",
+  "displayName": "Mull",
+  "description": "Organize your knowledge.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.138.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "mull",
+      "aliases": ["Mull", "mull"],
+      "extensions": [".mull"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "mull",
+      "scopeName": "source.mull",
+      "path": "./syntaxes/mull.tmLanguage.json"
+    }]
+  }
+}

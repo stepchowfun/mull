@@ -18,6 +18,7 @@ All the files in this repo are accounted for here:
 
 - [dir:.github]
 - [dir:src]
+- [dir:vscode-extension]
 - [file:.gitignore]
 - [file:CHANGELOG.md]
 - [file:CODE_OF_CONDUCT.md]
