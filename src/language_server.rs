@@ -1,7 +1,4 @@
-use crate::{
-    checker::{analyze, check},
-    error::Error,
-};
+use crate::{checker::analyze, error::Error};
 use std::{
     collections::HashMap,
     path::Path,
@@ -95,7 +92,7 @@ impl Backend {
                 vec![diagnostic(
                     &fallback_contents,
                     None,
-                    format!("Mull failed to check the wiki: {error}."),
+                    format!("Mull was unable to check the wiki: {error}."),
                 )]
             });
             let is_current = documents
@@ -268,7 +265,7 @@ fn formatting_edit(
     }
 }
 
-// Run Mull's complete check against the editor snapshot associated with a file URI.
+// Analyze the editor snapshot associated with a file URI without checking its formatting.
 fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
     // Reject URIs that cannot supply the filesystem context required by wiki validation.
     let Some(wiki_path) = uri.to_file_path() else {
@@ -280,7 +277,7 @@ fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic>
     };
 
     // Preserve independent Mull errors as independent editor diagnostics.
-    check(&wiki_path, &wiki_path, source_contents).map_or_else(
+    analyze(&wiki_path, &wiki_path, source_contents).map_or_else(
         |errors| {
             errors
                 .iter()
@@ -354,7 +351,7 @@ pub async fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnostic_from_error, formatting_edit, position};
+    use super::{diagnostic_from_error, diagnostics_for_document, formatting_edit, position};
     use crate::{error::SourceRange, parser};
     use std::{
         fs,
@@ -362,7 +359,7 @@ mod tests {
         process,
         sync::atomic::{AtomicUsize, Ordering},
     };
-    use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range};
+    use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, Uri};
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -432,6 +429,15 @@ mod tests {
         let wiki = TestWiki::new(source);
 
         assert!(formatting_edit(wiki.path(), source).is_err());
+    }
+
+    #[test]
+    fn formatting_differences_are_not_diagnostics() {
+        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert!(diagnostics_for_document(&uri, source).is_empty());
     }
 
     #[test]

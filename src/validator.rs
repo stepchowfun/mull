@@ -35,7 +35,7 @@ pub fn validate(
         Err(error) => {
             errors.push(Error::new(
                 &format!(
-                    "Failed to resolve wiki directory {}.",
+                    "Unable to resolve wiki directory {}.",
                     original_wiki_directory.code_path(),
                 ),
                 Some(source_path),
@@ -47,7 +47,7 @@ pub fn validate(
     };
     if let Err(error) = fs::metadata(wiki_path) {
         errors.push(Error::new(
-            &format!("Failed to resolve {}.", wiki_path.code_path()),
+            &format!("Unable to resolve {}.", wiki_path.code_path()),
             Some(source_path),
             None,
             Some(Rc::new(error)),
@@ -57,7 +57,7 @@ pub fn validate(
     let Some(wiki_file_name) = wiki_path.file_name() else {
         errors.push(Error::new(
             &format!(
-                "Failed to determine the file name of {}.",
+                "Unable to determine the file name of {}.",
                 wiki_path.code_path(),
             ),
             Some(source_path),
@@ -88,7 +88,10 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
         errors.push(Error::new(
-            &format!("Wiki does not contain a {} node.", HOME_TITLE.code_str()),
+            &format!(
+                "The wiki does not contain a {} node.",
+                HOME_TITLE.code_str(),
+            ),
             Some(source_path),
             None,
             None,
@@ -108,7 +111,7 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
                 && !wiki.text_nodes.contains_key(title)
             {
                 let message = if title.is_empty() {
-                    "Link target is empty.".to_owned()
+                    "This link is missing a target.".to_owned()
                 } else {
                     format!("Node {} not found.", title.code_str())
                 };
@@ -180,7 +183,7 @@ fn validate_filesystem_links(
                     let message = if error.kind() == std::io::ErrorKind::NotFound {
                         format!("{} not found.", path.code_path())
                     } else {
-                        format!("Failed to access {}.", path.code_path())
+                        format!("Unable to access {}.", path.code_path())
                     };
                     errors.push(Error::new(
                         &message,
@@ -270,7 +273,7 @@ fn find_unreferenced_filesystem_links(
         Ok(overrides) => overrides,
         Err(error) => {
             return vec![Error::new(
-                "Failed to build filesystem ignore rules.",
+                "Unable to build filesystem ignore rules.",
                 Some(source_path),
                 None,
                 Some(Rc::new(error)),
@@ -303,7 +306,7 @@ fn find_unreferenced_filesystem_links(
             Ok(entry) => entry,
             Err(error) => {
                 errors.push(Error::new(
-                    "Failed to walk wiki directory.",
+                    "Unable to walk wiki directory.",
                     Some(source_path),
                     None,
                     Some(Rc::new(error)),
@@ -466,12 +469,12 @@ mod tests {
         assert!(
             errors[0]
                 .to_string()
-                .contains("Wiki does not contain a `Home` node."),
+                .contains("The wiki does not contain a `Home` node."),
         );
         assert!(
             errors[1]
                 .to_string()
-                .contains(&format!("Failed to resolve `{}`.", wiki_path.display())),
+                .contains(&format!("Unable to resolve `{}`.", wiki_path.display())),
         );
     }
 
@@ -652,7 +655,7 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.to_string().contains("Failed to walk wiki directory.")),
+                .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
         );
     }
 
@@ -670,7 +673,7 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.to_string().contains("Failed to walk wiki directory.")),
+                .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
         );
     }
 
@@ -754,7 +757,7 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert!(contains_error(&errors, "Link target is empty."));
+        assert!(contains_error(&errors, "This link is missing a target."));
     }
 
     // Require every wiki to contain its special root node.
@@ -767,7 +770,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "Wiki does not contain a `Home` node.",
+            "The wiki does not contain a `Home` node.",
         ));
     }
 
