@@ -1,6 +1,10 @@
-use crate::{checker::check, error::Error};
+use crate::{
+    checker::{analyze, check},
+    error::Error,
+};
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -10,9 +14,10 @@ use tower_lsp_server::{
     jsonrpc::Result,
     ls_types::{
         Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
-        Position, PositionEncodingKind, Range, ServerCapabilities, ServerInfo,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+        InitializeParams, InitializeResult, OneOf, Position, PositionEncodingKind, Range,
+        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri,
     },
 };
 
@@ -139,6 +144,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 position_encoding: Some(PositionEncodingKind::UTF16),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -187,6 +193,46 @@ impl LanguageServer for Backend {
         self.save_document(params.text_document.uri, params.text);
     }
 
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        // Copy the latest snapshot without retaining the document lock while formatting.
+        let uri = params.text_document.uri;
+        let snapshot = self
+            .documents
+            .lock()
+            .expect("the open-document mutex should not be poisoned")
+            .get(&uri)
+            .map(|document| (document.contents.clone(), document.generation));
+        let Some((contents, generation)) = snapshot else {
+            return Ok(None);
+        };
+        let Some(wiki_path) = uri.to_file_path().map(std::borrow::Cow::into_owned) else {
+            return Ok(None);
+        };
+
+        // Parse, validate, and render outside the asynchronous executor.
+        let formatting_result = tokio::task::spawn_blocking(move || {
+            formatting_edit(&wiki_path, &contents).map_err(|_errors| ())
+        })
+        .await;
+        let Ok(Ok(edit)) = formatting_result else {
+            return Ok(None);
+        };
+
+        // Discard an edit calculated from contents that changed while formatting was underway.
+        let is_current = self
+            .documents
+            .lock()
+            .expect("the open-document mutex should not be poisoned")
+            .get(&uri)
+            .is_some_and(|document| document.generation == generation);
+        if !is_current {
+            return Ok(None);
+        }
+
+        // A successful request returns either one whole-document edit or an empty edit list.
+        Ok(Some(edit.into_iter().collect()))
+    }
+
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Cancel outstanding work before asking the client to clear this document's diagnostics.
         let uri = params.text_document.uri;
@@ -199,6 +245,26 @@ impl LanguageServer for Backend {
             pending_check.abort();
         }
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
+    }
+}
+
+// Produce a whole-document formatting edit after applying Mull's normal validation rules.
+fn formatting_edit(
+    wiki_path: &Path,
+    source_contents: &str,
+) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
+    // Render the validated wiki and avoid an edit when its source is already canonical.
+    let rendered_wiki = analyze(wiki_path, wiki_path, source_contents)?.to_string();
+    if source_contents == rendered_wiki {
+        Ok(None)
+    } else {
+        Ok(Some(TextEdit::new(
+            Range::new(
+                Position::new(0, 0),
+                position(source_contents, source_contents.len()),
+            ),
+            rendered_wiki,
+        )))
     }
 }
 
@@ -288,10 +354,46 @@ pub async fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnostic_from_error, position};
+    use super::{diagnostic_from_error, formatting_edit, position};
     use crate::{error::SourceRange, parser};
-    use std::path::Path;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range};
+
+    // Assign each formatting fixture a distinct directory when tests run concurrently.
+    static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    // This guard owns a temporary wiki directory and removes it after each test.
+    struct TestWiki(PathBuf);
+
+    impl TestWiki {
+        // Create a file-backed wiki so validation sees the same environment as the editor.
+        fn new(source_contents: &str) -> Self {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir()
+                .join(format!("mull-language-server-{}-{sequence}", process::id()));
+            fs::create_dir(&directory).unwrap();
+            let wiki_path = directory.join("wiki.mull");
+            fs::write(&wiki_path, source_contents).unwrap();
+            Self(wiki_path)
+        }
+
+        // Expose the temporary wiki path to the formatter.
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestWiki {
+        // Remove the complete fixture directory when the test finishes.
+        fn drop(&mut self) {
+            fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
+        }
+    }
 
     #[test]
     fn positions_use_utf16_code_units() {
@@ -301,6 +403,35 @@ mod tests {
         assert_eq!(position(source, 5), Position::new(1, 0));
         assert_eq!(position(source, 9), Position::new(1, 2));
         assert_eq!(position(source, source.len()), Position::new(1, 7));
+    }
+
+    #[test]
+    fn formatting_replaces_noncanonical_source() {
+        let source = "# Zulu\n\n😀\n\n# Home\n\n[Zulu]";
+        let wiki = TestWiki::new(source);
+        let edit = formatting_edit(wiki.path(), source).unwrap().unwrap();
+
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(0, 0), Position::new(6, 6)),
+        );
+        assert_eq!(edit.new_text, "# Home\n\n[Zulu]\n\n# Zulu\n\n😀\n");
+    }
+
+    #[test]
+    fn formatting_omits_edits_for_canonical_source() {
+        let source = "# Home\n";
+        let wiki = TestWiki::new(source);
+
+        assert!(formatting_edit(wiki.path(), source).unwrap().is_none());
+    }
+
+    #[test]
+    fn formatting_rejects_invalid_source() {
+        let source = "# Elsewhere\n";
+        let wiki = TestWiki::new(source);
+
+        assert!(formatting_edit(wiki.path(), source).is_err());
     }
 
     #[test]
