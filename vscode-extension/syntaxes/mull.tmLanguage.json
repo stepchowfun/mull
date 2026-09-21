@@ -3,29 +3,68 @@
 	"name": "Mull",
 	"patterns": [
 		{
-			"include": "#keywords"
+			"include": "#titles"
 		},
 		{
-			"include": "#strings"
+			"include": "#links"
+		},
+		{
+			"include": "#unexpected-closing-delimiters"
 		}
 	],
 	"repository": {
-		"keywords": {
-			"patterns": [{
-				"name": "keyword.control.mull",
-				"match": "\\b(if|while|for|return)\\b"
-			}]
+		"titles": {
+			"name": "markup.heading.1.mull",
+			"match": "^(#)(?: (.*))?$",
+			"captures": {
+				"1": {
+					"name": "punctuation.definition.heading.mull"
+				},
+				"2": {
+					"name": "entity.name.section.mull"
+				}
+			}
 		},
-		"strings": {
-			"name": "string.quoted.double.mull",
-			"begin": "\"",
-			"end": "\"",
+		"links": {
+			"name": "meta.link.mull",
+			"contentName": "string.other.link.mull",
+			"begin": "(?<!\\\\)\\[",
+			"beginCaptures": {
+				"0": {
+					"name": "punctuation.definition.link.begin.mull"
+				}
+			},
+			"end": "(?<!\\\\)\\]|$",
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.definition.link.end.mull"
+				}
+			},
 			"patterns": [
 				{
+					"match": "(?<=\\[)([ \\t]*)(dir|file)(:)",
+					"captures": {
+						"2": {
+							"name": "keyword.other.link-kind.mull"
+						},
+						"3": {
+							"name": "punctuation.separator.link-kind.mull"
+						}
+					}
+				},
+				{
 					"name": "constant.character.escape.mull",
-					"match": "\\\\."
+					"match": "\\\\[\\[\\]]"
+				},
+				{
+					"name": "invalid.illegal.unexpected-opening-delimiter.mull",
+					"match": "(?<!\\\\)\\["
 				}
 			]
+		},
+		"unexpected-closing-delimiters": {
+			"name": "invalid.illegal.unexpected-closing-delimiter.mull",
+			"match": "(?<!\\\\)\\]"
 		}
 	},
 	"scopeName": "source.mull"
