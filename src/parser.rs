@@ -1,5 +1,5 @@
 use crate::{
-    error::{Error, SourceRange, source_error},
+    error::{Error, SourceRange},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
     wiki::{
@@ -47,15 +47,15 @@ fn parse_filesystem_path(
     // Reject an empty path before inspecting its components.
     let parsed_path = Path::new(path);
     if parsed_path.as_os_str().is_empty() {
-        return Err(source_error(
+        return Err(Error::new(
             &format!(
                 "Filesystem link path {} in node {} is empty.",
                 parsed_path.code_path(),
                 node_title.code_str(),
             ),
-            source_path,
-            source_contents,
-            source_range,
+            Some(source_path),
+            Some((source_contents, source_range)),
+            None,
         ));
     }
 
@@ -67,7 +67,7 @@ fn parse_filesystem_path(
         )
     });
     if has_invalid_component {
-        return Err(source_error(
+        return Err(Error::new(
             &format!(
                 concat!(
                     "Filesystem link path {} in node {} must be relative to the wiki directory ",
@@ -77,9 +77,9 @@ fn parse_filesystem_path(
                 node_title.code_str(),
                 "..".code_str(),
             ),
-            source_path,
-            source_contents,
-            source_range,
+            Some(source_path),
+            Some((source_contents, source_range)),
+            None,
         ));
     }
 
@@ -137,6 +137,7 @@ fn parse_content(
     let mut link_start = None::<usize>;
     let mut link_has_line_break = false;
     let mut previous_was_backslash = false;
+
     for (index, character) in original_content.char_indices() {
         let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
         previous_was_backslash = character == '\\';
@@ -144,52 +145,53 @@ fn parse_content(
             continue;
         }
 
+        // Locate the current character for any delimiter error.
+        let character_source_range = SourceRange {
+            start: source_range.start + index,
+            end: source_range.start + index + character.len_utf8(),
+        };
+
         // Report the first line break within each link.
         if character == '\n'
             && let Some(start) = link_start
             && !link_has_line_break
         {
-            errors.push(source_error(
+            let link_source_range = SourceRange {
+                start: source_range.start + start,
+                end: source_range.start + index + character.len_utf8(),
+            };
+            errors.push(Error::new(
                 &format!("Link in node {} contains a line break.", title.code_str()),
-                source_path,
-                source_contents,
-                SourceRange {
-                    start: source_range.start + start,
-                    end: source_range.start + index + character.len_utf8(),
-                },
+                Some(source_path),
+                Some((source_contents, link_source_range)),
+                None,
             ));
             link_has_line_break = true;
         }
 
         // Interpret unescaped square brackets as link delimiters.
         match character {
-            '[' if link_start.is_some() => errors.push(source_error(
+            '[' if link_start.is_some() => errors.push(Error::new(
                 &format!(
                     "Unexpected opening link delimiter in node {}.",
                     title.code_str(),
                 ),
-                source_path,
-                source_contents,
-                SourceRange {
-                    start: source_range.start + index,
-                    end: source_range.start + index + character.len_utf8(),
-                },
+                Some(source_path),
+                Some((source_contents, character_source_range)),
+                None,
             )),
             '[' => {
                 link_start = Some(index);
                 link_has_line_break = false;
             }
-            ']' if link_start.is_none() => errors.push(source_error(
+            ']' if link_start.is_none() => errors.push(Error::new(
                 &format!(
                     "Unexpected closing link delimiter in node {}.",
                     title.code_str(),
                 ),
-                source_path,
-                source_contents,
-                SourceRange {
-                    start: source_range.start + index,
-                    end: source_range.start + index + character.len_utf8(),
-                },
+                Some(source_path),
+                Some((source_contents, character_source_range)),
+                None,
             )),
             ']' => {
                 let start = link_start.take().expect("the link start was checked above");
@@ -220,14 +222,15 @@ fn parse_content(
 
     // Reject an opening delimiter that has no closing delimiter.
     if let Some(start) = link_start {
-        errors.push(source_error(
+        let link_source_range = SourceRange {
+            start: source_range.start + start,
+            end: source_range.start + start + '['.len_utf8(),
+        };
+        errors.push(Error::new(
             &format!("Unclosed link in node {}.", title.code_str()),
-            source_path,
-            source_contents,
-            SourceRange {
-                start: source_range.start + start,
-                end: source_range.start + start + '['.len_utf8(),
-            },
+            Some(source_path),
+            Some((source_contents, link_source_range)),
+            None,
         ));
     }
 
@@ -267,11 +270,11 @@ fn insert_node(
 
     // Reject a title that has already been used.
     if wiki.text_nodes.contains_key(&title) {
-        errors.push(source_error(
+        errors.push(Error::new(
             &format!("Duplicate title {}.", title.code_str()),
-            source_path,
-            source_contents,
-            title_source_range,
+            Some(source_path),
+            Some((source_contents, title_source_range)),
+            None,
         ));
     }
 
@@ -345,11 +348,11 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             );
             let title = raw_title.trim();
             if title.is_empty() {
-                errors.push(source_error(
+                errors.push(Error::new(
                     "Title is empty.",
-                    source_path,
-                    source_contents,
-                    line_source_range,
+                    Some(source_path),
+                    Some((source_contents, line_source_range)),
+                    None,
                 ));
             } else {
                 pending_node = Some(PendingNode {
@@ -364,11 +367,14 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             && !line.trim().is_empty()
         {
             // Report only the first non-whitespace content outside a valid node.
-            errors.push(source_error(
+            errors.push(Error::new(
                 "Content appears before the first title.",
-                source_path,
-                source_contents,
-                trim_source_range(source_contents, line_source_range),
+                Some(source_path),
+                Some((
+                    source_contents,
+                    trim_source_range(source_contents, line_source_range),
+                )),
+                None,
             ));
             reported_content_before_title = true;
         }

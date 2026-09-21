@@ -228,11 +228,11 @@ fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic>
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    let message = error.reason.as_ref().map_or_else(
-        || error.message.clone(),
-        |reason| format!("{}\n\nReason: {reason}", error.message),
+    let message = error.reason().map_or_else(
+        || error.message().to_owned(),
+        |reason| format!("{}\n\nReason: {reason}", error.message()),
     );
-    diagnostic(source_contents, error.source_range, message)
+    diagnostic(source_contents, error.source_range(), message)
 }
 
 // Construct a Mull error diagnostic at a source range or at the start of the document.
@@ -327,8 +327,7 @@ mod tests {
 
     #[test]
     fn errors_without_ranges_point_to_document_start() {
-        let error =
-            crate::error::throw::<crate::error::Error>("Something went wrong.", None, None, None);
+        let error = crate::error::Error::new("Something went wrong.", None, None, None);
         let diagnostic = diagnostic_from_error("# Home\n", &error);
 
         assert_eq!(
@@ -340,11 +339,11 @@ mod tests {
     #[test]
     fn ranges_can_span_windows_line_endings() {
         let source = "first\r\nsecond";
-        let error = crate::error::source_error(
+        let error = crate::error::Error::new(
             "Something went wrong.",
-            Path::new("wiki.mull"),
-            source,
-            SourceRange { start: 0, end: 9 },
+            Some(Path::new("wiki.mull")),
+            Some((source, SourceRange { start: 0, end: 9 })),
+            None,
         );
         let diagnostic = diagnostic_from_error(source, &error);
 
