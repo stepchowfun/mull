@@ -35,6 +35,7 @@
     },
     "configurationDefaults": {
       "[mull]": {
+        "editor.formatOnSave": true,
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
       }
