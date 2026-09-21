@@ -39,7 +39,6 @@ fn push_normalized(target: &mut String, source: &str) {
 // Parse a filesystem link path while keeping it inside the wiki's logical tree.
 fn parse_filesystem_path(
     path: &str,
-    node_title: &str,
     source_path: &Path,
     source_contents: &str,
     source_range: SourceRange,
@@ -48,11 +47,7 @@ fn parse_filesystem_path(
     let parsed_path = Path::new(path);
     if parsed_path.as_os_str().is_empty() {
         return Err(Error::new(
-            &format!(
-                "Filesystem link path {} in node {} is empty.",
-                parsed_path.code_path(),
-                node_title.code_str(),
-            ),
+            "Filesystem link path is empty.",
             Some(source_path),
             Some((source_contents, source_range)),
             None,
@@ -70,11 +65,10 @@ fn parse_filesystem_path(
         return Err(Error::new(
             &format!(
                 concat!(
-                    "Filesystem link path {} in node {} must be relative to the wiki directory ",
+                    "Filesystem link path {} must be relative to the wiki directory ",
                     "without using {}.",
                 ),
                 parsed_path.code_path(),
-                node_title.code_str(),
                 "..".code_str(),
             ),
             Some(source_path),
@@ -100,7 +94,6 @@ fn parse_filesystem_path(
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
-    node_title: &str,
     source_path: &Path,
     source_contents: &str,
     source_range: SourceRange,
@@ -108,10 +101,10 @@ fn parse_link(
     // Unescape delimiters before converting the target into its semantic link type.
     let target = target.replace("\\[", "[").replace("\\]", "]");
     if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
-        parse_filesystem_path(path, node_title, source_path, source_contents, source_range)
+        parse_filesystem_path(path, source_path, source_contents, source_range)
             .map(|path| Link::File { path, source_range })
     } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
-        parse_filesystem_path(path, node_title, source_path, source_contents, source_range)
+        parse_filesystem_path(path, source_path, source_contents, source_range)
             .map(|path| Link::Directory { path, source_range })
     } else {
         Ok(Link::Text {
@@ -123,7 +116,6 @@ fn parse_link(
 
 // Parse link occurrences and produce the normalized content stored on a text node.
 fn parse_content(
-    title: &str,
     source_path: &Path,
     source_contents: &str,
     source_range: SourceRange,
@@ -161,7 +153,7 @@ fn parse_content(
                 end: source_range.start + index + character.len_utf8(),
             };
             errors.push(Error::new(
-                &format!("Link in node {} contains a line break.", title.code_str()),
+                "Link contains a line break.",
                 Some(source_path),
                 Some((source_contents, link_source_range)),
                 None,
@@ -172,10 +164,7 @@ fn parse_content(
         // Interpret unescaped square brackets as link delimiters.
         match character {
             '[' if link_start.is_some() => errors.push(Error::new(
-                &format!(
-                    "Unexpected opening link delimiter in node {}.",
-                    title.code_str(),
-                ),
+                "Unexpected opening link delimiter.",
                 Some(source_path),
                 Some((source_contents, character_source_range)),
                 None,
@@ -185,10 +174,7 @@ fn parse_content(
                 link_has_line_break = false;
             }
             ']' if link_start.is_none() => errors.push(Error::new(
-                &format!(
-                    "Unexpected closing link delimiter in node {}.",
-                    title.code_str(),
-                ),
+                "Unexpected closing link delimiter.",
                 Some(source_path),
                 Some((source_contents, character_source_range)),
                 None,
@@ -203,7 +189,6 @@ fn parse_content(
                 };
                 match parse_link(
                     trimmed_target,
-                    title,
                     source_path,
                     source_contents,
                     link_source_range,
@@ -227,7 +212,7 @@ fn parse_content(
             end: source_range.start + start + '['.len_utf8(),
         };
         errors.push(Error::new(
-            &format!("Unclosed link in node {}.", title.code_str()),
+            "Unclosed link.",
             Some(source_path),
             Some((source_contents, link_source_range)),
             None,
@@ -266,7 +251,7 @@ fn insert_node(
         },
     );
     let (content, links, mut errors) =
-        parse_content(&title, source_path, source_contents, content_source_range);
+        parse_content(source_path, source_contents, content_source_range);
 
     // Reject a title that has already been used.
     if wiki.text_nodes.contains_key(&title) {
@@ -546,27 +531,18 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             "dir:/images]",
         ));
 
+        assert_fails!(result.clone(), "Filesystem link path is empty.");
         assert_fails!(
             result.clone(),
-            "Filesystem link path `` in node `Home` is empty.",
+            "Filesystem link path `../notes.txt` must be relative",
         );
-        assert_fails!(
-            result.clone(),
-            "Filesystem link path `../notes.txt` in node `Home` must be relative",
-        );
-        assert_fails!(
-            result,
-            "Filesystem link path `/images` in node `Home` must be relative",
-        );
+        assert_fails!(result, "Filesystem link path `/images` must be relative");
     }
 
     // Reject opening link delimiters that are not closed.
     #[test]
     fn unclosed_link() {
-        assert_fails!(
-            parse_test("# Home\nSee [Greeting."),
-            "Unclosed link in node `Home`.",
-        );
+        assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
     }
 
     // Reject links that span multiple lines.
@@ -574,7 +550,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn link_with_line_break() {
         assert_fails!(
             parse_test("# Home\nSee [Greeting\ncontinued]."),
-            "Link in node `Home` contains a line break.",
+            "Link contains a line break.",
         );
     }
 
@@ -583,7 +559,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn unexpected_opening_delimiter() {
         assert_fails!(
             parse_test("# Home\nSee [nested[Greeting]."),
-            "Unexpected opening link delimiter in node `Home`.",
+            "Unexpected opening link delimiter.",
         );
     }
 
