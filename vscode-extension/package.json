@@ -6,6 +6,10 @@
   "engines": {
     "vscode": "^1.138.0"
   },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:mull"
+  ],
   "categories": [
     "Programming Languages"
   ],
@@ -21,11 +25,25 @@
       "scopeName": "source.mull",
       "path": "./syntaxes/mull.tmLanguage.json"
     }],
+    "configuration": {
+      "title": "Mull",
+      "properties": {
+        "mull.executablePath": {
+          "type": "string",
+          "default": "mull",
+          "scope": "machine-overridable",
+          "description": "Path to the Mull executable used to start the language server."
+        }
+      }
+    },
     "configurationDefaults": {
       "[mull]": {
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
       }
     }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.1"
   }
 }
