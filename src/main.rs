@@ -1,4 +1,5 @@
 mod assertions;
+mod checker;
 mod error;
 mod format;
 mod language_server;
@@ -9,13 +10,13 @@ mod validator;
 mod wiki;
 
 use crate::{
-    error::{Error, merge_errors, throw},
-    format::{CodePath, CodeStr},
+    checker::{analyze, check},
+    error::{Error, format_errors, throw},
+    format::CodePath,
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
-use similar::TextDiff;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -151,7 +152,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
 }
 
 // Run the requested operation.
-async fn entry() -> Result<(), Error> {
+async fn entry() -> Result<(), Vec<Error>> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
 
@@ -166,44 +167,46 @@ async fn entry() -> Result<(), Error> {
     };
 
     // Use the requested wiki or search for one when no path was supplied.
-    let wiki_path = cli.path.map_or_else(find_wiki, Ok)?;
+    let wiki_path = cli
+        .path
+        .map_or_else(find_wiki, Ok)
+        .map_err(|error| vec![error])?;
 
     // Prefer a path relative to the current directory when the wiki is contained within it.
     let current_directory = env::current_dir().map_err(|error| {
-        throw(
+        vec![throw(
             "Failed to determine the current directory.",
             None,
             None,
             Some(error),
-        )
+        )]
     })?;
     let display_path = relative_path(&current_directory, &wiki_path).to_owned();
 
     // Load the wiki and require its contents to be valid UTF-8.
     let wiki_bytes = fs::read(&wiki_path).map_err(|error| {
-        throw(
+        vec![throw(
             "Failed to read the wiki.",
             Some(&display_path),
             None,
             Some(error),
-        )
+        )]
     })?;
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
-        throw(
+        vec![throw(
             "The wiki is not valid UTF-8.",
             Some(&display_path),
             None,
             Some(error),
-        )
+        )]
     })?;
 
-    // Parse and score the wiki.
-    let wiki =
-        parser::parse(&display_path, &wiki_contents).map_err(|errors| merge_errors(&errors))?;
-
-    // Validate the node graph and surrounding filesystem.
-    validator::validate(&wiki, &wiki_path, &display_path, &wiki_contents)
-        .map_err(|errors| merge_errors(&errors))?;
+    // Analyze the wiki and additionally check its formatting when no fix was requested.
+    let wiki = if should_fix {
+        analyze(&wiki_path, &display_path, &wiki_contents)
+    } else {
+        check(&wiki_path, &display_path, &wiki_contents)
+    }?;
 
     // Render the wiki once for checking or fixing.
     let rendered_wiki = wiki.to_string();
@@ -214,35 +217,18 @@ async fn entry() -> Result<(), Error> {
             println!("Wiki {} looks good.", display_path.code_path());
         } else {
             fs::write(&wiki_path, rendered_wiki).map_err(|error| {
-                throw(
+                vec![throw(
                     "Failed to write the wiki.",
                     Some(&display_path),
                     None,
                     Some(error),
-                )
+                )]
             })?;
 
             // Report that the wiki was fixed.
             println!("Fixed {}.", display_path.code_path());
         }
     } else {
-        // Compare the original wiki with its canonical rendering.
-        if wiki_contents != rendered_wiki {
-            let diff = TextDiff::from_lines(&wiki_contents, &rendered_wiki)
-                .unified_diff()
-                .header("wiki", "rendered")
-                .to_string();
-            return Err(throw::<Error>(
-                &format!(
-                    "The wiki is not formatted correctly. {} can fix it.",
-                    "mull fix".code_str(),
-                ),
-                Some(&display_path),
-                Some(&diff),
-                None,
-            ));
-        }
-
         // Report that the wiki passed the check.
         println!("Wiki {} looks good.", display_path.code_path());
     }
@@ -255,8 +241,8 @@ async fn entry() -> Result<(), Error> {
 #[tokio::main]
 async fn main() {
     // Jump to the entrypoint and handle any resulting errors.
-    if let Err(error) = entry().await {
-        eprintln!("{error}");
+    if let Err(errors) = entry().await {
+        eprintln!("{}", format_errors(&errors));
         exit(1);
     }
 }

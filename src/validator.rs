@@ -1,5 +1,5 @@
 use crate::{
-    error::{Error, SourceRange, listing, throw},
+    error::{Error, source_error, source_error_with_reason, throw},
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
@@ -13,21 +13,6 @@ use std::{
 
 // Limit filesystem diagnostics so pathological wikis and directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
-
-// Construct a source-aware error with a listing of the relevant wiki text.
-fn source_error(
-    message: &str,
-    source_path: &Path,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Error {
-    throw::<Error>(
-        message,
-        Some(source_path),
-        Some(&listing(source_contents, source_range)),
-        None,
-    )
-}
 
 // Check text links, reachability, filesystem links, and filesystem coverage.
 pub fn validate(
@@ -190,15 +175,16 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    errors.push(throw(
+                    errors.push(source_error_with_reason(
                         &format!(
                             "Node {} links to inaccessible path {}.",
                             node.title.code_str(),
                             path.code_path(),
                         ),
-                        Some(source_path),
-                        Some(&listing(source_contents, source_range)),
-                        Some(error),
+                        source_path,
+                        source_contents,
+                        source_range,
+                        error,
                     ));
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;

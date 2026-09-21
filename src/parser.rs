@@ -1,5 +1,5 @@
 use crate::{
-    error::{Error, SourceRange, listing, throw},
+    error::{Error, SourceRange, source_error},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
     wiki::{
@@ -14,21 +14,6 @@ struct PendingNode {
     source_start: usize,
     content_start: usize,
     title_source_range: SourceRange,
-}
-
-// Construct a source-aware error with a listing of the relevant wiki text.
-fn source_error(
-    message: &str,
-    source_path: &Path,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Error {
-    throw::<Error>(
-        message,
-        Some(source_path),
-        Some(&listing(source_contents, source_range)),
-        None,
-    )
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
