@@ -18,8 +18,8 @@ use tower_lsp_server::{
         Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
-        MarkupKind, OneOf, Position, PositionEncodingKind, Range, ReferenceParams,
+        HoverProviderCapability, InitializeParams, InitializeResult, Location, LocationLink,
+        MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range, ReferenceParams,
         ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
         TextDocumentSyncOptions, TextEdit, Uri,
     },
@@ -339,13 +339,15 @@ fn definition_for_document(
     // Parse only the wiki syntax because navigation does not require filesystem validation.
     let wiki_path = uri.to_file_path()?;
     let wiki = parser::parse(wiki_path.as_ref(), source_contents).ok()?;
-    let (node, _link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
+    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
 
-    // Select the destination title when the editor jumps to the node.
-    Some(GotoDefinitionResponse::Scalar(Location::new(
-        uri.clone(),
-        lsp_range(source_contents, node.title_source_range),
-    )))
+    // Identify the complete source link and destination node while selecting its title on arrival.
+    Some(GotoDefinitionResponse::Link(vec![LocationLink {
+        origin_selection_range: Some(lsp_range(source_contents, link_source_range)),
+        target_uri: uri.clone(),
+        target_range: lsp_range(source_contents, node.source_range),
+        target_selection_range: lsp_range(source_contents, node.title_source_range),
+    }]))
 }
 
 // Preview the destination of a text link at an editor position.
@@ -652,12 +654,23 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let definition = definition_for_document(&uri, source, Position::new(2, 5)).unwrap();
 
-        let GotoDefinitionResponse::Scalar(location) = definition else {
+        let GotoDefinitionResponse::Link(links) = definition else {
             panic!("a text link should have one definition");
         };
-        assert_eq!(location.uri, uri);
+        let [link] = links.as_slice() else {
+            panic!("a text link should have exactly one definition");
+        };
+        assert_eq!(link.target_uri, uri);
         assert_eq!(
-            location.range,
+            link.origin_selection_range,
+            Some(Range::new(Position::new(2, 3), Position::new(2, 13))),
+        );
+        assert_eq!(
+            link.target_range,
+            Range::new(Position::new(4, 0), Position::new(6, 6)),
+        );
+        assert_eq!(
+            link.target_selection_range,
             Range::new(Position::new(4, 2), Position::new(4, 10)),
         );
     }
