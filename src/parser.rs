@@ -335,7 +335,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
                     end: line_source_range.end,
                 },
             );
-            let title = raw_title.trim();
+            let title = &source_contents[title_source_range.start..title_source_range.end];
             if title.is_empty() {
                 errors.push(Error::new(
                     "This title is empty.",
