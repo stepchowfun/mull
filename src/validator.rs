@@ -107,12 +107,13 @@ fn validate_text_links(wiki: &Wiki, source_path: &Path, source_contents: &str) -
             } = link
                 && !wiki.text_nodes.contains_key(title)
             {
+                let message = if title.is_empty() {
+                    "Link target is empty.".to_owned()
+                } else {
+                    format!("Node {} not found.", title.code_str())
+                };
                 errors.push(Error::new(
-                    &format!(
-                        "Node {} links to missing node {}.",
-                        node.title.code_str(),
-                        title.code_str(),
-                    ),
+                    &message,
                     Some(source_path),
                     Some((source_contents, *source_range)),
                     None,
@@ -176,12 +177,13 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
+                    let message = if error.kind() == std::io::ErrorKind::NotFound {
+                        format!("{} not found.", path.code_path())
+                    } else {
+                        format!("Failed to access {}.", path.code_path())
+                    };
                     errors.push(Error::new(
-                        &format!(
-                            "Node {} links to inaccessible path {}.",
-                            node.title.code_str(),
-                            path.code_path(),
-                        ),
+                        &message,
                         Some(source_path),
                         Some((source_contents, source_range)),
                         Some(Rc::new(error)),
@@ -202,21 +204,13 @@ fn validate_filesystem_links(
                     referenced_directories.insert(target);
                 }
                 Link::File { .. } => errors.push(Error::new(
-                    &format!(
-                        "Node {} links to {}, which is not a file.",
-                        node.title.code_str(),
-                        path.code_path(),
-                    ),
+                    &format!("{} is not a file.", path.code_path()),
                     Some(source_path),
                     Some((source_contents, source_range)),
                     None,
                 )),
                 Link::Directory { .. } => errors.push(Error::new(
-                    &format!(
-                        "Node {} links to {}, which is not a directory.",
-                        node.title.code_str(),
-                        path.code_path(),
-                    ),
+                    &format!("{} is not a directory.", path.code_path()),
                     Some(source_path),
                     Some((source_contents, source_range)),
                     None,
@@ -511,9 +505,8 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
         assert!(errors.iter().all(|error| {
-            error
-                .to_string()
-                .contains("Node `Home` links to inaccessible path `missing-")
+            let message = error.to_string();
+            message.contains("`missing-") && message.contains(".txt` not found.")
         }));
     }
 
@@ -532,11 +525,7 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("Node `Home` links to inaccessible path `missing.txt`."),
-        );
+        assert!(errors[0].to_string().contains("`missing.txt` not found."));
         assert!(
             errors[1..]
                 .iter()
@@ -696,10 +685,7 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to `images`, which is not a file.",
-        ));
+        assert!(contains_error(&errors, "`images` is not a file."));
         assert!(contains_error(
             &errors,
             &format!("File `{}` is not referenced.", photo_path.display()),
@@ -714,14 +700,8 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to missing node `Zulu`.",
-        ));
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to missing node `Alpha`.",
-        ));
+        assert!(contains_error(&errors, "Node `Zulu` not found."));
+        assert!(contains_error(&errors, "Node `Alpha` not found."));
     }
 
     // Report repeated invalid links at each distinct source occurrence.
@@ -732,11 +712,11 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
-        assert!(errors.iter().all(|error| {
-            error
-                .to_string()
-                .contains("links to missing node `Missing`")
-        }));
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("Node `Missing` not found.")),
+        );
         assert_ne!(errors[0].to_string(), errors[1].to_string());
     }
 
@@ -754,18 +734,12 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 4);
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to missing node `Missing`.",
-        ));
+        assert!(contains_error(&errors, "Node `Missing` not found."));
         assert!(contains_error(
             &errors,
             "Node `Orphan` is not reachable from `Home`.",
         ));
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to inaccessible path `missing.txt`.",
-        ));
+        assert!(contains_error(&errors, "`missing.txt` not found."));
         assert!(contains_error(
             &errors,
             "File `unreferenced.txt` is not referenced.",
@@ -780,10 +754,7 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert!(contains_error(
-            &errors,
-            "Node `Home` links to missing node ``.",
-        ));
+        assert!(contains_error(&errors, "Link target is empty."));
     }
 
     // Require every wiki to contain its special root node.

@@ -319,10 +319,7 @@ mod tests {
         );
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.source.as_deref(), Some("mull"));
-        assert_eq!(
-            diagnostic.message,
-            "Unexpected closing link delimiter in node `Home`.",
-        );
+        assert_eq!(diagnostic.message, "Unexpected closing link delimiter.");
     }
 
     #[test]
