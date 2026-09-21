@@ -20,6 +20,12 @@
       "language": "mull",
       "scopeName": "source.mull",
       "path": "./syntaxes/mull.tmLanguage.json"
-    }]
+    }],
+    "configurationDefaults": {
+      "[mull]": {
+        "editor.wordWrap": "bounded",
+        "editor.wordWrapColumn": 80
+      }
+    }
   }
 }
