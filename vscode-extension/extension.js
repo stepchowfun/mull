@@ -2,11 +2,29 @@
 const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
 
+// This private command navigates text links embedded in hover previews.
+const OPEN_NODE_COMMAND = "mull.openNode";
+
 // Retain the active client so it can be stopped when the extension is deactivated.
 let client;
 
+// Open a wiki node at the title range supplied by a trusted language-server hover.
+async function openNode(uriString, startLine, startCharacter, endLine, endCharacter) {
+  // Open either a file-backed or untitled document and select the complete title.
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriString));
+  const editor = await vscode.window.showTextDocument(document);
+  const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
+  editor.selection = new vscode.Selection(range.start, range.end);
+  editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+}
+
 // Start a Mull language server for local and untitled Mull documents.
-async function activate() {
+async function activate(context) {
+  // Expose only the navigation command embedded in Mull's hover Markdown.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(OPEN_NODE_COMMAND, openNode),
+  );
+
   // Resolve the configured executable before constructing the server process.
   const executablePath = vscode.workspace
     .getConfiguration("mull")
@@ -22,6 +40,11 @@ async function activate() {
       { scheme: "file", language: "mull" },
       { scheme: "untitled", language: "mull" },
     ],
+    markdown: {
+      isTrusted: {
+        enabledCommands: [OPEN_NODE_COMMAND],
+      },
+    },
   };
   client = new LanguageClient("mull", "Mull", serverOptions, clientOptions);
   await client.start();
