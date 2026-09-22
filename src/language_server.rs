@@ -789,6 +789,7 @@ fn linked_node_at<'a>(
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
+#[derive(Clone, Copy)]
 enum LinkExtent {
     // The complete link, including its square-bracket delimiters.
     Whole,
