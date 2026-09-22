@@ -167,7 +167,7 @@ fn validate_filesystem_links(
     nodes.sort_by_key(|node| &node.title);
     'nodes: for node in nodes {
         for link in &node.links {
-            // Skip text links and retain each filesystem link's source information.
+            // Skip text links before processing filesystem links [tag:filesystem_links_only].
             let (path, source_range) = match link {
                 Link::Text { .. } => continue,
                 Link::File { path, source_range } | Link::Directory { path, source_range } => {
@@ -219,7 +219,7 @@ fn validate_filesystem_links(
                     None,
                 )),
                 Link::Text { .. } => {
-                    // Text links were skipped above.
+                    // Text links were skipped above [ref:filesystem_links_only].
                     unreachable!("text links were already skipped")
                 }
             }

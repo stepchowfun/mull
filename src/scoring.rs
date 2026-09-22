@@ -8,7 +8,7 @@ pub fn populate_depths(wiki: &mut Wiki) {
         node.depth = None;
     }
 
-    // Start traversal at the home node when it exists.
+    // Preserve the invariant that queued nodes have assigned depths [tag:queued_node_depths].
     let mut pending_titles = VecDeque::<String>::new();
     if let Some(home) = wiki.text_nodes.get_mut(HOME_TITLE) {
         home.depth = Some(0);
@@ -17,6 +17,7 @@ pub fn populate_depths(wiki: &mut Wiki) {
 
     // Score each newly reached node and queue it for traversal.
     while let Some(title) = pending_titles.pop_front() {
+        // Every title enters the queue only after its depth is assigned [ref:queued_node_depths].
         let depth = wiki.text_nodes[&title]
             .depth
             .expect("queued nodes should have a depth");
