@@ -495,11 +495,11 @@ fn completions_for_document(
     // Parse either the original source or a temporary source with the active link closed.
     let byte_offset = byte_offset(source_contents, cursor)?;
     let wiki_path = local_path(uri);
-    let (wiki, target_source_range) =
+    let (wiki, replacement_source_range) =
         completion_context(wiki_path.as_deref(), source_contents, byte_offset)?;
 
-    // Present node titles deterministically and replace only the link's inner text.
-    let replacement_range = lsp_range(source_contents, target_source_range);
+    // Present node titles deterministically and replace the link's inner text and terminator.
+    let replacement_range = lsp_range(source_contents, replacement_source_range);
     let mut titles = wiki
         .text_nodes
         .keys()
@@ -517,7 +517,7 @@ fn completions_for_document(
                     filter_text: Some(escaped_title.clone()),
                     text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                         replacement_range,
-                        escaped_title,
+                        format!("{escaped_title}]"),
                     ))),
                     ..CompletionItem::default()
                 }
@@ -526,7 +526,7 @@ fn completions_for_document(
     )
 }
 
-// Parse enough of an active text link to identify its editable target range.
+// Parse enough of an active text link to identify the source range a completion should replace.
 fn completion_context(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -536,7 +536,14 @@ fn completion_context(
     if let Ok(wiki) = parser::parse(source_path, source_contents)
         && let Some(target_source_range) = text_link_target_at(&wiki, source_contents, byte_offset)
     {
-        return Some((wiki, target_source_range));
+        // Absorb the existing terminator, which the completion reinstates after the inserted title.
+        return Some((
+            wiki,
+            SourceRange {
+                start: target_source_range.start,
+                end: target_source_range.end + ']'.len_utf8(),
+            },
+        ));
     }
 
     // Close a link at the cursor temporarily so completion works while it is being authored.
@@ -544,6 +551,8 @@ fn completion_context(
     completed_source.insert(byte_offset, ']');
     let wiki = parser::parse(source_path, &completed_source).ok()?;
     let target_source_range = text_link_target_at(&wiki, &completed_source, byte_offset)?;
+
+    // Keep the range inside the original source, which has no terminator to absorb.
     Some((wiki, target_source_range))
 }
 
@@ -1193,7 +1202,7 @@ mod tests {
         );
     }
 
-    // Complete a partial target inside an existing pair of link delimiters.
+    // Complete a partial target by absorbing and reinstating the existing closing delimiter.
     #[test]
     fn completions_replace_closed_link_targets() {
         let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
@@ -1212,9 +1221,9 @@ mod tests {
         };
         assert_eq!(
             edit.range,
-            Range::new(Position::new(2, 1), Position::new(2, 3)),
+            Range::new(Position::new(2, 1), Position::new(2, 4)),
         );
-        assert_eq!(edit.new_text, "Greeting");
+        assert_eq!(edit.new_text, "Greeting]");
     }
 
     // Close an unfinished link temporarily while calculating its completions.
@@ -1235,7 +1244,30 @@ mod tests {
             edit.range,
             Range::new(Position::new(2, 1), Position::new(2, 4)),
         );
-        assert_eq!(edit.new_text, "Greeting");
+        assert_eq!(edit.new_text, "Greeting]");
+    }
+
+    // Leave the cursor after a single closing delimiter once a completion has been applied.
+    #[test]
+    fn completions_do_not_duplicate_closing_delimiters() {
+        // Model an editor that has already auto-closed the link the cursor sits inside.
+        let source = "# Home\n\n[Gr]\n\n# Greeting";
+        let completions =
+            completions_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
+        let greeting = completions
+            .iter()
+            .find(|completion| completion.label == "Greeting")
+            .unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
+            panic!("a completion should replace the link target");
+        };
+
+        // Apply the edit to confirm the link is closed exactly once.
+        let start = byte_offset(source, edit.range.start).unwrap();
+        let end = byte_offset(source, edit.range.end).unwrap();
+        let mut applied = source.to_owned();
+        applied.replace_range(start..end, &edit.new_text);
+        assert_eq!(applied, "# Home\n\n[Greeting]\n\n# Greeting");
     }
 
     // Escape link delimiters when inserting a node title as a completion.
@@ -1253,7 +1285,7 @@ mod tests {
         };
 
         assert_eq!(bracketed.filter_text.as_deref(), Some("A\\[B\\]"));
-        assert_eq!(edit.new_text, "A\\[B\\]");
+        assert_eq!(edit.new_text, "A\\[B\\]]");
     }
 
     // Offer text-node completions only while the cursor is inside a text link target.
