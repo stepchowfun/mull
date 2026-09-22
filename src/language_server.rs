@@ -36,7 +36,7 @@ use tower_lsp_server::{
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
 // This extension command reveals a source range for clickable text links in hover previews.
-// [tag:reveal_range_command] Keep in sync with [file:vscode-extension/extension.js].
+// [group:reveal_range_command] Keep in sync with [file:vscode-extension/extension.js].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
 // This state associates the latest editor contents with a pending diagnostic update.

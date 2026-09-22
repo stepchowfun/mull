@@ -3,7 +3,7 @@ const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
 
 // This private command reveals a source range for text links embedded in hover previews.
-// [ref:reveal_range_command]
+// [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = "mull.revealRange";
 
 // Retain the active client so it can be stopped when the extension is deactivated.
