@@ -35,10 +35,6 @@ pub struct TextNode {
     pub content: String, // No leading or trailing whitespace
     pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
-    #[allow(
-        dead_code,
-        reason = "Retained for diagnostics covering a complete text node."
-    )]
     pub source_range: SourceRange, // The complete node
     pub title_source_range: SourceRange, // The trimmed title text
 }
