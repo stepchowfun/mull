@@ -9,7 +9,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
 use tokio::task::JoinHandle;
@@ -20,14 +20,14 @@ use tower_lsp_server::{
         CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
         CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
         DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        DidSaveTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
-        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-        InitializeParams, InitializeResult, InitializedParams, Location, LocationLink,
-        MarkupContent, MarkupKind, MessageType, OneOf, Position, PositionEncodingKind,
-        PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
-        ServerCapabilities, ServerInfo, TextDocumentPositionParams, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
-        WorkspaceEdit,
+        DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+        DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+        HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
+        Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
+        RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
@@ -51,6 +51,7 @@ struct OpenDocument {
 struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Uri, OpenDocument>>>,
+    supports_hierarchical_document_symbols: AtomicBool,
 }
 
 impl Backend {
@@ -59,6 +60,7 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(Mutex::new(HashMap::new())),
+            supports_hierarchical_document_symbols: AtomicBool::new(false),
         }
     }
 
@@ -162,7 +164,19 @@ impl Backend {
     reason = "Some methods mirror the asynchronous language-server interface without awaiting."
 )]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Remember whether document symbols may carry separate full and selection ranges.
+        let supports_hierarchical_document_symbols = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|capabilities| capabilities.document_symbol.as_ref())
+            .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
+            .unwrap_or(false);
+        self.supports_hierarchical_document_symbols
+            .store(supports_hierarchical_document_symbols, Ordering::Relaxed);
+
+        // Advertise the language features implemented by this server.
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
@@ -178,6 +192,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -361,6 +376,23 @@ impl LanguageServer for Backend {
         Ok(Some(edit.into_iter().collect()))
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        // Describe the nodes in the latest synchronized editor snapshot.
+        let uri = params.text_document.uri;
+        let Some(contents) = self.document_contents(&uri) else {
+            return Ok(None);
+        };
+        Ok(document_symbols_for_document(
+            &uri,
+            &contents,
+            self.supports_hierarchical_document_symbols
+                .load(Ordering::Relaxed),
+        ))
+    }
+
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Cancel outstanding work before asking the client to clear this document's diagnostics.
         let uri = params.text_document.uri;
@@ -402,6 +434,55 @@ fn formatting_edit(
             ),
             rendered_wiki,
         )))
+    }
+}
+
+// Describe every parsed text node for editor outlines and document-symbol navigation.
+#[allow(
+    deprecated,
+    reason = "The protocol's DocumentSymbol type retains a required legacy field."
+)]
+fn document_symbols_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    supports_hierarchy: bool,
+) -> Option<DocumentSymbolResponse> {
+    // Parse syntax without semantic validation so structurally valid nodes remain navigable.
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
+    nodes.sort_by_key(|node| node.source_range.start);
+
+    // Use separate node and title ranges when the client supports hierarchical symbols.
+    let symbols = nodes
+        .into_iter()
+        .map(|node| DocumentSymbol {
+            name: node.title.clone(),
+            detail: None,
+            kind: SymbolKind::OBJECT,
+            tags: None,
+            deprecated: None,
+            range: lsp_range(source_contents, node.source_range),
+            selection_range: lsp_range(source_contents, node.title_source_range),
+            children: None,
+        })
+        .collect::<Vec<_>>();
+    if supports_hierarchy {
+        Some(DocumentSymbolResponse::Nested(symbols))
+    } else {
+        Some(DocumentSymbolResponse::Flat(
+            symbols
+                .into_iter()
+                .map(|symbol| SymbolInformation {
+                    name: symbol.name,
+                    kind: symbol.kind,
+                    tags: symbol.tags,
+                    deprecated: None,
+                    location: Location::new(uri.clone(), symbol.selection_range),
+                    container_name: None,
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -893,8 +974,9 @@ pub async fn run() {
 mod tests {
     use super::{
         byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
-        diagnostics_for_document, formatting_edit, hover_for_document, open_node_command_url,
-        position, prepare_rename_for_document, references_for_document, rename_for_document,
+        diagnostics_for_document, document_symbols_for_document, formatting_edit,
+        hover_for_document, open_node_command_url, position, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
     use crate::{error::SourceRange, parser};
     use std::{
@@ -904,8 +986,8 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        CompletionTextEdit, DiagnosticSeverity, GotoDefinitionResponse, HoverContents, MarkupKind,
-        Position, PrepareRenameResponse, Range, Uri,
+        CompletionTextEdit, DiagnosticSeverity, DocumentSymbolResponse, GotoDefinitionResponse,
+        HoverContents, MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -982,6 +1064,71 @@ mod tests {
                 "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%5D",
             ),
         );
+    }
+
+    // Expose text nodes in source order for saved and untitled editor outlines.
+    #[test]
+    fn document_symbols_describe_text_nodes() {
+        let source = "# Zebra\n\nFirst\n\n# Alpha\n\nSecond";
+        let wiki = TestWiki::new(source);
+        let uris = [untitled_uri(), Uri::from_file_path(wiki.path()).unwrap()];
+
+        for uri in uris {
+            let response = document_symbols_for_document(&uri, source, true).unwrap();
+            let DocumentSymbolResponse::Nested(symbols) = response else {
+                panic!("text nodes should be represented as nested document symbols");
+            };
+            assert_eq!(
+                symbols
+                    .iter()
+                    .map(|symbol| symbol.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Zebra", "Alpha"],
+            );
+            assert!(symbols.iter().all(|symbol| {
+                symbol.kind == SymbolKind::OBJECT
+                    && symbol.detail.is_none()
+                    && symbol.tags.is_none()
+                    && symbol.children.is_none()
+            }));
+            assert_eq!(
+                symbols[0].range,
+                Range::new(Position::new(0, 0), Position::new(4, 0)),
+            );
+            assert_eq!(
+                symbols[0].selection_range,
+                Range::new(Position::new(0, 2), Position::new(0, 7)),
+            );
+            assert_eq!(
+                symbols[1].range,
+                Range::new(Position::new(4, 0), Position::new(6, 6)),
+            );
+            assert_eq!(
+                symbols[1].selection_range,
+                Range::new(Position::new(4, 2), Position::new(4, 7)),
+            );
+
+            // Fall back to universally supported flat symbols at each title range.
+            let response = document_symbols_for_document(&uri, source, false).unwrap();
+            let DocumentSymbolResponse::Flat(symbols) = response else {
+                panic!("clients without hierarchy support should receive flat symbols");
+            };
+            assert_eq!(
+                symbols
+                    .iter()
+                    .map(|symbol| symbol.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Zebra", "Alpha"],
+            );
+            assert_eq!(
+                symbols[0].location.range,
+                Range::new(Position::new(0, 2), Position::new(0, 7)),
+            );
+            assert_eq!(
+                symbols[1].location.range,
+                Range::new(Position::new(4, 2), Position::new(4, 7)),
+            );
+        }
     }
 
     // Analyze ordinary text-node structure in a new editor buffer.
