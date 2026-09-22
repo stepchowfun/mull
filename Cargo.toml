@@ -1,6 +1,6 @@
 [package]
 name = "mull"
-version = "0.11.0"
+version = "0.11.1"
 authors = ["Stephan Boyer <stephan@stephanboyer.com>"]
 edition = "2024"
 description = "Organize your knowledge."

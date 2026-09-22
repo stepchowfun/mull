@@ -13,7 +13,7 @@ use crate::{
     checker::{analyze, check},
     error::{Error, format_errors},
     format::CodePath,
-    path_util::{WikiLocation, relative_path},
+    path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
@@ -167,28 +167,27 @@ async fn entry() -> Result<(), Vec<Error>> {
         }
     };
 
-    // Use the requested wiki or search for one when no path was supplied.
-    let wiki_path = cli
-        .path
-        .map_or_else(find_wiki, Ok)
-        .map_err(|error| vec![error])?;
-
-    // Prefer a path relative to the current directory when the wiki is contained within it.
-    let current_directory = env::current_dir().map_err(|error| {
-        vec![Error::new(
-            "Unable to determine the current directory.",
-            None,
-            None,
-            Some(Rc::new(error)),
-        )]
-    })?;
-    let display_path = relative_path(&current_directory, &wiki_path).to_owned();
+    // Select the wiki and make its path relative when it is contained in the current directory.
+    let wiki_path = relative_path(
+        &env::current_dir().map_err(|error| {
+            vec![Error::new(
+                "Unable to determine the current directory.",
+                None,
+                None,
+                Some(Rc::new(error)),
+            )]
+        })?,
+        &cli.path
+            .map_or_else(find_wiki, Ok)
+            .map_err(|error| vec![error])?,
+    )
+    .to_owned();
 
     // Load the wiki and require its contents to be valid UTF-8.
     let wiki_bytes = fs::read(&wiki_path).map_err(|error| {
         vec![Error::new(
             "Unable to read the wiki.",
-            Some(&display_path),
+            Some(&wiki_path),
             None,
             Some(Rc::new(error)),
         )]
@@ -196,23 +195,17 @@ async fn entry() -> Result<(), Vec<Error>> {
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
         vec![Error::new(
             "The wiki is not valid UTF-8.",
-            Some(&display_path),
+            Some(&wiki_path),
             None,
             Some(Rc::new(error)),
         )]
     })?;
 
-    // Keep the physical and display paths together throughout analysis.
-    let location = WikiLocation::Local {
-        path: &wiki_path,
-        display_path: &display_path,
-    };
-
     // Analyze the wiki and additionally check its formatting when no fix was requested.
     let wiki = if should_fix {
-        analyze(location, &wiki_contents)
+        analyze(Some(&wiki_path), &wiki_contents)
     } else {
-        check(location, &wiki_contents)
+        check(Some(&wiki_path), &wiki_contents)
     }?;
 
     // Render the wiki once for checking or fixing.
@@ -221,23 +214,23 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Fix the wiki when requested, avoiding a rewrite when it is already canonical.
     if should_fix {
         if wiki_contents == rendered_wiki {
-            println!("Wiki {} looks good.", display_path.code_path());
+            println!("Wiki {} looks good.", wiki_path.code_path());
         } else {
             fs::write(&wiki_path, rendered_wiki).map_err(|error| {
                 vec![Error::new(
                     "Unable to write the wiki.",
-                    Some(&display_path),
+                    Some(&wiki_path),
                     None,
                     Some(Rc::new(error)),
                 )]
             })?;
 
             // Report that the wiki was fixed.
-            println!("Fixed {}.", display_path.code_path());
+            println!("Fixed {}.", wiki_path.code_path());
         }
     } else {
         // Report that the wiki passed the check.
-        println!("Wiki {} looks good.", display_path.code_path());
+        println!("Wiki {} looks good.", wiki_path.code_path());
     }
 
     // Everything succeeded.

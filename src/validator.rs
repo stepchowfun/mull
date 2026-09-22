@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
     format::{CodePath, CodeStr},
-    path_util::{WikiLocation, relative_path},
+    path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -18,20 +18,15 @@ const MAX_FILESYSTEM_ERRORS: usize = 50;
 // Check text links, reachability, filesystem links, and filesystem coverage.
 pub fn validate(
     wiki: &Wiki,
-    location: WikiLocation<'_>,
+    source_path: Option<&Path>,
     source_contents: &str,
 ) -> Result<(), Vec<Error>> {
     // Preserve graph errors if resolving the wiki later fails.
-    let source_path = location.display_path();
     let mut errors = validate_text_links(wiki, source_path, source_contents);
 
     // Report each filesystem link precisely when an editor buffer has no filesystem context.
-    let Some(wiki_path) = location.path() else {
-        errors.extend(validate_untitled_filesystem_links(
-            wiki,
-            source_path,
-            source_contents,
-        ));
+    let Some(wiki_path) = source_path else {
+        errors.extend(validate_untitled_filesystem_links(wiki, source_contents));
         return errors_to_result(errors);
     };
 
@@ -40,26 +35,12 @@ pub fn validate(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let Some(wiki_file_name) = wiki_path.file_name() else {
-        errors.push(Error::new(
-            &format!(
-                "Unable to determine the file name of {}.",
-                wiki_path.code_path(),
-            ),
-            source_path,
-            None,
-            None,
-        ));
-        return errors_to_result(errors);
-    };
-    let logical_wiki_path = wiki_directory.join(wiki_file_name);
 
     // Check the filesystem relative to the resolved wiki directory.
     errors.extend(validate_filesystem_links(
         wiki,
         wiki_directory,
-        &logical_wiki_path,
-        source_path,
+        wiki_path,
         source_contents,
     ));
     errors_to_result(errors)
@@ -142,11 +123,7 @@ fn validate_text_links(
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki.
-fn validate_untitled_filesystem_links(
-    wiki: &Wiki,
-    source_path: Option<&Path>,
-    source_contents: &str,
-) -> Vec<Error> {
+fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec<Error> {
     // Visit links deterministically and respect the shared filesystem-error budget.
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
@@ -157,7 +134,7 @@ fn validate_untitled_filesystem_links(
             Link::File { source_range, .. } | Link::Directory { source_range, .. } => {
                 Some(Error::new(
                     "Save the wiki to validate this filesystem link.",
-                    source_path,
+                    None,
                     Some((source_contents, *source_range)),
                     None,
                 ))
@@ -173,7 +150,6 @@ fn validate_filesystem_links(
     wiki: &Wiki,
     wiki_directory: &Path,
     wiki_path: &Path,
-    source_path: Option<&Path>,
     source_contents: &str,
 ) -> Vec<Error> {
     // Track valid targets while visiting nodes and links in deterministic order.
@@ -204,7 +180,7 @@ fn validate_filesystem_links(
                     };
                     errors.push(Error::new(
                         &message,
-                        source_path,
+                        Some(wiki_path),
                         Some((source_contents, source_range)),
                         Some(Rc::new(error)),
                     ));
@@ -225,13 +201,13 @@ fn validate_filesystem_links(
                 }
                 Link::File { .. } => errors.push(Error::new(
                     &format!("{} is not a file.", path.code_path()),
-                    source_path,
+                    Some(wiki_path),
                     Some((source_contents, source_range)),
                     None,
                 )),
                 Link::Directory { .. } => errors.push(Error::new(
                     &format!("{} is not a directory.", path.code_path()),
-                    source_path,
+                    Some(wiki_path),
                     Some((source_contents, source_range)),
                     None,
                 )),
@@ -259,7 +235,6 @@ fn validate_filesystem_links(
         &referenced_files,
         &referenced_directories,
         remaining_error_capacity,
-        source_path,
     ));
 
     errors
@@ -272,7 +247,6 @@ fn find_unreferenced_filesystem_links(
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
     maximum_errors: usize,
-    source_path: Option<&Path>,
 ) -> Vec<Error> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
     if referenced_directories.contains(wiki_directory) {
@@ -291,7 +265,7 @@ fn find_unreferenced_filesystem_links(
         Err(error) => {
             return vec![Error::new(
                 "Unable to build filesystem ignore rules.",
-                source_path,
+                Some(wiki_path),
                 None,
                 Some(Rc::new(error)),
             )];
@@ -308,11 +282,13 @@ fn find_unreferenced_filesystem_links(
         .require_git(false)
         .overrides(overrides)
         .filter_entry({
-            let wiki_path = wiki_path.to_owned();
+            let wiki_directory = wiki_directory.to_owned();
+            let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
             let referenced_directories = referenced_directories.clone();
             move |entry| {
                 // Exclude the wiki and prune directories already covered by their links.
-                entry.path() != wiki_path && !referenced_directories.contains(entry.path())
+                relative_path(&wiki_directory, entry.path()) != relative_wiki_path
+                    && !referenced_directories.contains(entry.path())
             }
         });
 
@@ -324,7 +300,7 @@ fn find_unreferenced_filesystem_links(
             Err(error) => {
                 errors.push(Error::new(
                     "Unable to walk wiki directory.",
-                    source_path,
+                    Some(wiki_path),
                     None,
                     Some(Rc::new(error)),
                 ));
@@ -344,7 +320,7 @@ fn find_unreferenced_filesystem_links(
                     "File {} is not referenced.",
                     relative_path(wiki_directory, path).code_path(),
                 ),
-                source_path,
+                Some(wiki_path),
                 None,
                 None,
             ));
@@ -371,7 +347,7 @@ fn errors_to_result(errors: Vec<Error>) -> Result<(), Vec<Error>> {
 #[cfg(test)]
 mod tests {
     use super::{MAX_FILESYSTEM_ERRORS, validate as validate_wiki};
-    use crate::{error::Error, parser::parse as parse_wiki, path_util::WikiLocation, wiki::Wiki};
+    use crate::{error::Error, parser::parse as parse_wiki, wiki::Wiki};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -401,19 +377,12 @@ mod tests {
 
     // Validate a fixture using a stable display path for deterministic diagnostics.
     fn validate(wiki: &TestWiki, wiki_path: &Path) -> Result<(), Vec<Error>> {
-        validate_wiki(
-            &wiki.wiki,
-            WikiLocation::Local {
-                path: wiki_path,
-                display_path: Path::new("test.mull"),
-            },
-            &wiki.source_contents,
-        )
+        validate_wiki(&wiki.wiki, Some(wiki_path), &wiki.source_contents)
     }
 
     // Validate a fixture without pretending that its editor buffer has a filesystem path.
     fn validate_untitled(wiki: &TestWiki) -> Result<(), Vec<Error>> {
-        validate_wiki(&wiki.wiki, WikiLocation::Untitled, &wiki.source_contents)
+        validate_wiki(&wiki.wiki, None, &wiki.source_contents)
     }
 
     // Check rendered diagnostics without coupling tests to their complete listings.

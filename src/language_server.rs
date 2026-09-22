@@ -2,7 +2,6 @@ use crate::{
     checker::analyze,
     error::{Error, SourceRange},
     parser,
-    path_util::WikiLocation,
     wiki::{Link, TextNode, Wiki},
 };
 use std::{
@@ -280,13 +279,11 @@ impl LanguageServer for Backend {
         let Some((contents, generation)) = snapshot else {
             return Ok(None);
         };
-        let Some(wiki_path) = local_path(&uri).map(Cow::into_owned) else {
-            return Ok(None);
-        };
+        let wiki_path = local_path(&uri).map(Cow::into_owned);
 
         // Parse, validate, and render outside the asynchronous executor.
         let formatting_result = tokio::task::spawn_blocking(move || {
-            formatting_edit(&wiki_path, &contents).map_err(|_errors| ())
+            formatting_edit(wiki_path.as_deref(), &contents).map_err(|_errors| ())
         })
         .await;
         let Ok(Ok(edit)) = formatting_result else {
@@ -334,18 +331,11 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 
 // Produce a whole-document formatting edit after applying Mull's normal validation rules.
 fn formatting_edit(
-    wiki_path: &Path,
+    source_path: Option<&Path>,
     source_contents: &str,
 ) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
     // Render the validated wiki and avoid an edit when its source is already canonical.
-    let rendered_wiki = analyze(
-        WikiLocation::Local {
-            path: wiki_path,
-            display_path: wiki_path,
-        },
-        source_contents,
-    )?
-    .to_string();
+    let rendered_wiki = analyze(source_path, source_contents)?.to_string();
     if source_contents == rendered_wiki {
         Ok(None)
     } else {
@@ -483,16 +473,9 @@ fn text_link_at(wiki: &Wiki, byte_offset: usize) -> Option<(&str, SourceRange)> 
 fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
     // Use local filesystem context when the editor document has one.
     let wiki_path = local_path(uri);
-    let location = match wiki_path.as_deref() {
-        Some(path) => WikiLocation::Local {
-            path,
-            display_path: path,
-        },
-        None => WikiLocation::Untitled,
-    };
 
     // Preserve independent Mull errors as independent editor diagnostics.
-    analyze(location, source_contents).map_or_else(
+    analyze(wiki_path.as_deref(), source_contents).map_or_else(
         |errors| {
             errors
                 .iter()
@@ -883,7 +866,7 @@ mod tests {
     fn formatting_replaces_noncanonical_source() {
         let source = "# Zulu\n\n😀\n\n# Home\n\n[Zulu]";
         let wiki = TestWiki::new(source);
-        let edit = formatting_edit(wiki.path(), source).unwrap().unwrap();
+        let edit = formatting_edit(Some(wiki.path()), source).unwrap().unwrap();
 
         assert_eq!(
             edit.range,
@@ -897,7 +880,11 @@ mod tests {
         let source = "# Home\n";
         let wiki = TestWiki::new(source);
 
-        assert!(formatting_edit(wiki.path(), source).unwrap().is_none());
+        assert!(
+            formatting_edit(Some(wiki.path()), source)
+                .unwrap()
+                .is_none(),
+        );
     }
 
     #[test]
@@ -905,7 +892,16 @@ mod tests {
         let source = "# Elsewhere\n";
         let wiki = TestWiki::new(source);
 
-        assert!(formatting_edit(wiki.path(), source).is_err());
+        assert!(formatting_edit(Some(wiki.path()), source).is_err());
+    }
+
+    // Format a new editor buffer without requiring a filesystem path.
+    #[test]
+    fn formatting_supports_untitled_wikis() {
+        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let edit = formatting_edit(None, source).unwrap().unwrap();
+
+        assert_eq!(edit.new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
     }
 
     #[test]
