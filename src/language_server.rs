@@ -2,9 +2,11 @@ use crate::{
     checker::analyze,
     error::{Error, SourceRange},
     parser,
+    path_util::WikiLocation,
     wiki::{Link, TextNode, Wiki},
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
@@ -18,10 +20,10 @@ use tower_lsp_server::{
         Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, Location, LocationLink,
-        MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range, ReferenceParams,
-        ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-        TextDocumentSyncOptions, TextEdit, Uri,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf, Position,
+        PositionEncodingKind, Range, ReferenceParams, ServerCapabilities, ServerInfo,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
     },
 };
 
@@ -179,7 +181,18 @@ impl LanguageServer for Backend {
         })
     }
 
+    async fn initialized(&self, _params: InitializedParams) {
+        // Confirm that the server completed its initialization handshake.
+        self.client
+            .log_message(MessageType::INFO, "Mull language server initialized.")
+            .await;
+    }
+
     async fn shutdown(&self) -> Result<()> {
+        // Confirm that the server began its shutdown handshake.
+        self.client
+            .log_message(MessageType::INFO, "Mull language server shutting down.")
+            .await;
         Ok(())
     }
 
@@ -267,7 +280,7 @@ impl LanguageServer for Backend {
         let Some((contents, generation)) = snapshot else {
             return Ok(None);
         };
-        let Some(wiki_path) = uri.to_file_path().map(std::borrow::Cow::into_owned) else {
+        let Some(wiki_path) = local_path(&uri).map(Cow::into_owned) else {
             return Ok(None);
         };
 
@@ -310,13 +323,29 @@ impl LanguageServer for Backend {
     }
 }
 
+// Convert only file-scheme URIs because the URI library does not enforce this distinction.
+fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
+    uri.scheme()
+        .as_str()
+        .eq_ignore_ascii_case("file")
+        .then(|| uri.to_file_path())
+        .flatten()
+}
+
 // Produce a whole-document formatting edit after applying Mull's normal validation rules.
 fn formatting_edit(
     wiki_path: &Path,
     source_contents: &str,
 ) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
     // Render the validated wiki and avoid an edit when its source is already canonical.
-    let rendered_wiki = analyze(wiki_path, wiki_path, source_contents)?.to_string();
+    let rendered_wiki = analyze(
+        WikiLocation::Local {
+            path: wiki_path,
+            display_path: wiki_path,
+        },
+        source_contents,
+    )?
+    .to_string();
     if source_contents == rendered_wiki {
         Ok(None)
     } else {
@@ -337,8 +366,8 @@ fn definition_for_document(
     cursor: Position,
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
-    let wiki_path = uri.to_file_path()?;
-    let wiki = parser::parse(wiki_path.as_ref(), source_contents).ok()?;
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
 
     // Identify the complete source link and destination node while selecting its title on arrival.
@@ -353,8 +382,8 @@ fn definition_for_document(
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering does not require filesystem validation.
-    let wiki_path = uri.to_file_path()?;
-    let wiki = parser::parse(wiki_path.as_ref(), source_contents).ok()?;
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
 
     // Render the node faithfully as plain Mull source rather than interpreting it as Markdown.
@@ -375,8 +404,8 @@ fn references_for_document(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references does not require validation.
-    let wiki_path = uri.to_file_path()?;
-    let wiki = parser::parse(wiki_path.as_ref(), source_contents).ok()?;
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
     let title = referenced_title_at(&wiki, byte_offset)?;
     let node = wiki.text_nodes.get(title)?;
@@ -450,19 +479,20 @@ fn text_link_at(wiki: &Wiki, byte_offset: usize) -> Option<(&str, SourceRange)> 
     })
 }
 
-// Analyze the editor snapshot associated with a file URI without checking its formatting.
+// Analyze an editor snapshot without checking its formatting.
 fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
-    // Reject URIs that cannot supply the filesystem context required by wiki validation.
-    let Some(wiki_path) = uri.to_file_path() else {
-        return vec![diagnostic(
-            source_contents,
-            None,
-            "Mull could not determine the wiki's filesystem path.".to_owned(),
-        )];
+    // Use local filesystem context when the editor document has one.
+    let wiki_path = local_path(uri);
+    let location = match wiki_path.as_deref() {
+        Some(path) => WikiLocation::Local {
+            path,
+            display_path: path,
+        },
+        None => WikiLocation::Untitled,
     };
 
     // Preserve independent Mull errors as independent editor diagnostics.
-    analyze(&wiki_path, &wiki_path, source_contents).map_or_else(
+    analyze(location, source_contents).map_or_else(
         |errors| {
             errors
                 .iter()
@@ -622,6 +652,11 @@ mod tests {
         }
     }
 
+    // Construct the URI assigned to a new editor buffer before its first save.
+    fn untitled_uri() -> Uri {
+        "untitled:Untitled-1".parse().unwrap()
+    }
+
     #[test]
     fn positions_use_utf16_code_units() {
         let source = "zero\n😀 café";
@@ -644,6 +679,68 @@ mod tests {
         assert_eq!(byte_offset(source, Position::new(1, 7)), Some(source.len()));
         assert_eq!(byte_offset(source, Position::new(1, 8)), None);
         assert_eq!(byte_offset(source, Position::new(2, 0)), None);
+    }
+
+    // Analyze ordinary text-node structure in a new editor buffer.
+    #[test]
+    fn untitled_text_only_wikis_receive_diagnostics() {
+        let source = "# Home\nSee [Missing].";
+        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "Node `Missing` not found.");
+        assert_eq!(
+            diagnostics[0].range,
+            Range::new(Position::new(1, 4), Position::new(1, 13)),
+        );
+    }
+
+    // Report parser errors from a new editor buffer at their exact source locations.
+    #[test]
+    fn untitled_syntax_errors_receive_diagnostics() {
+        let source = "# Home\nUnexpected]";
+        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "Unexpected closing link delimiter.");
+        assert_eq!(
+            diagnostics[0].range,
+            Range::new(Position::new(1, 10), Position::new(1, 11)),
+        );
+    }
+
+    // Require a first save before resolving filesystem links from a new editor buffer.
+    #[test]
+    fn untitled_filesystem_links_receive_diagnostics() {
+        let source = concat!("# Home\n[", "file:notes.txt] [", "dir:images]");
+        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.message == "Save the wiki to validate this filesystem link."
+        }));
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.range)
+                .collect::<Vec<_>>(),
+            vec![
+                Range::new(Position::new(1, 0), Position::new(1, 16)),
+                Range::new(Position::new(1, 17), Position::new(1, 29)),
+            ],
+        );
+    }
+
+    // Navigate among text nodes without requiring a new editor buffer to have a path.
+    #[test]
+    fn untitled_wikis_support_navigation() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+
+        assert!(definition_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some());
+        assert!(hover_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some());
+        assert!(
+            references_for_document(&untitled_uri(), source, Position::new(2, 4), false).is_some(),
+        );
     }
 
     // Jump from a text link to the title of its destination node.
@@ -823,7 +920,7 @@ mod tests {
     #[test]
     fn source_errors_become_precise_diagnostics() {
         let source = "# Home\n😀 ]";
-        let error = parser::parse(Path::new("wiki.mull"), source)
+        let error = parser::parse(Some(Path::new("wiki.mull")), source)
             .unwrap_err()
             .into_iter()
             .next()

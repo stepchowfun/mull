@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn transitive_text_links() {
         let mut wiki = parse(
-            Path::new("test.mull"),
+            Some(Path::new("test.mull")),
             "# Home\nSee [Middle].\n# Middle\nSee [End].\n# End",
         )
         .unwrap();
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn minimum_depth() {
         let mut wiki = parse(
-            Path::new("test.mull"),
+            Some(Path::new("test.mull")),
             concat!(
                 "# Home\nSee [Left] and [Target].\n",
                 "# Left\nSee [Middle].\n",
