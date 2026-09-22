@@ -595,7 +595,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     let wiki_path = local_path(uri);
     let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = previewed_node_at(&wiki, byte_offset)?;
+    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
 
     // Render the node as Markdown with commands that navigate its resolvable text links.
     let markdown = node.to_markdown(|title| {
@@ -686,7 +686,7 @@ fn prepare_rename_for_document(
     let wiki_path = local_path(uri);
     let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = referenced_node_at(&wiki, source_contents, byte_offset)?;
+    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)?;
 
     // Select only the title text and seed the rename prompt with its decoded value.
     Some(PrepareRenameResponse::RangeWithPlaceholder {
@@ -710,7 +710,8 @@ fn rename_for_document(
     let Some(byte_offset) = byte_offset(source_contents, cursor) else {
         return Ok(None);
     };
-    let Some((node, _source_range)) = referenced_node_at(&wiki, source_contents, byte_offset)
+    let Some((node, _source_range)) =
+        node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)
     else {
         return Ok(None);
     };
@@ -787,38 +788,42 @@ fn linked_node_at<'a>(
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
-// Resolve either a node title or a text link to the node that should be previewed.
-fn previewed_node_at(wiki: &Wiki, byte_offset: usize) -> Option<(&TextNode, SourceRange)> {
-    // Prefer a node's declaration when the cursor is within its title.
-    if let Some(node) = wiki.text_nodes.values().find(|node| {
-        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
-    }) {
-        return Some((node, node.title_source_range));
-    }
+// This describes which part of a resolved text link a caller considers relevant.
+enum LinkExtent {
+    // The complete link, including its square-bracket delimiters.
+    Whole,
 
-    // Resolve a reference while retaining the complete link as the hovered range.
-    let (title, source_range) = text_link_at(wiki, byte_offset)?;
-    wiki.text_nodes.get(title).map(|node| (node, source_range))
+    // The link's inner text, which excludes its delimiters.
+    Target,
 }
 
-// Resolve the node and editable title range denoted by a declaration or text link.
-fn referenced_node_at<'a>(
+// Resolve the node denoted by a declaration or text link at a source offset.
+fn node_at<'a>(
     wiki: &'a Wiki,
     source_contents: &str,
     byte_offset: usize,
+    link_extent: LinkExtent,
 ) -> Option<(&'a TextNode, SourceRange)> {
-    // Prefer declarations before looking through reference occurrences.
-    if let Some(node) = wiki.text_nodes.values().find(|node| {
-        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
-    }) {
+    // Prefer a declaration, whose title is the only range it can contribute.
+    if let Some(node) = declaration_at(wiki, byte_offset) {
         return Some((node, node.title_source_range));
     }
 
-    // Resolve a text link and exclude its square-bracket delimiters from the editable range.
+    // Resolve a reference, reporting whichever extent of the link the caller asked for.
     let (title, source_range) = text_link_at(wiki, byte_offset)?;
     let node = wiki.text_nodes.get(title)?;
-    let target_source_range = text_link_target_source_range(source_contents, source_range)?;
-    Some((node, target_source_range))
+    let source_range = match link_extent {
+        LinkExtent::Whole => source_range,
+        LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
+    };
+    Some((node, source_range))
+}
+
+// Find the node whose title is declared at a source offset.
+fn declaration_at(wiki: &Wiki, byte_offset: usize) -> Option<&TextNode> {
+    wiki.text_nodes.values().find(|node| {
+        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+    })
 }
 
 // Find the title denoted by a declaration or text link at a source offset.
@@ -827,7 +832,7 @@ fn referenced_title_at<'a>(
     source_contents: &str,
     byte_offset: usize,
 ) -> Option<&'a str> {
-    referenced_node_at(wiki, source_contents, byte_offset)
+    node_at(wiki, source_contents, byte_offset, LinkExtent::Target)
         .map(|(node, _source_range)| node.title.as_str())
 }
 
