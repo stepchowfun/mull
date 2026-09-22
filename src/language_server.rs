@@ -20,7 +20,8 @@ use tower_lsp_server::{
         CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
         CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
         DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+        DidSaveTextDocumentParams, DocumentFormattingParams, DocumentHighlight,
+        DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams,
         DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
         HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
         InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
@@ -188,6 +189,7 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 position_encoding: Some(PositionEncodingKind::UTF16),
                 references_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -309,6 +311,23 @@ impl LanguageServer for Backend {
             &contents,
             position_params.position,
             params.context.include_declaration,
+        ))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        // Highlight the wiki occurrences related to the item under the cursor.
+        let position_params = params.text_document_position_params;
+        let uri = position_params.text_document.uri;
+        let Some(contents) = self.document_contents(&uri) else {
+            return Ok(None);
+        };
+        Ok(document_highlights_for_document(
+            &uri,
+            &contents,
+            position_params.position,
         ))
     }
 
@@ -645,22 +664,10 @@ fn references_for_document(
     let wiki_path = local_path(uri);
     let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
-    let title = referenced_title_at(&wiki, source_contents, byte_offset)?;
-    let node = wiki.text_nodes.get(title)?;
+    let (node, _source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
 
-    // Collect source ranges before sorting because nodes are stored in an unordered map.
-    let mut source_ranges = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Text {
-                title: link_title,
-                source_range,
-            } if link_title == title => Some(*source_range),
-            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
-        })
-        .collect::<Vec<_>>();
+    // Include the declaration only when requested, then restore source order.
+    let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
     if include_declaration {
         source_ranges.push(node.title_source_range);
     }
@@ -675,6 +682,107 @@ fn references_for_document(
             })
             .collect(),
     )
+}
+
+// Highlight related node or filesystem-link occurrences at an editor position.
+fn document_highlights_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<Vec<DocumentHighlight>> {
+    // Parse only the wiki syntax because document highlights do not require validation.
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let byte_offset = byte_offset(source_contents, cursor)?;
+
+    // Distinguish a text-node declaration from its references.
+    let mut highlights = if let Some((node, _source_range)) =
+        node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)
+    {
+        let mut highlights = text_link_source_ranges(&wiki, &node.title)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect::<Vec<_>>();
+        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
+        highlights
+    } else {
+        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
+        let link = filesystem_link_at(&wiki, byte_offset)?;
+        filesystem_link_source_ranges(&wiki, link)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect()
+    };
+
+    // Return every matching source occurrence in wiki order.
+    highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
+    Some(
+        highlights
+            .into_iter()
+            .map(|(source_range, kind)| DocumentHighlight {
+                range: lsp_range(source_contents, source_range),
+                kind: Some(kind),
+            })
+            .collect(),
+    )
+}
+
+// Collect every complete text-link range that resolves to a title.
+fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
+    // Links live on nodes in an unordered map, so sort their ranges into source order.
+    let mut source_ranges = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match link {
+            Link::Text {
+                title: link_title,
+                source_range,
+            } if link_title == title => Some(*source_range),
+            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
+    source_ranges
+}
+
+// Find a file or directory link at a source offset.
+fn filesystem_link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
+    wiki.text_nodes.values().find_map(|node| {
+        node.links.iter().find(|link| match link {
+            Link::File { source_range, .. } | Link::Directory { source_range, .. } => {
+                source_range.start <= byte_offset && byte_offset < source_range.end
+            }
+            Link::Text { .. } => false,
+        })
+    })
+}
+
+// Collect every complete filesystem-link range with the same kind and path as a target.
+fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
+    // Match logical paths without resolving symlinks, just as filesystem validation does.
+    wiki.text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match (link, target) {
+            (
+                Link::File { path, source_range },
+                Link::File {
+                    path: target_path, ..
+                },
+            )
+            | (
+                Link::Directory { path, source_range },
+                Link::Directory {
+                    path: target_path, ..
+                },
+            ) if path == target_path => Some(*source_range),
+            (
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+            ) => None,
+        })
+        .collect()
 }
 
 // Identify the source occurrence that should be selected before renaming a node.
@@ -826,16 +934,6 @@ fn declaration_at(wiki: &Wiki, byte_offset: usize) -> Option<&TextNode> {
     wiki.text_nodes.values().find(|node| {
         node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
     })
-}
-
-// Find the title denoted by a declaration or text link at a source offset.
-fn referenced_title_at<'a>(
-    wiki: &'a Wiki,
-    source_contents: &str,
-    byte_offset: usize,
-) -> Option<&'a str> {
-    node_at(wiki, source_contents, byte_offset, LinkExtent::Target)
-        .map(|(node, _source_range)| node.title.as_str())
 }
 
 // Find a text link at a source offset without resolving its destination.
@@ -990,9 +1088,9 @@ pub async fn run() {
 mod tests {
     use super::{
         byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_symbols_for_document, formatting_edit,
-        hover_for_document, position, prepare_rename_for_document, references_for_document,
-        rename_for_document, reveal_range_command_url,
+        diagnostics_for_document, document_highlights_for_document, document_symbols_for_document,
+        formatting_edit, hover_for_document, position, prepare_rename_for_document,
+        references_for_document, rename_for_document, reveal_range_command_url,
     };
     use crate::{error::SourceRange, parser};
     use std::{
@@ -1002,8 +1100,9 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        CompletionTextEdit, DiagnosticSeverity, DocumentSymbolResponse, GotoDefinitionResponse,
-        HoverContents, MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+        CompletionTextEdit, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
+        DocumentSymbolResponse, GotoDefinitionResponse, HoverContents, MarkupKind, Position,
+        PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -1459,6 +1558,107 @@ mod tests {
             Some(Vec::new()),
         );
         assert!(references_for_document(&uri, source, Position::new(0, 0), false).is_none());
+    }
+
+    // Highlight a node declaration and all its text links from either kind of occurrence.
+    #[test]
+    fn document_highlights_find_node_occurrences() {
+        let source = concat!(
+            "# Home\n\n",
+            "[Greeting] and [Greeting].\n\n",
+            "# Other\n\n",
+            "[Greeting]\n\n",
+            "# Greeting",
+        );
+        let uri = untitled_uri();
+        let from_title =
+            document_highlights_for_document(&uri, source, Position::new(8, 3)).unwrap();
+        let from_link =
+            document_highlights_for_document(&uri, source, Position::new(2, 3)).unwrap();
+        let expected = vec![
+            DocumentHighlight {
+                range: Range::new(Position::new(2, 0), Position::new(2, 10)),
+                kind: Some(DocumentHighlightKind::READ),
+            },
+            DocumentHighlight {
+                range: Range::new(Position::new(2, 15), Position::new(2, 25)),
+                kind: Some(DocumentHighlightKind::READ),
+            },
+            DocumentHighlight {
+                range: Range::new(Position::new(6, 0), Position::new(6, 10)),
+                kind: Some(DocumentHighlightKind::READ),
+            },
+            DocumentHighlight {
+                range: Range::new(Position::new(8, 2), Position::new(8, 10)),
+                kind: Some(DocumentHighlightKind::WRITE),
+            },
+        ];
+
+        assert_eq!(from_title, expected);
+        assert_eq!(from_link, expected);
+    }
+
+    // Highlight an unreferenced declaration while ignoring a cursor outside node occurrences.
+    #[test]
+    fn document_highlights_distinguish_unreferenced_nodes() {
+        let source = "# Home";
+        let uri = untitled_uri();
+
+        assert_eq!(
+            document_highlights_for_document(&uri, source, Position::new(0, 3)),
+            Some(vec![DocumentHighlight {
+                range: Range::new(Position::new(0, 2), Position::new(0, 6)),
+                kind: Some(DocumentHighlightKind::WRITE),
+            }]),
+        );
+        assert!(document_highlights_for_document(&uri, source, Position::new(0, 0)).is_none());
+    }
+
+    // Highlight matching filesystem links without conflating file and directory references.
+    #[test]
+    fn document_highlights_find_filesystem_links() {
+        let source = concat!(
+            "# Home\n\n",
+            "[",
+            "file:foo] [",
+            "file:foo] [",
+            "dir:bar]\n\n",
+            "# Other\n\n",
+            "[",
+            "dir:bar]",
+        );
+        let uri = untitled_uri();
+        let file_highlights =
+            document_highlights_for_document(&uri, source, Position::new(2, 3)).unwrap();
+        let directory_highlights =
+            document_highlights_for_document(&uri, source, Position::new(2, 25)).unwrap();
+
+        assert_eq!(
+            file_highlights,
+            vec![
+                DocumentHighlight {
+                    range: Range::new(Position::new(2, 0), Position::new(2, 10)),
+                    kind: Some(DocumentHighlightKind::READ),
+                },
+                DocumentHighlight {
+                    range: Range::new(Position::new(2, 11), Position::new(2, 21)),
+                    kind: Some(DocumentHighlightKind::READ),
+                },
+            ],
+        );
+        assert_eq!(
+            directory_highlights,
+            vec![
+                DocumentHighlight {
+                    range: Range::new(Position::new(2, 22), Position::new(2, 31)),
+                    kind: Some(DocumentHighlightKind::READ),
+                },
+                DocumentHighlight {
+                    range: Range::new(Position::new(6, 0), Position::new(6, 9)),
+                    kind: Some(DocumentHighlightKind::READ),
+                },
+            ],
+        );
     }
 
     // Prepare rename from either a declaration or text link without selecting its delimiters.
