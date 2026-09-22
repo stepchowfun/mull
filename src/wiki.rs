@@ -245,11 +245,11 @@ mod tests {
 
         assert_eq!(
             node.to_markdown(|title| {
-                (title == "Home").then(|| "command:mull.openNode?destination".to_owned())
+                (title == "Home").then(|| "command:mull.revealRange?destination".to_owned())
             }),
             concat!(
                 "# Greeting\n\nLiteral &#91;brackets&#93; and ",
-                "[&#91;Home&#93;](command:mull.openNode?destination).",
+                "[&#91;Home&#93;](command:mull.revealRange?destination).",
             ),
         );
     }
