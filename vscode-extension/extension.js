@@ -2,14 +2,15 @@
 const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
 
-// This private command navigates text links embedded in hover previews.
-const OPEN_NODE_COMMAND = "mull.openNode";
+// This private command reveals a source range for text links embedded in hover previews.
+// [ref:reveal_range_command]
+const REVEAL_RANGE_COMMAND = "mull.revealRange";
 
 // Retain the active client so it can be stopped when the extension is deactivated.
 let client;
 
-// Open a wiki node at the title range supplied by a trusted language-server hover.
-async function openNode(uriString, startLine, startCharacter, endLine, endCharacter) {
+// Reveal the source range supplied by a trusted language-server hover.
+async function revealRange(uriString, startLine, startCharacter, endLine, endCharacter) {
   // Open either a file-backed or untitled document and select the complete title.
   const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriString));
   const editor = await vscode.window.showTextDocument(document);
@@ -22,7 +23,7 @@ async function openNode(uriString, startLine, startCharacter, endLine, endCharac
 async function activate(context) {
   // Expose only the navigation command embedded in Mull's hover Markdown.
   context.subscriptions.push(
-    vscode.commands.registerCommand(OPEN_NODE_COMMAND, openNode),
+    vscode.commands.registerCommand(REVEAL_RANGE_COMMAND, revealRange),
   );
 
   // Resolve the configured executable before constructing the server process.
@@ -42,7 +43,7 @@ async function activate(context) {
     ],
     markdown: {
       isTrusted: {
-        enabledCommands: [OPEN_NODE_COMMAND],
+        enabledCommands: [REVEAL_RANGE_COMMAND],
       },
     },
   };

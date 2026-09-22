@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Consolidated the language server's declaration and text-link resolution into a single lookup.
+- Renamed the `mull.openNode` editor command to `mull.revealRange`.
 
 ## [0.14.1] - 2026-09-22
 

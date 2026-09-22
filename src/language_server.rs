@@ -34,8 +34,9 @@ use tower_lsp_server::{
 // Wait briefly after edits so filesystem validation does not run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
-// This extension command navigates clickable text links in Markdown hover previews.
-const OPEN_NODE_COMMAND: &str = "mull.openNode";
+// This extension command reveals a source range for clickable text links in hover previews.
+// [tag:reveal_range_command] Keep in sync with [file:vscode-extension/extension.js].
+const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
 // This state associates the latest editor contents with a pending diagnostic update.
 #[derive(Debug)]
@@ -600,7 +601,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // Render the node as Markdown with commands that navigate its resolvable text links.
     let markdown = node.to_markdown(|title| {
         let target = wiki.text_nodes.get(title)?;
-        open_node_command_url(uri, source_contents, target.title_source_range)
+        reveal_range_command_url(uri, source_contents, target.title_source_range)
     });
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -612,7 +613,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
 }
 
 // Encode an editor navigation command as a Markdown-safe URI.
-fn open_node_command_url(
+fn reveal_range_command_url(
     uri: &Uri,
     source_contents: &str,
     source_range: SourceRange,
@@ -628,7 +629,7 @@ fn open_node_command_url(
     ))
     .ok()?;
     Some(format!(
-        "command:{OPEN_NODE_COMMAND}?{}",
+        "command:{REVEAL_RANGE_COMMAND}?{}",
         utf8_percent_encode(&arguments, NON_ALPHANUMERIC),
     ))
 }
@@ -990,8 +991,8 @@ mod tests {
     use super::{
         byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
         diagnostics_for_document, document_symbols_for_document, formatting_edit,
-        hover_for_document, open_node_command_url, position, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        hover_for_document, position, prepare_rename_for_document, references_for_document,
+        rename_for_document, reveal_range_command_url,
     };
     use crate::{error::SourceRange, parser};
     use std::{
@@ -1067,15 +1068,16 @@ mod tests {
 
     // Encode a document URI and UTF-16 title range for the trusted editor command.
     #[test]
-    fn open_node_commands_encode_destinations() {
+    fn reveal_range_commands_encode_destinations() {
         let source = "# Home";
-        let url = open_node_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 })
-            .unwrap();
+        let url =
+            reveal_range_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 })
+                .unwrap();
 
         assert_eq!(
             url,
             concat!(
-                "command:mull.openNode?",
+                "command:mull.revealRange?",
                 "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%5D",
             ),
         );
@@ -1362,7 +1364,7 @@ mod tests {
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         let home_url =
-            open_node_command_url(&uri, source, SourceRange { start: 2, end: 6 }).unwrap();
+            reveal_range_command_url(&uri, source, SourceRange { start: 2, end: 6 }).unwrap();
         assert_eq!(
             contents.value,
             format!(
