@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-09-22
+
+### Added
+- Added language-server diagnostics and text-node navigation for untitled wikis.
+- Logged language-server initialization and shutdown.
+
+### Changed
+- Reported filesystem links in untitled wikis as errors until the wiki is saved.
+- Continued validating open wikis when their backing files disappear.
+
 ## [0.10.0] - 2026-09-21
 
 ### Added

@@ -39,7 +39,7 @@ fn push_normalized(target: &mut String, source: &str) {
 // Parse a filesystem link path while keeping it inside the wiki's logical tree.
 fn parse_filesystem_path(
     path: &str,
-    source_path: &Path,
+    source_path: Option<&Path>,
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<PathBuf, Error> {
@@ -48,7 +48,7 @@ fn parse_filesystem_path(
     if parsed_path.as_os_str().is_empty() {
         return Err(Error::new(
             "This link is missing a path.",
-            Some(source_path),
+            source_path,
             Some((source_contents, source_range)),
             None,
         ));
@@ -71,7 +71,7 @@ fn parse_filesystem_path(
                 parsed_path.code_path(),
                 "..".code_str(),
             ),
-            Some(source_path),
+            source_path,
             Some((source_contents, source_range)),
             None,
         ));
@@ -94,7 +94,7 @@ fn parse_filesystem_path(
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
-    source_path: &Path,
+    source_path: Option<&Path>,
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
@@ -116,7 +116,7 @@ fn parse_link(
 
 // Parse link occurrences and produce the normalized content stored on a text node.
 fn parse_content(
-    source_path: &Path,
+    source_path: Option<&Path>,
     source_contents: &str,
     source_range: SourceRange,
 ) -> (String, Vec<Link>, Vec<Error>) {
@@ -154,7 +154,7 @@ fn parse_content(
             };
             errors.push(Error::new(
                 "This link contains a line break.",
-                Some(source_path),
+                source_path,
                 Some((source_contents, link_source_range)),
                 None,
             ));
@@ -165,7 +165,7 @@ fn parse_content(
         match character {
             '[' if link_start.is_some() => errors.push(Error::new(
                 "Unexpected opening link delimiter.",
-                Some(source_path),
+                source_path,
                 Some((source_contents, character_source_range)),
                 None,
             )),
@@ -177,7 +177,7 @@ fn parse_content(
                 // Reject a closing delimiter without an opening delimiter [tag:missing_link_start].
                 errors.push(Error::new(
                     "Unexpected closing link delimiter.",
-                    Some(source_path),
+                    source_path,
                     Some((source_contents, character_source_range)),
                     None,
                 ));
@@ -217,7 +217,7 @@ fn parse_content(
         };
         errors.push(Error::new(
             "Unclosed link.",
-            Some(source_path),
+            source_path,
             Some((source_contents, link_source_range)),
             None,
         ));
@@ -233,7 +233,7 @@ fn insert_node(
     wiki: &mut Wiki,
     pending_node: PendingNode,
     source_end: usize,
-    source_path: &Path,
+    source_path: Option<&Path>,
     source_contents: &str,
 ) -> Result<(), Vec<Error>> {
     // Locate the node and its trimmed content in the original source.
@@ -261,7 +261,7 @@ fn insert_node(
     if wiki.text_nodes.contains_key(&title) {
         errors.push(Error::new(
             &format!("Duplicate title {}.", title.code_str()),
-            Some(source_path),
+            source_path,
             Some((source_contents, title_source_range)),
             None,
         ));
@@ -287,7 +287,7 @@ fn insert_node(
 }
 
 // Parse source contents into a scored wiki with source ranges for every node and link.
-pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Error>> {
+pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
     // Accumulate parsed nodes, errors, and the node currently being read.
     let mut wiki = Wiki::default();
     let mut errors = Vec::<Error>::new();
@@ -343,7 +343,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             if title.is_empty() {
                 errors.push(Error::new(
                     "This title is empty.",
-                    Some(source_path),
+                    source_path,
                     Some((source_contents, line_source_range)),
                     None,
                 ));
@@ -362,7 +362,7 @@ pub fn parse(source_path: &Path, source_contents: &str) -> Result<Wiki, Vec<Erro
             // Report only the first non-whitespace content outside a valid node.
             errors.push(Error::new(
                 "This content is not in any node.",
-                Some(source_path),
+                source_path,
                 Some((
                     source_contents,
                     trim_source_range(source_contents, line_source_range),
@@ -412,7 +412,7 @@ mod tests {
 
     // Parse test sources using a stable path for diagnostic assertions.
     fn parse_test(source_contents: &str) -> Result<Wiki, Vec<Error>> {
-        parse(Path::new("test.mull"), source_contents)
+        parse(Some(Path::new("test.mull")), source_contents)
     }
 
     // Describe link targets without coupling semantic assertions to their source ranges.

@@ -13,7 +13,7 @@ use crate::{
     checker::{analyze, check},
     error::{Error, format_errors},
     format::CodePath,
-    path_util::relative_path,
+    path_util::{WikiLocation, relative_path},
     wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
@@ -202,11 +202,17 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
+    // Keep the physical and display paths together throughout analysis.
+    let location = WikiLocation::Local {
+        path: &wiki_path,
+        display_path: &display_path,
+    };
+
     // Analyze the wiki and additionally check its formatting when no fix was requested.
     let wiki = if should_fix {
-        analyze(&wiki_path, &display_path, &wiki_contents)
+        analyze(location, &wiki_contents)
     } else {
-        check(&wiki_path, &display_path, &wiki_contents)
+        check(location, &wiki_contents)
     }?;
 
     // Render the wiki once for checking or fixing.
