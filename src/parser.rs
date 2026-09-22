@@ -173,13 +173,17 @@ fn parse_content(
                 link_start = Some(index);
                 link_has_line_break = false;
             }
-            ']' if link_start.is_none() => errors.push(Error::new(
-                "Unexpected closing link delimiter.",
-                Some(source_path),
-                Some((source_contents, character_source_range)),
-                None,
-            )),
+            ']' if link_start.is_none() => {
+                // Reject a closing delimiter without an opening delimiter [tag:missing_link_start].
+                errors.push(Error::new(
+                    "Unexpected closing link delimiter.",
+                    Some(source_path),
+                    Some((source_contents, character_source_range)),
+                    None,
+                ));
+            }
             ']' => {
+                // The preceding arm rejected a missing link start [ref:missing_link_start].
                 let start = link_start.take().expect("the link start was checked above");
                 let inner_start = start + '['.len_utf8();
                 let trimmed_target = original_content[inner_start..index].trim();
