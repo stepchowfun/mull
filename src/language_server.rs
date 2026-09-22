@@ -2,7 +2,7 @@ use crate::{
     checker::analyze,
     error::{Error, SourceRange},
     parser,
-    wiki::{Link, TextNode, Wiki},
+    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
 };
 use std::{
     borrow::Cow,
@@ -14,15 +14,19 @@ use std::{
 use tokio::task::JoinHandle;
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
-    jsonrpc::Result,
+    jsonrpc::{Error as JsonRpcError, Result},
     ls_types::{
-        Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf, Position,
-        PositionEncodingKind, Range, ReferenceParams, ServerCapabilities, ServerInfo,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
+        CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
+        CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
+        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+        DidSaveTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+        InitializeParams, InitializeResult, InitializedParams, Location, LocationLink,
+        MarkupContent, MarkupKind, MessageType, OneOf, Position, PositionEncodingKind,
+        PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
+        ServerCapabilities, ServerInfo, TextDocumentPositionParams, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
+        WorkspaceEdit,
     },
 };
 
@@ -157,10 +161,18 @@ impl LanguageServer for Backend {
     async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["[".to_owned()]),
+                    ..CompletionOptions::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 position_encoding: Some(PositionEncodingKind::UTF16),
                 references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -221,6 +233,19 @@ impl LanguageServer for Backend {
         self.save_document(params.text_document.uri, params.text);
     }
 
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        // Complete text links against the latest synchronized editor snapshot.
+        let position_params = params.text_document_position;
+        let uri = position_params.text_document.uri;
+        let Some(contents) = self.document_contents(&uri) else {
+            return Ok(None);
+        };
+        Ok(
+            completions_for_document(&uri, &contents, position_params.position)
+                .map(CompletionResponse::Array),
+        )
+    }
+
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -265,6 +290,33 @@ impl LanguageServer for Backend {
             position_params.position,
             params.context.include_declaration,
         ))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        // Identify the node occurrence that the editor should select for rename.
+        let uri = params.text_document.uri;
+        let Some(contents) = self.document_contents(&uri) else {
+            return Ok(None);
+        };
+        Ok(prepare_rename_for_document(
+            &uri,
+            &contents,
+            params.position,
+        ))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        // Rename a node and all of its text-link occurrences in the latest snapshot.
+        let position_params = params.text_document_position;
+        let uri = position_params.text_document.uri;
+        let Some(contents) = self.document_contents(&uri) else {
+            return Ok(None);
+        };
+        rename_for_document(&uri, &contents, position_params.position, &params.new_name)
+            .map_err(JsonRpcError::invalid_params)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -349,6 +401,80 @@ fn formatting_edit(
     }
 }
 
+// Complete the text-link target at an editor position with every node title.
+fn completions_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<Vec<CompletionItem>> {
+    // Parse either the original source or a temporary source with the active link closed.
+    let byte_offset = byte_offset(source_contents, cursor)?;
+    let wiki_path = local_path(uri);
+    let (wiki, target_source_range) =
+        completion_context(wiki_path.as_deref(), source_contents, byte_offset)?;
+
+    // Present node titles deterministically and replace only the link's inner text.
+    let replacement_range = lsp_range(source_contents, target_source_range);
+    let mut titles = wiki
+        .text_nodes
+        .keys()
+        .filter(|title| is_text_link_title(title))
+        .collect::<Vec<_>>();
+    titles.sort();
+    Some(
+        titles
+            .into_iter()
+            .map(|title| {
+                let escaped_title = escape_text_link_title(title);
+                CompletionItem {
+                    label: title.clone(),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    filter_text: Some(escaped_title.clone()),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        replacement_range,
+                        escaped_title,
+                    ))),
+                    ..CompletionItem::default()
+                }
+            })
+            .collect(),
+    )
+}
+
+// Parse enough of an active text link to identify its editable target range.
+fn completion_context(
+    source_path: Option<&Path>,
+    source_contents: &str,
+    byte_offset: usize,
+) -> Option<(Wiki, SourceRange)> {
+    // Prefer the unchanged source when the active link is already closed.
+    if let Ok(wiki) = parser::parse(source_path, source_contents)
+        && let Some(target_source_range) = text_link_target_at(&wiki, source_contents, byte_offset)
+    {
+        return Some((wiki, target_source_range));
+    }
+
+    // Close a link at the cursor temporarily so completion works while it is being authored.
+    let mut completed_source = source_contents.to_owned();
+    completed_source.insert(byte_offset, ']');
+    let wiki = parser::parse(source_path, &completed_source).ok()?;
+    let target_source_range = text_link_target_at(&wiki, &completed_source, byte_offset)?;
+    Some((wiki, target_source_range))
+}
+
+// Locate the editable inner text of a text link containing a byte offset.
+fn text_link_target_at(
+    wiki: &Wiki,
+    source_contents: &str,
+    byte_offset: usize,
+) -> Option<SourceRange> {
+    // Require the cursor to be within the target rather than on the opening delimiter.
+    let (_title, link_source_range) = text_link_at(wiki, byte_offset)?;
+    let target_source_range = text_link_target_source_range(source_contents, link_source_range)?;
+    (target_source_range.start <= byte_offset && byte_offset <= target_source_range.end)
+        .then_some(target_source_range)
+}
+
 // Locate the destination of a text link at an editor position.
 fn definition_for_document(
     uri: &Uri,
@@ -374,15 +500,16 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // Parse only the wiki syntax because hovering does not require filesystem validation.
     let wiki_path = local_path(uri);
     let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
+    let byte_offset = byte_offset(source_contents, cursor)?;
+    let (node, source_range) = previewed_node_at(&wiki, byte_offset)?;
 
-    // Render the node faithfully as plain Mull source rather than interpreting it as Markdown.
+    // Render the node as Markdown so its Mull title appears as a heading in the preview.
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::PlainText,
-            value: node.to_string().trim_end().to_owned(),
+            kind: MarkupKind::Markdown,
+            value: node.to_markdown(),
         }),
-        range: Some(lsp_range(source_contents, link_source_range)),
+        range: Some(lsp_range(source_contents, source_range)),
     })
 }
 
@@ -397,7 +524,7 @@ fn references_for_document(
     let wiki_path = local_path(uri);
     let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
-    let title = referenced_title_at(&wiki, byte_offset)?;
+    let title = referenced_title_at(&wiki, source_contents, byte_offset)?;
     let node = wiki.text_nodes.get(title)?;
 
     // Collect source ranges before sorting because nodes are stored in an unordered map.
@@ -429,6 +556,105 @@ fn references_for_document(
     )
 }
 
+// Identify the source occurrence that should be selected before renaming a node.
+fn prepare_rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<PrepareRenameResponse> {
+    // Resolve either a title declaration or text link in a parseable editor snapshot.
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let byte_offset = byte_offset(source_contents, cursor)?;
+    let (node, source_range) = referenced_node_at(&wiki, source_contents, byte_offset)?;
+
+    // Select only the title text and seed the rename prompt with its decoded value.
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: lsp_range(source_contents, source_range),
+        placeholder: node.title.clone(),
+    })
+}
+
+// Rename one text node and every text link that targets it.
+fn rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    new_name: &str,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Resolve the requested node without requiring the wiki to pass semantic validation.
+    let wiki_path = local_path(uri);
+    let Some(wiki) = parser::parse(wiki_path.as_deref(), source_contents).ok() else {
+        return Ok(None);
+    };
+    let Some(byte_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+    let Some((node, _source_range)) = referenced_node_at(&wiki, source_contents, byte_offset)
+    else {
+        return Ok(None);
+    };
+
+    // Normalize surrounding whitespace while rejecting titles that cannot occupy one source line.
+    if new_name
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("A node title cannot contain a line break.".to_owned());
+    }
+    let new_title = new_name.trim();
+    if new_title.is_empty() {
+        return Err("A node title cannot be empty.".to_owned());
+    }
+    if !is_text_link_title(new_title) {
+        return Err(format!(
+            "A text-linked node title cannot start with `{FILE_LINK_PREFIX}` or \
+                `{DIRECTORY_LINK_PREFIX}`.",
+        ));
+    }
+    if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
+        return Err(format!("Node `{new_title}` already exists."));
+    }
+
+    // Replace the declaration literally and encode the title inside every matching text link.
+    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
+    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+        if let Link::Text {
+            title,
+            source_range,
+        } = link
+            && title == &node.title
+            && let Some(target_source_range) =
+                text_link_target_source_range(source_contents, *source_range)
+        {
+            edits.push((target_source_range, escape_text_link_title(new_title)));
+        }
+    }
+    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
+
+    // Return one non-overlapping edit for each occurrence in the current document.
+    let edits = edits
+        .into_iter()
+        .map(|(source_range, new_text)| {
+            TextEdit::new(lsp_range(source_contents, source_range), new_text)
+        })
+        .collect();
+    Ok(Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(uri.clone(), edits)])),
+        ..WorkspaceEdit::default()
+    }))
+}
+
+// Escape delimiters so an arbitrary node title retains its meaning inside a text link.
+fn escape_text_link_title(title: &str) -> String {
+    title.replace('[', "\\[").replace(']', "\\]")
+}
+
+// Distinguish node titles that can be encoded without becoming filesystem links.
+fn is_text_link_title(title: &str) -> bool {
+    !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX)
+}
+
 // Resolve the text link under the cursor to its destination node.
 fn linked_node_at<'a>(
     wiki: &'a Wiki,
@@ -441,17 +667,48 @@ fn linked_node_at<'a>(
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
-// Find the title denoted by a declaration or text link at a source offset.
-fn referenced_title_at(wiki: &Wiki, byte_offset: usize) -> Option<&str> {
+// Resolve either a node title or a text link to the node that should be previewed.
+fn previewed_node_at(wiki: &Wiki, byte_offset: usize) -> Option<(&TextNode, SourceRange)> {
+    // Prefer a node's declaration when the cursor is within its title.
+    if let Some(node) = wiki.text_nodes.values().find(|node| {
+        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+    }) {
+        return Some((node, node.title_source_range));
+    }
+
+    // Resolve a reference while retaining the complete link as the hovered range.
+    let (title, source_range) = text_link_at(wiki, byte_offset)?;
+    wiki.text_nodes.get(title).map(|node| (node, source_range))
+}
+
+// Resolve the node and editable title range denoted by a declaration or text link.
+fn referenced_node_at<'a>(
+    wiki: &'a Wiki,
+    source_contents: &str,
+    byte_offset: usize,
+) -> Option<(&'a TextNode, SourceRange)> {
     // Prefer declarations before looking through reference occurrences.
-    wiki.text_nodes
-        .values()
-        .find(|node| {
-            node.title_source_range.start <= byte_offset
-                && byte_offset < node.title_source_range.end
-        })
-        .map(|node| node.title.as_str())
-        .or_else(|| text_link_at(wiki, byte_offset).map(|(title, _source_range)| title))
+    if let Some(node) = wiki.text_nodes.values().find(|node| {
+        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+    }) {
+        return Some((node, node.title_source_range));
+    }
+
+    // Resolve a text link and exclude its square-bracket delimiters from the editable range.
+    let (title, source_range) = text_link_at(wiki, byte_offset)?;
+    let node = wiki.text_nodes.get(title)?;
+    let target_source_range = text_link_target_source_range(source_contents, source_range)?;
+    Some((node, target_source_range))
+}
+
+// Find the title denoted by a declaration or text link at a source offset.
+fn referenced_title_at<'a>(
+    wiki: &'a Wiki,
+    source_contents: &str,
+    byte_offset: usize,
+) -> Option<&'a str> {
+    referenced_node_at(wiki, source_contents, byte_offset)
+        .map(|(node, _source_range)| node.title.as_str())
 }
 
 // Find a text link at a source offset without resolving its destination.
@@ -466,6 +723,21 @@ fn text_link_at(wiki: &Wiki, byte_offset: usize) -> Option<(&str, SourceRange)> 
             }
             Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
         })
+    })
+}
+
+// Exclude the delimiters from a source range known to represent a complete link.
+fn text_link_target_source_range(
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Option<SourceRange> {
+    // Confirm the parser-provided range still addresses square-bracket delimiters.
+    let link_source = source_contents.get(source_range.start..source_range.end)?;
+    let target_source = link_source.strip_prefix('[')?.strip_suffix(']')?;
+    let start = source_range.start + '['.len_utf8();
+    Some(SourceRange {
+        start,
+        end: start + target_source.len(),
     })
 }
 
@@ -590,8 +862,9 @@ pub async fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset, definition_for_document, diagnostic_from_error, diagnostics_for_document,
-        formatting_edit, hover_for_document, position, references_for_document,
+        byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
+        diagnostics_for_document, formatting_edit, hover_for_document, position,
+        prepare_rename_for_document, references_for_document, rename_for_document,
     };
     use crate::{error::SourceRange, parser};
     use std::{
@@ -601,7 +874,8 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        DiagnosticSeverity, GotoDefinitionResponse, HoverContents, MarkupKind, Position, Range, Uri,
+        CompletionTextEdit, DiagnosticSeverity, GotoDefinitionResponse, HoverContents, MarkupKind,
+        Position, PrepareRenameResponse, Range, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -726,6 +1000,95 @@ mod tests {
         );
     }
 
+    // Complete a partial target inside an existing pair of link delimiters.
+    #[test]
+    fn completions_replace_closed_link_targets() {
+        let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
+        let completions =
+            completions_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
+
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Greeting", "Home", "Other"],
+        );
+        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
+            panic!("a completion should replace the link target");
+        };
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(2, 1), Position::new(2, 3)),
+        );
+        assert_eq!(edit.new_text, "Greeting");
+    }
+
+    // Close an unfinished link temporarily while calculating its completions.
+    #[test]
+    fn completions_support_unfinished_links() {
+        let source = "# Home\n\n[Gre\n\n# Greeting";
+        let completions =
+            completions_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
+        let greeting = completions
+            .iter()
+            .find(|completion| completion.label == "Greeting")
+            .unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
+            panic!("a completion should replace the unfinished target");
+        };
+
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(2, 1), Position::new(2, 4)),
+        );
+        assert_eq!(edit.new_text, "Greeting");
+    }
+
+    // Escape link delimiters when inserting a node title as a completion.
+    #[test]
+    fn completions_escape_title_delimiters() {
+        let source = "# Home\n\n[]\n\n# A[B]";
+        let completions =
+            completions_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
+        let bracketed = completions
+            .iter()
+            .find(|completion| completion.label == "A[B]")
+            .unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &bracketed.text_edit else {
+            panic!("a completion should encode the title as a text link");
+        };
+
+        assert_eq!(bracketed.filter_text.as_deref(), Some("A\\[B\\]"));
+        assert_eq!(edit.new_text, "A\\[B\\]");
+    }
+
+    // Offer text-node completions only while the cursor is inside a text link target.
+    #[test]
+    fn completions_ignore_other_contexts() {
+        let source = concat!("# Home\n\nprose [", "file:notes.txt]");
+
+        assert!(completions_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
+        assert!(completions_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
+        assert!(completions_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
+    }
+
+    // Omit node titles whose reserved prefixes would produce filesystem links.
+    #[test]
+    fn completions_omit_filesystem_link_titles() {
+        let source = "# Home\n\n[]\n\n# file:notes.txt\n\n# dir:images\n\n# Other";
+        let completions =
+            completions_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
+
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Home", "Other"],
+        );
+    }
+
     // Jump from a text link to the title of its destination node.
     #[test]
     fn definitions_target_node_titles() {
@@ -758,7 +1121,7 @@ mod tests {
     // Preview the complete destination node while highlighting the source link.
     #[test]
     fn hovers_preview_nodes() {
-        let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nHello!";
+        let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nLiteral \\[brackets\\] and [Home].";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let hover = hover_for_document(&uri, source, Position::new(2, 5)).unwrap();
@@ -766,11 +1129,33 @@ mod tests {
         let HoverContents::Markup(contents) = hover.contents else {
             panic!("a node preview should use markup content");
         };
-        assert_eq!(contents.kind, MarkupKind::PlainText);
-        assert_eq!(contents.value, "# Greeting\n\nHello!");
+        assert_eq!(contents.kind, MarkupKind::Markdown);
+        assert_eq!(
+            contents.value,
+            "# Greeting\n\nLiteral &#91;brackets&#93; and *[Home]*.",
+        );
         assert_eq!(
             hover.range,
             Some(Range::new(Position::new(2, 3), Position::new(2, 13))),
+        );
+    }
+
+    // Preview a node directly from its title declaration.
+    #[test]
+    fn hovers_preview_node_titles() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello!";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let hover = hover_for_document(&uri, source, Position::new(4, 4)).unwrap();
+
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("a node preview should use markup content");
+        };
+        assert_eq!(contents.kind, MarkupKind::Markdown);
+        assert_eq!(contents.value, "# Greeting\n\nHello!");
+        assert_eq!(
+            hover.range,
+            Some(Range::new(Position::new(4, 2), Position::new(4, 10))),
         );
     }
 
@@ -836,6 +1221,106 @@ mod tests {
             Some(Vec::new()),
         );
         assert!(references_for_document(&uri, source, Position::new(0, 0), false).is_none());
+    }
+
+    // Prepare rename from either a declaration or text link without selecting its delimiters.
+    #[test]
+    fn rename_preparation_selects_title_text() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let from_title =
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(4, 3)).unwrap();
+        let from_link =
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
+
+        assert_eq!(
+            from_title,
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: Range::new(Position::new(4, 2), Position::new(4, 10)),
+                placeholder: "Greeting".to_owned(),
+            },
+        );
+        assert_eq!(
+            from_link,
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: Range::new(Position::new(2, 1), Position::new(2, 9)),
+                placeholder: "Greeting".to_owned(),
+            },
+        );
+    }
+
+    // Rename a declaration and every text link while trimming the requested title.
+    #[test]
+    fn rename_updates_every_occurrence() {
+        let source = "# Home\n\n[Greeting] and [Greeting]\n\n# Greeting";
+        let workspace_edit = rename_for_document(
+            &untitled_uri(),
+            source,
+            Position::new(4, 3),
+            "  Salutation\t",
+        )
+        .unwrap()
+        .unwrap();
+        let edits = &workspace_edit.changes.unwrap()[&untitled_uri()];
+
+        assert_eq!(edits.len(), 3);
+        assert_eq!(edits[0].new_text, "Salutation");
+        assert_eq!(edits[0].range.start, Position::new(2, 1));
+        assert_eq!(edits[1].new_text, "Salutation");
+        assert_eq!(edits[1].range.start, Position::new(2, 16));
+        assert_eq!(edits[2].new_text, "Salutation");
+        assert_eq!(edits[2].range.start, Position::new(4, 2));
+    }
+
+    // Preserve renamed titles containing delimiters by escaping only their link occurrences.
+    #[test]
+    fn rename_escapes_link_delimiters() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let workspace_edit =
+            rename_for_document(&untitled_uri(), source, Position::new(2, 4), "A[B]")
+                .unwrap()
+                .unwrap();
+        let edits = &workspace_edit.changes.unwrap()[&untitled_uri()];
+
+        assert_eq!(edits[0].new_text, "A\\[B\\]");
+        assert_eq!(edits[1].new_text, "A[B]");
+    }
+
+    // Allow renaming the structural home node even though validation will report its absence.
+    #[test]
+    fn rename_allows_home() {
+        let source = "# Home";
+        let workspace_edit =
+            rename_for_document(&untitled_uri(), source, Position::new(0, 3), "Start")
+                .unwrap()
+                .unwrap();
+        let edits = &workspace_edit.changes.unwrap()[&untitled_uri()];
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "Start");
+    }
+
+    // Reject only syntactically unusable or duplicate node titles during rename.
+    #[test]
+    fn rename_rejects_invalid_titles() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let cursor = Position::new(4, 3);
+
+        assert_eq!(
+            rename_for_document(&untitled_uri(), source, cursor, " \t").unwrap_err(),
+            "A node title cannot be empty.",
+        );
+        assert_eq!(
+            rename_for_document(&untitled_uri(), source, cursor, "Hello\nworld").unwrap_err(),
+            "A node title cannot contain a line break.",
+        );
+        assert_eq!(
+            rename_for_document(&untitled_uri(), source, cursor, "Home").unwrap_err(),
+            "Node `Home` already exists.",
+        );
+        assert_eq!(
+            rename_for_document(&untitled_uri(), source, cursor, "file:notes.txt").unwrap_err(),
+            "A text-linked node title cannot start with `file:` or `dir:`.",
+        );
     }
 
     // Leave filesystem links to ordinary editor and filesystem navigation.
