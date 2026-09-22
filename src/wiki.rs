@@ -47,14 +47,48 @@ pub struct Wiki {
 
 impl TextNode {
     // Render the node for a Markdown preview without exposing Mull's delimiter escapes.
-    pub fn to_markdown(&self) -> String {
-        // Hide Mull escapes for literal brackets and emphasize Mull links.
-        let content = self
-            .content
-            .replace("\\[", "&#91;")
-            .replace("\\]", "&#93;")
-            .replace('[', "*[")
-            .replace(']', "]*");
+    pub fn to_markdown<F>(&self, mut text_link_url: F) -> String
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        // Render each parsed link with its semantic destination while retaining surrounding prose.
+        let mut content = String::new();
+        let mut copied_through = 0;
+        let mut link_start = None;
+        let mut links = self.links.iter();
+        let mut previous_was_backslash = false;
+        for (index, character) in self.content.char_indices() {
+            let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
+            previous_was_backslash = character == '\\';
+            if is_escaped_delimiter {
+                continue;
+            }
+
+            // Track complete unescaped delimiter pairs, which the parser guarantees are valid.
+            match character {
+                '[' => link_start = Some(index),
+                ']' => {
+                    let Some(start) = link_start.take() else {
+                        continue;
+                    };
+                    content.push_str(&render_markdown_prose(&self.content[copied_through..start]));
+                    let target = &self.content[start + '['.len_utf8()..index];
+                    content.push_str(&match links.next() {
+                        Some(Link::Text { title, .. }) => {
+                            let url = text_link_url(title);
+                            render_markdown_text_link(target, url.as_deref())
+                        }
+                        Some(Link::File { .. } | Link::Directory { .. }) => {
+                            render_markdown_filesystem_link(target)
+                        }
+                        None => render_markdown_text_link(target, None),
+                    });
+                    copied_through = index + character.len_utf8();
+                }
+                _ => {}
+            }
+        }
+        content.push_str(&render_markdown_prose(&self.content[copied_through..]));
 
         // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
         if content.is_empty() {
@@ -63,6 +97,59 @@ impl TextNode {
             format!("{TITLE_PREFIX}{}\n\n{content}", self.title)
         }
     }
+}
+
+// Hide Mull delimiter escapes in prose while preserving any intentional Markdown formatting.
+fn render_markdown_prose(source: &str) -> String {
+    source.replace("\\[", "&#91;").replace("\\]", "&#93;")
+}
+
+// Render a text link as ordinary bracketed text with an optional Markdown destination.
+fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
+    // Keep Markdown punctuation in node titles from changing the rendered label.
+    let target = target.replace("\\[", "[").replace("\\]", "]");
+    let mut label = String::new();
+    for character in target.chars() {
+        label.push_str(match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '\\' => "&#92;",
+            '`' => "&#96;",
+            '*' => "&#42;",
+            '_' => "&#95;",
+            '[' => "&#91;",
+            ']' => "&#93;",
+            '~' => "&#126;",
+            _ => {
+                label.push(character);
+                continue;
+            }
+        });
+    }
+
+    // Retain the visible Mull delimiters inside the clickable region.
+    let label = format!("&#91;{label}&#93;");
+    match url {
+        Some(url) => format!("[{label}]({url})"),
+        None => label,
+    }
+}
+
+// Render a filesystem link as inline code without exposing Mull delimiter escapes.
+fn render_markdown_filesystem_link(target: &str) -> String {
+    // Use a fence longer than every backtick run occurring in the link text.
+    let target = target.replace("\\[", "[").replace("\\]", "]");
+    let source = format!("[{target}]");
+    let longest_run = source
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest_run + 1);
+
+    // The surrounding brackets keep the content distinct from either side of the fence.
+    format!("{fence}{source}{fence}")
 }
 
 // Render nodes in the wiki's heading-and-content format.
@@ -104,7 +191,7 @@ impl fmt::Display for Wiki {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextNode, Wiki};
+    use super::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki};
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
@@ -147,15 +234,74 @@ mod tests {
         let node = TextNode {
             title: "Greeting".to_owned(),
             content: "Literal \\[brackets\\] and [Home].".to_owned(),
-            links: Vec::new(),
+            links: vec![Link::Text {
+                title: "Home".to_owned(),
+                source_range: SOURCE_RANGE,
+            }],
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
         };
 
         assert_eq!(
-            node.to_markdown(),
-            "# Greeting\n\nLiteral &#91;brackets&#93; and *[Home]*.",
+            node.to_markdown(|title| {
+                (title == "Home").then(|| "command:mull.openNode?destination".to_owned())
+            }),
+            concat!(
+                "# Greeting\n\nLiteral &#91;brackets&#93; and ",
+                "[&#91;Home&#93;](command:mull.openNode?destination).",
+            ),
+        );
+    }
+
+    // Keep unresolved text links visible but non-clickable in Markdown previews.
+    #[test]
+    fn unresolved_node_markdown_link() {
+        let node = TextNode {
+            title: "Greeting".to_owned(),
+            content: "See [Missing].".to_owned(),
+            links: vec![Link::Text {
+                title: "Missing".to_owned(),
+                source_range: SOURCE_RANGE,
+            }],
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+        };
+
+        assert_eq!(
+            node.to_markdown(|_title| None),
+            "# Greeting\n\nSee &#91;Missing&#93;.",
+        );
+    }
+
+    // Distinguish file and directory links from prose with Markdown code styling.
+    #[test]
+    fn filesystem_link_markdown() {
+        let node = TextNode {
+            title: "Files".to_owned(),
+            content: format!("[{FILE_LINK_PREFIX}notes.txt] and [{DIRECTORY_LINK_PREFIX}odd`name]"),
+            links: vec![
+                Link::File {
+                    path: "notes.txt".into(),
+                    source_range: SOURCE_RANGE,
+                },
+                Link::Directory {
+                    path: "odd`name".into(),
+                    source_range: SOURCE_RANGE,
+                },
+            ],
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+        };
+
+        assert_eq!(
+            node.to_markdown(|_title| None),
+            format!(
+                "# Files\n\n`[{FILE_LINK_PREFIX}notes.txt]` and \
+                    ``[{DIRECTORY_LINK_PREFIX}odd`name]``",
+            ),
         );
     }
 

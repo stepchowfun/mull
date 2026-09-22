@@ -4,6 +4,7 @@ use crate::{
     parser,
     wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
 };
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -32,6 +33,9 @@ use tower_lsp_server::{
 
 // Wait briefly after edits so filesystem validation does not run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
+
+// This extension command navigates clickable text links in Markdown hover previews.
+const OPEN_NODE_COMMAND: &str = "mull.openNode";
 
 // This state associates the latest editor contents with a pending diagnostic update.
 #[derive(Debug)]
@@ -503,14 +507,40 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     let byte_offset = byte_offset(source_contents, cursor)?;
     let (node, source_range) = previewed_node_at(&wiki, byte_offset)?;
 
-    // Render the node as Markdown so its Mull title appears as a heading in the preview.
+    // Render the node as Markdown with commands that navigate its resolvable text links.
+    let markdown = node.to_markdown(|title| {
+        let target = wiki.text_nodes.get(title)?;
+        open_node_command_url(uri, source_contents, target.title_source_range)
+    });
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: node.to_markdown(),
+            value: markdown,
         }),
         range: Some(lsp_range(source_contents, source_range)),
     })
+}
+
+// Encode an editor navigation command as a Markdown-safe URI.
+fn open_node_command_url(
+    uri: &Uri,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Option<String> {
+    // Pass the document URI and UTF-16 destination range as positional command arguments.
+    let range = lsp_range(source_contents, source_range);
+    let arguments = serde_json::to_string(&(
+        uri.as_str(),
+        range.start.line,
+        range.start.character,
+        range.end.line,
+        range.end.character,
+    ))
+    .ok()?;
+    Some(format!(
+        "command:{OPEN_NODE_COMMAND}?{}",
+        utf8_percent_encode(&arguments, NON_ALPHANUMERIC),
+    ))
 }
 
 // Locate every text link to the node at an editor position.
@@ -863,8 +893,8 @@ pub async fn run() {
 mod tests {
     use super::{
         byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
-        diagnostics_for_document, formatting_edit, hover_for_document, position,
-        prepare_rename_for_document, references_for_document, rename_for_document,
+        diagnostics_for_document, formatting_edit, hover_for_document, open_node_command_url,
+        position, prepare_rename_for_document, references_for_document, rename_for_document,
     };
     use crate::{error::SourceRange, parser};
     use std::{
@@ -936,6 +966,22 @@ mod tests {
         assert_eq!(byte_offset(source, Position::new(1, 7)), Some(source.len()));
         assert_eq!(byte_offset(source, Position::new(1, 8)), None);
         assert_eq!(byte_offset(source, Position::new(2, 0)), None);
+    }
+
+    // Encode a document URI and UTF-16 title range for the trusted editor command.
+    #[test]
+    fn open_node_commands_encode_destinations() {
+        let source = "# Home";
+        let url = open_node_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 })
+            .unwrap();
+
+        assert_eq!(
+            url,
+            concat!(
+                "command:mull.openNode?",
+                "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%5D",
+            ),
+        );
     }
 
     // Analyze ordinary text-node structure in a new editor buffer.
@@ -1130,9 +1176,14 @@ mod tests {
             panic!("a node preview should use markup content");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
+        let home_url =
+            open_node_command_url(&uri, source, SourceRange { start: 2, end: 6 }).unwrap();
         assert_eq!(
             contents.value,
-            "# Greeting\n\nLiteral &#91;brackets&#93; and *[Home]*.",
+            format!(
+                "# Greeting\n\nLiteral &#91;brackets&#93; and \
+                    [&#91;Home&#93;]({home_url}).",
+            ),
         );
         assert_eq!(
             hover.range,
