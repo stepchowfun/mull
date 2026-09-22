@@ -45,6 +45,26 @@ pub struct Wiki {
     pub text_nodes: HashMap<String, TextNode>,
 }
 
+impl TextNode {
+    // Render the node for a Markdown preview without exposing Mull's delimiter escapes.
+    pub fn to_markdown(&self) -> String {
+        // Hide Mull escapes for literal brackets and emphasize Mull links.
+        let content = self
+            .content
+            .replace("\\[", "&#91;")
+            .replace("\\]", "&#93;")
+            .replace('[', "*[")
+            .replace(']', "]*");
+
+        // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
+        if content.is_empty() {
+            format!("{TITLE_PREFIX}{}", self.title)
+        } else {
+            format!("{TITLE_PREFIX}{}\n\n{content}", self.title)
+        }
+    }
+}
+
 // Render nodes in the wiki's heading-and-content format.
 impl fmt::Display for TextNode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -119,6 +139,24 @@ mod tests {
         };
 
         assert_eq!(node.to_string(), "# Greeting\n");
+    }
+
+    // Hide Mull delimiter escapes while preserving links in Markdown previews.
+    #[test]
+    fn node_markdown() {
+        let node = TextNode {
+            title: "Greeting".to_owned(),
+            content: "Literal \\[brackets\\] and [Home].".to_owned(),
+            links: Vec::new(),
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+        };
+
+        assert_eq!(
+            node.to_markdown(),
+            "# Greeting\n\nLiteral &#91;brackets&#93; and *[Home]*.",
+        );
     }
 
     // Ensure a wiki containing an empty node has only its trailing line break.
