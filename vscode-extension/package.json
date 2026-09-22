@@ -36,6 +36,7 @@
     },
     "configurationDefaults": {
       "[mull]": {
+        "editor.defaultFormatter": "stepchowfun.mull",
         "editor.formatOnSave": true,
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
