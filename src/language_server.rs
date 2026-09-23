@@ -310,7 +310,7 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        // Resolve the text link against the latest synchronized editor snapshot.
+        // Resolve the title or text link against the latest synchronized editor snapshot.
         let Some(contents) =
             self.document_contents(&params.text_document_position_params.text_document.uri)
         else {
@@ -481,7 +481,8 @@ fn completion_for_document(
         byte_offset(source_contents, cursor)?,
     )?;
 
-    // Present node titles deterministically and replace the link's inner text and terminator.
+    // Present node titles deterministically and replace the whole link, including its delimiters,
+    // so the cursor ends up after the closing `]`.
     let replacement_range = lsp_range(source_contents, replacement_source_range);
     let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
     titles.sort();
@@ -493,10 +494,10 @@ fn completion_for_document(
                 CompletionItem {
                     label: title.clone(),
                     kind: Some(CompletionItemKind::REFERENCE),
-                    filter_text: Some(escaped_title.clone()),
+                    filter_text: Some(format!("[{escaped_title}")),
                     text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                         replacement_range,
-                        format!("{escaped_title}]"),
+                        format!("[{escaped_title}]"),
                     ))),
                     ..CompletionItem::default()
                 }
@@ -505,7 +506,7 @@ fn completion_for_document(
     )
 }
 
-// Locate the destination of a text link at an editor position.
+// Locate the node declared or linked at an editor position.
 fn goto_definition_for_document(
     uri: &Uri,
     source_contents: &str,
@@ -513,11 +514,17 @@ fn goto_definition_for_document(
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = node_linked_at(&wiki, byte_offset(source_contents, cursor)?)?;
+    let (node, origin_source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
 
-    // Identify the complete source link and destination node while selecting its title on arrival.
+    // Identify the complete source link or title and the destination node while selecting its title
+    // on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
-        origin_selection_range: Some(lsp_range(source_contents, link_source_range)),
+        origin_selection_range: Some(lsp_range(source_contents, origin_source_range)),
         target_uri: uri.clone(),
         target_range: lsp_range(source_contents, node.source_range),
         target_selection_range: lsp_range(source_contents, node.title_source_range),
@@ -607,7 +614,10 @@ fn document_highlight_for_document(
         highlights
     } else {
         // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        filesystem_link_source_ranges(&wiki, filesystem_link_at(&wiki, byte_offset)?)
+        // A text link reaches this branch only when its target does not exist, so it has nothing
+        // to highlight.
+        let link = link_at(&wiki, byte_offset).filter(|link| !matches!(link, Link::Text { .. }))?;
+        filesystem_link_source_ranges(&wiki, link)
             .into_iter()
             .map(|source_range| (source_range, DocumentHighlightKind::READ))
             .collect()
@@ -802,133 +812,26 @@ fn completion_context(
 ) -> Option<(Wiki, SourceRange)> {
     // Prefer the unchanged source when the active link is already closed.
     if let Ok(wiki) = parser::parse(source_path, source_contents)
-        && let Some(target_source_range) = text_link_target_at(&wiki, source_contents, byte_offset)
+        && let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset)
     {
-        // Absorb the existing terminator, which the completion reinstates after the inserted title.
-        return Some((
-            wiki,
-            SourceRange {
-                start: target_source_range.start,
-                end: target_source_range.end + ']'.len_utf8(),
-            },
-        ));
+        let source_range = *source_range;
+        return Some((wiki, source_range));
     }
 
     // Close a link at the cursor temporarily so completion works while it is being authored.
     let mut completed_source = source_contents.to_owned();
     completed_source.insert(byte_offset, ']');
     let wiki = parser::parse(source_path, &completed_source).ok()?;
-    let target_source_range = text_link_target_at(&wiki, &completed_source, byte_offset)?;
+    let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset) else {
+        return None;
+    };
 
-    // Keep the range inside the original source, which has no terminator to absorb.
-    Some((wiki, target_source_range))
-}
-
-// Locate the editable inner text of a text link containing a byte offset.
-fn text_link_target_at(
-    wiki: &Wiki,
-    source_contents: &str,
-    byte_offset: usize,
-) -> Option<SourceRange> {
-    // Require the cursor to be within the target rather than on the opening delimiter.
-    let (_title, link_source_range) = text_link_at(wiki, byte_offset)?;
-    let target_source_range = text_link_target_source_range(source_contents, link_source_range)?;
-    (target_source_range.start <= byte_offset && byte_offset <= target_source_range.end)
-        .then_some(target_source_range)
-}
-
-// Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(
-    uri: &Uri,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Option<String> {
-    // Pass the document URI and UTF-16 destination range as positional command arguments.
-    let range = lsp_range(source_contents, source_range);
-    Some(format!(
-        "command:{REVEAL_RANGE_COMMAND}?{}",
-        utf8_percent_encode(
-            &serde_json::to_string(&(
-                uri.as_str(),
-                range.start.line,
-                range.start.character,
-                range.end.line,
-                range.end.character,
-            ))
-            .ok()?,
-            NON_ALPHANUMERIC,
-        ),
-    ))
-}
-
-// Collect every complete text-link range that resolves to a title.
-fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
-    // Links live on nodes in an unordered map, so sort their ranges into source order.
-    let mut source_ranges = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Text {
-                title: link_title,
-                source_range,
-            } if link_title == title => Some(*source_range),
-            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
-    source_ranges
-}
-
-// Find a file or directory link at a source offset.
-fn filesystem_link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
-    wiki.text_nodes.values().find_map(|node| {
-        node.links.iter().find(|link| match link {
-            Link::File { source_range, .. } | Link::Directory { source_range, .. } => {
-                source_range.start <= byte_offset && byte_offset < source_range.end
-            }
-            Link::Text { .. } => false,
-        })
-    })
-}
-
-// Collect every complete filesystem-link range with the same kind and path as a target.
-fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
-    // Match logical paths without resolving symlinks, just as filesystem validation does.
-    wiki.text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match (link, target) {
-            (
-                Link::File { path, source_range },
-                Link::File {
-                    path: target_path, ..
-                },
-            )
-            | (
-                Link::Directory { path, source_range },
-                Link::Directory {
-                    path: target_path, ..
-                },
-            ) if path == target_path => Some(*source_range),
-            (
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-            ) => None,
-        })
-        .collect()
-}
-
-// Escape delimiters so an arbitrary node title retains its meaning inside a text link.
-fn escape_text_link_title(title: &str) -> String {
-    title.replace('[', "\\[").replace(']', "\\]")
-}
-
-// Resolve the text link at a source offset to its destination node.
-fn node_linked_at(wiki: &Wiki, byte_offset: usize) -> Option<(&TextNode, SourceRange)> {
-    // Match the offset against complete link ranges, including their delimiters.
-    let (title, source_range) = text_link_at(wiki, byte_offset)?;
-    wiki.text_nodes.get(title).map(|node| (node, source_range))
+    // Map the link's end back into the original source, which lacks the temporary delimiter.
+    let source_range = SourceRange {
+        start: source_range.start,
+        end: source_range.end - ']'.len_utf8(),
+    };
+    Some((wiki, source_range))
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -956,7 +859,14 @@ fn node_at<'a>(
     }
 
     // Resolve a reference, reporting whichever extent of the link the caller asked for.
-    let (title, source_range) = text_link_at(wiki, byte_offset)?;
+    let Link::Text {
+        title,
+        source_range,
+    } = link_at(wiki, byte_offset)?
+    else {
+        return None;
+    };
+    let source_range = *source_range;
     Some((
         wiki.text_nodes.get(title)?,
         match link_extent {
@@ -966,17 +876,15 @@ fn node_at<'a>(
     ))
 }
 
-// Find a text link at a source offset without resolving its destination.
-fn text_link_at(wiki: &Wiki, byte_offset: usize) -> Option<(&str, SourceRange)> {
+// Find the link of any kind at a source offset without resolving its destination. Links never
+// overlap, so at most one link can contain the offset.
+fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
     wiki.text_nodes.values().find_map(|node| {
-        node.links.iter().find_map(|link| match link {
-            Link::Text {
-                title,
-                source_range,
-            } if source_range.start <= byte_offset && byte_offset < source_range.end => {
-                Some((title.as_str(), *source_range))
-            }
-            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+        node.links.iter().find(|link| {
+            let (Link::Text { source_range, .. }
+            | Link::File { source_range, .. }
+            | Link::Directory { source_range, .. }) = link;
+            source_range.start <= byte_offset && byte_offset < source_range.end
         })
     })
 }
@@ -998,44 +906,50 @@ fn text_link_target_source_range(
     })
 }
 
-// Convert a structured Mull error into the representation expected by language clients.
-fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
-    // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    diagnostic(
-        source_contents,
-        error.source_range(),
-        error.reason().map_or_else(
-            || error.message().to_owned(),
-            |reason| format!("{}\n\nReason: {reason}", error.message()),
-        ),
-    )
+// Collect every complete text-link range that resolves to a title.
+fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
+    // Links live on nodes in an unordered map, so sort their ranges into source order.
+    let mut source_ranges = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match link {
+            Link::Text {
+                title: link_title,
+                source_range,
+            } if link_title == title => Some(*source_range),
+            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
+    source_ranges
 }
 
-// Construct a Mull error diagnostic at a source range or at the start of the document.
-fn diagnostic(
-    source_contents: &str,
-    source_range: Option<crate::error::SourceRange>,
-    message: String,
-) -> Diagnostic {
-    Diagnostic {
-        range: lsp_range(
-            source_contents,
-            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
-        ),
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some(env!("CARGO_PKG_NAME").to_owned()),
-        message,
-        ..Diagnostic::default()
-    }
-}
-
-// Convert only file-scheme URIs because the URI library does not enforce this distinction.
-fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
-    uri.scheme()
-        .as_str()
-        .eq_ignore_ascii_case("file")
-        .then(|| uri.to_file_path())
-        .flatten()
+// Collect every complete filesystem-link range with the same kind and path as a target.
+fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
+    // Match logical paths without resolving symlinks, just as filesystem validation does.
+    wiki.text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match (link, target) {
+            (
+                Link::File { path, source_range },
+                Link::File {
+                    path: target_path, ..
+                },
+            )
+            | (
+                Link::Directory { path, source_range },
+                Link::Directory {
+                    path: target_path, ..
+                },
+            ) if path == target_path => Some(*source_range),
+            (
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+            ) => None,
+        })
+        .collect()
 }
 
 // Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
@@ -1099,6 +1013,75 @@ fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
         lsp_position(source_contents, source_range.start),
         lsp_position(source_contents, source_range.end),
     )
+}
+
+// Encode an editor navigation command as a Markdown-safe URI.
+fn reveal_range_command_url(
+    uri: &Uri,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Option<String> {
+    // Pass the document URI and UTF-16 destination range as positional command arguments.
+    let range = lsp_range(source_contents, source_range);
+    Some(format!(
+        "command:{REVEAL_RANGE_COMMAND}?{}",
+        utf8_percent_encode(
+            &serde_json::to_string(&(
+                uri.as_str(),
+                range.start.line,
+                range.start.character,
+                range.end.line,
+                range.end.character,
+            ))
+            .ok()?,
+            NON_ALPHANUMERIC,
+        ),
+    ))
+}
+
+// Escape delimiters so an arbitrary node title retains its meaning inside a text link.
+fn escape_text_link_title(title: &str) -> String {
+    title.replace('[', "\\[").replace(']', "\\]")
+}
+
+// Convert a structured Mull error into the representation expected by language clients.
+fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
+    // Include an underlying reason without including terminal prefixes, paths, or source listings.
+    diagnostic(
+        source_contents,
+        error.source_range(),
+        error.reason().map_or_else(
+            || error.message().to_owned(),
+            |reason| format!("{}\n\nReason: {reason}", error.message()),
+        ),
+    )
+}
+
+// Construct a Mull error diagnostic at a source range or at the start of the document.
+fn diagnostic(
+    source_contents: &str,
+    source_range: Option<crate::error::SourceRange>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic {
+        range: lsp_range(
+            source_contents,
+            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
+        ),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(env!("CARGO_PKG_NAME").to_owned()),
+        message,
+        ..Diagnostic::default()
+    }
+}
+
+// Convert only file-scheme URIs because the URI library does not enforce this distinction.
+fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
+    uri.scheme()
+        .as_str()
+        .eq_ignore_ascii_case("file")
+        .then(|| uri.to_file_path())
+        .flatten()
 }
 
 // Serve language-server requests over standard input and output until the client disconnects.
@@ -1347,9 +1330,9 @@ mod tests {
         );
     }
 
-    // Complete a partial target by absorbing and reinstating the existing closing delimiter.
+    // Complete a partial target by replacing the whole link, including its delimiters.
     #[test]
-    fn completions_replace_closed_link_targets() {
+    fn completions_replace_closed_links() {
         let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
         let completions =
             completion_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
@@ -1362,13 +1345,19 @@ mod tests {
             vec!["Greeting", "Home", "Other"],
         );
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("a completion should replace the link target");
+            panic!("a completion should replace the link");
         };
-        assert_eq!(
-            edit.range,
-            Range::new(Position::new(2, 1), Position::new(2, 4)),
-        );
-        assert_eq!(edit.new_text, "Greeting]");
+        let link_range = Range::new(Position::new(2, 0), Position::new(2, 4));
+        assert_eq!(edit.range, link_range);
+        assert_eq!(edit.new_text, "[Greeting]");
+
+        // Replace the same link from a cursor before its opening delimiter.
+        let completions =
+            completion_for_document(&untitled_uri(), source, Position::new(2, 0)).unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
+            panic!("a completion should replace the link");
+        };
+        assert_eq!(edit.range, link_range);
     }
 
     // Close an unfinished link temporarily while calculating its completions.
@@ -1382,14 +1371,14 @@ mod tests {
             .find(|completion| completion.label == "Greeting")
             .unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
-            panic!("a completion should replace the unfinished target");
+            panic!("a completion should replace the unfinished link");
         };
 
         assert_eq!(
             edit.range,
-            Range::new(Position::new(2, 1), Position::new(2, 4)),
+            Range::new(Position::new(2, 0), Position::new(2, 4)),
         );
-        assert_eq!(edit.new_text, "Greeting]");
+        assert_eq!(edit.new_text, "[Greeting]");
     }
 
     // Leave the cursor after a single closing delimiter once a completion has been applied.
@@ -1404,7 +1393,7 @@ mod tests {
             .find(|completion| completion.label == "Greeting")
             .unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
-            panic!("a completion should replace the link target");
+            panic!("a completion should replace the link");
         };
 
         // Apply the edit to confirm the link is closed exactly once.
@@ -1429,8 +1418,8 @@ mod tests {
             panic!("a completion should encode the title as a text link");
         };
 
-        assert_eq!(bracketed.filter_text.as_deref(), Some("A\\[B\\]"));
-        assert_eq!(edit.new_text, "A\\[B\\]]");
+        assert_eq!(bracketed.filter_text.as_deref(), Some("[A\\[B\\]"));
+        assert_eq!(edit.new_text, "[A\\[B\\]]");
     }
 
     // Offer text-node completions only while the cursor is inside a text link target.
@@ -1441,6 +1430,24 @@ mod tests {
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
+    }
+
+    // Treat a title as its own definition, which lets editors fall back to finding references.
+    #[test]
+    fn definitions_of_titles_target_themselves() {
+        let source = "# Home\n\n[Home]";
+        let definition =
+            goto_definition_for_document(&untitled_uri(), source, Position::new(0, 3)).unwrap();
+
+        let GotoDefinitionResponse::Link(links) = definition else {
+            panic!("a title should have one definition");
+        };
+        let [link] = links.as_slice() else {
+            panic!("a title should have exactly one definition");
+        };
+        let title_range = Range::new(Position::new(0, 2), Position::new(0, 6));
+        assert_eq!(link.origin_selection_range, Some(title_range));
+        assert_eq!(link.target_selection_range, title_range);
     }
 
     // Jump from a text link to the title of its destination node.
@@ -1633,6 +1640,16 @@ mod tests {
             }]),
         );
         assert!(document_highlight_for_document(&uri, source, Position::new(0, 0)).is_none());
+    }
+
+    // Highlight nothing for a text link whose target does not exist.
+    #[test]
+    fn document_highlights_ignore_unresolved_text_links() {
+        let source = "# Home\n\n[Missing]";
+
+        assert!(
+            document_highlight_for_document(&untitled_uri(), source, Position::new(2, 3)).is_none(),
+        );
     }
 
     // Highlight matching filesystem links without conflating file and directory references.
