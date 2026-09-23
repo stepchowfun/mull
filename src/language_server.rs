@@ -3,7 +3,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     parser,
-    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
+    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode, Wiki},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -18,18 +18,20 @@ use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::{Error as JsonRpcError, Result},
     ls_types::{
-        CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
-        CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
-        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-        DidSaveTextDocumentParams, DocumentFormattingParams, DocumentHighlight,
-        DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams,
-        DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-        HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
-        Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
-        RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+        CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+        CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
+        CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+        DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
+        DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+        Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
+        InitializeResult, InitializedParams, Location, LocationLink, MarkupContent, MarkupKind,
+        MessageType, OneOf, Position, PositionEncodingKind, PrepareRenameResponse, Range,
+        ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
+        SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
+        WorkspaceEdit,
     },
 };
 
@@ -225,6 +227,7 @@ impl LanguageServer for Backend {
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -424,6 +427,19 @@ impl LanguageServer for Backend {
             &contents,
             self.supports_hierarchical_document_symbols
                 .load(Ordering::Relaxed),
+        ))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        // Offer fixes for the latest synchronized editor snapshot.
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(code_action_for_document(
+            &params.text_document.uri,
+            &contents,
+            params.range,
+            &params.context.diagnostics,
         ))
     }
 
@@ -804,6 +820,64 @@ fn document_symbol_for_document(
     })
 }
 
+// Offer to create the missing destination of a text link at an editor range.
+fn code_action_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    range: Range,
+    diagnostics: &[Diagnostic],
+) -> Option<CodeActionResponse> {
+    // Find a text link whose destination does not exist, skipping empty targets, which no title can
+    // declare.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let Link::Text {
+        title,
+        source_range,
+    } = link_at(&wiki, byte_offset(source_contents, range.start)?)?
+    else {
+        return None;
+    };
+    if title.is_empty() || wiki.text_nodes.contains_key(title) {
+        return None;
+    }
+
+    // Append the node after a blank line, leaving its placement to the formatter.
+    let separator = if source_contents.ends_with("\n\n") {
+        ""
+    } else if source_contents.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    let end = lsp_position(source_contents, source_contents.len());
+
+    // Resolve the missing-target diagnostic reported at the same link.
+    let link_range = lsp_range(source_contents, *source_range);
+    Some(vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Create node `{title}`"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.range == link_range)
+                .cloned()
+                .collect(),
+        ),
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(
+                uri.clone(),
+                vec![TextEdit::new(
+                    Range::new(end, end),
+                    format!("{separator}{TITLE_PREFIX}{title}\n"),
+                )],
+            )])),
+            ..WorkspaceEdit::default()
+        }),
+        is_preferred: Some(true),
+        ..CodeAction::default()
+    })])
+}
+
 // Parse enough of an active text link to identify the source range a completion should replace.
 fn completion_context(
     source_path: Option<&Path>,
@@ -1099,9 +1173,9 @@ pub async fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset, completion_for_document, diagnostic_from_error, diagnostics_for_document,
-        document_highlight_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, lsp_position,
+        byte_offset, code_action_for_document, completion_for_document, diagnostic_from_error,
+        diagnostics_for_document, document_highlight_for_document, document_symbol_for_document,
+        formatting_for_document, goto_definition_for_document, hover_for_document, lsp_position,
         prepare_rename_for_document, references_for_document, rename_for_document,
         reveal_range_command_url,
     };
@@ -1113,9 +1187,9 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentHighlight,
-        DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse, HoverContents,
-        MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+        CodeActionKind, CodeActionOrCommand, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
+        DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse,
+        HoverContents, MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -1797,6 +1871,94 @@ mod tests {
             rename_for_document(&untitled_uri(), source, cursor, "file:notes.txt").unwrap_err(),
             "A node title cannot start with `file:` or `dir:`.",
         );
+    }
+
+    // Apply the single text edit of a code action's workspace edit to a source.
+    fn apply_code_action(uri: &Uri, source: &str, action: &CodeActionOrCommand) -> String {
+        let CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("a code action should not be a bare command");
+        };
+        let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+        let [edit] = changes[uri].as_slice() else {
+            panic!("a code action should make exactly one edit");
+        };
+        let start = byte_offset(source, edit.range.start).unwrap();
+        let end = byte_offset(source, edit.range.end).unwrap();
+        let mut applied = source.to_owned();
+        applied.replace_range(start..end, &edit.new_text);
+        applied
+    }
+
+    // Create the missing destination of a text link, resolving its diagnostic.
+    #[test]
+    fn code_actions_create_missing_nodes() {
+        let source = "# Home\n\n[Greeting]";
+        let uri = untitled_uri();
+        let link_range = Range::new(Position::new(2, 0), Position::new(2, 10));
+        let link_diagnostic = diagnostics(&uri, source).remove(0);
+        let other_diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+            ..link_diagnostic.clone()
+        };
+        assert_eq!(link_diagnostic.range, link_range);
+
+        let actions = code_action_for_document(
+            &uri,
+            source,
+            Range::new(Position::new(2, 3), Position::new(2, 3)),
+            &[other_diagnostic, link_diagnostic.clone()],
+        )
+        .unwrap();
+        let [action] = actions.as_slice() else {
+            panic!("a missing destination should have exactly one code action");
+        };
+        let CodeActionOrCommand::CodeAction(code_action) = action else {
+            panic!("a code action should not be a bare command");
+        };
+        assert_eq!(code_action.title, "Create node `Greeting`");
+        assert_eq!(code_action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(code_action.diagnostics, Some(vec![link_diagnostic]));
+        assert_eq!(code_action.is_preferred, Some(true));
+
+        // Confirm that the created node makes the wiki valid.
+        let applied = apply_code_action(&uri, source, action);
+        assert_eq!(applied, "# Home\n\n[Greeting]\n\n# Greeting\n");
+        assert!(diagnostics(&uri, &applied).is_empty());
+    }
+
+    // Separate the created node with exactly one blank line after a trailing line break.
+    #[test]
+    fn code_actions_reuse_trailing_line_breaks() {
+        let source = "# Home\n\n[Greeting]\n";
+        let uri = untitled_uri();
+        let actions = code_action_for_document(
+            &uri,
+            source,
+            Range::new(Position::new(2, 1), Position::new(2, 1)),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            apply_code_action(&uri, source, &actions[0]),
+            "# Home\n\n[Greeting]\n\n# Greeting\n",
+        );
+    }
+
+    // Offer to create nodes only for text links whose destinations are missing and declarable.
+    #[test]
+    fn code_actions_ignore_other_contexts() {
+        let source = "# Home\n\n[Home] [] [file:notes.txt] prose";
+        let uri = untitled_uri();
+        let actions_at = |character| {
+            let position = Position::new(2, character);
+            code_action_for_document(&uri, source, Range::new(position, position), &[])
+        };
+
+        assert!(actions_at(1).is_none());
+        assert!(actions_at(8).is_none());
+        assert!(actions_at(14).is_none());
+        assert!(actions_at(29).is_none());
     }
 
     // Leave filesystem links to ordinary editor and filesystem navigation.
