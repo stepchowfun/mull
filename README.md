@@ -6,7 +6,7 @@
 
 ## Usage
 
-Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor. Mull supports all the standard features you'd expect from a language plugin, such as formatting, error reporting, jumping to definitions, renaming nodes, hover previews, etc.
+Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor. Mull supports all the standard features you'd expect from a language plugin, such as syntax highlighting, formatting, error reporting, jumping to nodes, renaming nodes, hover previews, etc.
 
 You can also run Mull from the command line as follows:
 
