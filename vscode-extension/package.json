@@ -17,13 +17,13 @@
     "vscode-languageclient": "^10.1.1"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.2",
     "@types/vscode": "1.125.0",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.2.9"
+    "vite-plus": "^0.3.3"
   },
   "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@^0.2.9"
+    "vite": "npm:@voidzero-dev/vite-plus-core@^0.3.3"
   },
   "contributes": {
     "languages": [
