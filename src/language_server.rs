@@ -513,7 +513,7 @@ fn goto_definition_for_document(
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = node_linked_at(&wiki, source_contents, cursor)?;
+    let (node, link_source_range) = node_linked_at(&wiki, byte_offset(source_contents, cursor)?)?;
 
     // Identify the complete source link and destination node while selecting its title on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
@@ -919,14 +919,10 @@ fn escape_text_link_title(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
 }
 
-// Resolve the text link under the cursor to its destination node.
-fn node_linked_at<'a>(
-    wiki: &'a Wiki,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<(&'a TextNode, SourceRange)> {
-    // Match the cursor against complete link ranges, including their delimiters.
-    let (title, source_range) = text_link_at(wiki, byte_offset(source_contents, cursor)?)?;
+// Resolve the text link at a source offset to its destination node.
+fn node_linked_at(wiki: &Wiki, byte_offset: usize) -> Option<(&TextNode, SourceRange)> {
+    // Match the offset against complete link ranges, including their delimiters.
+    let (title, source_range) = text_link_at(wiki, byte_offset)?;
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
