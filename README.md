@@ -2,7 +2,7 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-*Mull* is a tool for managing a local personal knowledge base. A Mull *wiki* is a plain text file containing *nodes* with *links* between them. Nodes can also link to files and directories, so the knowledge graph serves as an index of the local file tree.
+*Mull* is a tool for managing a local personal knowledge base as a plain text file. The file contains *nodes* with *links* between them. Nodes can also link to files and directories, so the wiki serves as an index of the local file tree.
 
 ## Usage
 
@@ -22,7 +22,7 @@ Usage: mull [OPTIONS] [COMMAND]
 Commands:
   check            Check a wiki
   fix              Fix a wiki (default)
-  language-server  Start the language server
+  language-server  Start the language server (editors use this)
   help             Print this message or the help of the given subcommand(s)
 
 Options:
