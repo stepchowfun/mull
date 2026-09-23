@@ -31,7 +31,7 @@ pub enum Link {
 // This struct represents a text node in a wiki.
 #[derive(Clone, Debug)]
 pub struct TextNode {
-    pub title: String, // Non-empty, no line breaks, no leading or trailing whitespace, and no `file:` or `dir:` prefix
+    pub title: String, // Non-empty, one line, trimmed, and no `file:` or `dir:` prefix
     pub content: String, // No leading or trailing whitespace
     pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
