@@ -12,7 +12,7 @@ pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
 pub const HOME_TITLE: &str = "Home";
 
 // Distinguish node titles that text links can target from those that would become filesystem links.
-pub fn is_text_link_title(title: &str) -> bool {
+pub fn is_valid_text_node_title(title: &str) -> bool {
     !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX)
 }
 

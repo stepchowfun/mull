@@ -4,7 +4,7 @@ use crate::{
     scoring::populate_depths,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
-        is_text_link_title,
+        is_valid_text_node_title,
     },
 };
 use std::path::{Component, Path, PathBuf};
@@ -349,7 +349,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                     Some((source_contents, line_source_range)),
                     None,
                 ));
-            } else if !is_text_link_title(title) {
+            } else if !is_valid_text_node_title(title) {
                 errors.push(Error::new(
                     &format!(
                         "This title cannot start with {} or {}.",
