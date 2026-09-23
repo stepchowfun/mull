@@ -1,4 +1,5 @@
 mod assertions;
+mod cancellation;
 mod checker;
 mod error;
 mod format;
@@ -10,6 +11,7 @@ mod validator;
 mod wiki;
 
 use crate::{
+    cancellation::CancellationFlag,
     checker::{analyze, check},
     error::{Error, format_errors},
     format::CodePath,
@@ -201,12 +203,15 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
-    // Analyze the wiki and additionally check its formatting when no fix was requested.
+    // Analyze the wiki and additionally check its formatting when no fix was requested. The
+    // command line has nothing to cancel, so the analysis always runs to completion.
+    let cancellation = CancellationFlag::default();
     let wiki = if should_fix {
-        analyze(Some(&wiki_path), &wiki_contents)
+        analyze(Some(&wiki_path), &wiki_contents, &cancellation)
     } else {
-        check(Some(&wiki_path), &wiki_contents)
-    }?;
+        check(Some(&wiki_path), &wiki_contents, &cancellation)
+    }
+    .assume_completed()?;
 
     // Render the wiki once for checking or fixing.
     let rendered_wiki = wiki.to_string();

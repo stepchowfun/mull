@@ -1,4 +1,5 @@
 use crate::{
+    cancellation::{CancellationFlag, Outcome},
     checker::analyze,
     error::{Error, SourceRange},
     parser,
@@ -39,13 +40,20 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // Keep this in sync with [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
+// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
+#[derive(Debug)]
+struct PendingCheck {
+    handle: JoinHandle<()>,
+    cancellation: CancellationFlag,
+}
+
 // This state associates the latest editor contents with a pending diagnostic update.
 #[derive(Debug)]
 struct OpenDocument {
     contents: String,
     version: i32,
     generation: u64,
-    pending_check: Option<JoinHandle<()>>,
+    pending_check: Option<PendingCheck>,
 }
 
 // This backend checks each open wiki and publishes its errors to the language client.
@@ -73,8 +81,12 @@ impl Backend {
         let documents = Arc::clone(&self.documents);
         let diagnostic_uri = uri.clone();
         let diagnostic_contents = contents.clone();
+        let cancellation = CancellationFlag::default();
+        let check_cancellation = cancellation.clone();
 
-        // Cancel the preceding task and assign a distinct generation to this snapshot.
+        // Cancel the preceding task and assign a distinct generation to this snapshot. Aborting
+        // the task stops it if it has not started checking, and setting its flag stops it if it
+        // has already started.
         let mut open_documents = self
             .documents
             .lock()
@@ -86,7 +98,8 @@ impl Backend {
             pending_check: None,
         });
         if let Some(pending_check) = document.pending_check.take() {
-            pending_check.abort();
+            pending_check.cancellation.cancel();
+            pending_check.handle.abort();
         }
         document.contents = contents;
         document.version = version;
@@ -98,23 +111,28 @@ impl Backend {
 
         // Check outside the asynchronous executor and publish only if the snapshot is still
         // current.
-        document.pending_check = Some(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
             let check_uri = diagnostic_uri.clone();
             let fallback_contents = diagnostic_contents.clone();
             let diagnostics = tokio::task::spawn_blocking(move || {
-                diagnostics_for_document(&check_uri, &diagnostic_contents)
+                diagnostics_for_document(&check_uri, &diagnostic_contents, &check_cancellation)
             })
             .await
             .unwrap_or_else(|error| {
-                vec![diagnostic(
+                Some(vec![diagnostic(
                     &fallback_contents,
                     None,
                     format!("Mull was unable to check the wiki: {error}."),
-                )]
+                )])
             });
+
+            // Publish nothing when a newer snapshot cancelled this check partway through.
+            let Some(diagnostics) = diagnostics else {
+                return;
+            };
             let is_current = documents
                 .lock()
                 .expect("the open-document mutex should not be poisoned")
@@ -127,7 +145,11 @@ impl Backend {
                     .publish_diagnostics(diagnostic_uri, diagnostics, Some(version))
                     .await;
             }
-        }));
+        });
+        document.pending_check = Some(PendingCheck {
+            handle,
+            cancellation,
+        });
     }
 
     // Recheck the most recent snapshot immediately after it is saved.
@@ -428,7 +450,8 @@ impl LanguageServer for Backend {
             .expect("the open-document mutex should not be poisoned")
             .remove(&uri);
         if let Some(pending_check) = document.and_then(|document| document.pending_check) {
-            pending_check.abort();
+            pending_check.cancellation.cancel();
+            pending_check.handle.abort();
         }
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
@@ -448,8 +471,11 @@ fn formatting_edit(
     source_path: Option<&Path>,
     source_contents: &str,
 ) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
-    // Render the validated wiki and avoid an edit when its source is already canonical.
-    let rendered_wiki = analyze(source_path, source_contents)?.to_string();
+    // Render the validated wiki and avoid an edit when its source is already canonical. Formatting
+    // is a request with a response, so it has nothing to cancel.
+    let rendered_wiki = analyze(source_path, source_contents, &CancellationFlag::default())
+        .assume_completed()?
+        .to_string();
     if source_contents == rendered_wiki {
         Ok(None)
     } else {
@@ -973,12 +999,22 @@ fn text_link_target_source_range(
 }
 
 // Analyze an editor snapshot without checking its formatting.
-fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
+fn diagnostics_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cancellation: &CancellationFlag,
+) -> Option<Vec<Diagnostic>> {
     // Use local filesystem context when the editor document has one.
     let wiki_path = local_path(uri);
 
+    // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
+    let Outcome::Completed(result) = analyze(wiki_path.as_deref(), source_contents, cancellation)
+    else {
+        return None;
+    };
+
     // Preserve independent Mull errors as independent editor diagnostics.
-    analyze(wiki_path.as_deref(), source_contents).map_or_else(
+    Some(result.map_or_else(
         |errors| {
             errors
                 .iter()
@@ -986,7 +1022,7 @@ fn diagnostics_for_document(uri: &Uri, source_contents: &str) -> Vec<Diagnostic>
                 .collect()
         },
         |_wiki| Vec::new(),
-    )
+    ))
 }
 
 // Convert a structured Mull error into the representation expected by language clients.
@@ -1098,7 +1134,7 @@ mod tests {
         formatting_edit, hover_for_document, position, prepare_rename_for_document,
         references_for_document, rename_for_document, reveal_range_command_url,
     };
-    use crate::{error::SourceRange, parser};
+    use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1106,13 +1142,19 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        CompletionTextEdit, DiagnosticSeverity, DocumentHighlight, DocumentHighlightKind,
-        DocumentSymbolResponse, GotoDefinitionResponse, HoverContents, MarkupKind, Position,
-        PrepareRenameResponse, Range, SymbolKind, Uri,
+        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentHighlight,
+        DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse, HoverContents,
+        MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    // Compute diagnostics for a check which nothing cancels.
+    fn diagnostics(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
+        diagnostics_for_document(uri, source_contents, &CancellationFlag::default())
+            .expect("a check without cancellation should complete")
+    }
 
     // This guard owns a temporary wiki directory and removes it after each test.
     struct TestWiki(PathBuf);
@@ -1257,7 +1299,7 @@ mod tests {
     #[test]
     fn untitled_text_only_wikis_receive_diagnostics() {
         let source = "# Home\nSee [Missing].";
-        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+        let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "Node `Missing` not found.");
@@ -1271,7 +1313,7 @@ mod tests {
     #[test]
     fn untitled_syntax_errors_receive_diagnostics() {
         let source = "# Home\nUnexpected]";
-        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+        let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "Unexpected closing link delimiter.");
@@ -1285,7 +1327,7 @@ mod tests {
     #[test]
     fn untitled_filesystem_links_receive_diagnostics() {
         let source = concat!("# Home\n[", "file:notes.txt] [", "dir:images]");
-        let diagnostics = diagnostics_for_document(&untitled_uri(), source);
+        let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 2);
         assert!(diagnostics.iter().all(|diagnostic| {
@@ -1839,7 +1881,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(diagnostics_for_document(&uri, source).is_empty());
+        assert!(diagnostics(&uri, source).is_empty());
     }
 
     #[test]

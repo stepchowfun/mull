@@ -1,4 +1,5 @@
 use crate::{
+    cancellation::{CancellationFlag, Outcome},
     error::Error,
     format::{CodePath, CodeStr},
     path_util::relative_path,
@@ -20,15 +21,21 @@ pub fn validate(
     wiki: &Wiki,
     source_path: Option<&Path>,
     source_contents: &str,
-) -> Result<(), Vec<Error>> {
+    cancellation: &CancellationFlag,
+) -> Outcome<Result<(), Vec<Error>>> {
     // Preserve graph errors if resolving the wiki later fails.
     let mut errors = validate_text_links(wiki, source_path, source_contents);
 
     // Report each filesystem link precisely when an editor buffer has no filesystem context.
     let Some(wiki_path) = source_path else {
         errors.extend(validate_untitled_filesystem_links(wiki, source_contents));
-        return errors_to_result(errors);
+        return Outcome::Completed(errors_to_result(errors));
     };
+
+    // Stop before touching the filesystem if the caller already lost interest in the result.
+    if cancellation.is_cancelled() {
+        return Outcome::Cancelled;
+    }
 
     // Derive every filesystem path from the wiki's containing directory.
     let wiki_directory = wiki_path
@@ -37,13 +44,17 @@ pub fn validate(
         .unwrap_or_else(|| Path::new("."));
 
     // Check the filesystem relative to the resolved wiki directory.
-    errors.extend(validate_filesystem_links(
+    let Outcome::Completed(filesystem_errors) = validate_filesystem_links(
         wiki,
         wiki_directory,
         wiki_path,
         source_contents,
-    ));
-    errors_to_result(errors)
+        cancellation,
+    ) else {
+        return Outcome::Cancelled;
+    };
+    errors.extend(filesystem_errors);
+    Outcome::Completed(errors_to_result(errors))
 }
 
 // Validate text-link targets and reachability from the home node.
@@ -151,7 +162,8 @@ fn validate_filesystem_links(
     wiki_directory: &Path,
     wiki_path: &Path,
     source_contents: &str,
-) -> Vec<Error> {
+    cancellation: &CancellationFlag,
+) -> Outcome<Vec<Error>> {
     // Track valid targets while visiting nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
@@ -160,6 +172,11 @@ fn validate_filesystem_links(
     nodes.sort_by_key(|node| &node.title);
     'nodes: for node in nodes {
         for link in &node.links {
+            // Stop between links so a superseded check spends no more time probing the filesystem.
+            if cancellation.is_cancelled() {
+                return Outcome::Cancelled;
+            }
+
             // Skip text links before processing filesystem links [tag:filesystem_links_only].
             let (path, source_range) = match link {
                 Link::Text { .. } => continue,
@@ -224,20 +241,24 @@ fn validate_filesystem_links(
 
     // Avoid a directory walk when link validation exhausted the error budget.
     if errors.len() >= MAX_FILESYSTEM_ERRORS {
-        return errors;
+        return Outcome::Completed(errors);
     }
 
     // Spend the remaining error budget on uncovered filesystem entries.
     let remaining_error_capacity = MAX_FILESYSTEM_ERRORS - errors.len();
-    errors.extend(find_unreferenced_filesystem_links(
+    let Outcome::Completed(unreferenced_errors) = find_unreferenced_filesystem_links(
         wiki_directory,
         wiki_path,
         &referenced_files,
         &referenced_directories,
         remaining_error_capacity,
-    ));
+        cancellation,
+    ) else {
+        return Outcome::Cancelled;
+    };
+    errors.extend(unreferenced_errors);
 
-    errors
+    Outcome::Completed(errors)
 }
 
 // Find unreferenced files within a budget while pruning covered directories.
@@ -247,10 +268,11 @@ fn find_unreferenced_filesystem_links(
     referenced_files: &HashSet<PathBuf>,
     referenced_directories: &HashSet<PathBuf>,
     maximum_errors: usize,
-) -> Vec<Error> {
+    cancellation: &CancellationFlag,
+) -> Outcome<Vec<Error>> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
     if referenced_directories.contains(wiki_directory) {
-        return Vec::new();
+        return Outcome::Completed(Vec::new());
     }
 
     // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
@@ -263,12 +285,12 @@ fn find_unreferenced_filesystem_links(
     let overrides = match overrides.build() {
         Ok(overrides) => overrides,
         Err(error) => {
-            return vec![Error::new(
+            return Outcome::Completed(vec![Error::new(
                 "Unable to build filesystem ignore rules.",
                 Some(wiki_path),
                 None,
                 Some(Rc::new(error)),
-            )];
+            )]);
         }
     };
 
@@ -295,6 +317,11 @@ fn find_unreferenced_filesystem_links(
     // Stop traversing once the remaining error budget is exhausted.
     let mut errors = Vec::<Error>::new();
     for result in walker_builder.build() {
+        // Stop between entries so a superseded check does not walk the rest of the tree.
+        if cancellation.is_cancelled() {
+            return Outcome::Cancelled;
+        }
+
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
@@ -332,7 +359,7 @@ fn find_unreferenced_filesystem_links(
 
     // Present the collected walk errors in deterministic order.
     errors.sort_by_key(ToString::to_string);
-    errors
+    Outcome::Completed(errors)
 }
 
 // Convert collected validation errors into the public result type.
@@ -347,7 +374,12 @@ fn errors_to_result(errors: Vec<Error>) -> Result<(), Vec<Error>> {
 #[cfg(test)]
 mod tests {
     use super::{MAX_FILESYSTEM_ERRORS, validate as validate_wiki};
-    use crate::{error::Error, parser::parse as parse_wiki, wiki::Wiki};
+    use crate::{
+        cancellation::{CancellationFlag, Outcome},
+        error::Error,
+        parser::parse as parse_wiki,
+        wiki::Wiki,
+    };
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -377,12 +409,24 @@ mod tests {
 
     // Validate a fixture using a stable display path for deterministic diagnostics.
     fn validate(wiki: &TestWiki, wiki_path: &Path) -> Result<(), Vec<Error>> {
-        validate_wiki(&wiki.wiki, Some(wiki_path), &wiki.source_contents)
+        validate_wiki(
+            &wiki.wiki,
+            Some(wiki_path),
+            &wiki.source_contents,
+            &CancellationFlag::default(),
+        )
+        .assume_completed()
     }
 
     // Validate a fixture without pretending that its editor buffer has a filesystem path.
     fn validate_untitled(wiki: &TestWiki) -> Result<(), Vec<Error>> {
-        validate_wiki(&wiki.wiki, None, &wiki.source_contents)
+        validate_wiki(
+            &wiki.wiki,
+            None,
+            &wiki.source_contents,
+            &CancellationFlag::default(),
+        )
+        .assume_completed()
     }
 
     // Check rendered diagnostics without coupling tests to their complete listings.
@@ -830,5 +874,31 @@ mod tests {
             &errors,
             "Node `Zulu` is not reachable from `Home`.",
         ));
+    }
+
+    // Report nothing once cancellation is requested, rather than reporting a partial walk.
+    #[test]
+    fn cancellation_stops_filesystem_validation() {
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join("unreferenced.txt"), "unreferenced").unwrap();
+        let wiki = parse("# Home").unwrap();
+
+        // Confirm the fixture produces a filesystem error when nothing cancels the validation.
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert!(contains_error(
+            &errors,
+            "File `unreferenced.txt` is not referenced.",
+        ));
+
+        // Request cancellation before validating the same fixture again.
+        let cancellation = CancellationFlag::default();
+        cancellation.cancel();
+        let outcome = validate_wiki(
+            &wiki.wiki,
+            Some(directory.wiki_path().as_path()),
+            &wiki.source_contents,
+            &cancellation,
+        );
+        assert!(matches!(outcome, Outcome::Cancelled));
     }
 }
