@@ -236,17 +236,20 @@ fn insert_node(
     source_path: Option<&Path>,
     source_contents: &str,
 ) -> Result<(), Vec<Error>> {
-    // Locate the node and its trimmed content in the original source.
+    // Locate the trimmed node and its trimmed content in the original source.
     let PendingNode {
         title,
         source_start,
         content_start,
         title_source_range,
     } = pending_node;
-    let source_range = SourceRange {
-        start: source_start,
-        end: source_end,
-    };
+    let source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: source_start,
+            end: source_end,
+        },
+    );
     let content_source_range = trim_source_range(
         source_contents,
         SourceRange {
@@ -477,7 +480,7 @@ mod tests {
         assert_eq!(wiki.text_nodes["Home"].title_source_range.start, 7);
         assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 11);
         assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
-        assert_eq!(wiki.text_nodes["Home"].source_range.end, 44);
+        assert_eq!(wiki.text_nodes["Home"].source_range.end, 41);
         let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
             panic!("the parsed link should be a text link");
         };

@@ -1245,7 +1245,7 @@ mod tests {
             }));
             assert_eq!(
                 symbols[0].range,
-                Range::new(Position::new(0, 0), Position::new(4, 0)),
+                Range::new(Position::new(0, 0), Position::new(2, 5)),
             );
             assert_eq!(
                 symbols[0].selection_range,
