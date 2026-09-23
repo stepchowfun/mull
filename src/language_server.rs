@@ -756,37 +756,42 @@ fn document_symbol_for_document(
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
-    // Use separate node and title ranges when the client supports hierarchical symbols.
-    let symbols = nodes
-        .into_iter()
-        .map(|node| DocumentSymbol {
-            name: node.title.clone(),
-            detail: None,
-            kind: SymbolKind::OBJECT,
-            tags: None,
-            deprecated: None,
-            range: lsp_range(source_contents, node.source_range),
-            selection_range: lsp_range(source_contents, node.title_source_range),
-            children: None,
-        })
-        .collect::<Vec<_>>();
-    if supports_hierarchy {
-        Some(DocumentSymbolResponse::Nested(symbols))
-    } else {
-        Some(DocumentSymbolResponse::Flat(
-            symbols
+    // Use separate node and title ranges when the client supports hierarchical symbols, and locate
+    // each flat symbol at its title otherwise.
+    Some(if supports_hierarchy {
+        DocumentSymbolResponse::Nested(
+            nodes
                 .into_iter()
-                .map(|symbol| SymbolInformation {
-                    name: symbol.name,
-                    kind: symbol.kind,
-                    tags: symbol.tags,
+                .map(|node| DocumentSymbol {
+                    name: node.title.clone(),
+                    detail: None,
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
                     deprecated: None,
-                    location: Location::new(uri.clone(), symbol.selection_range),
+                    range: lsp_range(source_contents, node.source_range),
+                    selection_range: lsp_range(source_contents, node.title_source_range),
+                    children: None,
+                })
+                .collect(),
+        )
+    } else {
+        DocumentSymbolResponse::Flat(
+            nodes
+                .into_iter()
+                .map(|node| SymbolInformation {
+                    name: node.title.clone(),
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location::new(
+                        uri.clone(),
+                        lsp_range(source_contents, node.title_source_range),
+                    ),
                     container_name: None,
                 })
                 .collect(),
-        ))
-    }
+        )
+    })
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
