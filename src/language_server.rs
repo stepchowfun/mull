@@ -1331,7 +1331,7 @@ mod tests {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
 
         assert!(
-            goto_definition_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some()
+            goto_definition_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some(),
         );
         assert!(hover_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some());
         assert!(
@@ -1836,7 +1836,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(formatting_for_document(&uri, source).unwrap().is_empty(),);
+        assert!(formatting_for_document(&uri, source).unwrap().is_empty());
     }
 
     #[test]
