@@ -121,41 +121,39 @@ impl Backend {
 
         // Check outside the asynchronous executor and publish only if the snapshot is still
         // current.
-        let handle = tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            let check_uri = diagnostic_uri.clone();
-            let fallback_contents = diagnostic_contents.clone();
-            let diagnostics = tokio::task::spawn_blocking(move || {
-                diagnostics_for_document(&check_uri, &diagnostic_contents, &check_cancellation)
-            })
-            .await
-            .unwrap_or_else(|error| {
-                Some(vec![diagnostic(
-                    &fallback_contents,
-                    None,
-                    format!("Mull was unable to check the wiki: {error}."),
-                )])
-            });
-
-            // Publish nothing when a newer snapshot cancelled this check partway through.
-            let Some(diagnostics) = diagnostics else {
-                return;
-            };
-            let is_current = documents
-                .lock()
-                .expect("the open-document mutex should not be poisoned")
-                .get(&diagnostic_uri)
-                .is_some_and(|document| document.generation == generation);
-            if is_current {
-                client
-                    .publish_diagnostics(diagnostic_uri, diagnostics, Some(version))
-                    .await;
-            }
-        });
         document.pending_check = Some(PendingCheck {
-            handle,
+            handle: tokio::spawn(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let check_uri = diagnostic_uri.clone();
+                let fallback_contents = diagnostic_contents.clone();
+
+                // Publish nothing when a newer snapshot cancelled this check partway through.
+                let Some(diagnostics) = tokio::task::spawn_blocking(move || {
+                    diagnostics_for_document(&check_uri, &diagnostic_contents, &check_cancellation)
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    Some(vec![diagnostic(
+                        &fallback_contents,
+                        None,
+                        format!("Mull was unable to check the wiki: {error}."),
+                    )])
+                }) else {
+                    return;
+                };
+                if documents
+                    .lock()
+                    .expect("the open-document mutex should not be poisoned")
+                    .get(&diagnostic_uri)
+                    .is_some_and(|document| document.generation == generation)
+                {
+                    client
+                        .publish_diagnostics(diagnostic_uri, diagnostics, Some(version))
+                        .await;
+                }
+            }),
             cancellation,
         });
     }
@@ -163,18 +161,17 @@ impl Backend {
     // Recheck the most recent snapshot immediately after it is saved.
     fn recheck_saved_document(&self, uri: Uri, contents: Option<String>) {
         // Copy the snapshot before scheduling, without retaining the lock across that operation.
-        let snapshot = {
-            let mut open_documents = self
-                .documents
-                .lock()
-                .expect("the open-document mutex should not be poisoned");
-            open_documents.get_mut(&uri).map(|document| {
+        let snapshot = self
+            .documents
+            .lock()
+            .expect("the open-document mutex should not be poisoned")
+            .get_mut(&uri)
+            .map(|document| {
                 if let Some(contents) = contents {
                     document.contents = contents;
                 }
                 (document.contents.clone(), document.version)
-            })
-        };
+            });
         if let Some((contents, version)) = snapshot {
             self.store_and_check_document(uri, contents, version, Duration::ZERO);
         }
@@ -199,15 +196,16 @@ impl Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         // Remember whether document symbols may carry separate full and selection ranges.
-        let supports_hierarchical_document_symbols = params
-            .capabilities
-            .text_document
-            .as_ref()
-            .and_then(|capabilities| capabilities.document_symbol.as_ref())
-            .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
-            .unwrap_or(false);
-        self.supports_hierarchical_document_symbols
-            .store(supports_hierarchical_document_symbols, Ordering::Relaxed);
+        self.supports_hierarchical_document_symbols.store(
+            params
+                .capabilities
+                .text_document
+                .as_ref()
+                .and_then(|capabilities| capabilities.document_symbol.as_ref())
+                .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
 
         // Advertise the language features implemented by this server.
         Ok(InitializeResult {
@@ -444,11 +442,9 @@ fn diagnostics_for_document(
     source_contents: &str,
     cancellation: &CancellationFlag,
 ) -> Option<Vec<Diagnostic>> {
-    // Use local filesystem context when the editor document has one.
-    let wiki_path = local_path(uri);
-
     // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
-    let Outcome::Completed(result) = analyze(wiki_path.as_deref(), source_contents, cancellation)
+    let Outcome::Completed(result) =
+        analyze(local_path(uri).as_deref(), source_contents, cancellation)
     else {
         return None;
     };
@@ -472,10 +468,11 @@ fn completion_for_document(
     cursor: Position,
 ) -> Option<Vec<CompletionItem>> {
     // Parse either the original source or a temporary source with the active link closed.
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let wiki_path = local_path(uri);
-    let (wiki, replacement_source_range) =
-        completion_context(wiki_path.as_deref(), source_contents, byte_offset)?;
+    let (wiki, replacement_source_range) = completion_context(
+        local_path(uri).as_deref(),
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+    )?;
 
     // Present node titles deterministically and replace the link's inner text and terminator.
     let replacement_range = lsp_range(source_contents, replacement_source_range);
@@ -512,8 +509,7 @@ fn goto_definition_for_document(
     cursor: Position,
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
 
     // Identify the complete source link and destination node while selecting its title on arrival.
@@ -528,20 +524,25 @@ fn goto_definition_for_document(
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering does not require filesystem validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
 
     // Render the node as Markdown with commands that navigate its resolvable text links.
-    let markdown = node.to_markdown(|title| {
-        let target = wiki.text_nodes.get(title)?;
-        reveal_range_command_url(uri, source_contents, target.title_source_range)
-    });
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: markdown,
+            value: node.to_markdown(|title| {
+                reveal_range_command_url(
+                    uri,
+                    source_contents,
+                    wiki.text_nodes.get(title)?.title_source_range,
+                )
+            }),
         }),
         range: Some(lsp_range(source_contents, source_range)),
     })
@@ -555,10 +556,13 @@ fn references_for_document(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references does not require validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, _source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, _source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
 
     // Include the declaration only when requested, then restore source order.
     let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
@@ -585,8 +589,7 @@ fn document_highlight_for_document(
     cursor: Position,
 ) -> Option<Vec<DocumentHighlight>> {
     // Parse only the wiki syntax because document highlights do not require validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
 
     // Distinguish a text-node declaration from its references.
@@ -601,8 +604,7 @@ fn document_highlight_for_document(
         highlights
     } else {
         // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        let link = filesystem_link_at(&wiki, byte_offset)?;
-        filesystem_link_source_ranges(&wiki, link)
+        filesystem_link_source_ranges(&wiki, filesystem_link_at(&wiki, byte_offset)?)
             .into_iter()
             .map(|source_range| (source_range, DocumentHighlightKind::READ))
             .collect()
@@ -628,10 +630,13 @@ fn prepare_rename_for_document(
     cursor: Position,
 ) -> Option<PrepareRenameResponse> {
     // Resolve either a title declaration or text link in a parseable editor snapshot.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Target,
+    )?;
 
     // Select only the title text and seed the rename prompt with its decoded value.
     Some(PrepareRenameResponse::RangeWithPlaceholder {
@@ -648,8 +653,7 @@ fn rename_for_document(
     new_name: &str,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Resolve the requested node without requiring the wiki to pass semantic validation.
-    let wiki_path = local_path(uri);
-    let Some(wiki) = parser::parse(wiki_path.as_deref(), source_contents).ok() else {
+    let Some(wiki) = parser::parse(local_path(uri).as_deref(), source_contents).ok() else {
         return Ok(None);
     };
     let Some(byte_offset) = byte_offset(source_contents, cursor) else {
@@ -699,14 +703,16 @@ fn rename_for_document(
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
-    let edits = edits
-        .into_iter()
-        .map(|(source_range, new_text)| {
-            TextEdit::new(lsp_range(source_contents, source_range), new_text)
-        })
-        .collect();
     Ok(Some(WorkspaceEdit {
-        changes: Some(HashMap::from([(uri.clone(), edits)])),
+        changes: Some(HashMap::from([(
+            uri.clone(),
+            edits
+                .into_iter()
+                .map(|(source_range, new_text)| {
+                    TextEdit::new(lsp_range(source_contents, source_range), new_text)
+                })
+                .collect(),
+        )])),
         ..WorkspaceEdit::default()
     }))
 }
@@ -714,8 +720,7 @@ fn rename_for_document(
 // Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
 fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextEdit>> {
     // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
-    let wiki_path = local_path(uri);
-    let rendered_wiki = parser::parse(wiki_path.as_deref(), source_contents)
+    let rendered_wiki = parser::parse(local_path(uri).as_deref(), source_contents)
         .ok()?
         .to_string();
 
@@ -744,8 +749,7 @@ fn document_symbol_for_document(
     supports_hierarchy: bool,
 ) -> Option<DocumentSymbolResponse> {
     // Parse syntax without semantic validation so structurally valid nodes remain navigable.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
@@ -833,17 +837,19 @@ fn reveal_range_command_url(
 ) -> Option<String> {
     // Pass the document URI and UTF-16 destination range as positional command arguments.
     let range = lsp_range(source_contents, source_range);
-    let arguments = serde_json::to_string(&(
-        uri.as_str(),
-        range.start.line,
-        range.start.character,
-        range.end.line,
-        range.end.character,
-    ))
-    .ok()?;
     Some(format!(
         "command:{REVEAL_RANGE_COMMAND}?{}",
-        utf8_percent_encode(&arguments, NON_ALPHANUMERIC),
+        utf8_percent_encode(
+            &serde_json::to_string(&(
+                uri.as_str(),
+                range.start.line,
+                range.start.character,
+                range.end.line,
+                range.end.character,
+            ))
+            .ok()?,
+            NON_ALPHANUMERIC,
+        ),
     ))
 }
 
@@ -922,8 +928,7 @@ fn linked_node_at<'a>(
     cursor: Position,
 ) -> Option<(&'a TextNode, SourceRange)> {
     // Match the cursor against complete link ranges, including their delimiters.
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (title, source_range) = text_link_at(wiki, byte_offset)?;
+    let (title, source_range) = text_link_at(wiki, byte_offset(source_contents, cursor)?)?;
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
@@ -951,12 +956,13 @@ fn node_at<'a>(
 
     // Resolve a reference, reporting whichever extent of the link the caller asked for.
     let (title, source_range) = text_link_at(wiki, byte_offset)?;
-    let node = wiki.text_nodes.get(title)?;
-    let source_range = match link_extent {
-        LinkExtent::Whole => source_range,
-        LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
-    };
-    Some((node, source_range))
+    Some((
+        wiki.text_nodes.get(title)?,
+        match link_extent {
+            LinkExtent::Whole => source_range,
+            LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
+        },
+    ))
 }
 
 // Find the node whose title is declared at a source offset.
@@ -987,8 +993,10 @@ fn text_link_target_source_range(
     source_range: SourceRange,
 ) -> Option<SourceRange> {
     // Confirm the parser-provided range still addresses square-bracket delimiters.
-    let link_source = source_contents.get(source_range.start..source_range.end)?;
-    let target_source = link_source.strip_prefix('[')?.strip_suffix(']')?;
+    let target_source = source_contents
+        .get(source_range.start..source_range.end)?
+        .strip_prefix('[')?
+        .strip_suffix(']')?;
     let start = source_range.start + '['.len_utf8();
     Some(SourceRange {
         start,
@@ -999,11 +1007,14 @@ fn text_link_target_source_range(
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    let message = error.reason().map_or_else(
-        || error.message().to_owned(),
-        |reason| format!("{}\n\nReason: {reason}", error.message()),
-    );
-    diagnostic(source_contents, error.source_range(), message)
+    diagnostic(
+        source_contents,
+        error.source_range(),
+        error.reason().map_or_else(
+            || error.message().to_owned(),
+            |reason| format!("{}\n\nReason: {reason}", error.message()),
+        ),
+    )
 }
 
 // Construct a Mull error diagnostic at a source range or at the start of the document.
@@ -1012,9 +1023,11 @@ fn diagnostic(
     source_range: Option<crate::error::SourceRange>,
     message: String,
 ) -> Diagnostic {
-    let source_range = source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 });
     Diagnostic {
-        range: lsp_range(source_contents, source_range),
+        range: lsp_range(
+            source_contents,
+            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
+        ),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(env!("CARGO_PKG_NAME").to_owned()),
         message,
@@ -1044,8 +1057,7 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
     // Locate the requested line without counting its line terminator as editor content.
     let mut line_start = 0;
     for _ in 0..position.line {
-        let line_break = source_contents[line_start..].find('\n')?;
-        line_start += line_break + '\n'.len_utf8();
+        line_start += source_contents[line_start..].find('\n')? + '\n'.len_utf8();
     }
     let line_end = source_contents[line_start..]
         .find('\n')
@@ -1081,16 +1093,17 @@ fn position(source_contents: &str, byte_offset: usize) -> Position {
     let prefix = source_contents
         .get(..byte_offset)
         .expect("source ranges should end on UTF-8 character boundaries");
-    let line_start = prefix
-        .rfind('\n')
-        .map_or(0, |index| index + '\n'.len_utf8());
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let character = source_contents[line_start..byte_offset]
-        .encode_utf16()
-        .count();
     Position::new(
-        u32::try_from(line).unwrap_or(u32::MAX),
-        u32::try_from(character).unwrap_or(u32::MAX),
+        u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(u32::MAX),
+        u32::try_from(
+            source_contents[prefix
+                .rfind('\n')
+                .map_or(0, |index| index + '\n'.len_utf8())
+                ..byte_offset]
+                .encode_utf16()
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
     )
 }
 
