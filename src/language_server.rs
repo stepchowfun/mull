@@ -3,7 +3,9 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     parser,
-    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_PREFIX, TextNode, Wiki},
+    wiki::{
+        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_PREFIX, TextNode, Wiki,
+    },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -820,62 +822,65 @@ fn document_symbol_for_document(
     })
 }
 
-// Offer to create the missing destination of a text link at an editor range.
+// Offer to create a missing home node or the missing destination of a text link at an editor range.
 fn code_action_for_document(
     uri: &Uri,
     source_contents: &str,
     range: Range,
     diagnostics: &[Diagnostic],
 ) -> Option<CodeActionResponse> {
-    // Find a text link whose destination does not exist, skipping empty targets, which no title can
-    // declare.
+    // Parse only the wiki syntax so fixes are available before the debounced check completes.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let Link::Text {
-        title,
-        source_range,
-    } = link_at(&wiki, byte_offset(source_contents, range.start)?)?
-    else {
-        return None;
-    };
-    if title.is_empty() || wiki.text_nodes.contains_key(title) {
-        return None;
+    let mut actions = Vec::new();
+
+    // Prepend a missing home node where its diagnostic is reported, since it has no source range.
+    let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
+    if range.start == document_start.start && !wiki.text_nodes.contains_key(HOME_TITLE) {
+        let separator = if source_contents.is_empty() { "" } else { "\n" };
+        actions.push(create_node_action(
+            uri,
+            HOME_TITLE,
+            TextEdit::new(
+                document_start,
+                format!("{TITLE_PREFIX}{HOME_TITLE}\n{separator}"),
+            ),
+            diagnostics,
+            document_start,
+        ));
     }
 
-    // Append the node after a blank line, leaving its placement to the formatter.
-    let separator = if source_contents.ends_with("\n\n") {
-        ""
-    } else if source_contents.ends_with('\n') {
-        "\n"
-    } else {
-        "\n\n"
-    };
-    let end = lsp_position(source_contents, source_contents.len());
+    // Append the missing destination of a text link after a blank line, leaving its placement to
+    // the formatter. Skip empty targets, which no title can declare.
+    if let Some(byte_offset) = byte_offset(source_contents, range.start)
+        && let Some(Link::Text {
+            title,
+            source_range,
+        }) = link_at(&wiki, byte_offset)
+        && !title.is_empty()
+        && !wiki.text_nodes.contains_key(title)
+    {
+        let separator = if source_contents.ends_with("\n\n") {
+            ""
+        } else if source_contents.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        let end = lsp_position(source_contents, source_contents.len());
+        actions.push(create_node_action(
+            uri,
+            title,
+            TextEdit::new(
+                Range::new(end, end),
+                format!("{separator}{TITLE_PREFIX}{title}\n"),
+            ),
+            diagnostics,
+            lsp_range(source_contents, *source_range),
+        ));
+    }
 
-    // Resolve the missing-target diagnostic reported at the same link.
-    let link_range = lsp_range(source_contents, *source_range);
-    Some(vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Create node `{title}`"),
-        kind: Some(CodeActionKind::QUICKFIX),
-        diagnostics: Some(
-            diagnostics
-                .iter()
-                .filter(|diagnostic| diagnostic.range == link_range)
-                .cloned()
-                .collect(),
-        ),
-        edit: Some(WorkspaceEdit {
-            changes: Some(HashMap::from([(
-                uri.clone(),
-                vec![TextEdit::new(
-                    Range::new(end, end),
-                    format!("{separator}{TITLE_PREFIX}{title}\n"),
-                )],
-            )])),
-            ..WorkspaceEdit::default()
-        }),
-        is_preferred: Some(true),
-        ..CodeAction::default()
-    })])
+    // Report the absence of fixes as no response.
+    (!actions.is_empty()).then_some(actions)
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
@@ -906,6 +911,33 @@ fn completion_context(
         end: source_range.end - ']'.len_utf8(),
     };
     Some((wiki, source_range))
+}
+
+// Describe a preferred quick fix that declares a node and resolves the diagnostics at a range.
+fn create_node_action(
+    uri: &Uri,
+    title: &str,
+    edit: TextEdit,
+    diagnostics: &[Diagnostic],
+    diagnostic_range: Range,
+) -> CodeActionOrCommand {
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Create node `{title}`"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.range == diagnostic_range)
+                .cloned()
+                .collect(),
+        ),
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+            ..WorkspaceEdit::default()
+        }),
+        is_preferred: Some(true),
+        ..CodeAction::default()
+    })
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -1943,6 +1975,55 @@ mod tests {
             apply_code_action(&uri, source, &actions[0]),
             "# Home\n\n[Greeting]\n\n# Greeting\n",
         );
+    }
+
+    // Create a missing home node at the start of the document, where its diagnostic is reported.
+    #[test]
+    fn code_actions_create_missing_home_nodes() {
+        let uri = untitled_uri();
+        let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
+        let home_diagnostic = diagnostics(&uri, "").remove(0);
+        assert_eq!(home_diagnostic.range, document_start);
+
+        let actions = code_action_for_document(
+            &uri,
+            "",
+            document_start,
+            std::slice::from_ref(&home_diagnostic),
+        )
+        .unwrap();
+        let [action] = actions.as_slice() else {
+            panic!("a missing home node should have exactly one code action");
+        };
+        let CodeActionOrCommand::CodeAction(code_action) = action else {
+            panic!("a code action should not be a bare command");
+        };
+        assert_eq!(code_action.title, "Create node `Home`");
+        assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
+        let applied = apply_code_action(&uri, "", action);
+        assert_eq!(applied, "# Home\n");
+        assert!(diagnostics(&uri, &applied).is_empty());
+
+        // Separate the home node from the nodes that follow it.
+        let source = "# Greeting\n";
+        let actions = code_action_for_document(&uri, source, document_start, &[]).unwrap();
+        assert_eq!(
+            apply_code_action(&uri, source, &actions[0]),
+            "# Home\n\n# Greeting\n",
+        );
+    }
+
+    // Offer to create a home node only when it is missing and the request starts the document.
+    #[test]
+    fn code_actions_omit_unneeded_home_nodes() {
+        let uri = untitled_uri();
+        let at = |line, character| {
+            let position = Position::new(line, character);
+            Range::new(position, position)
+        };
+
+        assert!(code_action_for_document(&uri, "# Home\n", at(0, 0), &[]).is_none());
+        assert!(code_action_for_document(&uri, "# Greeting\n", at(0, 3), &[]).is_none());
     }
 
     // Offer to create nodes only for text links whose destinations are missing and declarable.

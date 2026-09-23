@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.17.0] - 2026-09-23
 
 ### Added
-- Added a language-server quick fix that creates the missing destination node of a text link.
+- Added language-server quick fixes that create a missing `Home` node or the missing destination node of a text link.
 
 ## [0.16.0] - 2026-09-23
 
