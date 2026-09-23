@@ -81,7 +81,7 @@ impl Backend {
         let documents = Arc::clone(&self.documents);
         let diagnostic_uri = uri.clone();
         let diagnostic_contents = contents.clone();
-        let cancellation = CancellationFlag::new();
+        let cancellation = CancellationFlag::default();
         let check_cancellation = cancellation.clone();
 
         // Cancel the preceding task and assign a distinct generation to this snapshot. Aborting
@@ -473,7 +473,7 @@ fn formatting_edit(
 ) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
     // Render the validated wiki and avoid an edit when its source is already canonical. Formatting
     // is a request with a response, so it has nothing to cancel.
-    let rendered_wiki = analyze(source_path, source_contents, &CancellationFlag::new())
+    let rendered_wiki = analyze(source_path, source_contents, &CancellationFlag::default())
         .assume_completed()?
         .to_string();
     if source_contents == rendered_wiki {
@@ -1152,7 +1152,7 @@ mod tests {
 
     // Compute diagnostics for a check which nothing cancels.
     fn diagnostics(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
-        diagnostics_for_document(uri, source_contents, &CancellationFlag::new())
+        diagnostics_for_document(uri, source_contents, &CancellationFlag::default())
             .expect("a check without cancellation should complete")
     }
 

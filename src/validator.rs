@@ -413,7 +413,7 @@ mod tests {
             &wiki.wiki,
             Some(wiki_path),
             &wiki.source_contents,
-            &CancellationFlag::new(),
+            &CancellationFlag::default(),
         )
         .assume_completed()
     }
@@ -424,7 +424,7 @@ mod tests {
             &wiki.wiki,
             None,
             &wiki.source_contents,
-            &CancellationFlag::new(),
+            &CancellationFlag::default(),
         )
         .assume_completed()
     }
@@ -891,7 +891,7 @@ mod tests {
         ));
 
         // Request cancellation before validating the same fixture again.
-        let cancellation = CancellationFlag::new();
+        let cancellation = CancellationFlag::default();
         cancellation.cancel();
         let outcome = validate_wiki(
             &wiki.wiki,

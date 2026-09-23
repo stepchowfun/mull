@@ -205,7 +205,7 @@ async fn entry() -> Result<(), Vec<Error>> {
 
     // Analyze the wiki and additionally check its formatting when no fix was requested. The
     // command line has nothing to cancel, so the analysis always runs to completion.
-    let cancellation = CancellationFlag::new();
+    let cancellation = CancellationFlag::default();
     let wiki = if should_fix {
         analyze(Some(&wiki_path), &wiki_contents, &cancellation)
     } else {

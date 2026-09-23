@@ -8,11 +8,6 @@ use std::sync::{
 pub struct CancellationFlag(Arc<AtomicBool>);
 
 impl CancellationFlag {
-    // Construct a flag which has not requested cancellation.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     // Request that the computations holding this flag stop at their next opportunity.
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Relaxed);
