@@ -245,11 +245,14 @@ tasks:
       )
 
   release:
-    description: Build and output the release binaries for Linux.
+    description: Build and output the release artifacts.
     dependencies:
       - fetch_crates
     input_paths:
       - src
+      - vscode-extension
+    excluded_input_paths:
+      - vscode-extension/node_modules
     output_paths:
       - artifacts
     command: |
@@ -285,6 +288,16 @@ tasks:
       cp \
         target/aarch64-unknown-linux-musl/release/mull \
         artifacts/mull-aarch64-unknown-linux-musl
+
+      # Package the VS Code extension.
+      (
+        cd vscode-extension
+        npm ci
+        npx @vscode/vsce package \
+          --allow-missing-repository \
+          --skip-license \
+          --out ../artifacts/mull.vsix
+      )
 
   publish:
     description: Publish the crate to crates.io.
