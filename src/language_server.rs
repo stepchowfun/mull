@@ -217,7 +217,13 @@ impl LanguageServer for Backend {
     async fn initialized(&self, _params: InitializedParams) {
         // Confirm that the server completed its initialization handshake.
         self.client
-            .log_message(MessageType::INFO, "Mull language server initialized.")
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "Mull {} language server initialized.",
+                    env!("CARGO_PKG_VERSION"),
+                ),
+            )
             .await;
     }
 
