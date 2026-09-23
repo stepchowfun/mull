@@ -3,7 +3,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     parser,
-    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
+    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki, is_text_link_title},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -483,11 +483,7 @@ fn completion_for_document(
 
     // Present node titles deterministically and replace the link's inner text and terminator.
     let replacement_range = lsp_range(source_contents, replacement_source_range);
-    let mut titles = wiki
-        .text_nodes
-        .keys()
-        .filter(|title| is_text_link_title(title))
-        .collect::<Vec<_>>();
+    let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
     titles.sort();
     Some(
         titles
@@ -685,8 +681,7 @@ fn rename_for_document(
     }
     if !is_text_link_title(new_title) {
         return Err(format!(
-            "A text-linked node title cannot start with `{FILE_LINK_PREFIX}` or \
-                `{DIRECTORY_LINK_PREFIX}`.",
+            "A node title cannot start with `{FILE_LINK_PREFIX}` or `{DIRECTORY_LINK_PREFIX}`.",
         ));
     }
     if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
@@ -921,11 +916,6 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange>
 // Escape delimiters so an arbitrary node title retains its meaning inside a text link.
 fn escape_text_link_title(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
-}
-
-// Distinguish node titles that can be encoded without becoming filesystem links.
-fn is_text_link_title(title: &str) -> bool {
-    !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX)
 }
 
 // Resolve the text link under the cursor to its destination node.
@@ -1455,22 +1445,6 @@ mod tests {
         assert!(completion_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
     }
 
-    // Omit node titles whose reserved prefixes would produce filesystem links.
-    #[test]
-    fn completions_omit_filesystem_link_titles() {
-        let source = "# Home\n\n[]\n\n# file:notes.txt\n\n# dir:images\n\n# Other";
-        let completions =
-            completion_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
-
-        assert_eq!(
-            completions
-                .iter()
-                .map(|completion| completion.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Home", "Other"],
-        );
-    }
-
     // Jump from a text link to the title of its destination node.
     #[test]
     fn definitions_target_node_titles() {
@@ -1806,7 +1780,7 @@ mod tests {
         );
         assert_eq!(
             rename_for_document(&untitled_uri(), source, cursor, "file:notes.txt").unwrap_err(),
-            "A text-linked node title cannot start with `file:` or `dir:`.",
+            "A node title cannot start with `file:` or `dir:`.",
         );
     }
 

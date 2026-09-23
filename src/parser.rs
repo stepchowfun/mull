@@ -4,6 +4,7 @@ use crate::{
     scoring::populate_depths,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
+        is_text_link_title,
     },
 };
 use std::path::{Component, Path, PathBuf};
@@ -331,7 +332,8 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 errors.extend(node_errors);
             }
 
-            // Reject titles that are empty after surrounding whitespace is stripped.
+            // Reject titles that are empty after surrounding whitespace is stripped, as well as
+            // titles that text links could not target because they would become filesystem links.
             let title_source_range = trim_source_range(
                 source_contents,
                 SourceRange {
@@ -345,6 +347,17 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                     "This title is empty.",
                     source_path,
                     Some((source_contents, line_source_range)),
+                    None,
+                ));
+            } else if !is_text_link_title(title) {
+                errors.push(Error::new(
+                    &format!(
+                        "This title cannot start with {} or {}.",
+                        FILE_LINK_PREFIX.code_str(),
+                        DIRECTORY_LINK_PREFIX.code_str(),
+                    ),
+                    source_path,
+                    Some((source_contents, title_source_range)),
                     None,
                 ));
             } else {
@@ -629,6 +642,21 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("This title is empty."));
+    }
+
+    // Reject titles that text links would interpret as filesystem links.
+    #[test]
+    fn filesystem_link_titles() {
+        let errors = parse_test("# Home\n\n# file:notes.txt\n\n# dir:images").unwrap_err();
+
+        assert_eq!(errors.len(), 2);
+        for error in &errors {
+            assert!(
+                error
+                    .to_string()
+                    .contains("This title cannot start with `file:` or `dir:`."),
+            );
+        }
     }
 
     // Do not reinterpret content after an invalid title as content before the first title.

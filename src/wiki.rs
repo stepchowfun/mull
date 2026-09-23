@@ -11,6 +11,11 @@ pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
+// Distinguish node titles that text links can target from those that would become filesystem links.
+pub fn is_text_link_title(title: &str) -> bool {
+    !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX)
+}
+
 // These are the source occurrences through which a node can reference a target.
 #[derive(Clone, Debug)]
 pub enum Link {
