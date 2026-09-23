@@ -56,7 +56,7 @@ enum Subcommand {
     #[command(about = "Fix a wiki (default)")]
     Fix,
 
-    #[command(about = "Start the language server")]
+    #[command(about = "Start the language server (editors use this)")]
     LanguageServer,
 }
 
