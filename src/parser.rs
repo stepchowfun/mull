@@ -287,6 +287,39 @@ fn insert_node(
     }
 }
 
+// Reject titles that are empty after surrounding whitespace is stripped, as well as titles that
+// text links could not target because they would become filesystem links.
+fn validate_title(
+    title: &str,
+    title_source_range: SourceRange,
+    line_source_range: SourceRange,
+    source_path: Option<&Path>,
+    source_contents: &str,
+) -> Result<(), Error> {
+    if title.is_empty() {
+        // An empty title has no range of its own, so report the whole line.
+        Err(Error::new(
+            "This title is empty.",
+            source_path,
+            Some((source_contents, line_source_range)),
+            None,
+        ))
+    } else if is_valid_text_node_title(title) {
+        Ok(())
+    } else {
+        Err(Error::new(
+            &format!(
+                "This title cannot start with {} or {}.",
+                FILE_LINK_PREFIX.code_str(),
+                DIRECTORY_LINK_PREFIX.code_str(),
+            ),
+            source_path,
+            Some((source_contents, title_source_range)),
+            None,
+        ))
+    }
+}
+
 // Parse source contents into a scored wiki with source ranges for every node and link.
 pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
     // Accumulate parsed nodes, errors, and the node currently being read.
@@ -332,8 +365,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 errors.extend(node_errors);
             }
 
-            // Reject titles that are empty after surrounding whitespace is stripped, as well as
-            // titles that text links could not target because they would become filesystem links.
+            // Start a node for the title after stripping its surrounding whitespace, if it is valid.
             let title_source_range = trim_source_range(
                 source_contents,
                 SourceRange {
@@ -342,24 +374,14 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 },
             );
             let title = &source_contents[title_source_range.start..title_source_range.end];
-            if title.is_empty() {
-                errors.push(Error::new(
-                    "This title is empty.",
-                    source_path,
-                    Some((source_contents, line_source_range)),
-                    None,
-                ));
-            } else if !is_valid_text_node_title(title) {
-                errors.push(Error::new(
-                    &format!(
-                        "This title cannot start with {} or {}.",
-                        FILE_LINK_PREFIX.code_str(),
-                        DIRECTORY_LINK_PREFIX.code_str(),
-                    ),
-                    source_path,
-                    Some((source_contents, title_source_range)),
-                    None,
-                ));
+            if let Err(error) = validate_title(
+                title,
+                title_source_range,
+                line_source_range,
+                source_path,
+                source_contents,
+            ) {
+                errors.push(error);
             } else {
                 pending_node = Some(PendingNode {
                     title: title.to_owned(),
