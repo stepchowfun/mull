@@ -266,11 +266,10 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         // Track the newly opened document and check it without waiting for further edits.
-        let document = params.text_document;
         self.store_and_check_document(
-            document.uri,
-            document.text,
-            document.version,
+            params.text_document.uri,
+            params.text_document.text,
+            params.text_document.version,
             Duration::ZERO,
         );
     }
@@ -294,15 +293,17 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         // Complete text links against the latest synchronized editor snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
-        Ok(
-            completion_for_document(&uri, &contents, position_params.position)
-                .map(CompletionResponse::Array),
+        Ok(completion_for_document(
+            &params.text_document_position.text_document.uri,
+            &contents,
+            params.text_document_position.position,
         )
+        .map(CompletionResponse::Array))
     }
 
     async fn goto_definition(
@@ -310,43 +311,43 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         // Resolve the text link against the latest synchronized editor snapshot.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(goto_definition_for_document(
-            &uri,
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         // Preview the text-link target from the latest synchronized editor snapshot.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(hover_for_document(
-            &uri,
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         // Find references to the node under the cursor in the latest synchronized snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(references_for_document(
-            &uri,
+            &params.text_document_position.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position.position,
             params.context.include_declaration,
         ))
     }
@@ -356,15 +357,15 @@ impl LanguageServer for Backend {
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         // Highlight the wiki occurrences related to the item under the cursor.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(document_highlight_for_document(
-            &uri,
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
@@ -373,12 +374,11 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the node occurrence that the editor should select for rename.
-        let uri = params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
         Ok(prepare_rename_for_document(
-            &uri,
+            &params.text_document.uri,
             &contents,
             params.position,
         ))
@@ -386,22 +386,29 @@ impl LanguageServer for Backend {
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         // Rename a node and all of its text-link occurrences in the latest snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
-        rename_for_document(&uri, &contents, position_params.position, &params.new_name)
-            .map_err(JsonRpcError::invalid_params)
+        rename_for_document(
+            &params.text_document_position.text_document.uri,
+            &contents,
+            params.text_document_position.position,
+            &params.new_name,
+        )
+        .map_err(JsonRpcError::invalid_params)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         // Render the latest synchronized editor snapshot, leaving unparsable contents unchanged.
-        let uri = params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
-        Ok(formatting_for_document(&uri, &contents))
+        Ok(formatting_for_document(
+            &params.text_document.uri,
+            &contents,
+        ))
     }
 
     async fn document_symbol(
@@ -409,12 +416,11 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         // Describe the nodes in the latest synchronized editor snapshot.
-        let uri = params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
         Ok(document_symbol_for_document(
-            &uri,
+            &params.text_document.uri,
             &contents,
             self.supports_hierarchical_document_symbols
                 .load(Ordering::Relaxed),
@@ -423,16 +429,17 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Cancel outstanding work before asking the client to clear this document's diagnostics.
-        let uri = params.text_document.uri;
         let document = self
             .documents
             .lock()
             .expect("the open-document mutex should not be poisoned")
-            .remove(&uri);
+            .remove(&params.text_document.uri);
         if let Some(pending_check) = document.and_then(|document| document.pending_check) {
             pending_check.cancel();
         }
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
     }
 }
 
