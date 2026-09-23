@@ -4,7 +4,6 @@ use crate::{
     scoring::populate_depths,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
-        is_valid_text_node_title,
     },
 };
 use std::path::{Component, Path, PathBuf};
@@ -287,25 +286,35 @@ fn insert_node(
     }
 }
 
-// Reject titles that are empty after surrounding whitespace is stripped, as well as titles that
-// text links could not target because they would become filesystem links.
-fn validate_title(
-    title: &str,
-    title_source_range: SourceRange,
-    line_source_range: SourceRange,
+// Locate the title that follows a title marker, rejecting titles that are empty after surrounding
+// whitespace is stripped, as well as titles that text links could not target because they would
+// become filesystem links.
+fn parse_title(
+    raw_title: &str,
     source_path: Option<&Path>,
     source_contents: &str,
-) -> Result<(), Error> {
+    line_source_range: SourceRange,
+) -> Result<SourceRange, Error> {
+    // Strip surrounding whitespace from the text after the marker, which ends the line.
+    let title_source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: line_source_range.end - raw_title.len(),
+            end: line_source_range.end,
+        },
+    );
+    let title = &source_contents[title_source_range.start..title_source_range.end];
+
+    // Report an empty title at the whole line, since the title has no text of its own.
     if title.is_empty() {
-        // An empty title has no range of its own, so report the whole line.
         Err(Error::new(
             "This title is empty.",
             source_path,
             Some((source_contents, line_source_range)),
             None,
         ))
-    } else if is_valid_text_node_title(title) {
-        Ok(())
+    } else if !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX) {
+        Ok(title_source_range)
     } else {
         Err(Error::new(
             &format!(
@@ -365,30 +374,18 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 errors.extend(node_errors);
             }
 
-            // Start a node for the title after stripping its surrounding whitespace, if it is valid.
-            let title_source_range = trim_source_range(
-                source_contents,
-                SourceRange {
-                    start: line_source_range.end - raw_title.len(),
-                    end: line_source_range.end,
-                },
-            );
-            let title = &source_contents[title_source_range.start..title_source_range.end];
-            if let Err(error) = validate_title(
-                title,
-                title_source_range,
-                line_source_range,
-                source_path,
-                source_contents,
-            ) {
-                errors.push(error);
-            } else {
-                pending_node = Some(PendingNode {
-                    title: title.to_owned(),
-                    source_start: line_start,
-                    content_start: next_line_start,
-                    title_source_range,
-                });
+            // Start a node for the title if it is valid.
+            match parse_title(raw_title, source_path, source_contents, line_source_range) {
+                Ok(title_source_range) => {
+                    pending_node = Some(PendingNode {
+                        title: source_contents[title_source_range.start..title_source_range.end]
+                            .to_owned(),
+                        source_start: line_start,
+                        content_start: next_line_start,
+                        title_source_range,
+                    });
+                }
+                Err(error) => errors.push(error),
             }
         } else if !has_seen_title_marker
             && !reported_content_before_title

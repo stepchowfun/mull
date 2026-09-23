@@ -3,9 +3,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     parser,
-    wiki::{
-        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki, is_valid_text_node_title,
-    },
+    wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -681,7 +679,7 @@ fn rename_for_document(
     if new_title.is_empty() {
         return Err("A node title cannot be empty.".to_owned());
     }
-    if !is_valid_text_node_title(new_title) {
+    if new_title.starts_with(FILE_LINK_PREFIX) || new_title.starts_with(DIRECTORY_LINK_PREFIX) {
         return Err(format!(
             "A node title cannot start with `{FILE_LINK_PREFIX}` or `{DIRECTORY_LINK_PREFIX}`.",
         ));
