@@ -668,7 +668,8 @@ fn rename_for_document(
         return Ok(None);
     };
 
-    // Normalize surrounding whitespace while rejecting titles that cannot occupy one source line.
+    // Normalize surrounding whitespace, then reject titles that the parser would not accept: those
+    // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
     if new_name
         .chars()
         .any(|character| matches!(character, '\r' | '\n'))
