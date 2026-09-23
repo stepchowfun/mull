@@ -68,6 +68,11 @@ jobs:
         name: aarch64-unknown-linux-musl
         path: artifacts/mull
         if-no-files-found: error
+    - uses: actions/upload-artifact@v7.0.1
+      with:
+        name: vscode-extension
+        path: artifacts/mull.vsix
+        if-no-files-found: error
   ci-windows:
     name: Build for Windows
     runs-on: windows-latest
@@ -251,6 +256,9 @@ jobs:
         mv \
           artifacts/aarch64-pc-windows-msvc/mull.exe \
           artifacts/mull-aarch64-pc-windows-msvc.exe
+        mv \
+          artifacts/vscode-extension/mull.vsix \
+          artifacts/mull.vsix
 
         # Create the release.
         gh release create "v$VERSION" --title "v$VERSION" --notes '' \
@@ -261,7 +269,8 @@ jobs:
           'artifacts/mull-x86_64-apple-darwin' \
           'artifacts/mull-aarch64-apple-darwin' \
           'artifacts/mull-x86_64-pc-windows-msvc.exe' \
-          'artifacts/mull-aarch64-pc-windows-msvc.exe'
+          'artifacts/mull-aarch64-pc-windows-msvc.exe' \
+          'artifacts/mull.vsix'
         echo "Created release v$VERSION."
     - uses: stepchowfun/toast/.github/actions/toast@main
       with:
