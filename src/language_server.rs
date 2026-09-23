@@ -733,7 +733,7 @@ fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextE
         Some(vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
-                position(source_contents, source_contents.len()),
+                lsp_position(source_contents, source_contents.len()),
             ),
             rendered_wiki,
         )])
@@ -1041,14 +1041,6 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
         .flatten()
 }
 
-// Convert a source range into the representation expected by the language server protocol.
-fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
-    Range::new(
-        position(source_contents, source_range.start),
-        position(source_contents, source_range.end),
-    )
-}
-
 // Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
 fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
     // Locate the requested line without counting its line terminator as editor content.
@@ -1084,7 +1076,7 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
 }
 
 // Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
-fn position(source_contents: &str, byte_offset: usize) -> Position {
+fn lsp_position(source_contents: &str, byte_offset: usize) -> Position {
     // Source ranges originate at character boundaries and cannot extend beyond the source.
     let byte_offset = byte_offset.min(source_contents.len());
     let prefix = source_contents
@@ -1101,6 +1093,14 @@ fn position(source_contents: &str, byte_offset: usize) -> Position {
                 .count(),
         )
         .unwrap_or(u32::MAX),
+    )
+}
+
+// Convert a source range into the representation expected by the language server protocol.
+fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
+    Range::new(
+        lsp_position(source_contents, source_range.start),
+        lsp_position(source_contents, source_range.end),
     )
 }
 
@@ -1121,8 +1121,9 @@ mod tests {
     use super::{
         byte_offset, completion_for_document, diagnostic_from_error, diagnostics_for_document,
         document_highlight_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, position, prepare_rename_for_document,
-        references_for_document, rename_for_document, reveal_range_command_url,
+        goto_definition_for_document, hover_for_document, lsp_position,
+        prepare_rename_for_document, references_for_document, rename_for_document,
+        reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
     use std::{
@@ -1183,10 +1184,10 @@ mod tests {
     fn positions_use_utf16_code_units() {
         let source = "zero\n😀 café";
 
-        assert_eq!(position(source, 0), Position::new(0, 0));
-        assert_eq!(position(source, 5), Position::new(1, 0));
-        assert_eq!(position(source, 9), Position::new(1, 2));
-        assert_eq!(position(source, source.len()), Position::new(1, 7));
+        assert_eq!(lsp_position(source, 0), Position::new(0, 0));
+        assert_eq!(lsp_position(source, 5), Position::new(1, 0));
+        assert_eq!(lsp_position(source, 9), Position::new(1, 2));
+        assert_eq!(lsp_position(source, source.len()), Position::new(1, 7));
     }
 
     // Convert editor positions back to byte offsets without splitting Unicode characters.
