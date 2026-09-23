@@ -513,7 +513,7 @@ fn goto_definition_for_document(
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
+    let (node, link_source_range) = node_linked_at(&wiki, source_contents, cursor)?;
 
     // Identify the complete source link and destination node while selecting its title on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
@@ -920,7 +920,7 @@ fn escape_text_link_title(title: &str) -> String {
 }
 
 // Resolve the text link under the cursor to its destination node.
-fn linked_node_at<'a>(
+fn node_linked_at<'a>(
     wiki: &'a Wiki,
     source_contents: &str,
     cursor: Position,
