@@ -1,6 +1,6 @@
+mod analyzer;
 mod assertions;
 mod cancellation;
-mod checker;
 mod error;
 mod format;
 mod language_server;
@@ -11,14 +11,15 @@ mod validator;
 mod wiki;
 
 use crate::{
+    analyzer::analyze,
     cancellation::CancellationFlag,
-    checker::{analyze, check},
     error::{Error, format_errors},
-    format::CodePath,
+    format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
+use similar::TextDiff;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -203,39 +204,44 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
-    // Analyze the wiki and additionally check its formatting when no fix was requested. The
-    // command line has nothing to cancel, so the analysis always runs to completion.
-    let cancellation = CancellationFlag::default();
-    let wiki = if should_fix {
-        analyze(Some(&wiki_path), &wiki_contents, &cancellation)
-    } else {
-        check(Some(&wiki_path), &wiki_contents, &cancellation)
-    }
-    .assume_completed()?;
+    // Analyze and render the wiki. The command line has nothing to cancel, so the analysis always
+    // runs to completion.
+    let rendered_wiki = analyze(
+        Some(&wiki_path),
+        &wiki_contents,
+        &CancellationFlag::default(),
+    )
+    .assume_completed()?
+    .to_string();
 
-    // Render the wiki once for checking or fixing.
-    let rendered_wiki = wiki.to_string();
-
-    // Fix the wiki when requested, avoiding a rewrite when it is already canonical.
-    if should_fix {
-        if wiki_contents == rendered_wiki {
-            println!("Wiki {} looks good.", wiki_path.code_path());
-        } else {
-            fs::write(&wiki_path, rendered_wiki).map_err(|error| {
-                vec![Error::new(
-                    "Unable to write the wiki.",
-                    Some(&wiki_path),
-                    None,
-                    Some(Rc::new(error)),
-                )]
-            })?;
-
-            // Report that the wiki was fixed.
-            println!("Fixed {}.", wiki_path.code_path());
-        }
-    } else {
-        // Report that the wiki passed the check.
+    // Accept a canonical wiki, then either fix a noncanonical one or reject it with a diff.
+    if wiki_contents == rendered_wiki {
         println!("Wiki {} looks good.", wiki_path.code_path());
+    } else if should_fix {
+        fs::write(&wiki_path, rendered_wiki).map_err(|error| {
+            vec![Error::new(
+                "Unable to write the wiki.",
+                Some(&wiki_path),
+                None,
+                Some(Rc::new(error)),
+            )]
+        })?;
+
+        // Report that the wiki was fixed.
+        println!("Fixed {}.", wiki_path.code_path());
+    } else {
+        return Err(vec![Error::new(
+            &format!(
+                "The wiki is not formatted correctly. {} can fix it.\n\n{}",
+                "mull fix".code_str(),
+                TextDiff::from_lines(&wiki_contents, &rendered_wiki)
+                    .unified_diff()
+                    .header("wiki", "rendered"),
+            ),
+            Some(&wiki_path),
+            None,
+            None,
+        )]);
     }
 
     // Everything succeeded.
