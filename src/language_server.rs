@@ -1,6 +1,6 @@
 use crate::{
+    analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
-    checker::analyze,
     error::{Error, SourceRange},
     parser,
     wiki::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki},
