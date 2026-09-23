@@ -944,7 +944,9 @@ fn node_at<'a>(
     link_extent: LinkExtent,
 ) -> Option<(&'a TextNode, SourceRange)> {
     // Prefer a declaration, whose title is the only range it can contribute.
-    if let Some(node) = declaration_at(wiki, byte_offset) {
+    if let Some(node) = wiki.text_nodes.values().find(|node| {
+        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+    }) {
         return Some((node, node.title_source_range));
     }
 
@@ -957,13 +959,6 @@ fn node_at<'a>(
             LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
         },
     ))
-}
-
-// Find the node whose title is declared at a source offset.
-fn declaration_at(wiki: &Wiki, byte_offset: usize) -> Option<&TextNode> {
-    wiki.text_nodes.values().find(|node| {
-        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
-    })
 }
 
 // Find a text link at a source offset without resolving its destination.
