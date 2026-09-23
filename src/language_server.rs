@@ -47,7 +47,20 @@ struct PendingCheck {
     cancellation: CancellationFlag,
 }
 
-// This state associates the latest editor contents with a pending diagnostic update.
+impl PendingCheck {
+    // Stop the check whether or not it has started. Aborting the task stops it if it has not
+    // started checking, and setting its flag stops it if it has already started.
+    fn cancel(self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
+// This state associates the latest editor contents with a pending diagnostic update. The client
+// assigns the version, which changes only when the contents do and is reported back with
+// diagnostics. The server assigns the generation, which increases every time a snapshot is
+// stored, including rechecks of unchanged contents after a save, so it identifies which snapshot
+// stale work was computed from.
 #[derive(Debug)]
 struct OpenDocument {
     contents: String,
@@ -75,7 +88,7 @@ impl Backend {
     }
 
     // Replace an editor snapshot and schedule diagnostics for its new generation.
-    fn update_document(&self, uri: Uri, contents: String, version: i32, delay: Duration) {
+    fn store_and_check_document(&self, uri: Uri, contents: String, version: i32, delay: Duration) {
         // Prepare the resources owned by the diagnostic task.
         let client = self.client.clone();
         let documents = Arc::clone(&self.documents);
@@ -84,9 +97,7 @@ impl Backend {
         let cancellation = CancellationFlag::default();
         let check_cancellation = cancellation.clone();
 
-        // Cancel the preceding task and assign a distinct generation to this snapshot. Aborting
-        // the task stops it if it has not started checking, and setting its flag stops it if it
-        // has already started.
+        // Cancel the preceding task and assign a distinct generation to this snapshot.
         let mut open_documents = self
             .documents
             .lock()
@@ -98,8 +109,7 @@ impl Backend {
             pending_check: None,
         });
         if let Some(pending_check) = document.pending_check.take() {
-            pending_check.cancellation.cancel();
-            pending_check.handle.abort();
+            pending_check.cancel();
         }
         document.contents = contents;
         document.version = version;
@@ -111,64 +121,59 @@ impl Backend {
 
         // Check outside the asynchronous executor and publish only if the snapshot is still
         // current.
-        let handle = tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            let check_uri = diagnostic_uri.clone();
-            let fallback_contents = diagnostic_contents.clone();
-            let diagnostics = tokio::task::spawn_blocking(move || {
-                diagnostics_for_document(&check_uri, &diagnostic_contents, &check_cancellation)
-            })
-            .await
-            .unwrap_or_else(|error| {
-                Some(vec![diagnostic(
-                    &fallback_contents,
-                    None,
-                    format!("Mull was unable to check the wiki: {error}."),
-                )])
-            });
-
-            // Publish nothing when a newer snapshot cancelled this check partway through.
-            let Some(diagnostics) = diagnostics else {
-                return;
-            };
-            let is_current = documents
-                .lock()
-                .expect("the open-document mutex should not be poisoned")
-                .get(&diagnostic_uri)
-                .is_some_and(|document| {
-                    document.version == version && document.generation == generation
-                });
-            if is_current {
-                client
-                    .publish_diagnostics(diagnostic_uri, diagnostics, Some(version))
-                    .await;
-            }
-        });
         document.pending_check = Some(PendingCheck {
-            handle,
+            handle: tokio::spawn(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let check_uri = diagnostic_uri.clone();
+                let fallback_contents = diagnostic_contents.clone();
+
+                // Publish nothing when a newer snapshot cancelled this check partway through.
+                let Some(diagnostics) = tokio::task::spawn_blocking(move || {
+                    diagnostics_for_document(&check_uri, &diagnostic_contents, &check_cancellation)
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    Some(vec![diagnostic(
+                        &fallback_contents,
+                        None,
+                        format!("Mull was unable to check the wiki: {error}."),
+                    )])
+                }) else {
+                    return;
+                };
+                if documents
+                    .lock()
+                    .expect("the open-document mutex should not be poisoned")
+                    .get(&diagnostic_uri)
+                    .is_some_and(|document| document.generation == generation)
+                {
+                    client
+                        .publish_diagnostics(diagnostic_uri, diagnostics, Some(version))
+                        .await;
+                }
+            }),
             cancellation,
         });
     }
 
     // Recheck the most recent snapshot immediately after it is saved.
-    fn save_document(&self, uri: Uri, contents: Option<String>) {
+    fn recheck_saved_document(&self, uri: Uri, contents: Option<String>) {
         // Copy the snapshot before scheduling, without retaining the lock across that operation.
-        let snapshot = {
-            let mut open_documents = self
-                .documents
-                .lock()
-                .expect("the open-document mutex should not be poisoned");
-            open_documents.get_mut(&uri).map(|document| {
+        let snapshot = self
+            .documents
+            .lock()
+            .expect("the open-document mutex should not be poisoned")
+            .get_mut(&uri)
+            .map(|document| {
                 if let Some(contents) = contents {
                     document.contents = contents;
                 }
                 (document.contents.clone(), document.version)
-            })
-        };
+            });
         if let Some((contents, version)) = snapshot {
-            self.update_document(uri, contents, version, Duration::ZERO);
+            self.store_and_check_document(uri, contents, version, Duration::ZERO);
         }
     }
 
@@ -182,7 +187,8 @@ impl Backend {
     }
 }
 
-// Respond to protocol requests and notifications required for synchronized diagnostics.
+// Respond to protocol requests and notifications for document synchronization, diagnostics, and
+// language features.
 #[allow(
     clippy::unused_async_trait_impl,
     reason = "Some methods mirror the asynchronous language-server interface without awaiting."
@@ -190,15 +196,16 @@ impl Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         // Remember whether document symbols may carry separate full and selection ranges.
-        let supports_hierarchical_document_symbols = params
-            .capabilities
-            .text_document
-            .as_ref()
-            .and_then(|capabilities| capabilities.document_symbol.as_ref())
-            .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
-            .unwrap_or(false);
-        self.supports_hierarchical_document_symbols
-            .store(supports_hierarchical_document_symbols, Ordering::Relaxed);
+        self.supports_hierarchical_document_symbols.store(
+            params
+                .capabilities
+                .text_document
+                .as_ref()
+                .and_then(|capabilities| capabilities.document_symbol.as_ref())
+                .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
 
         // Advertise the language features implemented by this server.
         Ok(InitializeResult {
@@ -258,11 +265,11 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let document = params.text_document;
-        self.update_document(
-            document.uri,
-            document.text,
-            document.version,
+        // Track the newly opened document and check it without waiting for further edits.
+        self.store_and_check_document(
+            params.text_document.uri,
+            params.text_document.text,
+            params.text_document.version,
             Duration::ZERO,
         );
     }
@@ -270,7 +277,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         // Full synchronization places the complete latest snapshot in the final change.
         if let Some(change) = params.content_changes.into_iter().next_back() {
-            self.update_document(
+            self.store_and_check_document(
                 params.text_document.uri,
                 change.text,
                 params.text_document.version,
@@ -280,20 +287,23 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        self.save_document(params.text_document.uri, params.text);
+        // Recheck the saved document immediately, adopting any contents the client included.
+        self.recheck_saved_document(params.text_document.uri, params.text);
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         // Complete text links against the latest synchronized editor snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
-        Ok(
-            completions_for_document(&uri, &contents, position_params.position)
-                .map(CompletionResponse::Array),
+        Ok(completion_for_document(
+            &params.text_document_position.text_document.uri,
+            &contents,
+            params.text_document_position.position,
         )
+        .map(CompletionResponse::Array))
     }
 
     async fn goto_definition(
@@ -301,43 +311,43 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         // Resolve the text link against the latest synchronized editor snapshot.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
-        Ok(definition_for_document(
-            &uri,
+        Ok(goto_definition_for_document(
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         // Preview the text-link target from the latest synchronized editor snapshot.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(hover_for_document(
-            &uri,
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         // Find references to the node under the cursor in the latest synchronized snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
         Ok(references_for_document(
-            &uri,
+            &params.text_document_position.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position.position,
             params.context.include_declaration,
         ))
     }
@@ -347,15 +357,15 @@ impl LanguageServer for Backend {
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         // Highlight the wiki occurrences related to the item under the cursor.
-        let position_params = params.text_document_position_params;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position_params.text_document.uri)
+        else {
             return Ok(None);
         };
-        Ok(document_highlights_for_document(
-            &uri,
+        Ok(document_highlight_for_document(
+            &params.text_document_position_params.text_document.uri,
             &contents,
-            position_params.position,
+            params.text_document_position_params.position,
         ))
     }
 
@@ -364,12 +374,11 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the node occurrence that the editor should select for rename.
-        let uri = params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
         Ok(prepare_rename_for_document(
-            &uri,
+            &params.text_document.uri,
             &contents,
             params.position,
         ))
@@ -377,51 +386,29 @@ impl LanguageServer for Backend {
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         // Rename a node and all of its text-link occurrences in the latest snapshot.
-        let position_params = params.text_document_position;
-        let uri = position_params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) =
+            self.document_contents(&params.text_document_position.text_document.uri)
+        else {
             return Ok(None);
         };
-        rename_for_document(&uri, &contents, position_params.position, &params.new_name)
-            .map_err(JsonRpcError::invalid_params)
+        rename_for_document(
+            &params.text_document_position.text_document.uri,
+            &contents,
+            params.text_document_position.position,
+            &params.new_name,
+        )
+        .map_err(JsonRpcError::invalid_params)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        // Copy the latest snapshot without retaining the document lock while formatting.
-        let uri = params.text_document.uri;
-        let snapshot = self
-            .documents
-            .lock()
-            .expect("the open-document mutex should not be poisoned")
-            .get(&uri)
-            .map(|document| (document.contents.clone(), document.generation));
-        let Some((contents, generation)) = snapshot else {
+        // Render the latest synchronized editor snapshot, leaving unparsable contents unchanged.
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
-        let wiki_path = local_path(&uri).map(Cow::into_owned);
-
-        // Parse, validate, and render outside the asynchronous executor.
-        let formatting_result = tokio::task::spawn_blocking(move || {
-            formatting_edit(wiki_path.as_deref(), &contents).map_err(|_errors| ())
-        })
-        .await;
-        let Ok(Ok(edit)) = formatting_result else {
-            return Ok(None);
-        };
-
-        // Discard an edit calculated from contents that changed while formatting was underway.
-        let is_current = self
-            .documents
-            .lock()
-            .expect("the open-document mutex should not be poisoned")
-            .get(&uri)
-            .is_some_and(|document| document.generation == generation);
-        if !is_current {
-            return Ok(None);
-        }
-
-        // A successful request returns either one whole-document edit or an empty edit list.
-        Ok(Some(edit.into_iter().collect()))
+        Ok(formatting_for_document(
+            &params.text_document.uri,
+            &contents,
+        ))
     }
 
     async fn document_symbol(
@@ -429,12 +416,11 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         // Describe the nodes in the latest synchronized editor snapshot.
-        let uri = params.text_document.uri;
-        let Some(contents) = self.document_contents(&uri) else {
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
-        Ok(document_symbols_for_document(
-            &uri,
+        Ok(document_symbol_for_document(
+            &params.text_document.uri,
             &contents,
             self.supports_hierarchical_document_symbols
                 .load(Ordering::Relaxed),
@@ -443,49 +429,319 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Cancel outstanding work before asking the client to clear this document's diagnostics.
-        let uri = params.text_document.uri;
         let document = self
             .documents
             .lock()
             .expect("the open-document mutex should not be poisoned")
-            .remove(&uri);
+            .remove(&params.text_document.uri);
         if let Some(pending_check) = document.and_then(|document| document.pending_check) {
-            pending_check.cancellation.cancel();
-            pending_check.handle.abort();
+            pending_check.cancel();
         }
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
     }
 }
 
-// Convert only file-scheme URIs because the URI library does not enforce this distinction.
-fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
-    uri.scheme()
-        .as_str()
-        .eq_ignore_ascii_case("file")
-        .then(|| uri.to_file_path())
-        .flatten()
+// Analyze an editor snapshot without checking its formatting.
+fn diagnostics_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cancellation: &CancellationFlag,
+) -> Option<Vec<Diagnostic>> {
+    // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
+    let Outcome::Completed(result) =
+        analyze(local_path(uri).as_deref(), source_contents, cancellation)
+    else {
+        return None;
+    };
+
+    // Preserve independent Mull errors as independent editor diagnostics.
+    Some(result.map_or_else(
+        |errors| {
+            errors
+                .iter()
+                .map(|error| diagnostic_from_error(source_contents, error))
+                .collect()
+        },
+        |_wiki| Vec::new(),
+    ))
 }
 
-// Produce a whole-document formatting edit after applying Mull's normal validation rules.
-fn formatting_edit(
-    source_path: Option<&Path>,
+// Complete the text-link target at an editor position with every node title.
+fn completion_for_document(
+    uri: &Uri,
     source_contents: &str,
-) -> std::result::Result<Option<TextEdit>, Vec<Error>> {
-    // Render the validated wiki and avoid an edit when its source is already canonical. Formatting
-    // is a request with a response, so it has nothing to cancel.
-    let rendered_wiki = analyze(source_path, source_contents, &CancellationFlag::default())
-        .assume_completed()?
-        .to_string();
-    if source_contents == rendered_wiki {
-        Ok(None)
+    cursor: Position,
+) -> Option<Vec<CompletionItem>> {
+    // Parse either the original source or a temporary source with the active link closed.
+    let (wiki, replacement_source_range) = completion_context(
+        local_path(uri).as_deref(),
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+    )?;
+
+    // Present node titles deterministically and replace the link's inner text and terminator.
+    let replacement_range = lsp_range(source_contents, replacement_source_range);
+    let mut titles = wiki
+        .text_nodes
+        .keys()
+        .filter(|title| is_text_link_title(title))
+        .collect::<Vec<_>>();
+    titles.sort();
+    Some(
+        titles
+            .into_iter()
+            .map(|title| {
+                let escaped_title = escape_text_link_title(title);
+                CompletionItem {
+                    label: title.clone(),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    filter_text: Some(escaped_title.clone()),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        replacement_range,
+                        format!("{escaped_title}]"),
+                    ))),
+                    ..CompletionItem::default()
+                }
+            })
+            .collect(),
+    )
+}
+
+// Locate the destination of a text link at an editor position.
+fn goto_definition_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<GotoDefinitionResponse> {
+    // Parse only the wiki syntax because navigation does not require filesystem validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
+
+    // Identify the complete source link and destination node while selecting its title on arrival.
+    Some(GotoDefinitionResponse::Link(vec![LocationLink {
+        origin_selection_range: Some(lsp_range(source_contents, link_source_range)),
+        target_uri: uri.clone(),
+        target_range: lsp_range(source_contents, node.source_range),
+        target_selection_range: lsp_range(source_contents, node.title_source_range),
+    }]))
+}
+
+// Preview the destination of a text link at an editor position.
+fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
+    // Parse only the wiki syntax because hovering does not require filesystem validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
+
+    // Render the node as Markdown with commands that navigate its resolvable text links.
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: node.to_markdown(|title| {
+                reveal_range_command_url(
+                    uri,
+                    source_contents,
+                    wiki.text_nodes.get(title)?.title_source_range,
+                )
+            }),
+        }),
+        range: Some(lsp_range(source_contents, source_range)),
+    })
+}
+
+// Locate every text link to the node at an editor position.
+fn references_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    include_declaration: bool,
+) -> Option<Vec<Location>> {
+    // Parse only the wiki syntax because finding references does not require validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, _source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
+
+    // Include the declaration only when requested, then restore source order.
+    let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
+    if include_declaration {
+        source_ranges.push(node.title_source_range);
+    }
+    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
+
+    // Return every occurrence in source order within the current wiki.
+    Some(
+        source_ranges
+            .into_iter()
+            .map(|source_range| {
+                Location::new(uri.clone(), lsp_range(source_contents, source_range))
+            })
+            .collect(),
+    )
+}
+
+// Highlight related node or filesystem-link occurrences at an editor position.
+fn document_highlight_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<Vec<DocumentHighlight>> {
+    // Parse only the wiki syntax because document highlights do not require validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let byte_offset = byte_offset(source_contents, cursor)?;
+
+    // Distinguish a text-node declaration from its references.
+    let mut highlights = if let Some((node, _source_range)) =
+        node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)
+    {
+        let mut highlights = text_link_source_ranges(&wiki, &node.title)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect::<Vec<_>>();
+        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
+        highlights
     } else {
-        Ok(Some(TextEdit::new(
+        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
+        filesystem_link_source_ranges(&wiki, filesystem_link_at(&wiki, byte_offset)?)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect()
+    };
+
+    // Return every matching source occurrence in wiki order.
+    highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
+    Some(
+        highlights
+            .into_iter()
+            .map(|(source_range, kind)| DocumentHighlight {
+                range: lsp_range(source_contents, source_range),
+                kind: Some(kind),
+            })
+            .collect(),
+    )
+}
+
+// Identify the source occurrence that should be selected before renaming a node.
+fn prepare_rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<PrepareRenameResponse> {
+    // Resolve either a title declaration or text link in a parseable editor snapshot.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Target,
+    )?;
+
+    // Select only the title text and seed the rename prompt with its decoded value.
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: lsp_range(source_contents, source_range),
+        placeholder: node.title.clone(),
+    })
+}
+
+// Rename one text node and every text link that targets it.
+fn rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    new_name: &str,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Resolve the requested node without requiring the wiki to pass semantic validation.
+    let Some(wiki) = parser::parse(local_path(uri).as_deref(), source_contents).ok() else {
+        return Ok(None);
+    };
+    let Some(byte_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+    let Some((node, _source_range)) =
+        node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)
+    else {
+        return Ok(None);
+    };
+
+    // Normalize surrounding whitespace while rejecting titles that cannot occupy one source line.
+    if new_name
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("A node title cannot contain a line break.".to_owned());
+    }
+    let new_title = new_name.trim();
+    if new_title.is_empty() {
+        return Err("A node title cannot be empty.".to_owned());
+    }
+    if !is_text_link_title(new_title) {
+        return Err(format!(
+            "A text-linked node title cannot start with `{FILE_LINK_PREFIX}` or \
+                `{DIRECTORY_LINK_PREFIX}`.",
+        ));
+    }
+    if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
+        return Err(format!("Node `{new_title}` already exists."));
+    }
+
+    // Replace the declaration literally and encode the title inside every matching text link.
+    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
+    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+        if let Link::Text {
+            title,
+            source_range,
+        } = link
+            && title == &node.title
+            && let Some(target_source_range) =
+                text_link_target_source_range(source_contents, *source_range)
+        {
+            edits.push((target_source_range, escape_text_link_title(new_title)));
+        }
+    }
+    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
+
+    // Return one non-overlapping edit for each occurrence in the current document.
+    Ok(Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(
+            uri.clone(),
+            edits
+                .into_iter()
+                .map(|(source_range, new_text)| {
+                    TextEdit::new(lsp_range(source_contents, source_range), new_text)
+                })
+                .collect(),
+        )])),
+        ..WorkspaceEdit::default()
+    }))
+}
+
+// Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
+fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextEdit>> {
+    // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
+    let rendered_wiki = parser::parse(local_path(uri).as_deref(), source_contents)
+        .ok()?
+        .to_string();
+
+    // A successful request returns either one whole-document edit or an empty edit list.
+    if source_contents == rendered_wiki {
+        Some(Vec::new())
+    } else {
+        Some(vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
                 position(source_contents, source_contents.len()),
             ),
             rendered_wiki,
-        )))
+        )])
     }
 }
 
@@ -494,14 +750,13 @@ fn formatting_edit(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
 )]
-fn document_symbols_for_document(
+fn document_symbol_for_document(
     uri: &Uri,
     source_contents: &str,
     supports_hierarchy: bool,
 ) -> Option<DocumentSymbolResponse> {
     // Parse syntax without semantic validation so structurally valid nodes remain navigable.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
@@ -536,46 +791,6 @@ fn document_symbols_for_document(
                 .collect(),
         ))
     }
-}
-
-// Complete the text-link target at an editor position with every node title.
-fn completions_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<Vec<CompletionItem>> {
-    // Parse either the original source or a temporary source with the active link closed.
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let wiki_path = local_path(uri);
-    let (wiki, replacement_source_range) =
-        completion_context(wiki_path.as_deref(), source_contents, byte_offset)?;
-
-    // Present node titles deterministically and replace the link's inner text and terminator.
-    let replacement_range = lsp_range(source_contents, replacement_source_range);
-    let mut titles = wiki
-        .text_nodes
-        .keys()
-        .filter(|title| is_text_link_title(title))
-        .collect::<Vec<_>>();
-    titles.sort();
-    Some(
-        titles
-            .into_iter()
-            .map(|title| {
-                let escaped_title = escape_text_link_title(title);
-                CompletionItem {
-                    label: title.clone(),
-                    kind: Some(CompletionItemKind::REFERENCE),
-                    filter_text: Some(escaped_title.clone()),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                        replacement_range,
-                        format!("{escaped_title}]"),
-                    ))),
-                    ..CompletionItem::default()
-                }
-            })
-            .collect(),
-    )
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
@@ -621,48 +836,6 @@ fn text_link_target_at(
         .then_some(target_source_range)
 }
 
-// Locate the destination of a text link at an editor position.
-fn definition_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<GotoDefinitionResponse> {
-    // Parse only the wiki syntax because navigation does not require filesystem validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
-
-    // Identify the complete source link and destination node while selecting its title on arrival.
-    Some(GotoDefinitionResponse::Link(vec![LocationLink {
-        origin_selection_range: Some(lsp_range(source_contents, link_source_range)),
-        target_uri: uri.clone(),
-        target_range: lsp_range(source_contents, node.source_range),
-        target_selection_range: lsp_range(source_contents, node.title_source_range),
-    }]))
-}
-
-// Preview the destination of a text link at an editor position.
-fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering does not require filesystem validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
-
-    // Render the node as Markdown with commands that navigate its resolvable text links.
-    let markdown = node.to_markdown(|title| {
-        let target = wiki.text_nodes.get(title)?;
-        reveal_range_command_url(uri, source_contents, target.title_source_range)
-    });
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: markdown,
-        }),
-        range: Some(lsp_range(source_contents, source_range)),
-    })
-}
-
 // Encode an editor navigation command as a Markdown-safe URI.
 fn reveal_range_command_url(
     uri: &Uri,
@@ -671,92 +844,20 @@ fn reveal_range_command_url(
 ) -> Option<String> {
     // Pass the document URI and UTF-16 destination range as positional command arguments.
     let range = lsp_range(source_contents, source_range);
-    let arguments = serde_json::to_string(&(
-        uri.as_str(),
-        range.start.line,
-        range.start.character,
-        range.end.line,
-        range.end.character,
-    ))
-    .ok()?;
     Some(format!(
         "command:{REVEAL_RANGE_COMMAND}?{}",
-        utf8_percent_encode(&arguments, NON_ALPHANUMERIC),
+        utf8_percent_encode(
+            &serde_json::to_string(&(
+                uri.as_str(),
+                range.start.line,
+                range.start.character,
+                range.end.line,
+                range.end.character,
+            ))
+            .ok()?,
+            NON_ALPHANUMERIC,
+        ),
     ))
-}
-
-// Locate every text link to the node at an editor position.
-fn references_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-    include_declaration: bool,
-) -> Option<Vec<Location>> {
-    // Parse only the wiki syntax because finding references does not require validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, _source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)?;
-
-    // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
-    if include_declaration {
-        source_ranges.push(node.title_source_range);
-    }
-    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
-
-    // Return every occurrence in source order within the current wiki.
-    Some(
-        source_ranges
-            .into_iter()
-            .map(|source_range| {
-                Location::new(uri.clone(), lsp_range(source_contents, source_range))
-            })
-            .collect(),
-    )
-}
-
-// Highlight related node or filesystem-link occurrences at an editor position.
-fn document_highlights_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<Vec<DocumentHighlight>> {
-    // Parse only the wiki syntax because document highlights do not require validation.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-
-    // Distinguish a text-node declaration from its references.
-    let mut highlights = if let Some((node, _source_range)) =
-        node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)
-    {
-        let mut highlights = text_link_source_ranges(&wiki, &node.title)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect::<Vec<_>>();
-        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
-        highlights
-    } else {
-        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        let link = filesystem_link_at(&wiki, byte_offset)?;
-        filesystem_link_source_ranges(&wiki, link)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect()
-    };
-
-    // Return every matching source occurrence in wiki order.
-    highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
-    Some(
-        highlights
-            .into_iter()
-            .map(|(source_range, kind)| DocumentHighlight {
-                range: lsp_range(source_contents, source_range),
-                kind: Some(kind),
-            })
-            .collect(),
-    )
 }
 
 // Collect every complete text-link range that resolves to a title.
@@ -817,96 +918,6 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange>
         .collect()
 }
 
-// Identify the source occurrence that should be selected before renaming a node.
-fn prepare_rename_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<PrepareRenameResponse> {
-    // Resolve either a title declaration or text link in a parseable editor snapshot.
-    let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (node, source_range) = node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)?;
-
-    // Select only the title text and seed the rename prompt with its decoded value.
-    Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: lsp_range(source_contents, source_range),
-        placeholder: node.title.clone(),
-    })
-}
-
-// Rename one text node and every text link that targets it.
-fn rename_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-    new_name: &str,
-) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the requested node without requiring the wiki to pass semantic validation.
-    let wiki_path = local_path(uri);
-    let Some(wiki) = parser::parse(wiki_path.as_deref(), source_contents).ok() else {
-        return Ok(None);
-    };
-    let Some(byte_offset) = byte_offset(source_contents, cursor) else {
-        return Ok(None);
-    };
-    let Some((node, _source_range)) =
-        node_at(&wiki, source_contents, byte_offset, LinkExtent::Target)
-    else {
-        return Ok(None);
-    };
-
-    // Normalize surrounding whitespace while rejecting titles that cannot occupy one source line.
-    if new_name
-        .chars()
-        .any(|character| matches!(character, '\r' | '\n'))
-    {
-        return Err("A node title cannot contain a line break.".to_owned());
-    }
-    let new_title = new_name.trim();
-    if new_title.is_empty() {
-        return Err("A node title cannot be empty.".to_owned());
-    }
-    if !is_text_link_title(new_title) {
-        return Err(format!(
-            "A text-linked node title cannot start with `{FILE_LINK_PREFIX}` or \
-                `{DIRECTORY_LINK_PREFIX}`.",
-        ));
-    }
-    if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
-        return Err(format!("Node `{new_title}` already exists."));
-    }
-
-    // Replace the declaration literally and encode the title inside every matching text link.
-    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
-    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
-        if let Link::Text {
-            title,
-            source_range,
-        } = link
-            && title == &node.title
-            && let Some(target_source_range) =
-                text_link_target_source_range(source_contents, *source_range)
-        {
-            edits.push((target_source_range, escape_text_link_title(new_title)));
-        }
-    }
-    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
-
-    // Return one non-overlapping edit for each occurrence in the current document.
-    let edits = edits
-        .into_iter()
-        .map(|(source_range, new_text)| {
-            TextEdit::new(lsp_range(source_contents, source_range), new_text)
-        })
-        .collect();
-    Ok(Some(WorkspaceEdit {
-        changes: Some(HashMap::from([(uri.clone(), edits)])),
-        ..WorkspaceEdit::default()
-    }))
-}
-
 // Escape delimiters so an arbitrary node title retains its meaning inside a text link.
 fn escape_text_link_title(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
@@ -924,8 +935,7 @@ fn linked_node_at<'a>(
     cursor: Position,
 ) -> Option<(&'a TextNode, SourceRange)> {
     // Match the cursor against complete link ranges, including their delimiters.
-    let byte_offset = byte_offset(source_contents, cursor)?;
-    let (title, source_range) = text_link_at(wiki, byte_offset)?;
+    let (title, source_range) = text_link_at(wiki, byte_offset(source_contents, cursor)?)?;
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
@@ -953,12 +963,13 @@ fn node_at<'a>(
 
     // Resolve a reference, reporting whichever extent of the link the caller asked for.
     let (title, source_range) = text_link_at(wiki, byte_offset)?;
-    let node = wiki.text_nodes.get(title)?;
-    let source_range = match link_extent {
-        LinkExtent::Whole => source_range,
-        LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
-    };
-    Some((node, source_range))
+    Some((
+        wiki.text_nodes.get(title)?,
+        match link_extent {
+            LinkExtent::Whole => source_range,
+            LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
+        },
+    ))
 }
 
 // Find the node whose title is declared at a source offset.
@@ -989,8 +1000,10 @@ fn text_link_target_source_range(
     source_range: SourceRange,
 ) -> Option<SourceRange> {
     // Confirm the parser-provided range still addresses square-bracket delimiters.
-    let link_source = source_contents.get(source_range.start..source_range.end)?;
-    let target_source = link_source.strip_prefix('[')?.strip_suffix(']')?;
+    let target_source = source_contents
+        .get(source_range.start..source_range.end)?
+        .strip_prefix('[')?
+        .strip_suffix(']')?;
     let start = source_range.start + '['.len_utf8();
     Some(SourceRange {
         start,
@@ -998,41 +1011,17 @@ fn text_link_target_source_range(
     })
 }
 
-// Analyze an editor snapshot without checking its formatting.
-fn diagnostics_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cancellation: &CancellationFlag,
-) -> Option<Vec<Diagnostic>> {
-    // Use local filesystem context when the editor document has one.
-    let wiki_path = local_path(uri);
-
-    // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
-    let Outcome::Completed(result) = analyze(wiki_path.as_deref(), source_contents, cancellation)
-    else {
-        return None;
-    };
-
-    // Preserve independent Mull errors as independent editor diagnostics.
-    Some(result.map_or_else(
-        |errors| {
-            errors
-                .iter()
-                .map(|error| diagnostic_from_error(source_contents, error))
-                .collect()
-        },
-        |_wiki| Vec::new(),
-    ))
-}
-
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    let message = error.reason().map_or_else(
-        || error.message().to_owned(),
-        |reason| format!("{}\n\nReason: {reason}", error.message()),
-    );
-    diagnostic(source_contents, error.source_range(), message)
+    diagnostic(
+        source_contents,
+        error.source_range(),
+        error.reason().map_or_else(
+            || error.message().to_owned(),
+            |reason| format!("{}\n\nReason: {reason}", error.message()),
+        ),
+    )
 }
 
 // Construct a Mull error diagnostic at a source range or at the start of the document.
@@ -1041,14 +1030,25 @@ fn diagnostic(
     source_range: Option<crate::error::SourceRange>,
     message: String,
 ) -> Diagnostic {
-    let source_range = source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 });
     Diagnostic {
-        range: lsp_range(source_contents, source_range),
+        range: lsp_range(
+            source_contents,
+            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
+        ),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(env!("CARGO_PKG_NAME").to_owned()),
         message,
         ..Diagnostic::default()
     }
+}
+
+// Convert only file-scheme URIs because the URI library does not enforce this distinction.
+fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
+    uri.scheme()
+        .as_str()
+        .eq_ignore_ascii_case("file")
+        .then(|| uri.to_file_path())
+        .flatten()
 }
 
 // Convert a source range into the representation expected by the language server protocol.
@@ -1064,8 +1064,7 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
     // Locate the requested line without counting its line terminator as editor content.
     let mut line_start = 0;
     for _ in 0..position.line {
-        let line_break = source_contents[line_start..].find('\n')?;
-        line_start += line_break + '\n'.len_utf8();
+        line_start += source_contents[line_start..].find('\n')? + '\n'.len_utf8();
     }
     let line_end = source_contents[line_start..]
         .find('\n')
@@ -1101,16 +1100,17 @@ fn position(source_contents: &str, byte_offset: usize) -> Position {
     let prefix = source_contents
         .get(..byte_offset)
         .expect("source ranges should end on UTF-8 character boundaries");
-    let line_start = prefix
-        .rfind('\n')
-        .map_or(0, |index| index + '\n'.len_utf8());
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let character = source_contents[line_start..byte_offset]
-        .encode_utf16()
-        .count();
     Position::new(
-        u32::try_from(line).unwrap_or(u32::MAX),
-        u32::try_from(character).unwrap_or(u32::MAX),
+        u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(u32::MAX),
+        u32::try_from(
+            source_contents[prefix
+                .rfind('\n')
+                .map_or(0, |index| index + '\n'.len_utf8())
+                ..byte_offset]
+                .encode_utf16()
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
     )
 }
 
@@ -1129,9 +1129,9 @@ pub async fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        byte_offset, completions_for_document, definition_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_highlights_for_document, document_symbols_for_document,
-        formatting_edit, hover_for_document, position, prepare_rename_for_document,
+        byte_offset, completion_for_document, diagnostic_from_error, diagnostics_for_document,
+        document_highlight_for_document, document_symbol_for_document, formatting_for_document,
+        goto_definition_for_document, hover_for_document, position, prepare_rename_for_document,
         references_for_document, rename_for_document, reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
@@ -1238,7 +1238,7 @@ mod tests {
         let uris = [untitled_uri(), Uri::from_file_path(wiki.path()).unwrap()];
 
         for uri in uris {
-            let response = document_symbols_for_document(&uri, source, true).unwrap();
+            let response = document_symbol_for_document(&uri, source, true).unwrap();
             let DocumentSymbolResponse::Nested(symbols) = response else {
                 panic!("text nodes should be represented as nested document symbols");
             };
@@ -1273,7 +1273,7 @@ mod tests {
             );
 
             // Fall back to universally supported flat symbols at each title range.
-            let response = document_symbols_for_document(&uri, source, false).unwrap();
+            let response = document_symbol_for_document(&uri, source, false).unwrap();
             let DocumentSymbolResponse::Flat(symbols) = response else {
                 panic!("clients without hierarchy support should receive flat symbols");
             };
@@ -1350,7 +1350,9 @@ mod tests {
     fn untitled_wikis_support_navigation() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
 
-        assert!(definition_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some());
+        assert!(
+            goto_definition_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some(),
+        );
         assert!(hover_for_document(&untitled_uri(), source, Position::new(2, 4)).is_some());
         assert!(
             references_for_document(&untitled_uri(), source, Position::new(2, 4), false).is_some(),
@@ -1362,7 +1364,7 @@ mod tests {
     fn completions_replace_closed_link_targets() {
         let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
         let completions =
-            completions_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
+            completion_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
 
         assert_eq!(
             completions
@@ -1386,7 +1388,7 @@ mod tests {
     fn completions_support_unfinished_links() {
         let source = "# Home\n\n[Gre\n\n# Greeting";
         let completions =
-            completions_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
+            completion_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -1408,7 +1410,7 @@ mod tests {
         // Model an editor that has already auto-closed the link the cursor sits inside.
         let source = "# Home\n\n[Gr]\n\n# Greeting";
         let completions =
-            completions_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
+            completion_for_document(&untitled_uri(), source, Position::new(2, 3)).unwrap();
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -1430,7 +1432,7 @@ mod tests {
     fn completions_escape_title_delimiters() {
         let source = "# Home\n\n[]\n\n# A[B]";
         let completions =
-            completions_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
+            completion_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
         let bracketed = completions
             .iter()
             .find(|completion| completion.label == "A[B]")
@@ -1448,9 +1450,9 @@ mod tests {
     fn completions_ignore_other_contexts() {
         let source = concat!("# Home\n\nprose [", "file:notes.txt]");
 
-        assert!(completions_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
-        assert!(completions_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
-        assert!(completions_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
+        assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
+        assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
+        assert!(completion_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
     }
 
     // Omit node titles whose reserved prefixes would produce filesystem links.
@@ -1458,7 +1460,7 @@ mod tests {
     fn completions_omit_filesystem_link_titles() {
         let source = "# Home\n\n[]\n\n# file:notes.txt\n\n# dir:images\n\n# Other";
         let completions =
-            completions_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
+            completion_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
 
         assert_eq!(
             completions
@@ -1475,7 +1477,7 @@ mod tests {
         let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nHello!";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let definition = definition_for_document(&uri, source, Position::new(2, 5)).unwrap();
+        let definition = goto_definition_for_document(&uri, source, Position::new(2, 5)).unwrap();
 
         let GotoDefinitionResponse::Link(links) = definition else {
             panic!("a text link should have one definition");
@@ -1620,9 +1622,8 @@ mod tests {
         );
         let uri = untitled_uri();
         let from_title =
-            document_highlights_for_document(&uri, source, Position::new(8, 3)).unwrap();
-        let from_link =
-            document_highlights_for_document(&uri, source, Position::new(2, 3)).unwrap();
+            document_highlight_for_document(&uri, source, Position::new(8, 3)).unwrap();
+        let from_link = document_highlight_for_document(&uri, source, Position::new(2, 3)).unwrap();
         let expected = vec![
             DocumentHighlight {
                 range: Range::new(Position::new(2, 0), Position::new(2, 10)),
@@ -1653,13 +1654,13 @@ mod tests {
         let uri = untitled_uri();
 
         assert_eq!(
-            document_highlights_for_document(&uri, source, Position::new(0, 3)),
+            document_highlight_for_document(&uri, source, Position::new(0, 3)),
             Some(vec![DocumentHighlight {
                 range: Range::new(Position::new(0, 2), Position::new(0, 6)),
                 kind: Some(DocumentHighlightKind::WRITE),
             }]),
         );
-        assert!(document_highlights_for_document(&uri, source, Position::new(0, 0)).is_none());
+        assert!(document_highlight_for_document(&uri, source, Position::new(0, 0)).is_none());
     }
 
     // Highlight matching filesystem links without conflating file and directory references.
@@ -1677,9 +1678,9 @@ mod tests {
         );
         let uri = untitled_uri();
         let file_highlights =
-            document_highlights_for_document(&uri, source, Position::new(2, 3)).unwrap();
+            document_highlight_for_document(&uri, source, Position::new(2, 3)).unwrap();
         let directory_highlights =
-            document_highlights_for_document(&uri, source, Position::new(2, 25)).unwrap();
+            document_highlight_for_document(&uri, source, Position::new(2, 25)).unwrap();
 
         assert_eq!(
             file_highlights,
@@ -1816,7 +1817,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(definition_for_document(&uri, source, Position::new(2, 4)).is_none());
+        assert!(goto_definition_for_document(&uri, source, Position::new(2, 4)).is_none());
         assert!(hover_for_document(&uri, source, Position::new(2, 4)).is_none());
         assert!(references_for_document(&uri, source, Position::new(2, 4), false).is_none());
     }
@@ -1828,7 +1829,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(definition_for_document(&uri, source, Position::new(2, 4)).is_none());
+        assert!(goto_definition_for_document(&uri, source, Position::new(2, 4)).is_none());
         assert!(hover_for_document(&uri, source, Position::new(2, 4)).is_none());
         assert!(references_for_document(&uri, source, Position::new(2, 4), false).is_none());
     }
@@ -1837,8 +1838,11 @@ mod tests {
     fn formatting_replaces_noncanonical_source() {
         let source = "# Zulu\n\n😀\n\n# Home\n\n[Zulu]";
         let wiki = TestWiki::new(source);
-        let edit = formatting_edit(Some(wiki.path()), source).unwrap().unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let edits = formatting_for_document(&uri, source).unwrap();
 
+        assert_eq!(edits.len(), 1);
+        let edit = &edits[0];
         assert_eq!(
             edit.range,
             Range::new(Position::new(0, 0), Position::new(6, 6)),
@@ -1850,29 +1854,40 @@ mod tests {
     fn formatting_omits_edits_for_canonical_source() {
         let source = "# Home\n";
         let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(
-            formatting_edit(Some(wiki.path()), source)
-                .unwrap()
-                .is_none(),
-        );
+        assert!(formatting_for_document(&uri, source).unwrap().is_empty());
     }
 
     #[test]
-    fn formatting_rejects_invalid_source() {
-        let source = "# Elsewhere\n";
+    fn formatting_rejects_unparsable_source() {
+        let source = "# Home\n😀 ]";
         let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(formatting_edit(Some(wiki.path()), source).is_err());
+        assert!(formatting_for_document(&uri, source).is_none());
+    }
+
+    // Format wikis that parse but fail validation, such as one without a home node.
+    #[test]
+    fn formatting_supports_invalid_wikis() {
+        let source = "# Zulu\n\n# Elsewhere";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let edits = formatting_for_document(&uri, source).unwrap();
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "# Elsewhere\n\n# Zulu\n");
     }
 
     // Format a new editor buffer without requiring a filesystem path.
     #[test]
     fn formatting_supports_untitled_wikis() {
         let source = "# Zulu\n\n# Home\n\n[Zulu]";
-        let edit = formatting_edit(None, source).unwrap().unwrap();
+        let edits = formatting_for_document(&untitled_uri(), source).unwrap();
 
-        assert_eq!(edit.new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
     }
 
     #[test]
