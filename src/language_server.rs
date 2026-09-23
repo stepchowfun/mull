@@ -2029,7 +2029,7 @@ mod tests {
     // Offer to create nodes only for text links whose destinations are missing and declarable.
     #[test]
     fn code_actions_ignore_other_contexts() {
-        let source = "# Home\n\n[Home] [] [file:notes.txt] prose";
+        let source = concat!("# Home\n\n[Home] [] [", "file:notes.txt] prose");
         let uri = untitled_uri();
         let actions_at = |character| {
             let position = Position::new(2, character);
