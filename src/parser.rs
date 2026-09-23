@@ -286,6 +286,49 @@ fn insert_node(
     }
 }
 
+// Locate the title that follows a title marker, rejecting titles that are empty after surrounding
+// whitespace is stripped, as well as titles that text links could not target because they would
+// become filesystem links.
+fn parse_title(
+    raw_title: &str,
+    source_path: Option<&Path>,
+    source_contents: &str,
+    line_source_range: SourceRange,
+) -> Result<SourceRange, Error> {
+    // Strip surrounding whitespace from the text after the marker, which ends the line.
+    let title_source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: line_source_range.end - raw_title.len(),
+            end: line_source_range.end,
+        },
+    );
+    let title = &source_contents[title_source_range.start..title_source_range.end];
+
+    // Report an empty title at the whole line, since the title has no text of its own.
+    if title.is_empty() {
+        Err(Error::new(
+            "This title is empty.",
+            source_path,
+            Some((source_contents, line_source_range)),
+            None,
+        ))
+    } else if !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX) {
+        Ok(title_source_range)
+    } else {
+        Err(Error::new(
+            &format!(
+                "This title cannot start with {} or {}.",
+                FILE_LINK_PREFIX.code_str(),
+                DIRECTORY_LINK_PREFIX.code_str(),
+            ),
+            source_path,
+            Some((source_contents, title_source_range)),
+            None,
+        ))
+    }
+}
+
 // Parse source contents into a scored wiki with source ranges for every node and link.
 pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
     // Accumulate parsed nodes, errors, and the node currently being read.
@@ -331,29 +374,18 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 errors.extend(node_errors);
             }
 
-            // Reject titles that are empty after surrounding whitespace is stripped.
-            let title_source_range = trim_source_range(
-                source_contents,
-                SourceRange {
-                    start: line_source_range.end - raw_title.len(),
-                    end: line_source_range.end,
-                },
-            );
-            let title = &source_contents[title_source_range.start..title_source_range.end];
-            if title.is_empty() {
-                errors.push(Error::new(
-                    "This title is empty.",
-                    source_path,
-                    Some((source_contents, line_source_range)),
-                    None,
-                ));
-            } else {
-                pending_node = Some(PendingNode {
-                    title: title.to_owned(),
-                    source_start: line_start,
-                    content_start: next_line_start,
-                    title_source_range,
-                });
+            // Start a node for the title if it is valid.
+            match parse_title(raw_title, source_path, source_contents, line_source_range) {
+                Ok(title_source_range) => {
+                    pending_node = Some(PendingNode {
+                        title: source_contents[title_source_range.start..title_source_range.end]
+                            .to_owned(),
+                        source_start: line_start,
+                        content_start: next_line_start,
+                        title_source_range,
+                    });
+                }
+                Err(error) => errors.push(error),
             }
         } else if !has_seen_title_marker
             && !reported_content_before_title
@@ -629,6 +661,21 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("This title is empty."));
+    }
+
+    // Reject titles that text links would interpret as filesystem links.
+    #[test]
+    fn filesystem_link_titles() {
+        let errors = parse_test("# Home\n\n# file:notes.txt\n\n# dir:images").unwrap_err();
+
+        assert_eq!(errors.len(), 2);
+        for error in &errors {
+            assert!(
+                error
+                    .to_string()
+                    .contains("This title cannot start with `file:` or `dir:`."),
+            );
+        }
     }
 
     // Do not reinterpret content after an invalid title as content before the first title.

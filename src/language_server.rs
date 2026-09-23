@@ -483,11 +483,7 @@ fn completion_for_document(
 
     // Present node titles deterministically and replace the link's inner text and terminator.
     let replacement_range = lsp_range(source_contents, replacement_source_range);
-    let mut titles = wiki
-        .text_nodes
-        .keys()
-        .filter(|title| is_text_link_title(title))
-        .collect::<Vec<_>>();
+    let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
     titles.sort();
     Some(
         titles
@@ -517,7 +513,7 @@ fn goto_definition_for_document(
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation does not require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, link_source_range) = linked_node_at(&wiki, source_contents, cursor)?;
+    let (node, link_source_range) = node_linked_at(&wiki, byte_offset(source_contents, cursor)?)?;
 
     // Identify the complete source link and destination node while selecting its title on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
@@ -672,7 +668,8 @@ fn rename_for_document(
         return Ok(None);
     };
 
-    // Normalize surrounding whitespace while rejecting titles that cannot occupy one source line.
+    // Normalize surrounding whitespace, then reject titles that the parser would not accept: those
+    // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
     if new_name
         .chars()
         .any(|character| matches!(character, '\r' | '\n'))
@@ -683,10 +680,9 @@ fn rename_for_document(
     if new_title.is_empty() {
         return Err("A node title cannot be empty.".to_owned());
     }
-    if !is_text_link_title(new_title) {
+    if new_title.starts_with(FILE_LINK_PREFIX) || new_title.starts_with(DIRECTORY_LINK_PREFIX) {
         return Err(format!(
-            "A text-linked node title cannot start with `{FILE_LINK_PREFIX}` or \
-                `{DIRECTORY_LINK_PREFIX}`.",
+            "A node title cannot start with `{FILE_LINK_PREFIX}` or `{DIRECTORY_LINK_PREFIX}`.",
         ));
     }
     if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
@@ -738,7 +734,7 @@ fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextE
         Some(vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
-                position(source_contents, source_contents.len()),
+                lsp_position(source_contents, source_contents.len()),
             ),
             rendered_wiki,
         )])
@@ -760,37 +756,42 @@ fn document_symbol_for_document(
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
-    // Use separate node and title ranges when the client supports hierarchical symbols.
-    let symbols = nodes
-        .into_iter()
-        .map(|node| DocumentSymbol {
-            name: node.title.clone(),
-            detail: None,
-            kind: SymbolKind::OBJECT,
-            tags: None,
-            deprecated: None,
-            range: lsp_range(source_contents, node.source_range),
-            selection_range: lsp_range(source_contents, node.title_source_range),
-            children: None,
-        })
-        .collect::<Vec<_>>();
-    if supports_hierarchy {
-        Some(DocumentSymbolResponse::Nested(symbols))
-    } else {
-        Some(DocumentSymbolResponse::Flat(
-            symbols
+    // Use separate node and title ranges when the client supports hierarchical symbols, and locate
+    // each flat symbol at its title otherwise.
+    Some(if supports_hierarchy {
+        DocumentSymbolResponse::Nested(
+            nodes
                 .into_iter()
-                .map(|symbol| SymbolInformation {
-                    name: symbol.name,
-                    kind: symbol.kind,
-                    tags: symbol.tags,
+                .map(|node| DocumentSymbol {
+                    name: node.title.clone(),
+                    detail: None,
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
                     deprecated: None,
-                    location: Location::new(uri.clone(), symbol.selection_range),
+                    range: lsp_range(source_contents, node.source_range),
+                    selection_range: lsp_range(source_contents, node.title_source_range),
+                    children: None,
+                })
+                .collect(),
+        )
+    } else {
+        DocumentSymbolResponse::Flat(
+            nodes
+                .into_iter()
+                .map(|node| SymbolInformation {
+                    name: node.title.clone(),
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location::new(
+                        uri.clone(),
+                        lsp_range(source_contents, node.title_source_range),
+                    ),
                     container_name: None,
                 })
                 .collect(),
-        ))
-    }
+        )
+    })
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
@@ -923,19 +924,10 @@ fn escape_text_link_title(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
 }
 
-// Distinguish node titles that can be encoded without becoming filesystem links.
-fn is_text_link_title(title: &str) -> bool {
-    !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX)
-}
-
-// Resolve the text link under the cursor to its destination node.
-fn linked_node_at<'a>(
-    wiki: &'a Wiki,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<(&'a TextNode, SourceRange)> {
-    // Match the cursor against complete link ranges, including their delimiters.
-    let (title, source_range) = text_link_at(wiki, byte_offset(source_contents, cursor)?)?;
+// Resolve the text link at a source offset to its destination node.
+fn node_linked_at(wiki: &Wiki, byte_offset: usize) -> Option<(&TextNode, SourceRange)> {
+    // Match the offset against complete link ranges, including their delimiters.
+    let (title, source_range) = text_link_at(wiki, byte_offset)?;
     wiki.text_nodes.get(title).map(|node| (node, source_range))
 }
 
@@ -957,7 +949,9 @@ fn node_at<'a>(
     link_extent: LinkExtent,
 ) -> Option<(&'a TextNode, SourceRange)> {
     // Prefer a declaration, whose title is the only range it can contribute.
-    if let Some(node) = declaration_at(wiki, byte_offset) {
+    if let Some(node) = wiki.text_nodes.values().find(|node| {
+        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+    }) {
         return Some((node, node.title_source_range));
     }
 
@@ -970,13 +964,6 @@ fn node_at<'a>(
             LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
         },
     ))
-}
-
-// Find the node whose title is declared at a source offset.
-fn declaration_at(wiki: &Wiki, byte_offset: usize) -> Option<&TextNode> {
-    wiki.text_nodes.values().find(|node| {
-        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
-    })
 }
 
 // Find a text link at a source offset without resolving its destination.
@@ -1051,14 +1038,6 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
         .flatten()
 }
 
-// Convert a source range into the representation expected by the language server protocol.
-fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
-    Range::new(
-        position(source_contents, source_range.start),
-        position(source_contents, source_range.end),
-    )
-}
-
 // Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
 fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
     // Locate the requested line without counting its line terminator as editor content.
@@ -1094,7 +1073,7 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
 }
 
 // Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
-fn position(source_contents: &str, byte_offset: usize) -> Position {
+fn lsp_position(source_contents: &str, byte_offset: usize) -> Position {
     // Source ranges originate at character boundaries and cannot extend beyond the source.
     let byte_offset = byte_offset.min(source_contents.len());
     let prefix = source_contents
@@ -1111,6 +1090,14 @@ fn position(source_contents: &str, byte_offset: usize) -> Position {
                 .count(),
         )
         .unwrap_or(u32::MAX),
+    )
+}
+
+// Convert a source range into the representation expected by the language server protocol.
+fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
+    Range::new(
+        lsp_position(source_contents, source_range.start),
+        lsp_position(source_contents, source_range.end),
     )
 }
 
@@ -1131,8 +1118,9 @@ mod tests {
     use super::{
         byte_offset, completion_for_document, diagnostic_from_error, diagnostics_for_document,
         document_highlight_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, position, prepare_rename_for_document,
-        references_for_document, rename_for_document, reveal_range_command_url,
+        goto_definition_for_document, hover_for_document, lsp_position,
+        prepare_rename_for_document, references_for_document, rename_for_document,
+        reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
     use std::{
@@ -1193,10 +1181,10 @@ mod tests {
     fn positions_use_utf16_code_units() {
         let source = "zero\n😀 café";
 
-        assert_eq!(position(source, 0), Position::new(0, 0));
-        assert_eq!(position(source, 5), Position::new(1, 0));
-        assert_eq!(position(source, 9), Position::new(1, 2));
-        assert_eq!(position(source, source.len()), Position::new(1, 7));
+        assert_eq!(lsp_position(source, 0), Position::new(0, 0));
+        assert_eq!(lsp_position(source, 5), Position::new(1, 0));
+        assert_eq!(lsp_position(source, 9), Position::new(1, 2));
+        assert_eq!(lsp_position(source, source.len()), Position::new(1, 7));
     }
 
     // Convert editor positions back to byte offsets without splitting Unicode characters.
@@ -1453,22 +1441,6 @@ mod tests {
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
-    }
-
-    // Omit node titles whose reserved prefixes would produce filesystem links.
-    #[test]
-    fn completions_omit_filesystem_link_titles() {
-        let source = "# Home\n\n[]\n\n# file:notes.txt\n\n# dir:images\n\n# Other";
-        let completions =
-            completion_for_document(&untitled_uri(), source, Position::new(2, 1)).unwrap();
-
-        assert_eq!(
-            completions
-                .iter()
-                .map(|completion| completion.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Home", "Other"],
-        );
     }
 
     // Jump from a text link to the title of its destination node.
@@ -1806,7 +1778,7 @@ mod tests {
         );
         assert_eq!(
             rename_for_document(&untitled_uri(), source, cursor, "file:notes.txt").unwrap_err(),
-            "A text-linked node title cannot start with `file:` or `dir:`.",
+            "A node title cannot start with `file:` or `dir:`.",
         );
     }
 
