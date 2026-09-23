@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2026-09-23
+
+### Changed
+- Formatted wikis through the language server whenever they parse, even if they fail validation.
+- Stopped superseded language-server checks partway through instead of letting them finish.
+- Mentioned in the `language-server` command's help text that editors use it.
+
 ## [0.15.1] - 2026-09-23
 
 ### Added
