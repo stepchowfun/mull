@@ -1,28 +1,51 @@
 {
   "name": "mull",
-  "publisher": "stepchowfun",
   "displayName": "Mull",
-  "description": "Organize your knowledge.",
   "version": "0.0.1",
-  "engines": {
-    "vscode": "^1.128.0"
-  },
-  "main": "./extension.js",
+  "description": "Organize your knowledge.",
   "categories": [
     "Programming Languages"
   ],
+  "publisher": "stepchowfun",
+  "type": "module",
+  "main": "./src/extension.ts",
+  "scripts": {
+    "lint": "vp check",
+    "format": "vp fmt"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/vscode": "1.125.0",
+    "typescript": "^7.0.2",
+    "vite-plus": "^0.2.9"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@^0.2.9"
+  },
   "contributes": {
-    "languages": [{
-      "id": "mull",
-      "aliases": ["Mull", "mull"],
-      "extensions": [".mull"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "mull",
-      "scopeName": "source.mull",
-      "path": "./syntaxes/mull.tmLanguage.json"
-    }],
+    "languages": [
+      {
+        "id": "mull",
+        "aliases": [
+          "Mull",
+          "mull"
+        ],
+        "extensions": [
+          ".mull"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mull",
+        "scopeName": "source.mull",
+        "path": "./syntaxes/mull.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "Mull",
       "properties": {
@@ -43,7 +66,7 @@
       }
     }
   },
-  "dependencies": {
-    "vscode-languageclient": "^10.1.1"
+  "engines": {
+    "vscode": "^1.128.0"
   }
 }

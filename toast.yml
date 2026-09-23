@@ -23,6 +23,12 @@ command_prefix: |
   #   https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu.html
   cargo-fmt () { cargo +nightly-2026-09-16 --frozen --offline fmt --all -- "$@"; }
 
+  # Load the NVM startup file, if it exists.
+  if [ -f "$HOME/.nvm/nvm.sh" ]; then
+    export NVM_DIR="$HOME/.nvm"
+    . "$HOME/.nvm/nvm.sh"
+  fi
+
   # Make Bash log commands.
   set -x
 tasks:
@@ -82,9 +88,22 @@ tasks:
       # Install nightly Rust [ref:rust_fmt_nightly_2026-09-16].
       rustup toolchain install nightly-2026-09-16 --profile minimal --component rustfmt
 
+  install_node:
+    description: Install Node.js, a JavaScript runtime environment.
+    dependencies:
+      - install_packages
+      - create_user
+    command: |
+      # Install Node.js.
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
+      export NVM_DIR="$HOME/.nvm"
+      . "$NVM_DIR/nvm.sh"
+      nvm install 24.15.0
+
   install_tools:
     description: Install the tools needed to build and validate the program.
     dependencies:
+      - install_node
       - install_rust
       - install_tagref
 
@@ -158,6 +177,13 @@ tasks:
       # Lint shell files with ShellCheck.
       find . -type f -name '*.sh' | xargs shellcheck
 
+      # Check the VS Code extension.
+      (
+        cd vscode-extension
+        npm ci
+        npm run lint
+      )
+
       # Lint the code with Clippy.
       cargo-offline clippy --all-features --all-targets --workspace
 
@@ -191,8 +217,18 @@ tasks:
       - fetch_crates
     input_paths:
       - src
+      - vscode-extension
+    excluded_input_paths:
+      - vscode-extension/node_modules
     output_paths:
       - src
+      - vscode-extension/.vscode
+      - vscode-extension/src
+      - vscode-extension/language-configuration.json
+      - vscode-extension/package.json
+      - vscode-extension/syntaxes
+      - vscode-extension/tsconfig.json
+      - vscode-extension/vite.config.ts
     command: |
       # Format the code with Rustfmt. We temporarily convert macro invocations into function calls
       # so Rustfmt's `trailing_comma` feature applies to macro arguments [tag:format_macros].
@@ -200,6 +236,13 @@ tasks:
       rg --type rust --files-with-matches '' src | xargs sed -i 's/^\([^ (]*\)_(/\1!(/g'
       cargo-fmt
       rg --type rust --files-with-matches '' src | xargs sed -i 's/_(/!(/g'
+
+      # Format the VS Code extension.
+      (
+        cd vscode-extension
+        npm ci
+        npm run format
+      )
 
   release:
     description: Build and output the release binaries for Linux.

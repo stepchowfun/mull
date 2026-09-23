@@ -1,123 +1,123 @@
 {
-	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-	"name": "Mull",
-	"patterns": [
-		{
-			"include": "#titles"
-		},
-		{
-			"include": "#secondary-headings"
-		},
-		{
-			"include": "#links"
-		},
-		{
-			"include": "#unexpected-closing-delimiters"
-		}
-	],
-	"repository": {
-		"titles": {
-			"name": "markup.heading.1.mull",
-			"match": "^(#)(?: (.*))?$",
-			"captures": {
-				"1": {
-					"name": "punctuation.definition.heading.mull"
-				},
-				"2": {
-					"name": "entity.name.section.mull"
-				}
-			}
-		},
-		"secondary-headings": {
-			"patterns": [
-				{
-					"name": "markup.italic.heading.2.mull",
-					"match": "^(##)(?: .*)?$",
-					"captures": {
-						"1": {
-							"name": "punctuation.definition.heading.mull"
-						}
-					}
-				},
-				{
-					"name": "markup.italic.heading.3.mull",
-					"match": "^(###)(?: .*)?$",
-					"captures": {
-						"1": {
-							"name": "punctuation.definition.heading.mull"
-						}
-					}
-				},
-				{
-					"name": "markup.italic.heading.4.mull",
-					"match": "^(####)(?: .*)?$",
-					"captures": {
-						"1": {
-							"name": "punctuation.definition.heading.mull"
-						}
-					}
-				},
-				{
-					"name": "markup.italic.heading.5.mull",
-					"match": "^(#####)(?: .*)?$",
-					"captures": {
-						"1": {
-							"name": "punctuation.definition.heading.mull"
-						}
-					}
-				},
-				{
-					"name": "markup.italic.heading.6.mull",
-					"match": "^(######)(?: .*)?$",
-					"captures": {
-						"1": {
-							"name": "punctuation.definition.heading.mull"
-						}
-					}
-				}
-			]
-		},
-		"links": {
-			"name": "meta.link.mull",
-			"contentName": "string.other.link.mull",
-			"begin": "(?<!\\\\)\\[",
-			"beginCaptures": {
-				"0": {
-					"name": "punctuation.definition.link.begin.mull"
-				}
-			},
-			"end": "(?<!\\\\)\\]|$",
-			"endCaptures": {
-				"0": {
-					"name": "punctuation.definition.link.end.mull"
-				}
-			},
-			"patterns": [
-				{
-					"match": "(?<=\\[)([ \\t]*)(dir|file)(:)",
-					"captures": {
-						"2": {
-							"name": "keyword.other.link-kind.mull"
-						},
-						"3": {
-							"name": "punctuation.separator.link-kind.mull"
-						}
-					}
-				},
-				{
-					"name": "constant.character.escape.mull",
-					"match": "\\\\[\\[\\]]"
-				},
-				{
-					"name": "invalid.illegal.unexpected-opening-delimiter.mull",
-					"match": "(?<!\\\\)\\["
-				}
-			]
-		},
-		"unexpected-closing-delimiters": {
-			"name": "invalid.illegal.unexpected-closing-delimiter.mull",
-			"match": "(?<!\\\\)\\]"
-		}
-	},
-	"scopeName": "source.mull"
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mull",
+  "patterns": [
+    {
+      "include": "#titles"
+    },
+    {
+      "include": "#secondary-headings"
+    },
+    {
+      "include": "#links"
+    },
+    {
+      "include": "#unexpected-closing-delimiters"
+    }
+  ],
+  "repository": {
+    "titles": {
+      "name": "markup.heading.1.mull",
+      "match": "^(#)(?: (.*))?$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.heading.mull"
+        },
+        "2": {
+          "name": "entity.name.section.mull"
+        }
+      }
+    },
+    "secondary-headings": {
+      "patterns": [
+        {
+          "name": "markup.italic.heading.2.mull",
+          "match": "^(##)(?: .*)?$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            }
+          }
+        },
+        {
+          "name": "markup.italic.heading.3.mull",
+          "match": "^(###)(?: .*)?$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            }
+          }
+        },
+        {
+          "name": "markup.italic.heading.4.mull",
+          "match": "^(####)(?: .*)?$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            }
+          }
+        },
+        {
+          "name": "markup.italic.heading.5.mull",
+          "match": "^(#####)(?: .*)?$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            }
+          }
+        },
+        {
+          "name": "markup.italic.heading.6.mull",
+          "match": "^(######)(?: .*)?$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            }
+          }
+        }
+      ]
+    },
+    "links": {
+      "name": "meta.link.mull",
+      "contentName": "string.other.link.mull",
+      "begin": "(?<!\\\\)\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.link.begin.mull"
+        }
+      },
+      "end": "(?<!\\\\)\\]|$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.link.end.mull"
+        }
+      },
+      "patterns": [
+        {
+          "match": "(?<=\\[)([ \\t]*)(dir|file)(:)",
+          "captures": {
+            "2": {
+              "name": "keyword.other.link-kind.mull"
+            },
+            "3": {
+              "name": "punctuation.separator.link-kind.mull"
+            }
+          }
+        },
+        {
+          "name": "constant.character.escape.mull",
+          "match": "\\\\[\\[\\]]"
+        },
+        {
+          "name": "invalid.illegal.unexpected-opening-delimiter.mull",
+          "match": "(?<!\\\\)\\["
+        }
+      ]
+    },
+    "unexpected-closing-delimiters": {
+      "name": "invalid.illegal.unexpected-closing-delimiter.mull",
+      "match": "(?<!\\\\)\\]"
+    }
+  },
+  "scopeName": "source.mull"
 }
