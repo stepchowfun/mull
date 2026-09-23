@@ -50,18 +50,19 @@
     fail 'Unfortunately, there is no pre-built binary for this platform.'
   fi
 
-  # Compute the full file path.
+  # Compute the full file path for the binary.
   SOURCE="$TEMPDIR/$FILENAME"
 
-  # Download the requested version, or the latest published version by default.
+  # Locate the requested release, or the latest published release by default.
   if [ -n "${VERSION:-}" ]; then
-    DOWNLOAD_URL="https://github.com/stepchowfun/mull/releases/download/v$VERSION/$FILENAME"
+    RELEASE_URL="https://github.com/stepchowfun/mull/releases/download/v$VERSION"
   else
-    DOWNLOAD_URL="https://github.com/stepchowfun/mull/releases/latest/download/$FILENAME"
+    RELEASE_URL='https://github.com/stepchowfun/mull/releases/latest/download'
   fi
 
   # Download the binary.
-  curl "$DOWNLOAD_URL" -o "$SOURCE" -LSf || fail 'There was an error downloading the binary.'
+  curl "$RELEASE_URL/$FILENAME" -o "$SOURCE" -LSf ||
+    fail 'There was an error downloading the binary.'
 
   # Make it executable.
   chmod a+x "$SOURCE" || fail 'There was an error setting the permissions for the binary.'
@@ -71,9 +72,6 @@
   mv -f "$SOURCE" "$DESTINATION" 2> /dev/null ||
     sudo mv -f "$SOURCE" "$DESTINATION" < /dev/tty ||
     fail "Unable to install the binary at $DESTINATION."
-
-  # Remove the temporary directory.
-  rm -rf "$TEMPDIR"
 
   # If SELinux is installed, apply the default security context to the binary.
   # shellcheck disable=SC2024
@@ -85,4 +83,40 @@
 
   # Let the user know if the installation was successful.
   "$DESTINATION" --version || fail 'There was an error installing the binary.'
+
+  # Find supported editor command-line interfaces.
+  VSCODE_COMMAND=''
+  CURSOR_COMMAND=''
+  if command -v code > /dev/null 2>&1; then
+    VSCODE_COMMAND=code
+  elif [ -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' ]; then
+    VSCODE_COMMAND='/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'
+  fi
+  if command -v cursor > /dev/null 2>&1; then
+    CURSOR_COMMAND=cursor
+  elif [ -x '/Applications/Cursor.app/Contents/Resources/app/bin/cursor' ]; then
+    CURSOR_COMMAND='/Applications/Cursor.app/Contents/Resources/app/bin/cursor'
+  fi
+
+  # Install the extension in each editor that is available.
+  if [ -n "$VSCODE_COMMAND" ] || [ -n "$CURSOR_COMMAND" ]; then
+    EXTENSION_SOURCE="$TEMPDIR/mull.vsix"
+    curl "$RELEASE_URL/mull.vsix" -o "$EXTENSION_SOURCE" -LSf ||
+      fail 'There was an error downloading the editor extension.'
+
+    # Install the extension in Visual Studio Code if it was found.
+    if [ -n "$VSCODE_COMMAND" ]; then
+      "$VSCODE_COMMAND" --install-extension "$EXTENSION_SOURCE" --force ||
+        fail 'There was an error installing the extension in Visual Studio Code.'
+    fi
+
+    # Install the extension in Cursor if it was found.
+    if [ -n "$CURSOR_COMMAND" ]; then
+      "$CURSOR_COMMAND" --install-extension "$EXTENSION_SOURCE" --force ||
+        fail 'There was an error installing the extension in Cursor.'
+    fi
+  fi
+
+  # Remove the temporary directory.
+  rm -rf "$TEMPDIR"
 )
