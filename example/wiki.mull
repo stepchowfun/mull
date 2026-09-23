@@ -14,23 +14,10 @@ See [What does Mull actually check?] for an overview of how Mull helps you maint
 
 # Files
 
-All the files in this repo are accounted for here:
+All the files next to this wiki are accounted for here:
 
-- [dir:.github]
-- [dir:src]
-- [dir:vscode-extension]
-- [file:.gitignore]
-- [file:CHANGELOG.md]
-- [file:CODE_OF_CONDUCT.md]
-- [file:CONTRIBUTING.md]
-- [file:Cargo.lock]
-- [file:Cargo.toml]
-- [file:LICENSE.md]
-- [file:MAINTAINERS.md]
-- [file:README.md]
-- [file:install.sh]
-- [file:tagref.yml]
-- [file:toast.yml]
+- [file:notes.txt]
+- [dir:attachments]
 
 # Poem
 
