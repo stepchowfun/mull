@@ -491,15 +491,18 @@ impl LanguageServer for Backend {
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        // Identify the node occurrence that the editor should select for rename.
+        // Identify the occurrence that the editor should select for rename, or explain why the
+        // entry behind a filesystem link cannot be renamed before the user enters a new name.
         let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
-        Ok(prepare_rename_for_document(
+        prepare_rename_for_document(
             &params.text_document.uri,
             &contents,
             params.position,
-        ))
+            self.supports_file_renames.load(Ordering::Relaxed),
+        )
+        .map_err(JsonRpcError::invalid_params)
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -766,41 +769,43 @@ fn document_highlight_for_document(
 }
 
 // Identify the source occurrence that should be selected before renaming a node, file, or
-// directory.
+// directory, or explain why the entry behind a filesystem link cannot be renamed.
 fn prepare_rename_for_document(
     uri: &Uri,
     source_contents: &str,
     cursor: Position,
-) -> Option<PrepareRenameResponse> {
-    // Resolve either a title declaration or text link in a parseable editor snapshot.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let cursor_offset = byte_offset(source_contents, cursor)?;
-    if let Some((node, source_range)) =
-        node_at(&wiki, source_contents, cursor_offset, LinkExtent::Target)
-    {
-        // Select only the title text and seed the rename prompt with its decoded value.
-        return Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: lsp_range(source_contents, source_range),
-            placeholder: node.title.clone(),
-        });
+    supports_file_renames: bool,
+) -> std::result::Result<Option<PrepareRenameResponse>, String> {
+    // Select only the path of a filesystem link and seed the rename prompt with its decoded text
+    // as written.
+    if let Some(entry) = renamable_entry_at(uri, source_contents, cursor, supports_file_renames)? {
+        let path_source_range = entry.path_source_range;
+        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: lsp_range(source_contents, path_source_range),
+            placeholder: unescape_link_delimiters(
+                &source_contents[path_source_range.start..path_source_range.end],
+            ),
+        }));
     }
 
-    // Renaming a file or directory requires a saved wiki whose directory contains it.
-    local_path(uri)?;
-    let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) =
-        link_at(&wiki, cursor_offset)?
+    // Otherwise, resolve either a title declaration or text link in a parseable editor snapshot.
+    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+        return Ok(None);
+    };
+    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+    let Some((node, source_range)) =
+        node_at(&wiki, source_contents, cursor_offset, LinkExtent::Target)
     else {
-        return None;
+        return Ok(None);
     };
 
-    // Select only the path and seed the rename prompt with its decoded text as written.
-    let path_source_range = filesystem_link_path_source_range(source_contents, *source_range)?;
-    Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: lsp_range(source_contents, path_source_range),
-        placeholder: unescape_link_delimiters(
-            &source_contents[path_source_range.start..path_source_range.end],
-        ),
-    })
+    // Select only the title text and seed the rename prompt with its decoded value.
+    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: lsp_range(source_contents, source_range),
+        placeholder: node.title.clone(),
+    }))
 }
 
 // Rename one text node and every text link that targets it.
@@ -893,34 +898,24 @@ fn rename_filesystem_entry_for_document(
     new_name: &str,
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the filesystem link at the cursor, leaving every other position to node renaming.
-    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+    // Find the renamable entry at the cursor, leaving every other position to text node renaming.
+    let Some(RenamableEntry {
+        wiki,
+        wiki_directory,
+        old_path,
+        is_directory,
+        ..
+    }) = renamable_entry_at(uri, source_contents, cursor, file_operation_support.rename)?
+    else {
         return Ok(None);
     };
-    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
-        return Ok(None);
-    };
-    let (is_directory, old_path) = match link_at(&wiki, cursor_offset) {
-        Some(Link::File { path, .. }) => (false, path),
-        Some(Link::Directory { path, .. }) => (true, path),
-        Some(Link::Text { .. }) | None => return Ok(None),
-    };
-
-    // The client renames the entry on disk, which requires a saved wiki and a capable client.
-    let Some(wiki_path) = local_path(uri) else {
-        return Err("Save the wiki before renaming the files it links to.".to_owned());
-    };
-    if !file_operation_support.rename {
-        return Err("This editor does not support renaming files.".to_owned());
-    }
+    let wiki_directory = wiki_directory.as_path();
+    let old_path = old_path.as_path();
 
     // Accept only a new path which the parser would accept in a link.
     let new_path = normalize_filesystem_path(new_name.trim())?;
-    if new_path == *old_path {
+    if new_path == old_path {
         return Ok(Some(WorkspaceEdit::default()));
-    }
-    if old_path.as_os_str().is_empty() {
-        return Err("The wiki directory cannot be renamed.".to_owned());
     }
     if new_path.as_os_str().is_empty() {
         return Err("An entry cannot be renamed to the wiki directory.".to_owned());
@@ -932,22 +927,10 @@ fn rename_filesystem_entry_for_document(
         ));
     }
 
-    // Resolve both paths from the wiki's containing directory, as validation does.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    // Require the destination to be free and creatable.
+    check_rename_destination(wiki_directory, old_path, &new_path)?;
     let old_absolute_path = wiki_directory.join(old_path);
     let new_absolute_path = wiki_directory.join(&new_path);
-
-    // Check the filesystem for the entry and its destination.
-    check_filesystem_rename(
-        wiki_directory,
-        &wiki_path,
-        old_path,
-        &new_path,
-        is_directory,
-    )?;
 
     // Rewrite the path of every link to the renamed entry.
     let edits = filesystem_rename_edits(&wiki, source_contents, old_path, &new_path, is_directory);
@@ -1009,36 +992,95 @@ fn rename_filesystem_entry_for_document(
     }))
 }
 
-// Require the linked entry to exist as the kind the link names, and require its destination to be
-// free and creatable.
-fn check_filesystem_rename(
-    wiki_directory: &Path,
-    wiki_path: &Path,
-    old_path: &Path,
-    new_path: &Path,
+// This describes the entry behind the filesystem link at the cursor, once it is known to be
+// renamable regardless of its new name.
+struct RenamableEntry {
+    wiki: Wiki,
+    wiki_directory: PathBuf,
+    path_source_range: SourceRange,
+    old_path: PathBuf,
     is_directory: bool,
-) -> std::result::Result<(), String> {
-    // Resolve both paths from the wiki's containing directory.
-    let old_absolute_path = wiki_directory.join(old_path);
-    let new_absolute_path = wiki_directory.join(new_path);
+}
 
-    // Require the linked entry to exist as the kind of entry the link names, other than the wiki.
+// Find the entry behind the filesystem link at the cursor and check whether it can be renamed at
+// all. Every other position yields no entry, leaving it to text node renaming.
+fn renamable_entry_at(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    supports_file_renames: bool,
+) -> std::result::Result<Option<RenamableEntry>, String> {
+    // Resolve the filesystem link at the cursor and the path within it.
+    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+        return Ok(None);
+    };
+    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+    let (is_directory, old_path, source_range) = match link_at(&wiki, cursor_offset) {
+        Some(Link::File { path, source_range }) => (false, path.clone(), *source_range),
+        Some(Link::Directory { path, source_range }) => (true, path.clone(), *source_range),
+        Some(Link::Text { .. }) | None => return Ok(None),
+    };
+    let Some(path_source_range) = filesystem_link_path_source_range(source_contents, source_range)
+    else {
+        return Ok(None);
+    };
+
+    // The client renames the entry on disk, which requires a saved wiki and a capable client.
+    let Some(wiki_path) = local_path(uri) else {
+        return Err("Save the wiki before renaming the files it links to.".to_owned());
+    };
+    if !supports_file_renames {
+        return Err("This editor does not support renaming files.".to_owned());
+    }
+
+    // Require the linked entry to exist as the kind the link names, other than the wiki directory
+    // and the wiki itself, resolving it from the wiki's containing directory as validation does.
+    let wiki_directory = wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if old_path.as_os_str().is_empty() {
+        return Err("The wiki directory cannot be renamed.".to_owned());
+    }
     let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(&old_absolute_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
+    if !fs::metadata(wiki_directory.join(&old_path))
+        .is_ok_and(|metadata| metadata.is_dir() == is_directory)
+    {
         return Err(format!("{kind} {} does not exist.", old_path.code_path()));
     }
-    if old_path == relative_path(wiki_directory, wiki_path) {
+    if old_path == relative_path(wiki_directory, &wiki_path) {
         return Err("The wiki cannot be renamed through one of its own links.".to_owned());
     }
 
-    // Refuse to replace another entry, but allow changing only the case of a name on a
-    // case-insensitive filesystem, where both paths resolve to the same entry. Missing directories
-    // will be created, but not beneath an existing file.
+    Ok(Some(RenamableEntry {
+        wiki,
+        wiki_directory: wiki_directory.to_owned(),
+        path_source_range,
+        old_path,
+        is_directory,
+    }))
+}
+
+// Require a rename's destination to be free, other than by a change to the case of a name on a
+// case-insensitive filesystem, where both paths resolve to the same entry. Missing directories will
+// be created, but not beneath an existing file.
+fn check_rename_destination(
+    wiki_directory: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> std::result::Result<(), String> {
+    // Refuse to replace another entry.
+    let new_absolute_path = wiki_directory.join(new_path);
     if fs::symlink_metadata(&new_absolute_path).is_ok()
-        && fs::canonicalize(&new_absolute_path).ok() != fs::canonicalize(&old_absolute_path).ok()
+        && fs::canonicalize(&new_absolute_path).ok()
+            != fs::canonicalize(wiki_directory.join(old_path)).ok()
     {
         return Err(format!("Path {} already exists.", new_path.code_path()));
     }
+
+    // Refuse to create a directory beneath an existing file.
     if let Some(ancestor) = new_path
         .ancestors()
         .skip(1)
@@ -2588,9 +2630,13 @@ mod tests {
     fn rename_preparation_selects_title_text() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
         let from_title =
-            prepare_rename_for_document(&untitled_uri(), source, Position::new(4, 3)).unwrap();
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(4, 3), false)
+                .unwrap()
+                .unwrap();
         let from_link =
-            prepare_rename_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(2, 4), false)
+                .unwrap()
+                .unwrap();
 
         assert_eq!(
             from_title,
@@ -2751,19 +2797,62 @@ mod tests {
     fn rename_preparation_selects_filesystem_paths() {
         let source = concat!("# Home\n\n[ ", "file:./a\\[1\\].txt ]");
         let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("a[1].txt"), "a").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
-            prepare_rename_for_document(&uri, source, Position::new(2, 4)).unwrap(),
+            prepare_rename_for_document(&uri, source, Position::new(2, 4), true)
+                .unwrap()
+                .unwrap(),
             PrepareRenameResponse::RangeWithPlaceholder {
                 range: Range::new(Position::new(2, 7), Position::new(2, 19)),
                 placeholder: "./a[1].txt".to_owned(),
             },
         );
+    }
 
-        // Decline to rename files relative to an unsaved wiki.
-        assert!(
-            prepare_rename_for_document(&untitled_uri(), source, Position::new(2, 4)).is_none(),
+    // Explain why a filesystem link's entry cannot be renamed before asking for a new name.
+    #[test]
+    fn rename_preparation_rejects_unrenamable_entries() {
+        let source = concat!(
+            "# Home\n\n[",
+            "file:notes.txt] [",
+            "file:missing.txt] [",
+            "dir:.] [",
+            "file:wiki.mull]",
+        );
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let prepare = |uri: &Uri, character, supports_file_renames| {
+            prepare_rename_for_document(
+                uri,
+                source,
+                Position::new(2, character),
+                supports_file_renames,
+            )
+            .unwrap_err()
+        };
+
+        assert_eq!(
+            prepare(&untitled_uri(), 2, true),
+            "Save the wiki before renaming the files it links to.",
+        );
+        assert_eq!(
+            prepare(&uri, 2, false),
+            "This editor does not support renaming files.",
+        );
+        assert_eq!(
+            prepare(&uri, 18, true),
+            "File `missing.txt` does not exist.",
+        );
+        assert_eq!(
+            prepare(&uri, 37, true),
+            "The wiki directory cannot be renamed.",
+        );
+        assert_eq!(
+            prepare(&uri, 45, true),
+            "The wiki cannot be renamed through one of its own links.",
         );
     }
 
