@@ -33,9 +33,10 @@ use tower_lsp_server::{
         DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
         DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
-        DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
+        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher,
+        GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+        HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
         InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
         OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
         PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
@@ -52,6 +53,10 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // This extension command reveals a source range for clickable text links in hover previews.
 // Keep this in sync with [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
+
+// This extension command reveals the directory of a clicked directory link in the explorer.
+// Keep this in sync with [group:reveal_in_explorer_command].
+const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
@@ -309,6 +314,10 @@ impl LanguageServer for Backend {
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: None,
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
@@ -572,6 +581,17 @@ impl LanguageServer for Backend {
             &contents,
             params.range,
             &params.context.diagnostics,
+        ))
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        // Make the filesystem links in the latest synchronized editor snapshot clickable.
+        let Some(contents) = self.document_contents(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(document_link_for_document(
+            &params.text_document.uri,
+            &contents,
         ))
     }
 
@@ -1163,6 +1183,63 @@ fn code_action_for_document(
 
     // Report the absence of fixes as no response.
     (!actions.is_empty()).then_some(actions)
+}
+
+// Make each filesystem link whose target exists clickable: a file opens in the editor, and a
+// directory is revealed in the explorer.
+fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<DocumentLink>> {
+    // Resolve filesystem links from the directory containing a saved, parseable wiki.
+    let wiki_path = local_path(uri)?;
+    let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
+    let wiki_directory = wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    // Link each filesystem link to its target, skipping any that the checker would report.
+    let mut document_links = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| {
+            let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
+            else {
+                return None;
+            };
+            let is_directory = matches!(link, Link::Directory { .. });
+            let target_path = wiki_directory.join(path);
+            if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
+                return None;
+            }
+            let target_uri = Uri::from_file_path(&target_path)
+                .expect("a path within a saved wiki's directory should be absolute");
+            let (target, tooltip) = if is_directory {
+                (
+                    reveal_in_explorer_command_url(&target_uri)
+                        .parse()
+                        .expect("a command URL should be a valid URI"),
+                    "Reveal in Explorer",
+                )
+            } else {
+                (target_uri, "Open file")
+            };
+            Some(DocumentLink {
+                range: lsp_range(source_contents, *source_range),
+                target: Some(target),
+                tooltip: Some(tooltip.to_owned()),
+                data: None,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Report the links in source order.
+    document_links.sort_by_key(|document_link| {
+        (
+            document_link.range.start.line,
+            document_link.range.start.character,
+        )
+    });
+    Some(document_links)
 }
 
 // This describes the path of a filesystem link being authored at the cursor.
@@ -1842,6 +1919,19 @@ fn reveal_range_command_url(
     ))
 }
 
+// Build a command link that reveals a directory in the extension's explorer.
+fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
+    // Pass the directory URI as the command's only positional argument.
+    format!(
+        "command:{REVEAL_IN_EXPLORER_COMMAND}?{}",
+        utf8_percent_encode(
+            &serde_json::to_string(&[directory_uri.as_str()])
+                .expect("a list of strings should serialize to JSON"),
+            NON_ALPHANUMERIC,
+        ),
+    )
+}
+
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
@@ -1899,11 +1989,13 @@ mod tests {
     use super::{
         FileOperationSupport, byte_offset, code_action_for_document, completion_for_document,
         diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
-        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, lsp_position, prepare_rename_for_document, references_for_document,
-        rename_for_document, reveal_range_command_url,
+        document_link_for_document, document_symbol_for_document, formatting_for_document,
+        goto_definition_for_document, hover_for_document, lsp_position,
+        prepare_rename_for_document, references_for_document, rename_for_document,
+        reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -3222,6 +3314,59 @@ mod tests {
             rename(&uri, 58, "renamed.mull", ALL_FILE_OPERATIONS),
             "The wiki cannot be renamed through one of its own links.",
         );
+    }
+
+    // Link files to themselves and directories to a command that reveals them, skipping links
+    // whose targets are missing or of the wrong kind.
+    #[test]
+    fn document_links_open_existing_targets() {
+        let source = concat!(
+            "# Home\n\n[Home] [",
+            "file:missing.txt] [",
+            "file:notes.txt]\n[",
+            "dir:notes.txt] [",
+            "dir:./images/]",
+        );
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("images")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let links = document_link_for_document(&uri, source).unwrap();
+
+        // Expect the file link and then the directory link.
+        let [file_link, directory_link] = links.as_slice() else {
+            panic!("only the two links with existing targets should be clickable");
+        };
+        assert_eq!(
+            file_link.range,
+            Range::new(Position::new(2, 26), Position::new(2, 42)),
+        );
+        assert_eq!(
+            file_link.target,
+            Some(Uri::from_file_path(directory.join("notes.txt")).unwrap()),
+        );
+        assert_eq!(
+            directory_link.range,
+            Range::new(Position::new(3, 16), Position::new(3, 31)),
+        );
+        let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
+        assert_eq!(
+            directory_link.target.as_ref().map(|target| target.as_str()),
+            Some(
+                format!(
+                    "command:mull.revealInExplorer?{}",
+                    utf8_percent_encode(
+                        &format!("[\"{}\"]", directory_uri.as_str()),
+                        NON_ALPHANUMERIC,
+                    ),
+                )
+                .as_str(),
+            ),
+        );
+
+        // Decline to resolve links relative to an unsaved wiki.
+        assert!(document_link_for_document(&untitled_uri(), source).is_none());
     }
 
     // Apply the single text edit of a code action's workspace edit to a source.
