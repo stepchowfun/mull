@@ -779,11 +779,10 @@ fn prepare_rename_for_document(
     // Select only the path of a filesystem link and seed the rename prompt with its decoded text
     // as written.
     if let Some(entry) = renamable_entry_at(uri, source_contents, cursor, supports_file_renames)? {
-        let path_source_range = entry.path_source_range;
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: lsp_range(source_contents, path_source_range),
+            range: lsp_range(source_contents, entry.path_source_range),
             placeholder: unescape_link_delimiters(
-                &source_contents[path_source_range.start..path_source_range.end],
+                &source_contents[entry.path_source_range.start..entry.path_source_range.end],
             ),
         }));
     }
