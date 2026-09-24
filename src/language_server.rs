@@ -96,6 +96,13 @@ struct Backend {
     supports_watched_file_registration: AtomicBool,
 }
 
+// This records which file operations the client can perform within a versioned workspace edit.
+#[derive(Clone, Copy)]
+struct FileOperationSupport {
+    rename: bool,
+    delete: bool,
+}
+
 impl Backend {
     // Construct a backend connected to the editor-side language client.
     fn new(client: Client) -> Self {
@@ -914,13 +921,6 @@ fn rename_text_node_for_document(
     }))
 }
 
-// This records which file operations the client can perform within a versioned workspace edit.
-#[derive(Clone, Copy)]
-struct FileOperationSupport {
-    rename: bool,
-    delete: bool,
-}
-
 // Rename the file or directory of a filesystem link on disk and update every link to it or, for a
 // directory, to anything within it. The client creates any missing directories, and directories
 // that the rename leaves empty are deleted when the client supports it.
@@ -1030,217 +1030,6 @@ fn rename_filesystem_node_for_document(
         document_changes: Some(DocumentChanges::Operations(operations)),
         ..WorkspaceEdit::default()
     }))
-}
-
-// This describes the filesystem node targeted by the link at the cursor, once it is known to be
-// renamable regardless of its new name.
-struct RenamableFilesystemNode {
-    wiki_directory: PathBuf,
-    path_source_range: SourceRange,
-    old_path: PathBuf,
-    is_directory: bool,
-}
-
-// Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
-// at all. Every other position yields no node, leaving it to text node renaming.
-fn renamable_filesystem_node_at(
-    wiki: &Wiki,
-    uri: &Uri,
-    source_contents: &str,
-    cursor_offset: usize,
-    supports_file_renames: bool,
-) -> std::result::Result<Option<RenamableFilesystemNode>, String> {
-    // Resolve the filesystem link at the cursor and the path within it.
-    let (is_directory, old_path, source_range) = match link_at(wiki, cursor_offset) {
-        Some(Link::File { path, source_range }) => (false, path.clone(), *source_range),
-        Some(Link::Directory { path, source_range }) => (true, path.clone(), *source_range),
-        Some(Link::Text { .. }) | None => return Ok(None),
-    };
-    let Some(path_source_range) = filesystem_link_path_source_range(source_contents, source_range)
-    else {
-        return Ok(None);
-    };
-
-    // The client renames the node on disk, which requires a saved wiki and a capable client.
-    let Some(wiki_path) = local_path(uri) else {
-        return Err("Save the wiki before renaming the files it links to.".to_owned());
-    };
-    if !supports_file_renames {
-        return Err("This editor does not support renaming files.".to_owned());
-    }
-
-    // Require the linked node to exist as the kind the link names, other than the wiki directory
-    // and the wiki itself, resolving it from the wiki's containing directory as validation does.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if old_path.as_os_str().is_empty() {
-        return Err("The wiki directory cannot be renamed.".to_owned());
-    }
-    let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(wiki_directory.join(&old_path))
-        .is_ok_and(|metadata| metadata.is_dir() == is_directory)
-    {
-        return Err(format!("{kind} {} does not exist.", old_path.code_path()));
-    }
-    if old_path == relative_path(wiki_directory, &wiki_path) {
-        return Err("The wiki cannot be renamed through one of its own links.".to_owned());
-    }
-
-    Ok(Some(RenamableFilesystemNode {
-        wiki_directory: wiki_directory.to_owned(),
-        path_source_range,
-        old_path,
-        is_directory,
-    }))
-}
-
-// Require a rename's destination to be free, other than by a change to the case of a name on a
-// case-insensitive filesystem, where both paths resolve to the same entry. Missing directories will
-// be created, but not beneath an existing file.
-fn check_rename_destination(
-    wiki_directory: &Path,
-    old_path: &Path,
-    new_path: &Path,
-) -> std::result::Result<(), String> {
-    // Refuse to replace another entry.
-    let new_absolute_path = wiki_directory.join(new_path);
-    if fs::symlink_metadata(&new_absolute_path).is_ok()
-        && fs::canonicalize(&new_absolute_path).ok()
-            != fs::canonicalize(wiki_directory.join(old_path)).ok()
-    {
-        return Err(format!("Path {} already exists.", new_path.code_path()));
-    }
-
-    // Refuse to create a directory beneath an existing file.
-    if let Some(ancestor) = new_path
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| wiki_directory.join(ancestor).exists())
-        && !wiki_directory.join(ancestor).is_dir()
-    {
-        return Err(format!("Path {} is not a directory.", ancestor.code_path()));
-    }
-    Ok(())
-}
-
-// Find the outermost directory that moving a node out of it would leave containing nothing but
-// empty directories. A directory is kept if it will contain the new path or a directory link names
-// it, and the search never reaches the wiki directory itself.
-fn outermost_directory_emptied_by_rename(
-    wiki: &Wiki,
-    wiki_directory: &Path,
-    old_path: &Path,
-    new_path: &Path,
-) -> Option<PathBuf> {
-    // Collect the directories that links name, which must survive the rename.
-    let linked_directories = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Directory { path, .. } => Some(path.as_path()),
-            Link::Text { .. } | Link::File { .. } => None,
-        })
-        .collect::<HashSet<_>>();
-
-    // Ascend while each directory contains nothing but the entry being moved or deleted from it.
-    let mut emptied_directory = None;
-    let mut removed_entry = old_path;
-    while let Some(directory) = removed_entry
-        .parent()
-        .filter(|directory| !directory.as_os_str().is_empty())
-    {
-        if new_path.starts_with(directory) || linked_directories.contains(directory) {
-            break;
-        }
-        let Ok(mut entries) = fs::read_dir(wiki_directory.join(directory)) else {
-            break;
-        };
-        let contains_only_removed_entry = entries
-            .next()
-            .and_then(std::result::Result::ok)
-            .is_some_and(|entry| Some(entry.file_name().as_os_str()) == removed_entry.file_name())
-            && entries.next().is_none();
-        if !contains_only_removed_entry {
-            break;
-        }
-        emptied_directory = Some(directory.to_owned());
-        removed_entry = directory;
-    }
-    emptied_directory
-}
-
-// Rewrite the path of every link to a renamed entry. Renaming a directory also moves everything
-// within it, while a file is referenced only by file links with its exact path.
-fn filesystem_rename_edits(
-    wiki: &Wiki,
-    source_contents: &str,
-    old_path: &Path,
-    new_path: &Path,
-    is_directory: bool,
-) -> Vec<(SourceRange, String)> {
-    // Select filesystem links at the renamed path or, for a directory, within it.
-    let mut edits = Vec::new();
-    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
-        let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
-        else {
-            continue;
-        };
-        let Ok(suffix) = path.strip_prefix(old_path) else {
-            continue;
-        };
-        if !is_directory && (matches!(link, Link::Directory { .. }) || path != old_path) {
-            continue;
-        }
-
-        // Replace the link's path, keeping anything below a renamed directory.
-        let Some(path_source_range) =
-            filesystem_link_path_source_range(source_contents, *source_range)
-        else {
-            continue;
-        };
-        edits.push((
-            path_source_range,
-            render_link_path(
-                &source_contents[path_source_range.start..path_source_range.end],
-                &new_path.join(suffix),
-            ),
-        ));
-    }
-
-    // Present the edits in source order.
-    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
-    edits
-}
-
-// Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
-// trailing `/`, and escape any link delimiters.
-fn render_link_path(old_source: &str, path: &Path) -> String {
-    // Join the components with the separator that links use on every platform. Both the new path
-    // and any suffix below a renamed directory come from UTF-8 text.
-    let mut rendered = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("link paths should come from UTF-8 text")
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    // Keep the replaced path's leading `./` and trailing `/`.
-    if old_source.starts_with("./") {
-        rendered.insert_str(0, "./");
-    }
-    if old_source.len() > 1 && old_source.ends_with('/') {
-        rendered.push('/');
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
@@ -1610,6 +1399,217 @@ fn text_link_completions(
             }
         })
         .collect()
+}
+
+// This describes the filesystem node targeted by the link at the cursor, once it is known to be
+// renamable regardless of its new name.
+struct RenamableFilesystemNode {
+    wiki_directory: PathBuf,
+    path_source_range: SourceRange,
+    old_path: PathBuf,
+    is_directory: bool,
+}
+
+// Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
+// at all. Every other position yields no node, leaving it to text node renaming.
+fn renamable_filesystem_node_at(
+    wiki: &Wiki,
+    uri: &Uri,
+    source_contents: &str,
+    cursor_offset: usize,
+    supports_file_renames: bool,
+) -> std::result::Result<Option<RenamableFilesystemNode>, String> {
+    // Resolve the filesystem link at the cursor and the path within it.
+    let (is_directory, old_path, source_range) = match link_at(wiki, cursor_offset) {
+        Some(Link::File { path, source_range }) => (false, path.clone(), *source_range),
+        Some(Link::Directory { path, source_range }) => (true, path.clone(), *source_range),
+        Some(Link::Text { .. }) | None => return Ok(None),
+    };
+    let Some(path_source_range) = filesystem_link_path_source_range(source_contents, source_range)
+    else {
+        return Ok(None);
+    };
+
+    // The client renames the node on disk, which requires a saved wiki and a capable client.
+    let Some(wiki_path) = local_path(uri) else {
+        return Err("Save the wiki before renaming the files it links to.".to_owned());
+    };
+    if !supports_file_renames {
+        return Err("This editor does not support renaming files.".to_owned());
+    }
+
+    // Require the linked node to exist as the kind the link names, other than the wiki directory
+    // and the wiki itself, resolving it from the wiki's containing directory as validation does.
+    let wiki_directory = wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if old_path.as_os_str().is_empty() {
+        return Err("The wiki directory cannot be renamed.".to_owned());
+    }
+    let kind = if is_directory { "Directory" } else { "File" };
+    if !fs::metadata(wiki_directory.join(&old_path))
+        .is_ok_and(|metadata| metadata.is_dir() == is_directory)
+    {
+        return Err(format!("{kind} {} does not exist.", old_path.code_path()));
+    }
+    if old_path == relative_path(wiki_directory, &wiki_path) {
+        return Err("The wiki cannot be renamed through one of its own links.".to_owned());
+    }
+
+    Ok(Some(RenamableFilesystemNode {
+        wiki_directory: wiki_directory.to_owned(),
+        path_source_range,
+        old_path,
+        is_directory,
+    }))
+}
+
+// Require a rename's destination to be free, other than by a change to the case of a name on a
+// case-insensitive filesystem, where both paths resolve to the same entry. Missing directories will
+// be created, but not beneath an existing file.
+fn check_rename_destination(
+    wiki_directory: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> std::result::Result<(), String> {
+    // Refuse to replace another entry.
+    let new_absolute_path = wiki_directory.join(new_path);
+    if fs::symlink_metadata(&new_absolute_path).is_ok()
+        && fs::canonicalize(&new_absolute_path).ok()
+            != fs::canonicalize(wiki_directory.join(old_path)).ok()
+    {
+        return Err(format!("Path {} already exists.", new_path.code_path()));
+    }
+
+    // Refuse to create a directory beneath an existing file.
+    if let Some(ancestor) = new_path
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| wiki_directory.join(ancestor).exists())
+        && !wiki_directory.join(ancestor).is_dir()
+    {
+        return Err(format!("Path {} is not a directory.", ancestor.code_path()));
+    }
+    Ok(())
+}
+
+// Rewrite the path of every link to a renamed entry. Renaming a directory also moves everything
+// within it, while a file is referenced only by file links with its exact path.
+fn filesystem_rename_edits(
+    wiki: &Wiki,
+    source_contents: &str,
+    old_path: &Path,
+    new_path: &Path,
+    is_directory: bool,
+) -> Vec<(SourceRange, String)> {
+    // Select filesystem links at the renamed path or, for a directory, within it.
+    let mut edits = Vec::new();
+    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+        let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
+        else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(old_path) else {
+            continue;
+        };
+        if !is_directory && (matches!(link, Link::Directory { .. }) || path != old_path) {
+            continue;
+        }
+
+        // Replace the link's path, keeping anything below a renamed directory.
+        let Some(path_source_range) =
+            filesystem_link_path_source_range(source_contents, *source_range)
+        else {
+            continue;
+        };
+        edits.push((
+            path_source_range,
+            render_link_path(
+                &source_contents[path_source_range.start..path_source_range.end],
+                &new_path.join(suffix),
+            ),
+        ));
+    }
+
+    // Present the edits in source order.
+    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
+    edits
+}
+
+// Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
+// trailing `/`, and escape any link delimiters.
+fn render_link_path(old_source: &str, path: &Path) -> String {
+    // Join the components with the separator that links use on every platform. Both the new path
+    // and any suffix below a renamed directory come from UTF-8 text.
+    let mut rendered = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("link paths should come from UTF-8 text")
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Keep the replaced path's leading `./` and trailing `/`.
+    if old_source.starts_with("./") {
+        rendered.insert_str(0, "./");
+    }
+    if old_source.len() > 1 && old_source.ends_with('/') {
+        rendered.push('/');
+    }
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
+}
+
+// Find the outermost directory that moving a node out of it would leave containing nothing but
+// empty directories. A directory is kept if it will contain the new path or a directory link names
+// it, and the search never reaches the wiki directory itself.
+fn outermost_directory_emptied_by_rename(
+    wiki: &Wiki,
+    wiki_directory: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> Option<PathBuf> {
+    // Collect the directories that links name, which must survive the rename.
+    let linked_directories = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match link {
+            Link::Directory { path, .. } => Some(path.as_path()),
+            Link::Text { .. } | Link::File { .. } => None,
+        })
+        .collect::<HashSet<_>>();
+
+    // Ascend while each directory contains nothing but the entry being moved or deleted from it.
+    let mut emptied_directory = None;
+    let mut removed_entry = old_path;
+    while let Some(directory) = removed_entry
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+    {
+        if new_path.starts_with(directory) || linked_directories.contains(directory) {
+            break;
+        }
+        let Ok(mut entries) = fs::read_dir(wiki_directory.join(directory)) else {
+            break;
+        };
+        let contains_only_removed_entry = entries
+            .next()
+            .and_then(std::result::Result::ok)
+            .is_some_and(|entry| Some(entry.file_name().as_os_str()) == removed_entry.file_name())
+            && entries.next().is_none();
+        if !contains_only_removed_entry {
+            break;
+        }
+        emptied_directory = Some(directory.to_owned());
+        removed_entry = directory;
+    }
+    emptied_directory
 }
 
 // Describe a preferred quick fix that declares a node and resolves the diagnostics at a range.
