@@ -347,7 +347,7 @@ fn parse_content(
 
 // Format the trimmed target of a parsed link. A text link's target is kept as written, while a
 // filesystem link's path is written in its normalized form directly after its prefix, keeping a
-// leading `./` or a trailing `/`.
+// leading `./`.
 fn format_link_target(trimmed_target: &str, link: &Link) -> String {
     let (prefix, path) = match link {
         Link::Text { .. } => return trimmed_target.to_owned(),
@@ -461,8 +461,8 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
 }
 
 // Write a normalized filesystem link path in the style of the path it replaces, keeping a leading
-// `./` or a trailing `/`, and escape any link delimiters. An empty path, which denotes the wiki
-// directory, is written as `.`.
+// `./`, and escape any link delimiters. An empty path, which denotes the wiki directory, is written
+// as `.`.
 pub fn render_link_path(old_source: &str, path: &Path) -> String {
     // Join the components with the separator that links use on every platform. Link paths come
     // from UTF-8 text.
@@ -477,14 +477,11 @@ pub fn render_link_path(old_source: &str, path: &Path) -> String {
         .collect::<Vec<_>>()
         .join("/");
 
-    // Keep the replaced path's leading `./` and trailing `/`, writing the wiki directory as `.`.
+    // Keep the replaced path's leading `./`, writing the wiki directory as `.`.
     if rendered.is_empty() {
         rendered.push('.');
     } else if old_source.starts_with("./") {
         rendered.insert_str(0, "./");
-    }
-    if old_source.len() > 1 && old_source.ends_with('/') {
-        rendered.push('/');
     }
 
     // Escape the finished text once, just before it returns to the source.
@@ -650,8 +647,8 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     }
 
     // Format links by trimming their targets and the whitespace after a filesystem-link prefix, and
-    // by normalizing filesystem paths, keeping a leading `./` or a trailing `/` and writing the
-    // wiki directory as `.`.
+    // by normalizing filesystem paths, keeping a leading `./` and writing the wiki directory as
+    // `.`.
     #[test]
     fn formatted_links() {
         let wiki = parse_test(concat!(
@@ -673,11 +670,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             concat!(
                 "[Home] [",
                 "file:./a/b/c\\[1\\].txt] [",
-                "dir:images/] [",
-                "dir:./images/raw/] [",
+                "dir:images] [",
+                "dir:./images/raw] [",
                 "dir:.] [",
-                "dir:./] [",
-                "dir:./] [",
+                "dir:.] [",
+                "dir:.] [",
                 "file:notes.txt] [",
                 "file:./spaced.txt] [",
                 "dir:images]",

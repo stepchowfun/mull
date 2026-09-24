@@ -3128,7 +3128,7 @@ mod tests {
             (
                 concat!(
                     "# Home\n\n[",
-                    "dir:photos/] [",
+                    "dir:photos] [",
                     "dir:./photos/raw] [",
                     "file:photos/photo.jpg] [",
                     "file:images.txt]",
