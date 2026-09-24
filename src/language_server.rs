@@ -1043,9 +1043,9 @@ fn filesystem_link_completions(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let relative_wiki_path = relative_path(wiki_directory, wiki_path);
 
-    // Descend only along the typed directory so large subtrees are read only once they are named.
+    // Descend only along the typed directory so large subtrees are read only once they are named,
+    // and exclude the wiki itself.
     let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory) else {
         return Vec::new();
     };
@@ -1053,21 +1053,23 @@ fn filesystem_link_completions(
         .max_depth(Some(context.directory.components().count() + 1))
         .filter_entry({
             let wiki_directory = wiki_directory.to_owned();
+            let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
             let directory = context.directory.clone();
             move |entry| {
                 let path = relative_path(&wiki_directory, entry.path());
-                directory.starts_with(path) || path.parent() == Some(directory.as_path())
+                path != relative_wiki_path
+                    && (directory.starts_with(path) || path.parent() == Some(directory.as_path()))
             }
         });
 
-    // Offer each visible child of the typed directory other than the wiki itself.
+    // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
         let path = relative_path(wiki_directory, entry.path());
         let (Some(file_type), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
             continue;
         };
-        if path.parent() != Some(context.directory.as_path()) || path == relative_wiki_path {
+        if path.parent() != Some(context.directory.as_path()) {
             continue;
         }
 
