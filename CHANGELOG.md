@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-09-24
+
+### Changed
+- Replaced the `file:` and `dir:` link prefixes with `./`. A link whose target starts with `./` is a filesystem link, and a trailing `/` marks a directory, so `[./notes.txt]` is a file, `[./images/]` is a directory, and `[./]` is the wiki directory. Node titles may no longer start with `./`.
+- Formatted filesystem links with their `./` and, for a directory, a trailing `/`.
+- Reported a filesystem link whose trailing `/` does not match the kind of its target.
+- Offered both files and directories when completing any filesystem link.
+
 ## [0.23.0] - 2026-09-24
 
 ### Changed
