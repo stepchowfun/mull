@@ -222,6 +222,16 @@ fn validate_filesystem_links(
                 Link::Directory { .. } if metadata.is_dir() => {
                     referenced_directories.insert(target);
                 }
+                Link::File { .. } if metadata.is_dir() => errors.push(Error::new(
+                    &format!(
+                        "{} is a directory, so its link must end with {}.",
+                        path.code_path(),
+                        "/".code_str(),
+                    ),
+                    Some(wiki_path),
+                    Some((source_contents, source_range)),
+                    None,
+                )),
                 Link::File { .. } => errors.push(Error::new(
                     &format!("{} is not a file.", path.code_path()),
                     Some(wiki_path),
@@ -229,7 +239,11 @@ fn validate_filesystem_links(
                     None,
                 )),
                 Link::Directory { .. } => errors.push(Error::new(
-                    &format!("{} is not a directory.", path.code_path()),
+                    &format!(
+                        "{} is not a directory, so its link must not end with {}.",
+                        path.code_path(),
+                        "/".code_str(),
+                    ),
                     Some(wiki_path),
                     Some((source_contents, source_range)),
                     None,
@@ -466,7 +480,7 @@ mod tests {
     // Report every filesystem link at its source location until an untitled wiki is saved.
     #[test]
     fn untitled_filesystem_links() {
-        let source = concat!("# Home\n[", "file:notes.txt] [", "dir:images]");
+        let source = "# Home\n[./notes.txt] [./images/]";
         let wiki = parse(source).unwrap();
 
         let errors = validate_untitled(&wiki).unwrap_err();
@@ -483,7 +497,7 @@ mod tests {
                     &source[range.start..range.end]
                 })
                 .collect::<Vec<_>>(),
-            vec![concat!("[", "file:notes.txt]"), concat!("[", "dir:images]")],
+            vec!["[./notes.txt]", "[./images/]"],
         );
     }
 
@@ -496,13 +510,7 @@ mod tests {
         fs::write(directory.path().join("ignored.txt"), "ignored").unwrap();
         fs::create_dir(directory.path().join("images")).unwrap();
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
-        let wiki = parse(concat!(
-            "# Home\n[",
-            "file:.gitignore] [",
-            "file:.secret] [",
-            "dir:images]",
-        ))
-        .unwrap();
+        let wiki = parse("# Home\n[./.gitignore] [./.secret] [./images/]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -512,7 +520,7 @@ mod tests {
     fn wiki_directory_link() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("unmanaged.txt"), "content").unwrap();
-        let wiki = parse(concat!("# Home\n[", "dir:.]")).unwrap();
+        let wiki = parse("# Home\n[./]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -576,7 +584,7 @@ mod tests {
     fn filesystem_link_error_limit() {
         let directory = TestDirectory::new();
         let links = (0..=MAX_FILESYSTEM_ERRORS)
-            .map(|index| format!(concat!("[", "file:missing-{}.txt]"), index))
+            .map(|index| format!("[./missing-{index}.txt]"))
             .collect::<Vec<_>>()
             .join(" ");
         let wiki = parse(&format!("# Home\n{links}")).unwrap();
@@ -600,7 +608,7 @@ mod tests {
             )
             .unwrap();
         }
-        let wiki = parse(concat!("# Home\n[", "file:missing.txt]")).unwrap();
+        let wiki = parse("# Home\n[./missing.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
@@ -621,12 +629,7 @@ mod tests {
         fs::create_dir(directory.path().join("notes/archive")).unwrap();
         fs::write(directory.path().join("notes/current.txt"), "current").unwrap();
         fs::write(directory.path().join("notes/archive/old.txt"), "old").unwrap();
-        let wiki = parse(concat!(
-            "# Home\n[",
-            "file:notes/current.txt] [",
-            "file:notes/archive/old.txt]",
-        ))
-        .unwrap();
+        let wiki = parse("# Home\n[./notes/current.txt] [./notes/archive/old.txt]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -652,12 +655,7 @@ mod tests {
         fs::write(directory.path().join("target.txt"), "content").unwrap();
         symlink("target.txt", directory.path().join("first.txt")).unwrap();
         symlink("target.txt", directory.path().join("second.txt")).unwrap();
-        let wiki = parse(concat!(
-            "# Home\n[",
-            "file:target.txt] [",
-            "file:first.txt]",
-        ))
-        .unwrap();
+        let wiki = parse("# Home\n[./target.txt] [./first.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -677,12 +675,7 @@ mod tests {
         fs::create_dir(directory.path().join("target")).unwrap();
         fs::write(directory.path().join("target/file.txt"), "content").unwrap();
         symlink("target", directory.path().join("alias")).unwrap();
-        let wiki = parse(concat!(
-            "# Home\n[",
-            "dir:target] [",
-            "file:alias/file.txt]",
-        ))
-        .unwrap();
+        let wiki = parse("# Home\n[./target/] [./alias/file.txt]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -696,7 +689,7 @@ mod tests {
         let directory = TestDirectory::new();
         let external_directory = TestDirectory::new();
         symlink(external_directory.path(), directory.path().join("external")).unwrap();
-        let wiki = parse(concat!("# Home\n[", "file:external/wiki.mull]")).unwrap();
+        let wiki = parse("# Home\n[./external/wiki.mull]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -711,9 +704,9 @@ mod tests {
         let wiki_path = directory.wiki_path();
         let target_path = directory.path().join("wiki.txt");
         fs::rename(&wiki_path, &target_path).unwrap();
-        fs::write(&target_path, concat!("# Home\n[", "file:wiki.txt]")).unwrap();
+        fs::write(&target_path, "# Home\n[./wiki.txt]").unwrap();
         symlink("wiki.txt", &wiki_path).unwrap();
-        let wiki = parse(concat!("# Home\n[", "file:wiki.txt]")).unwrap();
+        let wiki = parse("# Home\n[./wiki.txt]").unwrap();
 
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
@@ -760,12 +753,24 @@ mod tests {
         let directory = TestDirectory::new();
         fs::create_dir(directory.path().join("images")).unwrap();
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
-        let wiki = parse(concat!("# Home\n[", "file:images]")).unwrap();
+        fs::write(directory.path().join("notes.txt"), "notes").unwrap();
+        let wiki = parse("# Home\n[./images] [./notes.txt/]").unwrap();
         let photo_path = Path::new("images").join("photo.jpg");
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(contains_error(&errors, "`images` is not a file."));
+        assert_eq!(errors.len(), 4);
+        assert!(contains_error(
+            &errors,
+            "`images` is a directory, so its link must end with `/`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "File `notes.txt` is not referenced.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "`notes.txt` is not a directory, so its link must not end with `/`.",
+        ));
         assert!(contains_error(
             &errors,
             &format!("File `{}` is not referenced.", photo_path.display()),
@@ -806,8 +811,7 @@ mod tests {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("unreferenced.txt"), "content").unwrap();
         let wiki = parse(concat!(
-            "# Home\nSee [Missing] and [",
-            "file:missing.txt].\n",
+            "# Home\nSee [Missing] and [./missing.txt].\n",
             "# Orphan",
         ))
         .unwrap();
