@@ -4,11 +4,11 @@ use crate::{
     error::{Error, SourceRange},
     parser,
     path_util::relative_path,
-    validator::wiki_tree_walker,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
         TextNode, Wiki,
     },
+    wiki_tree::wiki_tree_walker,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{

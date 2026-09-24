@@ -9,6 +9,7 @@ mod path_util;
 mod scoring;
 mod validator;
 mod wiki;
+mod wiki_tree;
 
 use crate::{
     analyzer::analyze,
