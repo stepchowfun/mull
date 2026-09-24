@@ -513,8 +513,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        // Rename a linked file or directory, or else a node, along with every link to it.
-        match rename_filesystem_node_for_document(
+        // Rename the node at the cursor with whichever file operations the client supports.
+        rename_for_document(
             uri,
             &contents,
             version,
@@ -524,10 +524,7 @@ impl LanguageServer for Backend {
                 rename: self.supports_file_renames.load(Ordering::Relaxed),
                 delete: self.supports_file_deletes.load(Ordering::Relaxed),
             },
-        ) {
-            Ok(None) => rename_text_node_for_document(uri, &contents, position, &params.new_name),
-            result => result,
-        }
+        )
         .map_err(JsonRpcError::invalid_params)
     }
 
@@ -807,6 +804,29 @@ fn prepare_rename_for_document(
         range: lsp_range(source_contents, source_range),
         placeholder: node.title.clone(),
     }))
+}
+
+// Rename the filesystem node or text node at an editor position, along with every link to it.
+fn rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    version: i32,
+    cursor: Position,
+    new_name: &str,
+    file_operation_support: FileOperationSupport,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Try the filesystem node a link targets, and otherwise fall back to a text node.
+    match rename_filesystem_node_for_document(
+        uri,
+        source_contents,
+        version,
+        cursor,
+        new_name,
+        file_operation_support,
+    ) {
+        Ok(None) => rename_text_node_for_document(uri, source_contents, cursor, new_name),
+        result => result,
+    }
 }
 
 // Rename one text node and every text link that targets it.
@@ -1892,7 +1912,7 @@ mod tests {
         diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
         document_symbol_for_document, formatting_for_document, goto_definition_for_document,
         hover_for_document, lsp_position, prepare_rename_for_document, references_for_document,
-        rename_filesystem_node_for_document, rename_text_node_for_document,
+        rename_filesystem_node_for_document, rename_for_document, rename_text_node_for_document,
         reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
@@ -2793,6 +2813,38 @@ mod tests {
             rename.new_uri.clone(),
             deleted_uris,
         )
+    }
+
+    // Rename whichever kind of node the link at the cursor targets.
+    #[test]
+    fn rename_dispatches_by_node_kind() {
+        let source = concat!("# Home\n\n[Home] [", "file:notes.txt]");
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let rename = |character, new_name| {
+            rename_for_document(
+                &uri,
+                source,
+                7,
+                Position::new(2, character),
+                new_name,
+                ALL_FILE_OPERATIONS,
+            )
+            .unwrap()
+        };
+
+        // A text node is renamed with plain text edits, and a filesystem node with file operations.
+        let text_node_edit = rename(2, "Start").unwrap();
+        assert!(text_node_edit.changes.is_some() && text_node_edit.document_changes.is_none());
+        let filesystem_node_edit = rename(10, "renamed.txt").unwrap();
+        assert!(
+            filesystem_node_edit.changes.is_none()
+                && filesystem_node_edit.document_changes.is_some(),
+        );
+
+        // Other positions have nothing to rename.
+        assert!(rename(6, "Start").is_none());
     }
 
     // Prepare to rename a filesystem link by selecting its decoded path as written.
