@@ -698,16 +698,24 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
         LinkExtent::Whole,
     )?;
 
-    // Render the node as Markdown with commands that navigate its resolvable text links.
+    // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
+    // in a saved wiki, its filesystem links to their targets.
+    let wiki_path = local_path(uri);
+    let wiki_directory = wiki_path.as_deref().map(wiki_directory);
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: node.to_markdown(|title| {
-                reveal_range_command_url(
+            value: node.to_markdown(|link| match link {
+                Link::Text { title, .. } => reveal_range_command_url(
                     uri,
                     source_contents,
                     wiki.text_nodes.get(title)?.title_source_range,
-                )
+                ),
+                Link::File { .. } | Link::Directory { .. } => Some(
+                    filesystem_link_target(wiki_directory?, link)?
+                        .as_str()
+                        .to_owned(),
+                ),
             }),
         }),
         range: Some(lsp_range(source_contents, source_range)),
@@ -1191,10 +1199,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
     // Resolve filesystem links from the directory containing a saved, parseable wiki.
     let wiki_path = local_path(uri)?;
     let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let wiki_directory = wiki_directory(&wiki_path);
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut document_links = wiki
@@ -1202,30 +1207,18 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
         .values()
         .flat_map(|node| &node.links)
         .filter_map(|link| {
-            let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
+            let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) = link
             else {
                 return None;
             };
-            let is_directory = matches!(link, Link::Directory { .. });
-            let target_path = wiki_directory.join(path);
-            if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
-                return None;
-            }
-            let target_uri = Uri::from_file_path(&target_path)
-                .expect("a path within a saved wiki's directory should be absolute");
-            let (target, tooltip) = if is_directory {
-                (
-                    reveal_in_explorer_command_url(&target_uri)
-                        .parse()
-                        .expect("a command URL should be a valid URI"),
-                    "Reveal in Explorer",
-                )
+            let tooltip = if matches!(link, Link::Directory { .. }) {
+                "Reveal in Explorer"
             } else {
-                (target_uri, "Open file")
+                "Open file"
             };
             Some(DocumentLink {
                 range: lsp_range(source_contents, *source_range),
-                target: Some(target),
+                target: Some(filesystem_link_target(wiki_directory, link)?),
                 tooltip: Some(tooltip.to_owned()),
                 data: None,
             })
@@ -1901,6 +1894,40 @@ fn reveal_range_command_url(
     ))
 }
 
+// Find where following a filesystem link should lead: a file opens in the editor, and a directory
+// is revealed in the explorer. A link whose target is missing or of the wrong kind leads nowhere,
+// just as the checker reports it.
+fn filesystem_link_target(wiki_directory: &Path, link: &Link) -> Option<Uri> {
+    // Require the target to exist as the kind of entry the link names.
+    let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
+        return None;
+    };
+    let is_directory = matches!(link, Link::Directory { .. });
+    let target_path = wiki_directory.join(path);
+    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
+        return None;
+    }
+
+    // Open a file directly, and reveal a directory through the extension.
+    let target_uri = Uri::from_file_path(&target_path)
+        .expect("a path within a saved wiki's directory should be absolute");
+    Some(if is_directory {
+        reveal_in_explorer_command_url(&target_uri)
+            .parse()
+            .expect("a command URL should be a valid URI")
+    } else {
+        target_uri
+    })
+}
+
+// Find the directory that a saved wiki's filesystem links are relative to.
+fn wiki_directory(wiki_path: &Path) -> &Path {
+    wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 // Build a command link that reveals a directory in the extension's explorer.
 fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
     // Pass the directory URI as the command's only positional argument.
@@ -2531,6 +2558,49 @@ mod tests {
         assert_eq!(
             hover.range,
             Some(Range::new(Position::new(2, 3), Position::new(2, 13))),
+        );
+    }
+
+    // Link filesystem links in previews to their targets, leaving missing targets as plain code.
+    #[test]
+    fn hovers_link_filesystem_targets() {
+        let source = "# Home\n\n[Other]\n\n# Other\n\n[./notes.txt] [./images/] [./missing.txt]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("images")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let hover = hover_for_document(&uri, source, Position::new(2, 2)).unwrap();
+
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("a node preview should use markup content");
+        };
+        let file_uri = Uri::from_file_path(directory.join("notes.txt")).unwrap();
+        let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
+        let reveal_url = format!(
+            "command:mull.revealInExplorer?{}",
+            utf8_percent_encode(
+                &format!("[\"{}\"]", directory_uri.as_str()),
+                NON_ALPHANUMERIC,
+            ),
+        );
+        assert_eq!(
+            contents.value,
+            format!(
+                "# Other\n\n[`[./notes.txt]`](<{}>) [`[./images/]`](<{reveal_url}>) \
+                    `[./missing.txt]`",
+                file_uri.as_str(),
+            ),
+        );
+
+        // Leave filesystem links unlinked in an unsaved wiki.
+        let hover = hover_for_document(&untitled_uri(), source, Position::new(2, 2)).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("a node preview should use markup content");
+        };
+        assert_eq!(
+            contents.value,
+            "# Other\n\n`[./notes.txt]` `[./images/]` `[./missing.txt]`",
         );
     }
 

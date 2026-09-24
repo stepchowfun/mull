@@ -117,7 +117,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     markdown: {
       isTrusted: {
-        enabledCommands: [REVEAL_RANGE_COMMAND],
+        enabledCommands: [REVEAL_RANGE_COMMAND, REVEAL_IN_EXPLORER_COMMAND],
       },
     },
   };
