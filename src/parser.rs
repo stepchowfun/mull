@@ -16,110 +16,207 @@ struct PendingNode {
     title_source_range: SourceRange,
 }
 
-// Remove surrounding whitespace from a source range without losing its original coordinates.
-fn trim_source_range(source_contents: &str, source_range: SourceRange) -> SourceRange {
-    // Find the trimmed start relative to the original source.
-    let source = &source_contents[source_range.start..source_range.end];
-    let start_trimmed = source.trim_start();
-    let start = source_range.start + source.len() - start_trimmed.len();
+// Parse source contents into a scored wiki with source ranges for every node and link.
+pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
+    // Accumulate parsed nodes, errors, and the node currently being read.
+    let mut wiki = Wiki::default();
+    let mut errors = Vec::<Error>::new();
+    let mut pending_node = None::<PendingNode>;
+    let mut has_seen_title_marker = false;
+    let mut reported_content_before_title = false;
+    let mut line_start = 0;
 
-    // Find the trimmed end relative to the adjusted start.
-    let trimmed = start_trimmed.trim_end();
-    SourceRange {
-        start,
-        end: start + trimmed.len(),
-    }
-}
+    // Process ranged source lines as boundaries while retaining their original byte offsets.
+    for raw_line in source_contents.split_inclusive('\n') {
+        let next_line_start = line_start + raw_line.len();
+        let line_with_possible_carriage_return = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line_with_possible_carriage_return
+            .strip_suffix('\r')
+            .unwrap_or(line_with_possible_carriage_return);
+        let line_source_range = SourceRange {
+            start: line_start,
+            end: line_start + line.len(),
+        };
 
-// Append source text while normalizing Windows line endings to the wiki's canonical form.
-fn push_normalized(target: &mut String, source: &str) {
-    target.push_str(&source.replace("\r\n", "\n"));
-}
+        // Recognize a title marker followed by either a space or the end of the line.
+        let raw_title = if line == TITLE_MARKER {
+            Some("")
+        } else {
+            line.strip_prefix(TITLE_PREFIX)
+        };
+        if let Some(raw_title) = raw_title {
+            // Treat invalid titles as structural boundaries for subsequent content.
+            has_seen_title_marker = true;
 
-// Normalize a filesystem link path while keeping it inside the wiki's logical tree, describing any
-// problem with a message.
-pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
-    // Reject an empty path before inspecting its components.
-    let parsed_path = Path::new(path);
-    if parsed_path.as_os_str().is_empty() {
-        return Err("This link is missing a path.".to_owned());
-    }
-
-    // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A root
-    // or prefix makes the path absolute.
-    if parsed_path
-        .components()
-        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
-    {
-        return Err(format!(
-            "Path {} must be relative to the wiki directory.",
-            parsed_path.code_path(),
-        ));
-    }
-
-    // A parent component could lead outside the wiki directory.
-    if parsed_path
-        .components()
-        .any(|component| component == Component::ParentDir)
-    {
-        return Err(format!(
-            "Path {} must not contain {}.",
-            parsed_path.code_path(),
-            "..".code_str(),
-        ));
-    }
-
-    // Normalize harmless current-directory components without resolving symlinks.
-    Ok(parsed_path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(component) => Some(component),
-            Component::CurDir => None,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                // Escaping components were rejected above [ref:filesystem_path_components].
-                unreachable!("filesystem link path components were already validated")
+            // Finish the preceding node before starting the next one.
+            if let Some(previous_node) = pending_node.take()
+                && let Err(node_errors) = insert_node(
+                    &mut wiki,
+                    previous_node,
+                    line_start,
+                    source_path,
+                    source_contents,
+                )
+            {
+                errors.extend(node_errors);
             }
-        })
-        .collect())
-}
 
-// Parse a filesystem link path, attributing any problem to the link's source range.
-fn parse_filesystem_path(
-    path: &str,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Result<PathBuf, Error> {
-    normalize_filesystem_path(path).map_err(|message| {
-        Error::new(
-            &message,
+            // Start a node for the title if it is valid.
+            match parse_title(raw_title, source_path, source_contents, line_source_range) {
+                Ok(title_source_range) => {
+                    pending_node = Some(PendingNode {
+                        title: source_contents[title_source_range.start..title_source_range.end]
+                            .to_owned(),
+                        source_start: line_start,
+                        content_start: next_line_start,
+                        title_source_range,
+                    });
+                }
+                Err(error) => errors.push(error),
+            }
+        } else if !has_seen_title_marker
+            && !reported_content_before_title
+            && !line.trim().is_empty()
+        {
+            // Report only the first non-whitespace content outside a valid node.
+            errors.push(Error::new(
+                "This content is not in any node.",
+                source_path,
+                Some((
+                    source_contents,
+                    trim_source_range(source_contents, line_source_range),
+                )),
+                None,
+            ));
+            reported_content_before_title = true;
+        }
+
+        line_start = next_line_start;
+    }
+
+    // Finish the final node at the end of the wiki.
+    if let Some(final_node) = pending_node
+        && let Err(node_errors) = insert_node(
+            &mut wiki,
+            final_node,
+            source_contents.len(),
             source_path,
-            Some((source_contents, source_range)),
-            None,
+            source_contents,
         )
-    })
+    {
+        errors.extend(node_errors);
+    }
+
+    // Return all node errors together, or score and return the parsed wiki.
+    if errors.is_empty() {
+        populate_depths(&mut wiki);
+        Ok(wiki)
+    } else {
+        Err(errors)
+    }
 }
 
-// Convert the contents of a closed delimiter pair into a typed link occurrence.
-fn parse_link(
-    target: &str,
+// Locate the title that follows a title marker, rejecting titles that are empty after surrounding
+// whitespace is stripped, as well as titles that text links could not target because they would
+// become filesystem links.
+fn parse_title(
+    raw_title: &str,
     source_path: Option<&Path>,
     source_contents: &str,
-    source_range: SourceRange,
-) -> Result<Link, Error> {
-    // Unescape delimiters before converting the target into its semantic link type.
-    let target = target.replace("\\[", "[").replace("\\]", "]");
-    if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
-        parse_filesystem_path(path, source_path, source_contents, source_range)
-            .map(|path| Link::File { path, source_range })
-    } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
-        parse_filesystem_path(path, source_path, source_contents, source_range)
-            .map(|path| Link::Directory { path, source_range })
+    line_source_range: SourceRange,
+) -> Result<SourceRange, Error> {
+    // Strip surrounding whitespace from the text after the marker, which ends the line.
+    let title_source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: line_source_range.end - raw_title.len(),
+            end: line_source_range.end,
+        },
+    );
+    let title = &source_contents[title_source_range.start..title_source_range.end];
+
+    // Report an empty title at the whole line, since the title has no text of its own.
+    if title.is_empty() {
+        Err(Error::new(
+            "This title is empty.",
+            source_path,
+            Some((source_contents, line_source_range)),
+            None,
+        ))
+    } else if !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX) {
+        Ok(title_source_range)
     } else {
-        Ok(Link::Text {
-            title: target,
-            source_range,
-        })
+        Err(Error::new(
+            &format!(
+                "This title cannot start with {} or {}.",
+                FILE_LINK_PREFIX.code_str(),
+                DIRECTORY_LINK_PREFIX.code_str(),
+            ),
+            source_path,
+            Some((source_contents, title_source_range)),
+            None,
+        ))
+    }
+}
+
+// Add a completed node after collecting all of its parsing errors.
+fn insert_node(
+    wiki: &mut Wiki,
+    pending_node: PendingNode,
+    source_end: usize,
+    source_path: Option<&Path>,
+    source_contents: &str,
+) -> Result<(), Vec<Error>> {
+    // Locate the trimmed node and its trimmed content in the original source.
+    let PendingNode {
+        title,
+        source_start,
+        content_start,
+        title_source_range,
+    } = pending_node;
+    let source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: source_start,
+            end: source_end,
+        },
+    );
+    let content_source_range = trim_source_range(
+        source_contents,
+        SourceRange {
+            start: content_start,
+            end: source_end,
+        },
+    );
+    let (content, links, mut errors) =
+        parse_content(source_path, source_contents, content_source_range);
+
+    // Reject a title that has already been used.
+    if wiki.text_nodes.contains_key(&title) {
+        errors.push(Error::new(
+            &format!("Duplicate title {}.", title.code_str()),
+            source_path,
+            Some((source_contents, title_source_range)),
+            None,
+        ));
+    }
+
+    // Insert only nodes that parsed without errors.
+    if errors.is_empty() {
+        wiki.text_nodes.insert(
+            title.clone(),
+            TextNode {
+                title,
+                content,
+                links,
+                depth: None,
+                source_range,
+                title_source_range,
+            },
+        );
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
@@ -237,207 +334,110 @@ fn parse_content(
     (content, links, errors)
 }
 
-// Add a completed node after collecting all of its parsing errors.
-fn insert_node(
-    wiki: &mut Wiki,
-    pending_node: PendingNode,
-    source_end: usize,
+// Convert the contents of a closed delimiter pair into a typed link occurrence.
+fn parse_link(
+    target: &str,
     source_path: Option<&Path>,
     source_contents: &str,
-) -> Result<(), Vec<Error>> {
-    // Locate the trimmed node and its trimmed content in the original source.
-    let PendingNode {
-        title,
-        source_start,
-        content_start,
-        title_source_range,
-    } = pending_node;
-    let source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: source_start,
-            end: source_end,
-        },
-    );
-    let content_source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: content_start,
-            end: source_end,
-        },
-    );
-    let (content, links, mut errors) =
-        parse_content(source_path, source_contents, content_source_range);
+    source_range: SourceRange,
+) -> Result<Link, Error> {
+    // Unescape delimiters before converting the target into its semantic link type.
+    let target = target.replace("\\[", "[").replace("\\]", "]");
+    if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
+        parse_filesystem_path(path, source_path, source_contents, source_range)
+            .map(|path| Link::File { path, source_range })
+    } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
+        parse_filesystem_path(path, source_path, source_contents, source_range)
+            .map(|path| Link::Directory { path, source_range })
+    } else {
+        Ok(Link::Text {
+            title: target,
+            source_range,
+        })
+    }
+}
 
-    // Reject a title that has already been used.
-    if wiki.text_nodes.contains_key(&title) {
-        errors.push(Error::new(
-            &format!("Duplicate title {}.", title.code_str()),
+// Parse a filesystem link path, attributing any problem to the link's source range.
+fn parse_filesystem_path(
+    path: &str,
+    source_path: Option<&Path>,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Result<PathBuf, Error> {
+    normalize_filesystem_path(path).map_err(|message| {
+        Error::new(
+            &message,
             source_path,
-            Some((source_contents, title_source_range)),
+            Some((source_contents, source_range)),
             None,
+        )
+    })
+}
+
+// Normalize a filesystem link path while keeping it inside the wiki's logical tree, describing any
+// problem with a message.
+pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
+    // Reject an empty path before inspecting its components.
+    let parsed_path = Path::new(path);
+    if parsed_path.as_os_str().is_empty() {
+        return Err("This link is missing a path.".to_owned());
+    }
+
+    // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A root
+    // or prefix makes the path absolute.
+    if parsed_path
+        .components()
+        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
+        return Err(format!(
+            "Path {} must be relative to the wiki directory.",
+            parsed_path.code_path(),
         ));
     }
 
-    // Insert only nodes that parsed without errors.
-    if errors.is_empty() {
-        wiki.text_nodes.insert(
-            title.clone(),
-            TextNode {
-                title,
-                content,
-                links,
-                depth: None,
-                source_range,
-                title_source_range,
-            },
-        );
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
-// Locate the title that follows a title marker, rejecting titles that are empty after surrounding
-// whitespace is stripped, as well as titles that text links could not target because they would
-// become filesystem links.
-fn parse_title(
-    raw_title: &str,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_source_range: SourceRange,
-) -> Result<SourceRange, Error> {
-    // Strip surrounding whitespace from the text after the marker, which ends the line.
-    let title_source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: line_source_range.end - raw_title.len(),
-            end: line_source_range.end,
-        },
-    );
-    let title = &source_contents[title_source_range.start..title_source_range.end];
-
-    // Report an empty title at the whole line, since the title has no text of its own.
-    if title.is_empty() {
-        Err(Error::new(
-            "This title is empty.",
-            source_path,
-            Some((source_contents, line_source_range)),
-            None,
-        ))
-    } else if !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX) {
-        Ok(title_source_range)
-    } else {
-        Err(Error::new(
-            &format!(
-                "This title cannot start with {} or {}.",
-                FILE_LINK_PREFIX.code_str(),
-                DIRECTORY_LINK_PREFIX.code_str(),
-            ),
-            source_path,
-            Some((source_contents, title_source_range)),
-            None,
-        ))
-    }
-}
-
-// Parse source contents into a scored wiki with source ranges for every node and link.
-pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
-    // Accumulate parsed nodes, errors, and the node currently being read.
-    let mut wiki = Wiki::default();
-    let mut errors = Vec::<Error>::new();
-    let mut pending_node = None::<PendingNode>;
-    let mut has_seen_title_marker = false;
-    let mut reported_content_before_title = false;
-    let mut line_start = 0;
-
-    // Process ranged source lines as boundaries while retaining their original byte offsets.
-    for raw_line in source_contents.split_inclusive('\n') {
-        let next_line_start = line_start + raw_line.len();
-        let line_with_possible_carriage_return = raw_line.strip_suffix('\n').unwrap_or(raw_line);
-        let line = line_with_possible_carriage_return
-            .strip_suffix('\r')
-            .unwrap_or(line_with_possible_carriage_return);
-        let line_source_range = SourceRange {
-            start: line_start,
-            end: line_start + line.len(),
-        };
-
-        // Recognize a title marker followed by either a space or the end of the line.
-        let raw_title = if line == TITLE_MARKER {
-            Some("")
-        } else {
-            line.strip_prefix(TITLE_PREFIX)
-        };
-        if let Some(raw_title) = raw_title {
-            // Treat invalid titles as structural boundaries for subsequent content.
-            has_seen_title_marker = true;
-
-            // Finish the preceding node before starting the next one.
-            if let Some(previous_node) = pending_node.take()
-                && let Err(node_errors) = insert_node(
-                    &mut wiki,
-                    previous_node,
-                    line_start,
-                    source_path,
-                    source_contents,
-                )
-            {
-                errors.extend(node_errors);
-            }
-
-            // Start a node for the title if it is valid.
-            match parse_title(raw_title, source_path, source_contents, line_source_range) {
-                Ok(title_source_range) => {
-                    pending_node = Some(PendingNode {
-                        title: source_contents[title_source_range.start..title_source_range.end]
-                            .to_owned(),
-                        source_start: line_start,
-                        content_start: next_line_start,
-                        title_source_range,
-                    });
-                }
-                Err(error) => errors.push(error),
-            }
-        } else if !has_seen_title_marker
-            && !reported_content_before_title
-            && !line.trim().is_empty()
-        {
-            // Report only the first non-whitespace content outside a valid node.
-            errors.push(Error::new(
-                "This content is not in any node.",
-                source_path,
-                Some((
-                    source_contents,
-                    trim_source_range(source_contents, line_source_range),
-                )),
-                None,
-            ));
-            reported_content_before_title = true;
-        }
-
-        line_start = next_line_start;
-    }
-
-    // Finish the final node at the end of the wiki.
-    if let Some(final_node) = pending_node
-        && let Err(node_errors) = insert_node(
-            &mut wiki,
-            final_node,
-            source_contents.len(),
-            source_path,
-            source_contents,
-        )
+    // A parent component could lead outside the wiki directory.
+    if parsed_path
+        .components()
+        .any(|component| component == Component::ParentDir)
     {
-        errors.extend(node_errors);
+        return Err(format!(
+            "Path {} must not contain {}.",
+            parsed_path.code_path(),
+            "..".code_str(),
+        ));
     }
 
-    // Return all node errors together, or score and return the parsed wiki.
-    if errors.is_empty() {
-        populate_depths(&mut wiki);
-        Ok(wiki)
-    } else {
-        Err(errors)
+    // Normalize harmless current-directory components without resolving symlinks.
+    Ok(parsed_path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(component) => Some(component),
+            Component::CurDir => None,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                // Escaping components were rejected above [ref:filesystem_path_components].
+                unreachable!("filesystem link path components were already validated")
+            }
+        })
+        .collect())
+}
+
+// Append source text while normalizing Windows line endings to the wiki's canonical form.
+fn push_normalized(target: &mut String, source: &str) {
+    target.push_str(&source.replace("\r\n", "\n"));
+}
+
+// Remove surrounding whitespace from a source range without losing its original coordinates.
+fn trim_source_range(source_contents: &str, source_range: SourceRange) -> SourceRange {
+    // Find the trimmed start relative to the original source.
+    let source = &source_contents[source_range.start..source_range.end];
+    let start_trimmed = source.trim_start();
+    let start = source_range.start + source.len() - start_trimmed.len();
+
+    // Find the trimmed end relative to the adjusted start.
+    let trimmed = start_trimmed.trim_end();
+    SourceRange {
+        start,
+        end: start + trimmed.len(),
     }
 }
 
