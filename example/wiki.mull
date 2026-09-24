@@ -10,11 +10,23 @@ If you want to use square brackets without creating links, you can escape them w
 
 See [What does Mull actually check?] for an overview of how Mull helps you maintain a wiki like this.
 
+See also [My favorite painting].
+
+# My favorite painting
+
+My favorite painting is [./images/girl_with_a_pearl_earring.jpg]
+
+[./images/]
+
+If you rename or delete that file, Mull will tell you that the link is broken. You can be confident that there are no "dangling" files.
+
+Every file in this directory must be referenced by the wiki.
+
 # Poem
 
-Rain taps softly on the glass,
-Silver moments drift and pass.
-Night unfolds its quiet light,
+Rain taps softly on the glass,\
+Silver moments drift and pass.\
+Night unfolds its quiet light,\
 Stars bloom gently into sight.
 
 # What does Mull actually check?

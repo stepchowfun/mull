@@ -94,13 +94,10 @@
       },
       "patterns": [
         {
-          "match": "(?<=\\[)([ \\t]*)(dir|file)(:)",
+          "match": "(?<=\\[)([ \\t]*)(\\./)",
           "captures": {
             "2": {
               "name": "keyword.other.link-kind.mull"
-            },
-            "3": {
-              "name": "punctuation.separator.link-kind.mull"
             }
           }
         },

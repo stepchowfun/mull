@@ -1,12 +1,13 @@
 use crate::error::SourceRange;
 use std::{collections::HashMap, fmt, path::PathBuf};
 
-// These strings define the wiki format's extension and structural markers.
+// These strings define the wiki format's extension and structural markers. A link whose target
+// starts with `./` is a filesystem link, which names a directory if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
-pub const FILE_LINK_PREFIX: &str = "file:";
-pub const DIRECTORY_LINK_PREFIX: &str = "dir:";
+pub const FILESYSTEM_LINK_PREFIX: &str = "./";
+pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
@@ -31,7 +32,7 @@ pub enum Link {
 // This struct represents a text node in a wiki.
 #[derive(Clone, Debug)]
 pub struct TextNode {
-    pub title: String, // Non-empty, one line, trimmed, and no `file:` or `dir:` prefix
+    pub title: String,   // Non-empty, one line, trimmed, and not starting with `./`
     pub content: String, // No leading or trailing whitespace, and lines are trimmed at the end
     pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
@@ -209,7 +210,7 @@ fn render_markdown_filesystem_link(target: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TextNode, Wiki};
+    use super::{Link, TextNode, Wiki};
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
@@ -316,7 +317,7 @@ mod tests {
     fn filesystem_link_markdown() {
         let node = TextNode {
             title: "Files".to_owned(),
-            content: format!("[{FILE_LINK_PREFIX}notes.txt] and [{DIRECTORY_LINK_PREFIX}odd`name]"),
+            content: "[./notes.txt] and [./odd`name/]".to_owned(),
             links: vec![
                 Link::File {
                     path: "notes.txt".into(),
@@ -334,10 +335,7 @@ mod tests {
 
         assert_eq!(
             node.to_markdown(|_title| None),
-            format!(
-                "# Files\n\n`[{FILE_LINK_PREFIX}notes.txt]` and \
-                    ``[{DIRECTORY_LINK_PREFIX}odd`name]``",
-            ),
+            "# Files\n\n`[./notes.txt]` and ``[./odd`name/]``",
         );
     }
 

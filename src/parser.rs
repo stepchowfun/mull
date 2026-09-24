@@ -3,8 +3,8 @@ use crate::{
     format::{CodePath, CodeStr},
     scoring::populate_depths,
     wiki::{
-        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
-        escape_link_delimiters, unescape_link_delimiters,
+        DIRECTORY_LINK_SUFFIX, FILESYSTEM_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode,
+        Wiki, escape_link_delimiters, unescape_link_delimiters,
     },
 };
 use std::path::{Component, Path, PathBuf};
@@ -144,14 +144,13 @@ fn parse_title(
             Some((source_contents, line_source_range)),
             None,
         ))
-    } else if !title.starts_with(FILE_LINK_PREFIX) && !title.starts_with(DIRECTORY_LINK_PREFIX) {
+    } else if !title.starts_with(FILESYSTEM_LINK_PREFIX) {
         Ok(title_source_range)
     } else {
         Err(Error::new(
             &format!(
-                "This title cannot start with {} or {}.",
-                FILE_LINK_PREFIX.code_str(),
-                DIRECTORY_LINK_PREFIX.code_str(),
+                "This title cannot start with {}.",
+                FILESYSTEM_LINK_PREFIX.code_str(),
             ),
             source_path,
             Some((source_contents, title_source_range)),
@@ -346,19 +345,13 @@ fn parse_content(
 }
 
 // Format the trimmed target of a parsed link. A text link's target is kept as written, while a
-// filesystem link's path is written in its normalized form directly after its prefix, keeping a
-// leading `./`.
+// filesystem link's path is written in its normalized form.
 fn format_link_target(trimmed_target: &str, link: &Link) -> String {
-    let (prefix, path) = match link {
-        Link::Text { .. } => return trimmed_target.to_owned(),
-        Link::File { path, .. } => (FILE_LINK_PREFIX, path),
-        Link::Directory { path, .. } => (DIRECTORY_LINK_PREFIX, path),
-    };
-    let path_source = trimmed_target
-        .strip_prefix(prefix)
-        .expect("a parsed filesystem link should start with its prefix")
-        .trim_start();
-    format!("{prefix}{}", render_link_path(path_source, path))
+    match link {
+        Link::Text { .. } => trimmed_target.to_owned(),
+        Link::File { path, .. } => render_link_path(path, false),
+        Link::Directory { path, .. } => render_link_path(path, true),
+    }
 }
 
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
@@ -368,26 +361,18 @@ fn parse_link(
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
-    // Unescape delimiters before converting the target into its semantic link type. Whitespace
-    // after a filesystem-link prefix separates it from the path, just as whitespace around the
-    // target is not part of it.
+    // Unescape delimiters before converting the target into its semantic link type. A filesystem
+    // link names a directory if its path ends with a separator.
     let target = unescape_link_delimiters(target);
-    if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
-        parse_filesystem_path(
-            path.trim_start(),
-            source_path,
-            source_contents,
-            source_range,
-        )
-        .map(|path| Link::File { path, source_range })
-    } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
-        parse_filesystem_path(
-            path.trim_start(),
-            source_path,
-            source_contents,
-            source_range,
-        )
-        .map(|path| Link::Directory { path, source_range })
+    if target.starts_with(FILESYSTEM_LINK_PREFIX) {
+        let is_directory = target.ends_with(DIRECTORY_LINK_SUFFIX);
+        parse_filesystem_path(&target, source_path, source_contents, source_range).map(|path| {
+            if is_directory {
+                Link::Directory { path, source_range }
+            } else {
+                Link::File { path, source_range }
+            }
+        })
     } else {
         Ok(Link::Text {
             title: target,
@@ -460,13 +445,12 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
         .collect())
 }
 
-// Write a normalized filesystem link path in the style of the path it replaces, keeping a leading
-// `./`, and escape any link delimiters. An empty path, which denotes the wiki directory, is written
-// as `.`.
-pub fn render_link_path(old_source: &str, path: &Path) -> String {
+// Write a normalized filesystem link path: `./` and the path's components, followed by `/` for a
+// directory, with any link delimiters escaped. The wiki directory is written as `./`.
+pub fn render_link_path(path: &Path, is_directory: bool) -> String {
     // Join the components with the separator that links use on every platform. Link paths come
     // from UTF-8 text.
-    let mut rendered = path
+    let components = path
         .components()
         .map(|component| {
             component
@@ -474,14 +458,13 @@ pub fn render_link_path(old_source: &str, path: &Path) -> String {
                 .to_str()
                 .expect("link paths should come from UTF-8 text")
         })
-        .collect::<Vec<_>>()
-        .join("/");
+        .collect::<Vec<_>>();
+    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
 
-    // Keep the replaced path's leading `./`, writing the wiki directory as `.`.
-    if rendered.is_empty() {
-        rendered.push('.');
-    } else if old_source.starts_with("./") {
-        rendered.insert_str(0, "./");
+    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
+    // directory.
+    if is_directory && !components.is_empty() {
+        rendered.push_str(DIRECTORY_LINK_SUFFIX);
     }
 
     // Escape the finished text once, just before it returns to the source.
@@ -624,14 +607,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Parse file and directory links separately from text links.
     #[test]
     fn filesystem_links() {
-        let wiki = parse_test(concat!(
-            "# Home\nSee [",
-            "file:./notes.txt], [",
-            "dir:images], and [",
-            "dir:images/./raw], plus [",
-            "dir:.] and [",
-            "file: spaced.txt].",
-        ))
+        let wiki = parse_test(
+            "# Home\nSee [./notes.txt], [./images/], [./images/./raw/], [./], [.//docs/], and \
+                [./ spaced.txt].",
+        )
         .unwrap();
 
         assert_eq!(
@@ -641,44 +620,25 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 format!("dir:{}", PathBuf::from("images").display()),
                 format!("dir:{}", PathBuf::from("images").join("raw").display()),
                 "dir:".to_owned(),
-                format!("file:{}", PathBuf::from("spaced.txt").display()),
+                format!("dir:{}", PathBuf::from("docs").display()),
+                format!("file:{}", PathBuf::from(" spaced.txt").display()),
             ],
         );
     }
 
-    // Format links by trimming their targets and the whitespace after a filesystem-link prefix, and
-    // by normalizing filesystem paths, keeping a leading `./` and writing the wiki directory as
-    // `.`.
+    // Format links by trimming their targets and normalizing filesystem paths, writing a directory
+    // with a trailing `/` and the wiki directory as `./`.
     #[test]
     fn formatted_links() {
-        let wiki = parse_test(concat!(
-            "# Home\n[ Home ] [ ",
-            "file:./a//b/./c\\[1\\].txt ] [",
-            "dir:images/] [",
-            "dir:./images/./raw/] [",
-            "dir:.] [",
-            "dir:./] [",
-            "dir:././] [ ",
-            "file:notes.txt ] [",
-            "file:  ./spaced.txt] [",
-            "dir: images]",
-        ))
+        let wiki = parse_test(
+            "# Home\n[ Home ] [ ./a//b/./c\\[1\\].txt ] [./images/] [./images/./raw//] [./] [././] \
+                [.///]",
+        )
         .unwrap();
 
         assert_eq!(
             wiki.text_nodes["Home"].content,
-            concat!(
-                "[Home] [",
-                "file:./a/b/c\\[1\\].txt] [",
-                "dir:images] [",
-                "dir:./images/raw] [",
-                "dir:.] [",
-                "dir:.] [",
-                "dir:.] [",
-                "file:notes.txt] [",
-                "file:./spaced.txt] [",
-                "dir:images]",
-            ),
+            "[Home] [./a/b/c\\[1\\].txt] [./images/] [./images/raw/] [./] [./] [./]",
         );
     }
 
@@ -695,27 +655,16 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         );
     }
 
-    // Reject filesystem links that are empty, absolute, or contain parents.
+    // Reject filesystem links whose paths contain parent components.
     #[test]
     fn invalid_filesystem_link_paths() {
-        let result = parse_test(concat!(
-            "# Home\n[",
-            "file:] [",
-            "file:../notes.txt] [",
-            "file:notes/../notes.txt] [",
-            "dir:/images]",
-        ));
+        let result = parse_test("# Home\n[./../notes.txt] [./notes/../notes.txt]");
 
-        assert_fails!(result.clone(), "This link is missing a path.");
-        assert_fails!(result.clone(), "Path `../notes.txt` must not contain `..`.");
         assert_fails!(
             result.clone(),
-            "Path `notes/../notes.txt` must not contain `..`.",
+            "Path `./../notes.txt` must not contain `..`.",
         );
-        assert_fails!(
-            result,
-            "Path `/images` must be relative to the wiki directory.",
-        );
+        assert_fails!(result, "Path `./notes/../notes.txt` must not contain `..`.");
     }
 
     // Reject opening link delimiters that are not closed.
@@ -808,14 +757,14 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     // Reject titles that text links would interpret as filesystem links.
     #[test]
     fn filesystem_link_titles() {
-        let errors = parse_test("# Home\n\n# file:notes.txt\n\n# dir:images").unwrap_err();
+        let errors = parse_test("# Home\n\n# ./notes.txt\n\n# ./\n\n# notes: ./draft").unwrap_err();
 
         assert_eq!(errors.len(), 2);
         for error in &errors {
             assert!(
                 error
                     .to_string()
-                    .contains("This title cannot start with `file:` or `dir:`."),
+                    .contains("This title cannot start with `./`."),
             );
         }
     }
