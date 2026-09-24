@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Formatted filesystem link paths in their normalized form, keeping a leading `./` or a trailing `/`, so formatting and renaming write links the same way.
+- Ignored whitespace between the `file:` or `dir:` prefix of a link and its path, so the path no longer starts with that whitespace, and formatting removes it.
 
 ## [0.20.0] - 2026-09-24
 

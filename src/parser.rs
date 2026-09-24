@@ -345,8 +345,8 @@ fn parse_content(
 }
 
 // Format the trimmed target of a parsed link. A text link's target is kept as written, while a
-// filesystem link's path is written in its normalized form, keeping a leading `./` or a trailing
-// `/`.
+// filesystem link's path is written in its normalized form directly after its prefix, keeping a
+// leading `./` or a trailing `/`.
 fn format_link_target(trimmed_target: &str, link: &Link) -> String {
     let (prefix, path) = match link {
         Link::Text { .. } => return trimmed_target.to_owned(),
@@ -355,7 +355,8 @@ fn format_link_target(trimmed_target: &str, link: &Link) -> String {
     };
     let path_source = trimmed_target
         .strip_prefix(prefix)
-        .expect("a parsed filesystem link should start with its prefix");
+        .expect("a parsed filesystem link should start with its prefix")
+        .trim_start();
     format!("{prefix}{}", render_link_path(path_source, path))
 }
 
@@ -366,14 +367,26 @@ fn parse_link(
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
-    // Unescape delimiters before converting the target into its semantic link type.
+    // Unescape delimiters before converting the target into its semantic link type. Whitespace
+    // after a filesystem-link prefix separates it from the path, just as whitespace around the
+    // target is not part of it.
     let target = unescape_link_delimiters(target);
     if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
-        parse_filesystem_path(path, source_path, source_contents, source_range)
-            .map(|path| Link::File { path, source_range })
+        parse_filesystem_path(
+            path.trim_start(),
+            source_path,
+            source_contents,
+            source_range,
+        )
+        .map(|path| Link::File { path, source_range })
     } else if let Some(path) = target.strip_prefix(DIRECTORY_LINK_PREFIX) {
-        parse_filesystem_path(path, source_path, source_contents, source_range)
-            .map(|path| Link::Directory { path, source_range })
+        parse_filesystem_path(
+            path.trim_start(),
+            source_path,
+            source_contents,
+            source_range,
+        )
+        .map(|path| Link::Directory { path, source_range })
     } else {
         Ok(Link::Text {
             title: target,
@@ -583,7 +596,8 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             "file:./notes.txt], [",
             "dir:images], and [",
             "dir:images/./raw], plus [",
-            "dir:.].",
+            "dir:.] and [",
+            "file: spaced.txt].",
         ))
         .unwrap();
 
@@ -594,12 +608,14 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 format!("dir:{}", PathBuf::from("images").display()),
                 format!("dir:{}", PathBuf::from("images").join("raw").display()),
                 "dir:".to_owned(),
+                format!("file:{}", PathBuf::from("spaced.txt").display()),
             ],
         );
     }
 
-    // Format links by trimming their targets and normalizing filesystem paths, keeping a leading
-    // `./` or a trailing `/` and writing the wiki directory as `.`.
+    // Format links by trimming their targets and the whitespace after a filesystem-link prefix, and
+    // by normalizing filesystem paths, keeping a leading `./` or a trailing `/` and writing the
+    // wiki directory as `.`.
     #[test]
     fn formatted_links() {
         let wiki = parse_test(concat!(
@@ -610,7 +626,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             "dir:.] [",
             "dir:./] [",
             "dir:././] [ ",
-            "file:notes.txt ]",
+            "file:notes.txt ] [",
+            "file:  ./spaced.txt] [",
+            "dir: images]",
         ))
         .unwrap();
 
@@ -624,7 +642,9 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 "dir:.] [",
                 "dir:./] [",
                 "dir:./] [",
-                "file:notes.txt]",
+                "file:notes.txt] [",
+                "file:./spaced.txt] [",
+                "dir:images]",
             ),
         );
     }
