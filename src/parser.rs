@@ -36,22 +36,13 @@ fn push_normalized(target: &mut String, source: &str) {
     target.push_str(&source.replace("\r\n", "\n"));
 }
 
-// Parse a filesystem link path while keeping it inside the wiki's logical tree.
-fn parse_filesystem_path(
-    path: &str,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Result<PathBuf, Error> {
+// Normalize a filesystem link path while keeping it inside the wiki's logical tree, describing any
+// problem with a message.
+pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
     // Reject an empty path before inspecting its components.
     let parsed_path = Path::new(path);
     if parsed_path.as_os_str().is_empty() {
-        return Err(Error::new(
-            "This link is missing a path.",
-            source_path,
-            Some((source_contents, source_range)),
-            None,
-        ));
+        return Err("This link is missing a path.".to_owned());
     }
 
     // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A root
@@ -60,14 +51,9 @@ fn parse_filesystem_path(
         .components()
         .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
     {
-        return Err(Error::new(
-            &format!(
-                "Path {} must be relative to the wiki directory.",
-                parsed_path.code_path(),
-            ),
-            source_path,
-            Some((source_contents, source_range)),
-            None,
+        return Err(format!(
+            "Path {} must be relative to the wiki directory.",
+            parsed_path.code_path(),
         ));
     }
 
@@ -76,15 +62,10 @@ fn parse_filesystem_path(
         .components()
         .any(|component| component == Component::ParentDir)
     {
-        return Err(Error::new(
-            &format!(
-                "Path {} must not contain {}.",
-                parsed_path.code_path(),
-                "..".code_str(),
-            ),
-            source_path,
-            Some((source_contents, source_range)),
-            None,
+        return Err(format!(
+            "Path {} must not contain {}.",
+            parsed_path.code_path(),
+            "..".code_str(),
         ));
     }
 
@@ -100,6 +81,23 @@ fn parse_filesystem_path(
             }
         })
         .collect())
+}
+
+// Parse a filesystem link path, attributing any problem to the link's source range.
+fn parse_filesystem_path(
+    path: &str,
+    source_path: Option<&Path>,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Result<PathBuf, Error> {
+    normalize_filesystem_path(path).map_err(|message| {
+        Error::new(
+            &message,
+            source_path,
+            Some((source_contents, source_range)),
+            None,
+        )
+    })
 }
 
 // Convert the contents of a closed delimiter pair into a typed link occurrence.

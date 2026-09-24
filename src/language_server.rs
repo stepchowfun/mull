@@ -2,7 +2,8 @@ use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
-    parser,
+    format::CodePath,
+    parser::{self, normalize_filesystem_path},
     path_util::relative_path,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
@@ -14,6 +15,7 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
     collections::HashMap,
+    fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
@@ -29,16 +31,17 @@ use tower_lsp_server::{
         CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
         DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
         DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-        DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
-        DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
+        DocumentChangeOperation, DocumentChanges, DocumentFormattingParams, DocumentHighlight,
+        DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams,
+        DocumentSymbolResponse, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+        InitializeParams, InitializeResult, InitializedParams, Location, LocationLink,
+        MarkupContent, MarkupKind, MessageType, OneOf, OptionalVersionedTextDocumentIdentifier,
         Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
-        Registration, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
-        WorkspaceEdit,
+        Registration, RenameFile, RenameOptions, RenameParams, ResourceOp, ResourceOperationKind,
+        ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
@@ -86,6 +89,7 @@ struct OpenDocument {
 struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Uri, OpenDocument>>>,
+    supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
     supports_watched_file_registration: AtomicBool,
 }
@@ -96,6 +100,7 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(Mutex::new(HashMap::new())),
+            supports_file_renames: AtomicBool::new(false),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
             supports_watched_file_registration: AtomicBool::new(false),
         }
@@ -212,11 +217,17 @@ impl Backend {
 
     // Copy the current editor snapshot for a language feature request.
     fn document_contents(&self, uri: &Uri) -> Option<String> {
+        self.document_snapshot(uri)
+            .map(|(contents, _version)| contents)
+    }
+
+    // Read the latest synchronized contents of an open document with its client-assigned version.
+    fn document_snapshot(&self, uri: &Uri) -> Option<(String, i32)> {
         self.documents
             .lock()
             .expect("the open-document mutex should not be poisoned")
             .get(uri)
-            .map(|document| document.contents.clone())
+            .map(|document| (document.contents.clone(), document.version))
     }
 }
 
@@ -237,6 +248,25 @@ impl LanguageServer for Backend {
                 .and_then(|capabilities| capabilities.document_symbol.as_ref())
                 .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
                 .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+
+        // Remember whether the client can rename files as part of a versioned workspace edit.
+        self.supports_file_renames.store(
+            params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|capabilities| capabilities.workspace_edit.as_ref())
+                .is_some_and(|capabilities| {
+                    capabilities.document_changes == Some(true)
+                        && capabilities
+                            .resource_operations
+                            .as_ref()
+                            .is_some_and(|operations| {
+                                operations.contains(&ResourceOperationKind::Rename)
+                            })
+                }),
             Ordering::Relaxed,
         );
 
@@ -471,18 +501,25 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        // Rename a node and all of its text-link occurrences in the latest snapshot.
-        let Some(contents) =
-            self.document_contents(&params.text_document_position.text_document.uri)
-        else {
+        // Rename against the latest snapshot, whose version guards the edit against later changes.
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some((contents, version)) = self.document_snapshot(uri) else {
             return Ok(None);
         };
-        rename_for_document(
-            &params.text_document_position.text_document.uri,
+
+        // Rename a linked file or directory, or else a node, along with every link to it.
+        match rename_filesystem_link_for_document(
+            uri,
             &contents,
-            params.text_document_position.position,
+            version,
+            position,
             &params.new_name,
-        )
+            self.supports_file_renames.load(Ordering::Relaxed),
+        ) {
+            Ok(None) => rename_for_document(uri, &contents, position, &params.new_name),
+            result => result,
+        }
         .map_err(JsonRpcError::invalid_params)
     }
 
@@ -723,7 +760,8 @@ fn document_highlight_for_document(
     )
 }
 
-// Identify the source occurrence that should be selected before renaming a node.
+// Identify the source occurrence that should be selected before renaming a node, file, or
+// directory.
 fn prepare_rename_for_document(
     uri: &Uri,
     source_contents: &str,
@@ -731,17 +769,32 @@ fn prepare_rename_for_document(
 ) -> Option<PrepareRenameResponse> {
     // Resolve either a title declaration or text link in a parseable editor snapshot.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, source_range) = node_at(
-        &wiki,
-        source_contents,
-        byte_offset(source_contents, cursor)?,
-        LinkExtent::Target,
-    )?;
+    let cursor_offset = byte_offset(source_contents, cursor)?;
+    if let Some((node, source_range)) =
+        node_at(&wiki, source_contents, cursor_offset, LinkExtent::Target)
+    {
+        // Select only the title text and seed the rename prompt with its decoded value.
+        return Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: lsp_range(source_contents, source_range),
+            placeholder: node.title.clone(),
+        });
+    }
 
-    // Select only the title text and seed the rename prompt with its decoded value.
+    // Renaming a file or directory requires a saved wiki whose directory contains it.
+    local_path(uri)?;
+    let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) =
+        link_at(&wiki, cursor_offset)?
+    else {
+        return None;
+    };
+
+    // Select only the path and seed the rename prompt with its decoded text as written.
+    let path_source_range = filesystem_link_path_source_range(source_contents, *source_range)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: lsp_range(source_contents, source_range),
-        placeholder: node.title.clone(),
+        range: lsp_range(source_contents, path_source_range),
+        placeholder: unescape_link_delimiters(
+            &source_contents[path_source_range.start..path_source_range.end],
+        ),
     })
 }
 
@@ -815,6 +868,184 @@ fn rename_for_document(
         )])),
         ..WorkspaceEdit::default()
     }))
+}
+
+// Rename the file or directory of a filesystem link on disk and update every link to it or, for a
+// directory, to anything within it.
+fn rename_filesystem_link_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    version: i32,
+    cursor: Position,
+    new_name: &str,
+    supports_file_renames: bool,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Resolve the filesystem link at the cursor, leaving every other position to node renaming.
+    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+        return Ok(None);
+    };
+    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+    let (is_directory, old_path) = match link_at(&wiki, cursor_offset) {
+        Some(Link::File { path, .. }) => (false, path),
+        Some(Link::Directory { path, .. }) => (true, path),
+        Some(Link::Text { .. }) | None => return Ok(None),
+    };
+
+    // The client renames the entry on disk, which requires a saved wiki and a capable client.
+    let Some(wiki_path) = local_path(uri) else {
+        return Err("Save the wiki before renaming the files it links to.".to_owned());
+    };
+    if !supports_file_renames {
+        return Err("This editor does not support renaming files.".to_owned());
+    }
+
+    // Accept only a new path which the parser would accept in a link.
+    let new_path = normalize_filesystem_path(new_name.trim())?;
+    if new_path == *old_path {
+        return Ok(Some(WorkspaceEdit::default()));
+    }
+    if old_path.as_os_str().is_empty() {
+        return Err("The wiki directory cannot be renamed.".to_owned());
+    }
+    if new_path.as_os_str().is_empty() {
+        return Err("An entry cannot be renamed to the wiki directory.".to_owned());
+    }
+    if is_directory && new_path.starts_with(old_path) {
+        return Err(format!(
+            "Directory {} cannot be moved into itself.",
+            old_path.code_path(),
+        ));
+    }
+
+    // Resolve both paths from the wiki's containing directory, as validation does.
+    let wiki_directory = wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let old_absolute_path = wiki_directory.join(old_path);
+    let new_absolute_path = wiki_directory.join(&new_path);
+
+    // Require the linked entry to exist as the kind of entry the link names, other than the wiki.
+    let kind = if is_directory { "Directory" } else { "File" };
+    if !fs::metadata(&old_absolute_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
+        return Err(format!("{kind} {} does not exist.", old_path.code_path()));
+    }
+    if old_path == relative_path(wiki_directory, &wiki_path) {
+        return Err("The wiki cannot be renamed through one of its own links.".to_owned());
+    }
+
+    // Refuse to replace another entry, but allow changing only the case of a name on a
+    // case-insensitive filesystem, where both paths resolve to the same entry.
+    if fs::symlink_metadata(&new_absolute_path).is_ok()
+        && fs::canonicalize(&new_absolute_path).ok() != fs::canonicalize(&old_absolute_path).ok()
+    {
+        return Err(format!("Path {} already exists.", new_path.code_path()));
+    }
+    if !new_absolute_path.parent().is_some_and(Path::is_dir) {
+        return Err(format!(
+            "Directory {} does not exist.",
+            new_path.parent().unwrap_or(Path::new("")).code_path(),
+        ));
+    }
+
+    // Rewrite the path of every link to the renamed entry.
+    let edits = filesystem_rename_edits(&wiki, source_contents, old_path, &new_path, is_directory);
+
+    // Edit the wiki at the version the edits were computed from, then rename the entry.
+    let (Some(old_uri), Some(new_uri)) = (
+        Uri::from_file_path(&old_absolute_path),
+        Uri::from_file_path(&new_absolute_path),
+    ) else {
+        return Err(format!("Path {} cannot be renamed.", old_path.code_path()));
+    };
+    Ok(Some(WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(vec![
+            DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: Some(version),
+                },
+                edits: edits
+                    .into_iter()
+                    .map(|(source_range, new_text)| {
+                        OneOf::Left(TextEdit::new(
+                            lsp_range(source_contents, source_range),
+                            new_text,
+                        ))
+                    })
+                    .collect(),
+            }),
+            DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+                old_uri,
+                new_uri,
+                options: None,
+                annotation_id: None,
+            })),
+        ])),
+        ..WorkspaceEdit::default()
+    }))
+}
+
+// Rewrite the path of every link to a renamed entry. Renaming a directory also moves everything
+// within it, while a file is referenced only by file links with its exact path.
+fn filesystem_rename_edits(
+    wiki: &Wiki,
+    source_contents: &str,
+    old_path: &Path,
+    new_path: &Path,
+    is_directory: bool,
+) -> Vec<(SourceRange, String)> {
+    // Select filesystem links at the renamed path or, for a directory, within it.
+    let mut edits = Vec::new();
+    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+        let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
+        else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(old_path) else {
+            continue;
+        };
+        if !is_directory && (matches!(link, Link::Directory { .. }) || path != old_path) {
+            continue;
+        }
+
+        // Replace the link's path, keeping anything below a renamed directory.
+        let Some(path_source_range) =
+            filesystem_link_path_source_range(source_contents, *source_range)
+        else {
+            continue;
+        };
+        edits.push((
+            path_source_range,
+            render_link_path(
+                &source_contents[path_source_range.start..path_source_range.end],
+                &new_path.join(suffix),
+            ),
+        ));
+    }
+
+    // Present the edits in source order.
+    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
+    edits
+}
+
+// Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
+// trailing `/`, and escape any link delimiters in its components.
+fn render_link_path(old_source: &str, path: &Path) -> String {
+    let components = path
+        .components()
+        .map(|component| escape_link_delimiters(&component.as_os_str().to_string_lossy()))
+        .collect::<Vec<_>>();
+    let mut rendered = components.join("/");
+    if old_source.starts_with("./") {
+        rendered.insert_str(0, "./");
+    }
+    if old_source.len() > 1 && old_source.ends_with('/') {
+        rendered.push('/');
+    }
+    rendered
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
@@ -1285,6 +1516,28 @@ fn text_link_target_source_range(
     })
 }
 
+// Locate the path of a complete filesystem link, excluding its delimiters, prefix, and surrounding
+// whitespace.
+fn filesystem_link_path_source_range(
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Option<SourceRange> {
+    // Trim the link's inner text as the parser does, then skip the filesystem-link prefix.
+    let target_source_range = text_link_target_source_range(source_contents, source_range)?;
+    let target = &source_contents[target_source_range.start..target_source_range.end];
+    let trimmed_target = target.trim();
+    let path = trimmed_target
+        .strip_prefix(FILE_LINK_PREFIX)
+        .or_else(|| trimmed_target.strip_prefix(DIRECTORY_LINK_PREFIX))?;
+    let start = target_source_range.start
+        + (target.len() - target.trim_start().len())
+        + (trimmed_target.len() - path.len());
+    Some(SourceRange {
+        start,
+        end: start + path.len(),
+    })
+}
+
 // Collect every complete text-link range that resolves to a title.
 fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
     // Links live on nodes in an unordered map, so sort their ranges into source order.
@@ -1423,6 +1676,11 @@ fn escape_link_delimiters(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
 }
 
+// Decode escaped delimiters in link text, as the parser does.
+fn unescape_link_delimiters(source: &str) -> String {
+    source.replace("\\[", "[").replace("\\]", "]")
+}
+
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
@@ -1481,8 +1739,8 @@ mod tests {
         byte_offset, code_action_for_document, completion_for_document, diagnostic_from_error,
         diagnostics_for_document, document_highlight_for_document, document_symbol_for_document,
         formatting_for_document, goto_definition_for_document, hover_for_document, lsp_position,
-        prepare_rename_for_document, references_for_document, rename_for_document,
-        reveal_range_command_url,
+        prepare_rename_for_document, references_for_document, rename_filesystem_link_for_document,
+        rename_for_document, reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
     use std::{
@@ -1493,9 +1751,10 @@ mod tests {
     };
     use tower_lsp_server::ls_types::{
         CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
-        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentHighlight,
-        DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse, HoverContents,
-        MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentChangeOperation,
+        DocumentChanges, DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse,
+        GotoDefinitionResponse, HoverContents, MarkupKind, OneOf, Position, PrepareRenameResponse,
+        Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -2311,6 +2570,238 @@ mod tests {
         assert_eq!(
             rename_for_document(&untitled_uri(), source, cursor, "file:notes.txt").unwrap_err(),
             "A node title cannot start with `file:` or `dir:`.",
+        );
+    }
+
+    // Apply a filesystem rename's text edits to a source, and return the result with the entry
+    // rename's old and new URIs.
+    fn apply_filesystem_rename(source: &str, workspace_edit: WorkspaceEdit) -> (String, Uri, Uri) {
+        let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
+            panic!("a filesystem rename should consist of document change operations");
+        };
+        let [
+            DocumentChangeOperation::Edit(text_document_edit),
+            DocumentChangeOperation::Op(ResourceOp::Rename(rename)),
+        ] = operations.as_slice()
+        else {
+            panic!("a filesystem rename should edit the wiki and then rename one entry");
+        };
+        assert_eq!(text_document_edit.text_document.version, Some(7_i32));
+
+        // Apply the edits from the end so earlier ranges stay valid.
+        let mut applied = source.to_owned();
+        for edit in text_document_edit.edits.iter().rev() {
+            let OneOf::Left(edit) = edit else {
+                panic!("a filesystem rename should not annotate its edits");
+            };
+            let start = byte_offset(source, edit.range.start).unwrap();
+            let end = byte_offset(source, edit.range.end).unwrap();
+            applied.replace_range(start..end, &edit.new_text);
+        }
+        (applied, rename.old_uri.clone(), rename.new_uri.clone())
+    }
+
+    // Prepare to rename a filesystem link by selecting its decoded path as written.
+    #[test]
+    fn rename_preparation_selects_filesystem_paths() {
+        let source = concat!("# Home\n\n[ ", "file:./a\\[1\\].txt ]");
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(
+            prepare_rename_for_document(&uri, source, Position::new(2, 4)).unwrap(),
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: Range::new(Position::new(2, 7), Position::new(2, 19)),
+                placeholder: "./a[1].txt".to_owned(),
+            },
+        );
+
+        // Decline to rename files relative to an unsaved wiki.
+        assert!(
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(2, 4)).is_none(),
+        );
+    }
+
+    // Rename a linked file and update each link to it in the style it was written.
+    #[test]
+    fn rename_moves_linked_files() {
+        let source = concat!(
+            "# Home\n\n[",
+            "file:./notes.txt] [",
+            "file:notes.txt] [",
+            "dir:notes]",
+        );
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("notes")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let workspace_edit = rename_filesystem_link_for_document(
+            &uri,
+            source,
+            7,
+            Position::new(2, 4),
+            " notes/a[1].txt ",
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            apply_filesystem_rename(source, workspace_edit),
+            (
+                concat!(
+                    "# Home\n\n[",
+                    "file:./notes/a\\[1\\].txt] [",
+                    "file:notes/a\\[1\\].txt] [",
+                    "dir:notes]",
+                )
+                .to_owned(),
+                Uri::from_file_path(directory.join("notes.txt")).unwrap(),
+                Uri::from_file_path(directory.join("notes/a[1].txt")).unwrap(),
+            ),
+        );
+    }
+
+    // Rename a linked directory and update links to it and to everything within it.
+    #[test]
+    fn rename_moves_linked_directories() {
+        let source = concat!(
+            "# Home\n\n[",
+            "dir:images/] [",
+            "dir:./images/raw] [",
+            "file:images/photo.jpg] [",
+            "file:images.txt]",
+        );
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::create_dir_all(directory.join("images/raw")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        fs::write(directory.join("images.txt"), "images").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let workspace_edit = rename_filesystem_link_for_document(
+            &uri,
+            source,
+            7,
+            Position::new(2, 4),
+            "photos",
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            apply_filesystem_rename(source, workspace_edit),
+            (
+                concat!(
+                    "# Home\n\n[",
+                    "dir:photos/] [",
+                    "dir:./photos/raw] [",
+                    "file:photos/photo.jpg] [",
+                    "file:images.txt]",
+                )
+                .to_owned(),
+                Uri::from_file_path(directory.join("images")).unwrap(),
+                Uri::from_file_path(directory.join("photos")).unwrap(),
+            ),
+        );
+    }
+
+    // Leave text links to node renaming, and treat renaming a path to itself as a no-op.
+    #[test]
+    fn rename_distinguishes_filesystem_links() {
+        let source = concat!("# Home\n\n[Home] [", "file:notes.txt]");
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert!(
+            rename_filesystem_link_for_document(&uri, source, 7, Position::new(2, 2), "x", true)
+                .unwrap()
+                .is_none(),
+        );
+        assert_eq!(
+            rename_filesystem_link_for_document(
+                &uri,
+                source,
+                7,
+                Position::new(2, 10),
+                "./notes.txt",
+                true,
+            )
+            .unwrap(),
+            Some(WorkspaceEdit::default()),
+        );
+    }
+
+    // Reject filesystem renames which the parser, the filesystem, or the editor cannot support.
+    #[test]
+    fn rename_rejects_invalid_filesystem_renames() {
+        let source = concat!(
+            "# Home\n\n[",
+            "file:notes.txt] [",
+            "dir:images] [",
+            "file:missing.txt] [",
+            "dir:.] [",
+            "file:wiki.mull]",
+        );
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::write(directory.join("other.txt"), "other").unwrap();
+        fs::create_dir(directory.join("images")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let rename = |uri: &Uri, character, new_name, supports_file_renames| {
+            rename_filesystem_link_for_document(
+                uri,
+                source,
+                7,
+                Position::new(2, character),
+                new_name,
+                supports_file_renames,
+            )
+            .unwrap_err()
+        };
+
+        assert_eq!(
+            rename(&untitled_uri(), 2, "other.txt", true),
+            "Save the wiki before renaming the files it links to.",
+        );
+        assert_eq!(
+            rename(&uri, 2, "renamed.txt", false),
+            "This editor does not support renaming files.",
+        );
+        assert_eq!(
+            rename(&uri, 2, "../notes.txt", true),
+            "Path `../notes.txt` must not contain `..`.",
+        );
+        assert_eq!(
+            rename(&uri, 2, "./", true),
+            "An entry cannot be renamed to the wiki directory.",
+        );
+        assert_eq!(
+            rename(&uri, 2, "other.txt", true),
+            "Path `other.txt` already exists.",
+        );
+        assert_eq!(
+            rename(&uri, 2, "archive/notes.txt", true),
+            "Directory `archive` does not exist.",
+        );
+        assert_eq!(
+            rename(&uri, 18, "images/raw", true),
+            "Directory `images` cannot be moved into itself.",
+        );
+        assert_eq!(
+            rename(&uri, 31, "found.txt", true),
+            "File `missing.txt` does not exist.",
+        );
+        assert_eq!(
+            rename(&uri, 50, "elsewhere", true),
+            "The wiki directory cannot be renamed.",
+        );
+        assert_eq!(
+            rename(&uri, 58, "renamed.mull", true),
+            "The wiki cannot be renamed through one of its own links.",
         );
     }
 
