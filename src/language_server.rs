@@ -3,15 +3,18 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     parser,
+    path_util::relative_path,
+    validator::wiki_tree_walker,
     wiki::{
-        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_PREFIX, TextNode, Wiki,
+        DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
+        TextNode, Wiki,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    path::Path,
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
@@ -21,20 +24,21 @@ use tower_lsp_server::{
     jsonrpc::{Error as JsonRpcError, Result},
     ls_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
-        CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic,
-        DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-        DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-        DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
-        DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher, GlobPattern,
-        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf, Position,
-        PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, Registration,
-        RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+        CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem,
+        CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+        DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
+        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+        DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
+        DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
+        Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
+        Registration, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
+        SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
+        WorkspaceEdit,
     },
 };
 
@@ -44,6 +48,9 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // This extension command reveals a source range for clickable text links in hover previews.
 // Keep this in sync with [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
+
+// This editor command reopens suggestions so the children of a completed directory can be chosen.
+const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
 #[derive(Debug)]
@@ -249,7 +256,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec!["[".to_owned()]),
+                    trigger_characters: Some(vec!["[".to_owned(), ":".to_owned(), "/".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -371,7 +378,7 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        // Complete text links against the latest synchronized editor snapshot.
+        // Complete links against the latest synchronized editor snapshot.
         let Some(contents) =
             self.document_contents(&params.text_document_position.text_document.uri)
         else {
@@ -560,18 +567,25 @@ fn diagnostics_for_document(
     ))
 }
 
-// Complete the text-link target at an editor position with every node title.
+// Complete the link target at an editor position with node titles or filesystem paths.
 fn completion_for_document(
     uri: &Uri,
     source_contents: &str,
     cursor: Position,
 ) -> Option<Vec<CompletionItem>> {
+    // Complete a filesystem link from the directory containing the wiki.
+    let cursor_offset = byte_offset(source_contents, cursor)?;
+    if let Some(context) = filesystem_link_context(source_contents, cursor_offset) {
+        return Some(filesystem_link_completions(
+            &local_path(uri)?,
+            source_contents,
+            &context,
+        ));
+    }
+
     // Parse either the original source or a temporary source with the active link closed.
-    let (wiki, replacement_source_range) = completion_context(
-        local_path(uri).as_deref(),
-        source_contents,
-        byte_offset(source_contents, cursor)?,
-    )?;
+    let (wiki, replacement_source_range) =
+        completion_context(local_path(uri).as_deref(), source_contents, cursor_offset)?;
 
     // Present node titles deterministically and replace the whole link, including its delimiters,
     // so the cursor ends up after the closing `]`.
@@ -582,7 +596,7 @@ fn completion_for_document(
         titles
             .into_iter()
             .map(|title| {
-                let escaped_title = escape_text_link_title(title);
+                let escaped_title = escape_link_delimiters(title);
                 CompletionItem {
                     label: title.clone(),
                     kind: Some(CompletionItemKind::REFERENCE),
@@ -802,7 +816,7 @@ fn rename_for_document(
             && let Some(target_source_range) =
                 text_link_target_source_range(source_contents, *source_range)
         {
-            edits.push((target_source_range, escape_text_link_title(new_title)));
+            edits.push((target_source_range, escape_link_delimiters(new_title)));
         }
     }
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
@@ -955,6 +969,188 @@ fn code_action_for_document(
 
     // Report the absence of fixes as no response.
     (!actions.is_empty()).then_some(actions)
+}
+
+// This describes the path of a filesystem link being authored at the cursor.
+struct FilesystemLinkContext<'a> {
+    is_directory_link: bool,
+    typed_directory: &'a str, // The typed path through its last `/`, as written in the source
+    directory: PathBuf,       // The normalized directory named by `typed_directory`
+    path_start: usize,
+    cursor: usize,
+    closing_delimiter: Option<usize>,
+}
+
+// Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
+fn filesystem_link_context(
+    source_contents: &str,
+    cursor: usize,
+) -> Option<FilesystemLinkContext<'_>> {
+    // Confine the search to the cursor's line, since links cannot contain line breaks.
+    let line_start = source_contents[..cursor]
+        .rfind('\n')
+        .map_or(0, |index| index + '\n'.len_utf8());
+    let line_end = source_contents[cursor..]
+        .find('\n')
+        .map_or(source_contents.len(), |index| cursor + index);
+    let line = &source_contents[line_start..line_end];
+    let line = line.strip_suffix('\r').unwrap_or(line);
+
+    // Ignore titles, which cannot contain links.
+    if line == TITLE_MARKER || line.starts_with(TITLE_PREFIX) {
+        return None;
+    }
+
+    // Find the open link before the cursor and any closing delimiter after it, skipping escaped
+    // delimiters as the parser does.
+    let mut opening_delimiter = None;
+    let mut closing_delimiter = None;
+    let mut previous_was_backslash = false;
+    for (index, character) in line.char_indices() {
+        let offset = line_start + index;
+        let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
+        previous_was_backslash = character == '\\';
+        if is_escaped_delimiter {
+            continue;
+        }
+        if offset < cursor {
+            match character {
+                '[' => opening_delimiter = Some(offset),
+                ']' => opening_delimiter = None,
+                _ => {}
+            }
+        } else if matches!(character, '[' | ']') {
+            closing_delimiter = (character == ']').then_some(offset);
+            break;
+        }
+    }
+
+    // Require a filesystem prefix after any leading whitespace, since the parser trims targets.
+    let target = source_contents[opening_delimiter? + '['.len_utf8()..cursor].trim_start();
+    let (is_directory_link, typed_path) = match target.strip_prefix(FILE_LINK_PREFIX) {
+        Some(typed_path) => (false, typed_path),
+        None => (true, target.strip_prefix(DIRECTORY_LINK_PREFIX)?),
+    };
+
+    // Resolve the typed directory, declining paths which escape the wiki tree
+    // [ref:filesystem_path_components].
+    let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
+    let mut directory = PathBuf::new();
+    for component in
+        Path::new(&typed_directory.replace("\\[", "[").replace("\\]", "]")).components()
+    {
+        match component {
+            Component::Normal(component) => directory.push(component),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(FilesystemLinkContext {
+        is_directory_link,
+        typed_directory,
+        directory,
+        path_start: cursor - typed_path.len(),
+        cursor,
+        closing_delimiter,
+    })
+}
+
+// Complete the next component of a filesystem link's path from the directory its prefix names.
+fn filesystem_link_completions(
+    wiki_path: &Path,
+    source_contents: &str,
+    context: &FilesystemLinkContext<'_>,
+) -> Vec<CompletionItem> {
+    // Derive every filesystem path from the wiki's containing directory, as validation does.
+    let wiki_directory = wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let relative_wiki_path = relative_path(wiki_directory, wiki_path);
+
+    // Descend only along the typed directory so large subtrees are read only once they are named.
+    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory) else {
+        return Vec::new();
+    };
+    walker_builder
+        .max_depth(Some(context.directory.components().count() + 1))
+        .filter_entry({
+            let wiki_directory = wiki_directory.to_owned();
+            let directory = context.directory.clone();
+            move |entry| {
+                let path = relative_path(&wiki_directory, entry.path());
+                directory.starts_with(path) || path.parent() == Some(directory.as_path())
+            }
+        });
+
+    // Offer each visible child of the typed directory other than the wiki itself.
+    let mut completions = Vec::new();
+    for entry in walker_builder.build().flatten() {
+        let path = relative_path(wiki_directory, entry.path());
+        let (Some(file_type), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
+            continue;
+        };
+        if path.parent() != Some(context.directory.as_path()) || path == relative_wiki_path {
+            continue;
+        }
+
+        // Leave a directory's link open for its children, and close a file's link.
+        let completed_path = format!(
+            "{}{}",
+            context.typed_directory,
+            escape_link_delimiters(name),
+        );
+        let (label, kind, new_text, replacement_end, command) = if file_type.is_dir() {
+            (
+                format!("{name}/"),
+                CompletionItemKind::FOLDER,
+                format!("{completed_path}/"),
+                context.closing_delimiter.unwrap_or(context.cursor),
+                Some(Command {
+                    title: "Suggest".to_owned(),
+                    command: TRIGGER_SUGGEST_COMMAND.to_owned(),
+                    arguments: None,
+                }),
+            )
+        } else if context.is_directory_link {
+            continue;
+        } else {
+            (
+                name.to_owned(),
+                CompletionItemKind::FILE,
+                format!("{completed_path}]"),
+                context
+                    .closing_delimiter
+                    .map_or(context.cursor, |offset| offset + ']'.len_utf8()),
+                None,
+            )
+        };
+
+        // Replace the whole typed path so the editor filters candidates against it.
+        let replacement_range = lsp_range(
+            source_contents,
+            SourceRange {
+                start: context.path_start,
+                end: replacement_end,
+            },
+        );
+        completions.push(CompletionItem {
+            label,
+            kind: Some(kind),
+            filter_text: Some(completed_path),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                replacement_range,
+                new_text,
+            ))),
+            command,
+            ..CompletionItem::default()
+        });
+    }
+
+    // Present entries deterministically.
+    completions.sort_by(|a, b| a.label.cmp(&b.label));
+    completions
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
@@ -1219,8 +1415,8 @@ fn reveal_range_command_url(
     ))
 }
 
-// Escape delimiters so an arbitrary node title retains its meaning inside a text link.
-fn escape_text_link_title(title: &str) -> String {
+// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
+fn escape_link_delimiters(title: &str) -> String {
     title.replace('[', "\\[").replace(']', "\\]")
 }
 
@@ -1293,9 +1489,10 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tower_lsp_server::ls_types::{
-        CodeActionKind, CodeActionOrCommand, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
-        DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse,
-        HoverContents, MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+        CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
+        CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentHighlight,
+        DocumentHighlightKind, DocumentSymbolResponse, GotoDefinitionResponse, HoverContents,
+        MarkupKind, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -1610,6 +1807,139 @@ mod tests {
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 2)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 10)).is_none());
         assert!(completion_for_document(&untitled_uri(), source, Position::new(0, 3)).is_none());
+    }
+
+    // Summarize each completion by its label, replacement range, and inserted text.
+    fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
+        completions
+            .iter()
+            .map(|completion| {
+                let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
+                    panic!("a completion should replace part of the link");
+                };
+                (
+                    completion.label.as_str(),
+                    edit.range,
+                    edit.new_text.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    // Complete a file link with the visible entries of the wiki directory.
+    #[test]
+    fn completions_list_filesystem_entries() {
+        let source = concat!("# Home\n\n[", "file:]");
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("images")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&uri, source, Position::new(2, 6)).unwrap();
+
+        // Close a file's link but leave a directory's link open for its children.
+        let empty_path = Range::new(Position::new(2, 6), Position::new(2, 6));
+        let closed_path = Range::new(Position::new(2, 6), Position::new(2, 7));
+        assert_eq!(
+            completion_edits(&completions),
+            vec![
+                (".gitignore", closed_path, ".gitignore]"),
+                ("images/", empty_path, "images/"),
+                ("notes.txt", closed_path, "notes.txt]"),
+            ],
+        );
+        assert_eq!(completions[0].kind, Some(CompletionItemKind::FILE));
+        assert_eq!(completions[1].kind, Some(CompletionItemKind::FOLDER));
+        assert!(completions[0].command.is_none());
+        assert_eq!(
+            completions[1]
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerSuggest"),
+        );
+    }
+
+    // Complete only directories within the directory named by an unfinished directory link.
+    #[test]
+    fn completions_list_nested_directories() {
+        let source = concat!("# Home\n\n[", "dir:./images/r");
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::create_dir_all(directory.join("images/raw/large")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&uri, source, Position::new(2, 15)).unwrap();
+
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "raw/",
+                Range::new(Position::new(2, 5), Position::new(2, 15)),
+                "./images/raw/",
+            )],
+        );
+        assert_eq!(completions[0].filter_text.as_deref(), Some("./images/raw"));
+    }
+
+    // Escape link delimiters in completed names and interpret them in typed directories.
+    #[test]
+    fn completions_escape_path_delimiters() {
+        let source = concat!("# Home\n\n[", "file:a\\[b\\]/]");
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::create_dir_all(directory.join("a[b]")).unwrap();
+        fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let completions = completion_for_document(&uri, source, Position::new(2, 6)).unwrap();
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "a[b]/",
+                Range::new(Position::new(2, 6), Position::new(2, 13)),
+                "a\\[b\\]/",
+            )],
+        );
+
+        let completions = completion_for_document(&uri, source, Position::new(2, 13)).unwrap();
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "c[d].txt",
+                Range::new(Position::new(2, 6), Position::new(2, 14)),
+                "a\\[b\\]/c\\[d\\].txt]",
+            )],
+        );
+    }
+
+    // Decline filesystem completions where the parser would not recognize a valid link path.
+    #[test]
+    fn completions_ignore_invalid_filesystem_contexts() {
+        let source = concat!("# [", "file:\n\n[", "file:../] [", "dir:/] \\[", "file:");
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        // Ignore titles, escaping paths, and escaped delimiters.
+        for cursor in [
+            Position::new(0, 8),
+            Position::new(2, 9),
+            Position::new(2, 17),
+            Position::new(2, 26),
+        ] {
+            assert!(
+                completion_for_document(&uri, source, cursor)
+                    .is_none_or(|completions| completions.is_empty()),
+            );
+        }
+
+        // Require a filesystem to list entries from.
+        let source = concat!("# Home\n\n[", "file:]");
+        assert!(completion_for_document(&untitled_uri(), source, Position::new(2, 6)).is_none());
     }
 
     // Treat a title as its own definition, which lets editors fall back to finding references.

@@ -261,6 +261,30 @@ fn validate_filesystem_links(
     Outcome::Completed(errors)
 }
 
+// Configure a walk of the wiki tree which follows directory symlinks, includes hidden entries, and
+// honors ignore files within the tree while excluding VCS metadata.
+pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Error> {
+    // Exclude VCS metadata, which never needs links.
+    let mut overrides = OverrideBuilder::new(wiki_directory);
+    overrides
+        .add("!.git/")
+        .expect("the static .git override should be valid")
+        .add("!.hg/")
+        .expect("the static .hg override should be valid");
+    let overrides = overrides.build()?;
+
+    // Consult ignore files only within the wiki tree, whether or not it is a Git repository.
+    let mut walker_builder = WalkBuilder::new(wiki_directory);
+    walker_builder
+        .current_dir(wiki_directory)
+        .follow_links(true)
+        .hidden(false)
+        .parents(false)
+        .require_git(false)
+        .overrides(overrides);
+    Ok(walker_builder)
+}
+
 // Find unreferenced files within a budget while pruning covered directories.
 fn find_unreferenced_filesystem_links(
     wiki_directory: &Path,
@@ -275,15 +299,9 @@ fn find_unreferenced_filesystem_links(
         return Outcome::Completed(Vec::new());
     }
 
-    // Include hidden entries while retaining ignore-file behavior and excluding VCS metadata.
-    let mut overrides = OverrideBuilder::new(wiki_directory);
-    overrides
-        .add("!.git/")
-        .expect("the static .git override should be valid")
-        .add("!.hg/")
-        .expect("the static .hg override should be valid");
-    let overrides = match overrides.build() {
-        Ok(overrides) => overrides,
+    // Walk the wiki tree with the same visibility rules as every other filesystem consumer.
+    let mut walker_builder = match wiki_tree_walker(wiki_directory) {
+        Ok(walker_builder) => walker_builder,
         Err(error) => {
             return Outcome::Completed(vec![Error::new(
                 "Unable to build filesystem ignore rules.",
@@ -294,25 +312,17 @@ fn find_unreferenced_filesystem_links(
         }
     };
 
-    // Follow directory symlinks while pruning subtrees covered by explicit directory links.
-    let mut walker_builder = WalkBuilder::new(wiki_directory);
-    walker_builder
-        .current_dir(wiki_directory)
-        .follow_links(true)
-        .hidden(false)
-        .parents(false)
-        .require_git(false)
-        .overrides(overrides)
-        .filter_entry({
-            let wiki_directory = wiki_directory.to_owned();
-            let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
-            let referenced_directories = referenced_directories.clone();
-            move |entry| {
-                // Exclude the wiki and prune directories already covered by their links.
-                relative_path(&wiki_directory, entry.path()) != relative_wiki_path
-                    && !referenced_directories.contains(entry.path())
-            }
-        });
+    // Prune subtrees covered by explicit directory links.
+    walker_builder.filter_entry({
+        let wiki_directory = wiki_directory.to_owned();
+        let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
+        let referenced_directories = referenced_directories.clone();
+        move |entry| {
+            // Exclude the wiki and prune directories already covered by their links.
+            relative_path(&wiki_directory, entry.path()) != relative_wiki_path
+                && !referenced_directories.contains(entry.path())
+        }
+    });
 
     // Stop traversing once the remaining error budget is exhausted.
     let mut errors = Vec::<Error>::new();
