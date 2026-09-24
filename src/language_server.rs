@@ -1218,10 +1218,16 @@ fn filesystem_rename_edits(
 // Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
 // trailing `/`, and escape any link delimiters.
 fn render_link_path(old_source: &str, path: &Path) -> String {
-    // Join the components with the separator that links use on every platform.
+    // Join the components with the separator that links use on every platform. Both the new path
+    // and any suffix below a renamed directory come from UTF-8 text.
     let mut rendered = path
         .components()
-        .map(|component| component.as_os_str().to_string_lossy())
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("link paths should come from UTF-8 text")
+        })
         .collect::<Vec<_>>()
         .join("/");
 
