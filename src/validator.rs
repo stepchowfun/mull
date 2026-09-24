@@ -190,17 +190,23 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    let message = if error.kind() == std::io::ErrorKind::NotFound {
-                        format!("{} not found.", path.code_path())
+                    // A missing target needs no further explanation, but any other failure keeps
+                    // its underlying cause.
+                    errors.push(if error.kind() == std::io::ErrorKind::NotFound {
+                        Error::new(
+                            &format!("{} not found.", path.code_path()),
+                            Some(wiki_path),
+                            Some((source_contents, source_range)),
+                            None,
+                        )
                     } else {
-                        format!("Unable to access {}.", path.code_path())
-                    };
-                    errors.push(Error::new(
-                        &message,
-                        Some(wiki_path),
-                        Some((source_contents, source_range)),
-                        Some(Rc::new(error)),
-                    ));
+                        Error::new(
+                            &format!("Unable to access {}.", path.code_path()),
+                            Some(wiki_path),
+                            Some((source_contents, source_range)),
+                            Some(Rc::new(error)),
+                        )
+                    });
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;
                     }
@@ -599,6 +605,7 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
         assert!(errors[0].to_string().contains("`missing.txt` not found."));
+        assert!(errors[0].reason().is_none());
         assert!(
             errors[1..]
                 .iter()
