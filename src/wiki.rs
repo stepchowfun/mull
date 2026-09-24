@@ -91,10 +91,11 @@ impl TextNode {
         content.push_str(&render_markdown_prose(&self.content[copied_through..]));
 
         // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
+        let title = render_markdown_literal(&self.title);
         if content.is_empty() {
-            format!("{TITLE_PREFIX}{}", self.title)
+            format!("{TITLE_PREFIX}{title}")
         } else {
-            format!("{TITLE_PREFIX}{}\n\n{content}", self.title)
+            format!("{TITLE_PREFIX}{title}\n\n{content}")
         }
     }
 }
@@ -104,13 +105,12 @@ fn render_markdown_prose(source: &str) -> String {
     source.replace("\\[", "&#91;").replace("\\]", "&#93;")
 }
 
-// Render a text link as ordinary bracketed text with an optional Markdown destination.
-fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
-    // Keep Markdown punctuation in node titles from changing the rendered label.
-    let target = target.replace("\\[", "[").replace("\\]", "]");
-    let mut label = String::new();
-    for character in target.chars() {
-        label.push_str(match character {
+// Render plain text literally in Markdown by replacing its syntax characters with entities. This
+// includes `#`, since a trailing sequence of them would otherwise close a heading.
+fn render_markdown_literal(text: &str) -> String {
+    let mut rendered = String::new();
+    for character in text.chars() {
+        rendered.push_str(match character {
             '&' => "&amp;",
             '<' => "&lt;",
             '>' => "&gt;",
@@ -121,15 +121,24 @@ fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
             '[' => "&#91;",
             ']' => "&#93;",
             '~' => "&#126;",
+            '#' => "&#35;",
             _ => {
-                label.push(character);
+                rendered.push(character);
                 continue;
             }
         });
     }
+    rendered
+}
 
-    // Retain the visible Mull delimiters inside the clickable region.
-    let label = format!("&#91;{label}&#93;");
+// Render a text link as ordinary bracketed text with an optional Markdown destination.
+fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
+    // Keep Markdown punctuation in node titles from changing the rendered label, and retain the
+    // visible Mull delimiters inside the clickable region.
+    let label = format!(
+        "&#91;{}&#93;",
+        render_markdown_literal(&target.replace("\\[", "[").replace("\\]", "]")),
+    );
     match url {
         Some(url) => format!("[{label}]({url})"),
         None => label,
@@ -251,6 +260,24 @@ mod tests {
                 "# Greeting\n\nLiteral &#91;brackets&#93; and ",
                 "[&#91;Home&#93;](command:mull.revealRange?destination).",
             ),
+        );
+    }
+
+    // Render titles literally rather than as Markdown syntax.
+    #[test]
+    fn node_markdown_title() {
+        let node = TextNode {
+            title: "A*B* [C](d) <e> #".to_owned(),
+            content: String::new(),
+            links: Vec::new(),
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+        };
+
+        assert_eq!(
+            node.to_markdown(|_title| None),
+            "# A&#42;B&#42; &#91;C&#93;(d) &lt;e&gt; &#35;",
         );
     }
 
