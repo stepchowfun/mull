@@ -23,17 +23,18 @@ use tower_lsp_server::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
         CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
         CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic,
-        DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+        DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
         DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
-        DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-        Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
-        InitializeResult, InitializedParams, Location, LocationLink, MarkupContent, MarkupKind,
-        MessageType, OneOf, Position, PositionEncodingKind, PrepareRenameResponse, Range,
-        ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
-        WorkspaceEdit,
+        DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher, GlobPattern,
+        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf, Position,
+        PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, Registration,
+        RenameOptions, RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
@@ -79,6 +80,7 @@ struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Uri, OpenDocument>>>,
     supports_hierarchical_document_symbols: AtomicBool,
+    supports_watched_file_registration: AtomicBool,
 }
 
 impl Backend {
@@ -88,6 +90,7 @@ impl Backend {
             client,
             documents: Arc::new(Mutex::new(HashMap::new())),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
+            supports_watched_file_registration: AtomicBool::new(false),
         }
     }
 
@@ -181,6 +184,25 @@ impl Backend {
         }
     }
 
+    // Recheck open documents after filesystem changes, which their filesystem links may reflect.
+    // Documents whose own files changed are skipped, since editor synchronization covers them.
+    fn recheck_open_documents(&self, changed_uris: &[&Uri]) {
+        // Copy the snapshots before scheduling, without retaining the lock across that operation.
+        let snapshots = self
+            .documents
+            .lock()
+            .expect("the open-document mutex should not be poisoned")
+            .iter()
+            .filter(|(uri, _document)| !changed_uris.contains(uri))
+            .map(|(uri, document)| (uri.clone(), document.contents.clone(), document.version))
+            .collect::<Vec<_>>();
+
+        // Debounce the checks, since a single operation can change many files in quick succession.
+        for (uri, contents, version) in snapshots {
+            self.store_and_check_document(uri, contents, version, CHECK_DELAY);
+        }
+    }
+
     // Copy the current editor snapshot for a language feature request.
     fn document_contents(&self, uri: &Uri) -> Option<String> {
         self.documents
@@ -207,6 +229,18 @@ impl LanguageServer for Backend {
                 .as_ref()
                 .and_then(|capabilities| capabilities.document_symbol.as_ref())
                 .and_then(|capabilities| capabilities.hierarchical_document_symbol_support)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+
+        // Remember whether the client can watch files on the server's behalf.
+        self.supports_watched_file_registration.store(
+            params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|capabilities| capabilities.did_change_watched_files.as_ref())
+                .and_then(|capabilities| capabilities.dynamic_registration)
                 .unwrap_or(false),
             Ordering::Relaxed,
         );
@@ -259,6 +293,35 @@ impl LanguageServer for Backend {
                 ),
             )
             .await;
+
+        // Ask the client to report filesystem changes, which can invalidate filesystem links.
+        if self
+            .supports_watched_file_registration
+            .load(Ordering::Relaxed)
+            && let Err(error) = self
+                .client
+                .register_capability(vec![Registration {
+                    id: "mull-watched-files".to_owned(),
+                    method: "workspace/didChangeWatchedFiles".to_owned(),
+                    register_options: serde_json::to_value(
+                        DidChangeWatchedFilesRegistrationOptions {
+                            watchers: vec![FileSystemWatcher {
+                                glob_pattern: GlobPattern::String("**/*".to_owned()),
+                                kind: None,
+                            }],
+                        },
+                    )
+                    .ok(),
+                }])
+                .await
+        {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("Mull was unable to watch for filesystem changes: {error}."),
+                )
+                .await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -294,6 +357,17 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         // Recheck the saved document immediately, adopting any contents the client included.
         self.recheck_saved_document(params.text_document.uri, params.text);
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        // Recheck open documents against the changed filesystem.
+        self.recheck_open_documents(
+            &params
+                .changes
+                .iter()
+                .map(|change| &change.uri)
+                .collect::<Vec<_>>(),
+        );
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
