@@ -316,7 +316,7 @@ fn parse_content(
                 };
 
                 // Copy the prose before the link, then the link in its formatted form.
-                push_normalized(&mut content, &original_content[copied_through..inner_start]);
+                content.push_str(&original_content[copied_through..inner_start]);
                 content.push_str(&formatted_target);
                 content.push(']');
                 copied_through = index + character.len_utf8();
@@ -339,9 +339,10 @@ fn parse_content(
         ));
     }
 
-    // Retain the content following the final link.
-    push_normalized(&mut content, &original_content[copied_through..]);
-    (content, links, errors)
+    // Retain the content following the final link, then normalize the finished content. Links
+    // cannot contain line breaks, and each ends with a delimiter, so normalizing never changes one.
+    content.push_str(&original_content[copied_through..]);
+    (normalize_lines(&content), links, errors)
 }
 
 // Format the trimmed target of a parsed link. A text link's target is kept as written, while a
@@ -459,9 +460,13 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
         .collect())
 }
 
-// Append source text while normalizing Windows line endings to the wiki's canonical form.
-fn push_normalized(target: &mut String, source: &str) {
-    target.push_str(&source.replace("\r\n", "\n"));
+// Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
+// line.
+fn normalize_lines(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
@@ -646,6 +651,19 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 "file:./spaced.txt] [",
                 "dir:images]",
             ),
+        );
+    }
+
+    // Remove whitespace at the end of each line, including after a link and on blank lines.
+    #[test]
+    fn trailing_whitespace() {
+        let wiki =
+            parse_test("# Home\r\nFirst  \t\r\n   \nSee [Home]  \nand [Home] later.\t\nLast")
+                .unwrap();
+
+        assert_eq!(
+            wiki.text_nodes["Home"].content,
+            "First\n\nSee [Home]\nand [Home] later.\nLast",
         );
     }
 
