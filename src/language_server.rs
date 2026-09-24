@@ -3,11 +3,11 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     format::CodePath,
-    parser::{self, normalize_filesystem_path},
+    parser::{self, normalize_filesystem_path, render_link_path},
     path_util::relative_path,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki, escape_link_delimiters, render_link_path, unescape_link_delimiters,
+        TextNode, Wiki, escape_link_delimiters, unescape_link_delimiters,
     },
     wiki_tree::wiki_tree_walker,
 };
@@ -3128,7 +3128,7 @@ mod tests {
             (
                 concat!(
                     "# Home\n\n[",
-                    "dir:photos/] [",
+                    "dir:photos] [",
                     "dir:./photos/raw] [",
                     "file:photos/photo.jpg] [",
                     "file:images.txt]",
