@@ -32,47 +32,6 @@ pub enum Link {
     },
 }
 
-// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
-pub fn escape_link_delimiters(text: &str) -> String {
-    text.replace('[', "\\[").replace(']', "\\]")
-}
-
-// Decode escaped delimiters in link text, as the parser does.
-pub fn unescape_link_delimiters(source: &str) -> String {
-    source.replace("\\[", "[").replace("\\]", "]")
-}
-
-// Write a normalized filesystem link path in the style of the path it replaces, keeping a leading
-// `./` or a trailing `/`, and escape any link delimiters. An empty path, which denotes the wiki
-// directory, is written as `.`.
-pub fn render_link_path(old_source: &str, path: &Path) -> String {
-    // Join the components with the separator that links use on every platform. Link paths come
-    // from UTF-8 text.
-    let mut rendered = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("link paths should come from UTF-8 text")
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    // Keep the replaced path's leading `./` and trailing `/`, writing the wiki directory as `.`.
-    if rendered.is_empty() {
-        rendered.push('.');
-    } else if old_source.starts_with("./") {
-        rendered.insert_str(0, "./");
-    }
-    if old_source.len() > 1 && old_source.ends_with('/') {
-        rendered.push('/');
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
-}
-
 // This struct represents a text node in a wiki.
 #[derive(Clone, Debug)]
 pub struct TextNode {
@@ -145,6 +104,84 @@ impl TextNode {
     }
 }
 
+// Render nodes in the wiki's heading-and-content format.
+impl fmt::Display for TextNode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Omit the content separator when there is no content.
+        if self.content.is_empty() {
+            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
+        } else {
+            writeln!(
+                formatter,
+                "{TITLE_PREFIX}{}\n\n{}",
+                self.title,
+                self.content,
+            )
+        }
+    }
+}
+
+// Render nodes deterministically in depth order with titles breaking ties.
+impl fmt::Display for Wiki {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
+        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
+        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
+
+        // Add one line break between nodes because each node already ends with one.
+        for (index, (_title, node)) in nodes.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
+            write!(formatter, "{node}")?;
+        }
+
+        // Rendering succeeded.
+        Ok(())
+    }
+}
+
+// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
+pub fn escape_link_delimiters(text: &str) -> String {
+    text.replace('[', "\\[").replace(']', "\\]")
+}
+
+// Decode escaped delimiters in link text, as the parser does.
+pub fn unescape_link_delimiters(source: &str) -> String {
+    source.replace("\\[", "[").replace("\\]", "]")
+}
+
+// Write a normalized filesystem link path in the style of the path it replaces, keeping a leading
+// `./` or a trailing `/`, and escape any link delimiters. An empty path, which denotes the wiki
+// directory, is written as `.`.
+pub fn render_link_path(old_source: &str, path: &Path) -> String {
+    // Join the components with the separator that links use on every platform. Link paths come
+    // from UTF-8 text.
+    let mut rendered = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("link paths should come from UTF-8 text")
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Keep the replaced path's leading `./` and trailing `/`, writing the wiki directory as `.`.
+    if rendered.is_empty() {
+        rendered.push('.');
+    } else if old_source.starts_with("./") {
+        rendered.insert_str(0, "./");
+    }
+    if old_source.len() > 1 && old_source.ends_with('/') {
+        rendered.push('/');
+    }
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
+}
+
 // Hide Mull delimiter escapes in prose while preserving any intentional Markdown formatting.
 fn render_markdown_prose(source: &str) -> String {
     source.replace("\\[", "&#91;").replace("\\]", "&#93;")
@@ -203,43 +240,6 @@ fn render_markdown_filesystem_link(target: &str) -> String {
 
     // The surrounding brackets keep the content distinct from either side of the fence.
     format!("{fence}{source}{fence}")
-}
-
-// Render nodes in the wiki's heading-and-content format.
-impl fmt::Display for TextNode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Omit the content separator when there is no content.
-        if self.content.is_empty() {
-            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
-        } else {
-            writeln!(
-                formatter,
-                "{TITLE_PREFIX}{}\n\n{}",
-                self.title,
-                self.content,
-            )
-        }
-    }
-}
-
-// Render nodes deterministically in depth order with titles breaking ties.
-impl fmt::Display for Wiki {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
-        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
-
-        // Add one line break between nodes because each node already ends with one.
-        for (index, (_title, node)) in nodes.into_iter().enumerate() {
-            if index > 0 {
-                writeln!(formatter)?;
-            }
-            write!(formatter, "{node}")?;
-        }
-
-        // Rendering succeeded.
-        Ok(())
-    }
 }
 
 #[cfg(test)]
