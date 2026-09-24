@@ -7,7 +7,7 @@ use crate::{
     path_util::relative_path,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki,
+        TextNode, Wiki, escape_link_delimiters, render_link_path, unescape_link_delimiters,
     },
     wiki_tree::wiki_tree_walker,
 };
@@ -1533,34 +1533,6 @@ fn filesystem_rename_edits(
     edits
 }
 
-// Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
-// trailing `/`, and escape any link delimiters.
-fn render_link_path(old_source: &str, path: &Path) -> String {
-    // Join the components with the separator that links use on every platform. Both the new path
-    // and any suffix below a renamed directory come from UTF-8 text.
-    let mut rendered = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("link paths should come from UTF-8 text")
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    // Keep the replaced path's leading `./` and trailing `/`.
-    if old_source.starts_with("./") {
-        rendered.insert_str(0, "./");
-    }
-    if old_source.len() > 1 && old_source.ends_with('/') {
-        rendered.push('/');
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
-}
-
 // Find the outermost directory that moving a node out of it would leave containing nothing but
 // empty directories. A directory is kept if it will contain the new path or a directory link names
 // it, and the search never reaches the wiki directory itself.
@@ -1862,16 +1834,6 @@ fn reveal_range_command_url(
             NON_ALPHANUMERIC,
         ),
     ))
-}
-
-// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
-fn escape_link_delimiters(title: &str) -> String {
-    title.replace('[', "\\[").replace(']', "\\]")
-}
-
-// Decode escaped delimiters in link text, as the parser does.
-fn unescape_link_delimiters(source: &str) -> String {
-    source.replace("\\[", "[").replace("\\]", "]")
 }
 
 // Convert a structured Mull error into the representation expected by language clients.

@@ -1,5 +1,9 @@
 use crate::error::SourceRange;
-use std::{collections::HashMap, fmt, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 // These strings define the wiki format's extension and structural markers.
 pub const WIKI_EXTENSION: &str = "mull";
@@ -26,6 +30,47 @@ pub enum Link {
         path: PathBuf,
         source_range: SourceRange,
     },
+}
+
+// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
+pub fn escape_link_delimiters(text: &str) -> String {
+    text.replace('[', "\\[").replace(']', "\\]")
+}
+
+// Decode escaped delimiters in link text, as the parser does.
+pub fn unescape_link_delimiters(source: &str) -> String {
+    source.replace("\\[", "[").replace("\\]", "]")
+}
+
+// Write a normalized filesystem link path in the style of the path it replaces, keeping a leading
+// `./` or a trailing `/`, and escape any link delimiters. An empty path, which denotes the wiki
+// directory, is written as `.`.
+pub fn render_link_path(old_source: &str, path: &Path) -> String {
+    // Join the components with the separator that links use on every platform. Link paths come
+    // from UTF-8 text.
+    let mut rendered = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("link paths should come from UTF-8 text")
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Keep the replaced path's leading `./` and trailing `/`, writing the wiki directory as `.`.
+    if rendered.is_empty() {
+        rendered.push('.');
+    } else if old_source.starts_with("./") {
+        rendered.insert_str(0, "./");
+    }
+    if old_source.len() > 1 && old_source.ends_with('/') {
+        rendered.push('/');
+    }
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
 }
 
 // This struct represents a text node in a wiki.
@@ -137,7 +182,7 @@ fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
     // visible Mull delimiters inside the clickable region.
     let label = format!(
         "&#91;{}&#93;",
-        render_markdown_literal(&target.replace("\\[", "[").replace("\\]", "]")),
+        render_markdown_literal(&unescape_link_delimiters(target)),
     );
     match url {
         Some(url) => format!("[{label}]({url})"),
@@ -148,8 +193,7 @@ fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
 // Render a filesystem link as inline code without exposing Mull delimiter escapes.
 fn render_markdown_filesystem_link(target: &str) -> String {
     // Use a fence longer than every backtick run occurring in the link text.
-    let target = target.replace("\\[", "[").replace("\\]", "]");
-    let source = format!("[{target}]");
+    let source = format!("[{}]", unescape_link_delimiters(target));
     let longest_run = source
         .split(|character| character != '`')
         .map(str::len)

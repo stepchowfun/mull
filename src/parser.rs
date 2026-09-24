@@ -4,6 +4,7 @@ use crate::{
     scoring::populate_depths,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
+        render_link_path, unescape_link_delimiters,
     },
 };
 use std::path::{Component, Path, PathBuf};
@@ -297,17 +298,26 @@ fn parse_content(
                     start: source_range.start + start,
                     end: source_range.start + index + character.len_utf8(),
                 };
-                match parse_link(
+                let formatted_target = match parse_link(
                     trimmed_target,
                     source_path,
                     source_contents,
                     link_source_range,
                 ) {
-                    Ok(link) => links.push(link),
-                    Err(error) => errors.push(error),
-                }
+                    Ok(link) => {
+                        let formatted_target = format_link_target(trimmed_target, &link);
+                        links.push(link);
+                        formatted_target
+                    }
+                    Err(error) => {
+                        errors.push(error);
+                        trimmed_target.to_owned()
+                    }
+                };
+
+                // Copy the prose before the link, then the link in its formatted form.
                 push_normalized(&mut content, &original_content[copied_through..inner_start]);
-                content.push_str(trimmed_target);
+                content.push_str(&formatted_target);
                 content.push(']');
                 copied_through = index + character.len_utf8();
             }
@@ -334,6 +344,21 @@ fn parse_content(
     (content, links, errors)
 }
 
+// Format the trimmed target of a parsed link. A text link's target is kept as written, while a
+// filesystem link's path is written in its normalized form, keeping a leading `./` or a trailing
+// `/`.
+fn format_link_target(trimmed_target: &str, link: &Link) -> String {
+    let (prefix, path) = match link {
+        Link::Text { .. } => return trimmed_target.to_owned(),
+        Link::File { path, .. } => (FILE_LINK_PREFIX, path),
+        Link::Directory { path, .. } => (DIRECTORY_LINK_PREFIX, path),
+    };
+    let path_source = trimmed_target
+        .strip_prefix(prefix)
+        .expect("a parsed filesystem link should start with its prefix");
+    format!("{prefix}{}", render_link_path(path_source, path))
+}
+
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
@@ -342,7 +367,7 @@ fn parse_link(
     source_range: SourceRange,
 ) -> Result<Link, Error> {
     // Unescape delimiters before converting the target into its semantic link type.
-    let target = target.replace("\\[", "[").replace("\\]", "]");
+    let target = unescape_link_delimiters(target);
     if let Some(path) = target.strip_prefix(FILE_LINK_PREFIX) {
         parse_filesystem_path(path, source_path, source_contents, source_range)
             .map(|path| Link::File { path, source_range })
@@ -570,6 +595,37 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 format!("dir:{}", PathBuf::from("images").join("raw").display()),
                 "dir:".to_owned(),
             ],
+        );
+    }
+
+    // Format links by trimming their targets and normalizing filesystem paths, keeping a leading
+    // `./` or a trailing `/` and writing the wiki directory as `.`.
+    #[test]
+    fn formatted_links() {
+        let wiki = parse_test(concat!(
+            "# Home\n[ Home ] [ ",
+            "file:./a//b/./c\\[1\\].txt ] [",
+            "dir:images/] [",
+            "dir:./images/./raw/] [",
+            "dir:.] [",
+            "dir:./] [",
+            "dir:././] [ ",
+            "file:notes.txt ]",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            wiki.text_nodes["Home"].content,
+            concat!(
+                "[Home] [",
+                "file:./a/b/c\\[1\\].txt] [",
+                "dir:images/] [",
+                "dir:./images/raw/] [",
+                "dir:.] [",
+                "dir:./] [",
+                "dir:./] [",
+                "file:notes.txt]",
+            ),
         );
     }
 
