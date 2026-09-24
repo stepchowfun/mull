@@ -78,8 +78,39 @@
       ]
     },
     "links": {
-      "name": "meta.link.mull",
-      "contentName": "string.other.link.mull",
+      "patterns": [
+        {
+          "include": "#filesystem-links"
+        },
+        {
+          "include": "#text-links"
+        }
+      ]
+    },
+    "filesystem-links": {
+      "name": "meta.link.filesystem.mull",
+      "contentName": "markup.underline.link.path.mull",
+      "begin": "(?<!\\\\)\\[(?=[ \\t]*/)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.link.begin.mull"
+        }
+      },
+      "end": "(?<!\\\\)\\]|$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.link.end.mull"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#link-contents"
+        }
+      ]
+    },
+    "text-links": {
+      "name": "meta.link.text.mull",
+      "contentName": "string.other.link.title.mull",
       "begin": "(?<!\\\\)\\[",
       "beginCaptures": {
         "0": {
@@ -94,13 +125,12 @@
       },
       "patterns": [
         {
-          "match": "(?<=\\[)([ \\t]*)(/)",
-          "captures": {
-            "2": {
-              "name": "keyword.other.link-kind.mull"
-            }
-          }
-        },
+          "include": "#link-contents"
+        }
+      ]
+    },
+    "link-contents": {
+      "patterns": [
         {
           "name": "constant.character.escape.mull",
           "match": "\\\\[\\[\\]]"
