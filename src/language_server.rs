@@ -1216,20 +1216,25 @@ fn filesystem_rename_edits(
 }
 
 // Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
-// trailing `/`, and escape any link delimiters in its components.
+// trailing `/`, and escape any link delimiters.
 fn render_link_path(old_source: &str, path: &Path) -> String {
-    let components = path
+    // Join the components with the separator that links use on every platform.
+    let mut rendered = path
         .components()
-        .map(|component| escape_link_delimiters(&component.as_os_str().to_string_lossy()))
-        .collect::<Vec<_>>();
-    let mut rendered = components.join("/");
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Keep the replaced path's leading `./` and trailing `/`.
     if old_source.starts_with("./") {
         rendered.insert_str(0, "./");
     }
     if old_source.len() > 1 && old_source.ends_with('/') {
         rendered.push('/');
     }
-    rendered
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
