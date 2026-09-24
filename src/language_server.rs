@@ -778,7 +778,9 @@ fn prepare_rename_for_document(
 ) -> std::result::Result<Option<PrepareRenameResponse>, String> {
     // Select only the path of a filesystem link and seed the rename prompt with its decoded text
     // as written.
-    if let Some(entry) = renamable_entry_at(uri, source_contents, cursor, supports_file_renames)? {
+    if let Some(entry) =
+        renamable_filesystem_entry_at(uri, source_contents, cursor, supports_file_renames)?
+    {
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: lsp_range(source_contents, entry.path_source_range),
             placeholder: unescape_link_delimiters(
@@ -898,13 +900,14 @@ fn rename_filesystem_entry_for_document(
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Find the renamable entry at the cursor, leaving every other position to text node renaming.
-    let Some(RenamableEntry {
+    let Some(RenamableFilesystemEntry {
         wiki,
         wiki_directory,
         old_path,
         is_directory,
         ..
-    }) = renamable_entry_at(uri, source_contents, cursor, file_operation_support.rename)?
+    }) =
+        renamable_filesystem_entry_at(uri, source_contents, cursor, file_operation_support.rename)?
     else {
         return Ok(None);
     };
@@ -993,7 +996,7 @@ fn rename_filesystem_entry_for_document(
 
 // This describes the entry behind the filesystem link at the cursor, once it is known to be
 // renamable regardless of its new name.
-struct RenamableEntry {
+struct RenamableFilesystemEntry {
     wiki: Wiki,
     wiki_directory: PathBuf,
     path_source_range: SourceRange,
@@ -1003,12 +1006,12 @@ struct RenamableEntry {
 
 // Find the entry behind the filesystem link at the cursor and check whether it can be renamed at
 // all. Every other position yields no entry, leaving it to text node renaming.
-fn renamable_entry_at(
+fn renamable_filesystem_entry_at(
     uri: &Uri,
     source_contents: &str,
     cursor: Position,
     supports_file_renames: bool,
-) -> std::result::Result<Option<RenamableEntry>, String> {
+) -> std::result::Result<Option<RenamableFilesystemEntry>, String> {
     // Resolve the filesystem link at the cursor and the path within it.
     let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
         return Ok(None);
@@ -1053,7 +1056,7 @@ fn renamable_entry_at(
         return Err("The wiki cannot be renamed through one of its own links.".to_owned());
     }
 
-    Ok(Some(RenamableEntry {
+    Ok(Some(RenamableFilesystemEntry {
         wiki,
         wiki_directory: wiki_directory.to_owned(),
         path_source_range,
