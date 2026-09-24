@@ -983,23 +983,25 @@ fn rename_filesystem_link_for_document(
         })),
     ];
 
-    // Finally, delete the directories the rename leaves empty, innermost first.
-    if file_operation_support.delete {
-        operations.extend(
-            directories_emptied_by_rename(&wiki, wiki_directory, old_path, &new_path)
-                .into_iter()
-                .filter_map(|directory| Uri::from_file_path(wiki_directory.join(directory)))
-                .map(|uri| {
-                    DocumentChangeOperation::Op(ResourceOp::Delete(DeleteFile {
-                        uri,
-                        options: Some(DeleteFileOptions {
-                            recursive: Some(false),
-                            ignore_if_not_exists: Some(true),
-                        }),
-                        annotation_id: None,
-                    }))
+    // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
+    // before performing any of them, so a nested empty directory would block deleting its parent.
+    // Instead, one recursive deletion removes the outermost directory, which contains only empty
+    // directories once the entry has moved.
+    if file_operation_support.delete
+        && let Some(directory) =
+            outermost_directory_emptied_by_rename(&wiki, wiki_directory, old_path, &new_path)
+        && let Some(uri) = Uri::from_file_path(wiki_directory.join(directory))
+    {
+        operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
+            DeleteFile {
+                uri,
+                options: Some(DeleteFileOptions {
+                    recursive: Some(true),
+                    ignore_if_not_exists: Some(true),
                 }),
-        );
+                annotation_id: None,
+            },
+        )));
     }
     Ok(Some(WorkspaceEdit {
         document_changes: Some(DocumentChanges::Operations(operations)),
@@ -1048,15 +1050,15 @@ fn check_filesystem_rename(
     Ok(())
 }
 
-// Find the directories, innermost first, that moving an entry out of them would leave empty. A
-// directory is kept if it will contain the new path or a directory link names it, and the search
-// never reaches the wiki directory itself.
-fn directories_emptied_by_rename(
+// Find the outermost directory that moving an entry out of it would leave containing nothing but
+// empty directories. A directory is kept if it will contain the new path or a directory link names
+// it, and the search never reaches the wiki directory itself.
+fn outermost_directory_emptied_by_rename(
     wiki: &Wiki,
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
-) -> Vec<PathBuf> {
+) -> Option<PathBuf> {
     // Collect the directories that links name, which must survive the rename.
     let linked_directories = wiki
         .text_nodes
@@ -1069,7 +1071,7 @@ fn directories_emptied_by_rename(
         .collect::<HashSet<_>>();
 
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
-    let mut emptied_directories = Vec::new();
+    let mut emptied_directory = None;
     let mut removed_entry = old_path;
     while let Some(directory) = removed_entry
         .parent()
@@ -1089,10 +1091,10 @@ fn directories_emptied_by_rename(
         if !contains_only_removed_entry {
             break;
         }
-        emptied_directories.push(directory.to_owned());
+        emptied_directory = Some(directory.to_owned());
         removed_entry = directory;
     }
-    emptied_directories
+    emptied_directory
 }
 
 // Rewrite the path of every link to a renamed entry. Renaming a directory also moves everything
@@ -2716,7 +2718,7 @@ mod tests {
             applied.replace_range(start..end, &edit.new_text);
         }
 
-        // Require any remaining operations to delete directories without deleting their contents.
+        // Require any remaining operations to delete directories along with the empty ones inside.
         let deleted_uris = deletions
             .iter()
             .map(|operation| {
@@ -2728,7 +2730,7 @@ mod tests {
                         .options
                         .as_ref()
                         .and_then(|options| options.recursive),
-                    Some(false),
+                    Some(true),
                 );
                 deletion.uri.clone()
             })
@@ -2883,8 +2885,9 @@ mod tests {
         );
     }
 
-    // Leave missing directories to the client, and delete the directories a rename leaves empty
-    // unless they will contain the new path or a directory link names them.
+    // Leave missing directories to the client, and delete the outermost directory a rename leaves
+    // containing only empty directories, keeping any which will contain the new path or which a
+    // directory link names.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = concat!(
@@ -2919,10 +2922,11 @@ mod tests {
         };
         let directory_uri = |path| Uri::from_file_path(directory.join(path)).unwrap();
 
-        // Delete every directory left empty, innermost first, even when creating new ones.
+        // Delete the outermost directory left empty with a single operation, even when creating
+        // new directories, since clients may validate every deletion before performing any.
         assert_eq!(
             deleted_uris(2, "new/photos/photo.jpg", ALL_FILE_OPERATIONS),
-            vec![directory_uri("a/b"), directory_uri("a")],
+            vec![directory_uri("a")],
         );
 
         // Keep a directory which still contains another entry or will contain the new path.
