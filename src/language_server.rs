@@ -7,7 +7,7 @@ use crate::{
     path_util::relative_path,
     wiki::{
         DIRECTORY_LINK_PREFIX, FILE_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki,
+        TextNode, Wiki, escape_link_delimiters, render_link_path, unescape_link_delimiters,
     },
     wiki_tree::wiki_tree_walker,
 };
@@ -1215,11 +1215,15 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
         }
     }
 
-    // Require a filesystem prefix after any leading whitespace, since the parser trims targets.
+    // Require a filesystem prefix after any leading whitespace, and ignore any whitespace after it,
+    // since the parser trims both.
     let target = source_contents[opening_delimiter? + '['.len_utf8()..cursor].trim_start();
     let (is_directory_link, typed_path) = match target.strip_prefix(FILE_LINK_PREFIX) {
-        Some(typed_path) => (false, typed_path),
-        None => (true, target.strip_prefix(DIRECTORY_LINK_PREFIX)?),
+        Some(typed_path) => (false, typed_path.trim_start()),
+        None => (
+            true,
+            target.strip_prefix(DIRECTORY_LINK_PREFIX)?.trim_start(),
+        ),
     };
 
     // Resolve the typed directory, declining paths which escape the wiki tree
@@ -1533,34 +1537,6 @@ fn filesystem_rename_edits(
     edits
 }
 
-// Write a normalized link path in the style of the path it replaces, keeping a leading `./` or a
-// trailing `/`, and escape any link delimiters.
-fn render_link_path(old_source: &str, path: &Path) -> String {
-    // Join the components with the separator that links use on every platform. Both the new path
-    // and any suffix below a renamed directory come from UTF-8 text.
-    let mut rendered = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("link paths should come from UTF-8 text")
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    // Keep the replaced path's leading `./` and trailing `/`.
-    if old_source.starts_with("./") {
-        rendered.insert_str(0, "./");
-    }
-    if old_source.len() > 1 && old_source.ends_with('/') {
-        rendered.push('/');
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
-}
-
 // Find the outermost directory that moving a node out of it would leave containing nothing but
 // empty directories. A directory is kept if it will contain the new path or a directory link names
 // it, and the search never reaches the wiki directory itself.
@@ -1713,7 +1689,8 @@ fn filesystem_link_path_source_range(
     source_contents: &str,
     source_range: SourceRange,
 ) -> SourceRange {
-    // Trim the link's inner text as the parser does, then skip the filesystem-link prefix.
+    // Trim the link's inner text as the parser does, then skip the filesystem-link prefix and any
+    // whitespace after it.
     let target_source_range = text_link_target_source_range(source_contents, source_range)
         .expect("a parsed link should be delimited by square brackets");
     let target = &source_contents[target_source_range.start..target_source_range.end];
@@ -1721,7 +1698,8 @@ fn filesystem_link_path_source_range(
     let path = trimmed_target
         .strip_prefix(FILE_LINK_PREFIX)
         .or_else(|| trimmed_target.strip_prefix(DIRECTORY_LINK_PREFIX))
-        .expect("a parsed filesystem link should start with a filesystem-link prefix");
+        .expect("a parsed filesystem link should start with a filesystem-link prefix")
+        .trim_start();
     let start = target_source_range.start
         + (target.len() - target.trim_start().len())
         + (trimmed_target.len() - path.len());
@@ -1862,16 +1840,6 @@ fn reveal_range_command_url(
             NON_ALPHANUMERIC,
         ),
     ))
-}
-
-// Escape delimiters so an arbitrary node title or path retains its meaning inside a link.
-fn escape_link_delimiters(title: &str) -> String {
-    title.replace('[', "\\[").replace(']', "\\]")
-}
-
-// Decode escaped delimiters in link text, as the parser does.
-fn unescape_link_delimiters(source: &str) -> String {
-    source.replace("\\[", "[").replace("\\]", "]")
 }
 
 // Convert a structured Mull error into the representation expected by language clients.
@@ -2315,6 +2283,25 @@ mod tests {
                 .as_ref()
                 .map(|command| command.command.as_str()),
             Some("editor.action.triggerSuggest"),
+        );
+    }
+
+    // Ignore whitespace after a filesystem-link prefix, which is not part of the path.
+    #[test]
+    fn completions_ignore_whitespace_after_prefix() {
+        let source = concat!("# Home\n\n[", "file: no");
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&uri, source, Position::new(2, 9)).unwrap();
+
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "notes.txt",
+                Range::new(Position::new(2, 7), Position::new(2, 9)),
+                "notes.txt]",
+            )],
         );
     }
 
@@ -2914,7 +2901,7 @@ mod tests {
     // Prepare to rename a filesystem link by selecting its decoded path as written.
     #[test]
     fn rename_preparation_selects_filesystem_paths() {
-        let source = concat!("# Home\n\n[ ", "file:./a\\[1\\].txt ]");
+        let source = concat!("# Home\n\n[ ", "file: ./a\\[1\\].txt ]");
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().parent().unwrap().join("a[1].txt"), "a").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -2924,7 +2911,7 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 7), Position::new(2, 19)),
+                range: Range::new(Position::new(2, 8), Position::new(2, 20)),
                 placeholder: "./a[1].txt".to_owned(),
             },
         );
