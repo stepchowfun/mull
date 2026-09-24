@@ -953,20 +953,16 @@ fn code_action_for_document(
 }
 
 // This describes the path of a filesystem link being authored at the cursor.
-struct FilesystemLinkContext<'a> {
+struct FilesystemLinkContext {
     is_directory_link: bool,
-    typed_directory: &'a str, // The typed path through its last `/`, as written in the source
-    directory: PathBuf,       // The normalized directory named by `typed_directory`
-    path_start: usize,
+    directory: PathBuf, // The normalized directory named by the typed path through its last `/`
+    segment_start: usize, // The start of the path component after that `/`
     cursor: usize,
     closing_delimiter: Option<usize>,
 }
 
 // Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
-fn filesystem_link_context(
-    source_contents: &str,
-    cursor: usize,
-) -> Option<FilesystemLinkContext<'_>> {
+fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<FilesystemLinkContext> {
     // Confine the search to the cursor's line, since links cannot contain line breaks.
     let line_start = source_contents[..cursor]
         .rfind('\n')
@@ -1029,9 +1025,8 @@ fn filesystem_link_context(
 
     Some(FilesystemLinkContext {
         is_directory_link,
-        typed_directory,
         directory,
-        path_start: cursor - typed_path.len(),
+        segment_start: cursor - (typed_path.len() - typed_directory.len()),
         cursor,
         closing_delimiter,
     })
@@ -1041,7 +1036,7 @@ fn filesystem_link_context(
 fn filesystem_link_completions(
     wiki_path: &Path,
     source_contents: &str,
-    context: &FilesystemLinkContext<'_>,
+    context: &FilesystemLinkContext,
 ) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
     let wiki_directory = wiki_path
@@ -1077,16 +1072,12 @@ fn filesystem_link_completions(
         }
 
         // Leave a directory's link open for its children, and close a file's link.
-        let completed_path = format!(
-            "{}{}",
-            context.typed_directory,
-            escape_link_delimiters(name),
-        );
+        let escaped_name = escape_link_delimiters(name);
         let (label, kind, new_text, replacement_end, command) = if file_type.is_dir() {
             (
                 format!("{name}/"),
                 CompletionItemKind::FOLDER,
-                format!("{completed_path}/"),
+                format!("{escaped_name}/"),
                 context.closing_delimiter.unwrap_or(context.cursor),
                 Some(Command {
                     title: "Suggest".to_owned(),
@@ -1100,7 +1091,7 @@ fn filesystem_link_completions(
             (
                 name.to_owned(),
                 CompletionItemKind::FILE,
-                format!("{completed_path}]"),
+                format!("{escaped_name}]"),
                 context
                     .closing_delimiter
                     .map_or(context.cursor, |offset| offset + ']'.len_utf8()),
@@ -1108,18 +1099,18 @@ fn filesystem_link_completions(
             )
         };
 
-        // Replace the whole typed path so the editor filters candidates against it.
+        // Replace the typed component so the editor filters candidates against it.
         let replacement_range = lsp_range(
             source_contents,
             SourceRange {
-                start: context.path_start,
+                start: context.segment_start,
                 end: replacement_end,
             },
         );
         completions.push(CompletionItem {
             label,
             kind: Some(kind),
-            filter_text: Some(completed_path),
+            filter_text: Some(escaped_name),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                 replacement_range,
                 new_text,
@@ -1873,7 +1864,8 @@ mod tests {
         );
     }
 
-    // Complete only directories within the directory named by an unfinished directory link.
+    // Complete only directories within the directory named by an unfinished directory link,
+    // replacing only the component being typed.
     #[test]
     fn completions_list_nested_directories() {
         let source = concat!("# Home\n\n[", "dir:./images/r");
@@ -1888,14 +1880,15 @@ mod tests {
             completion_edits(&completions),
             vec![(
                 "raw/",
-                Range::new(Position::new(2, 5), Position::new(2, 15)),
-                "./images/raw/",
+                Range::new(Position::new(2, 14), Position::new(2, 15)),
+                "raw/",
             )],
         );
-        assert_eq!(completions[0].filter_text.as_deref(), Some("./images/raw"));
+        assert_eq!(completions[0].filter_text.as_deref(), Some("raw"));
     }
 
-    // Escape link delimiters in completed names and interpret them in typed directories.
+    // Escape link delimiters in completed names and interpret them in typed directories, which
+    // completions leave untouched.
     #[test]
     fn completions_escape_path_delimiters() {
         let source = concat!("# Home\n\n[", "file:a\\[b\\]/]");
@@ -1920,8 +1913,8 @@ mod tests {
             completion_edits(&completions),
             vec![(
                 "c[d].txt",
-                Range::new(Position::new(2, 6), Position::new(2, 14)),
-                "a\\[b\\]/c\\[d\\].txt]",
+                Range::new(Position::new(2, 13), Position::new(2, 14)),
+                "c\\[d\\].txt]",
             )],
         );
     }
