@@ -39,8 +39,8 @@ pub struct TextNode {
     pub content: String, // No leading or trailing whitespace, and lines are trimmed at the end
     pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
-    pub source_range: SourceRange, // The complete node without trailing whitespace
-    pub title_source_range: SourceRange, // The trimmed title text
+    pub source_range: SourceRange, // The complete node without leading or trailing whitespace
+    pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
 }
 
 // This struct represents a parsed wiki.
