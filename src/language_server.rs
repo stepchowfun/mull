@@ -1461,14 +1461,19 @@ fn renamable_filesystem_node_at(
 }
 
 // Require a rename's destination to be free, other than by a change to the case of a name on a
-// case-insensitive filesystem, where both paths resolve to the same entry. Missing directories will
+// case-insensitive filesystem, where both paths resolve to the same node. Missing directories will
 // be created, but not beneath an existing file.
 fn check_rename_destination(
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
 ) -> std::result::Result<(), String> {
-    // Refuse to replace another entry.
+    // Refuse to replace another node. Something exists at the new path if its own metadata can be
+    // read, even if it's a broken symlink. The exception is a case-only rename on a
+    // case-insensitive filesystem, such as macOS's default one: there, `Photo.jpg` finds the node
+    // being renamed, `photo.jpg`, so the new path appears to exist. Canonicalizing a path yields
+    // the name's case as stored on disk, so both paths then canonicalize identically and the rename
+    // is allowed.
     let new_absolute_path = wiki_directory.join(new_path);
     if fs::symlink_metadata(&new_absolute_path).is_ok()
         && fs::canonicalize(&new_absolute_path).ok()
