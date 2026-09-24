@@ -583,33 +583,14 @@ fn completion_for_document(
         ));
     }
 
-    // Parse either the original source or a temporary source with the active link closed.
+    // Complete a text link with the titles of the nodes in the wiki.
     let (wiki, replacement_source_range) =
         text_link_context(local_path(uri).as_deref(), source_contents, cursor_offset)?;
-
-    // Present node titles deterministically and replace the whole link, including its delimiters,
-    // so the cursor ends up after the closing `]`.
-    let replacement_range = lsp_range(source_contents, replacement_source_range);
-    let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
-    titles.sort();
-    Some(
-        titles
-            .into_iter()
-            .map(|title| {
-                let escaped_title = escape_link_delimiters(title);
-                CompletionItem {
-                    label: title.clone(),
-                    kind: Some(CompletionItemKind::REFERENCE),
-                    filter_text: Some(format!("[{escaped_title}")),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                        replacement_range,
-                        format!("[{escaped_title}]"),
-                    ))),
-                    ..CompletionItem::default()
-                }
-            })
-            .collect(),
-    )
+    Some(text_link_completions(
+        &wiki,
+        source_contents,
+        replacement_source_range,
+    ))
 }
 
 // Locate the node declared or linked at an editor position.
@@ -1181,6 +1162,35 @@ fn text_link_context(
         end: source_range.end - ']'.len_utf8(),
     };
     Some((wiki, source_range))
+}
+
+// Complete a text link with every node title, replacing the link at a source range.
+fn text_link_completions(
+    wiki: &Wiki,
+    source_contents: &str,
+    replacement_source_range: SourceRange,
+) -> Vec<CompletionItem> {
+    // Present node titles deterministically and replace the whole link, including its delimiters,
+    // so the cursor ends up after the closing `]`.
+    let replacement_range = lsp_range(source_contents, replacement_source_range);
+    let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
+    titles.sort();
+    titles
+        .into_iter()
+        .map(|title| {
+            let escaped_title = escape_link_delimiters(title);
+            CompletionItem {
+                label: title.clone(),
+                kind: Some(CompletionItemKind::REFERENCE),
+                filter_text: Some(format!("[{escaped_title}")),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                    replacement_range,
+                    format!("[{escaped_title}]"),
+                ))),
+                ..CompletionItem::default()
+            }
+        })
+        .collect()
 }
 
 // Describe a preferred quick fix that declares a node and resolves the diagnostics at a range.
