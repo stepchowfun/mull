@@ -54,20 +54,31 @@ fn parse_filesystem_path(
         ));
     }
 
-    // Reject components that escape the logical wiki tree [tag:filesystem_path_components].
-    let has_invalid_component = parsed_path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_),
-        )
-    });
-    if has_invalid_component {
+    // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A root
+    // or prefix makes the path absolute.
+    if parsed_path
+        .components()
+        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
         return Err(Error::new(
             &format!(
-                concat!(
-                    "Path {} must be relative to the wiki directory ",
-                    "without using {}.",
-                ),
+                "Path {} must be relative to the wiki directory.",
+                parsed_path.code_path(),
+            ),
+            source_path,
+            Some((source_contents, source_range)),
+            None,
+        ));
+    }
+
+    // A parent component could lead outside the wiki directory.
+    if parsed_path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(Error::new(
+            &format!(
+                "Path {} must not contain {}.",
                 parsed_path.code_path(),
                 "..".code_str(),
             ),
@@ -571,12 +582,20 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             "# Home\n[",
             "file:] [",
             "file:../notes.txt] [",
+            "file:notes/../notes.txt] [",
             "dir:/images]",
         ));
 
         assert_fails!(result.clone(), "This link is missing a path.");
-        assert_fails!(result.clone(), "Path `../notes.txt` must be relative");
-        assert_fails!(result, "Path `/images` must be relative");
+        assert_fails!(result.clone(), "Path `../notes.txt` must not contain `..`.");
+        assert_fails!(
+            result.clone(),
+            "Path `notes/../notes.txt` must not contain `..`.",
+        );
+        assert_fails!(
+            result,
+            "Path `/images` must be relative to the wiki directory.",
+        );
     }
 
     // Reject opening link delimiters that are not closed.
