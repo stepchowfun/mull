@@ -459,9 +459,21 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
         .collect())
 }
 
-// Append source text while normalizing Windows line endings to the wiki's canonical form.
+// Append source text in the wiki's canonical form, with Unix line endings and no whitespace at the
+// end of a line. Links cannot span lines, so whitespace before a line break is always in the source
+// text between them.
 fn push_normalized(target: &mut String, source: &str) {
-    target.push_str(&source.replace("\r\n", "\n"));
+    // Trim every line that a line break ends, leaving the last one, which may continue with a link.
+    let source = source.replace("\r\n", "\n");
+    let mut lines = source.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if lines.peek().is_some() {
+            target.push_str(line.trim_end());
+            target.push('\n');
+        } else {
+            target.push_str(line);
+        }
+    }
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
@@ -646,6 +658,19 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 "file:./spaced.txt] [",
                 "dir:images]",
             ),
+        );
+    }
+
+    // Remove whitespace at the end of each line, including after a link and on blank lines.
+    #[test]
+    fn trailing_whitespace() {
+        let wiki =
+            parse_test("# Home\r\nFirst  \t\r\n   \nSee [Home]  \nand [Home] later.\t\nLast")
+                .unwrap();
+
+        assert_eq!(
+            wiki.text_nodes["Home"].content,
+            "First\n\nSee [Home]\nand [Home] later.\nLast",
         );
     }
 
