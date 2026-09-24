@@ -492,7 +492,7 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the occurrence that the editor should select for rename, or explain why the
-        // entry behind a filesystem link cannot be renamed before the user enters a new name.
+        // filesystem node a link targets cannot be renamed before the user enters a new name.
         let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
@@ -514,7 +514,7 @@ impl LanguageServer for Backend {
         };
 
         // Rename a linked file or directory, or else a node, along with every link to it.
-        match rename_filesystem_entry_for_document(
+        match rename_filesystem_node_for_document(
             uri,
             &contents,
             version,
@@ -769,7 +769,7 @@ fn document_highlight_for_document(
 }
 
 // Identify the source occurrence that should be selected before renaming a node, file, or
-// directory, or explain why the entry behind a filesystem link cannot be renamed.
+// directory, or explain why the filesystem node a link targets cannot be renamed.
 fn prepare_rename_for_document(
     uri: &Uri,
     source_contents: &str,
@@ -779,7 +779,7 @@ fn prepare_rename_for_document(
     // Select only the path of a filesystem link and seed the rename prompt with its decoded text
     // as written.
     if let Some(entry) =
-        renamable_filesystem_entry_at(uri, source_contents, cursor, supports_file_renames)?
+        renamable_filesystem_node_at(uri, source_contents, cursor, supports_file_renames)?
     {
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: lsp_range(source_contents, entry.path_source_range),
@@ -891,7 +891,7 @@ struct FileOperationSupport {
 // Rename the file or directory of a filesystem link on disk and update every link to it or, for a
 // directory, to anything within it. The client creates any missing directories, and directories
 // that the rename leaves empty are deleted when the client supports it.
-fn rename_filesystem_entry_for_document(
+fn rename_filesystem_node_for_document(
     uri: &Uri,
     source_contents: &str,
     version: i32,
@@ -899,15 +899,14 @@ fn rename_filesystem_entry_for_document(
     new_name: &str,
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Find the renamable entry at the cursor, leaving every other position to text node renaming.
-    let Some(RenamableFilesystemEntry {
+    // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
+    let Some(RenamableFilesystemNode {
         wiki,
         wiki_directory,
         old_path,
         is_directory,
         ..
-    }) =
-        renamable_filesystem_entry_at(uri, source_contents, cursor, file_operation_support.rename)?
+    }) = renamable_filesystem_node_at(uri, source_contents, cursor, file_operation_support.rename)?
     else {
         return Ok(None);
     };
@@ -920,7 +919,7 @@ fn rename_filesystem_entry_for_document(
         return Ok(Some(WorkspaceEdit::default()));
     }
     if new_path.as_os_str().is_empty() {
-        return Err("An entry cannot be renamed to the wiki directory.".to_owned());
+        return Err("A file or directory cannot be renamed to the wiki directory.".to_owned());
     }
     if is_directory && new_path.starts_with(old_path) {
         return Err(format!(
@@ -971,7 +970,7 @@ fn rename_filesystem_entry_for_document(
     // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
     // before performing any of them, so a nested empty directory would block deleting its parent.
     // Instead, one recursive deletion removes the outermost directory, which contains only empty
-    // directories once the entry has moved.
+    // directories once the renamed node has moved.
     if file_operation_support.delete
         && let Some(directory) =
             outermost_directory_emptied_by_rename(&wiki, wiki_directory, old_path, &new_path)
@@ -994,9 +993,9 @@ fn rename_filesystem_entry_for_document(
     }))
 }
 
-// This describes the entry behind the filesystem link at the cursor, once it is known to be
+// This describes the filesystem node targeted by the link at the cursor, once it is known to be
 // renamable regardless of its new name.
-struct RenamableFilesystemEntry {
+struct RenamableFilesystemNode {
     wiki: Wiki,
     wiki_directory: PathBuf,
     path_source_range: SourceRange,
@@ -1004,14 +1003,14 @@ struct RenamableFilesystemEntry {
     is_directory: bool,
 }
 
-// Find the entry behind the filesystem link at the cursor and check whether it can be renamed at
-// all. Every other position yields no entry, leaving it to text node renaming.
-fn renamable_filesystem_entry_at(
+// Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
+// at all. Every other position yields no node, leaving it to text node renaming.
+fn renamable_filesystem_node_at(
     uri: &Uri,
     source_contents: &str,
     cursor: Position,
     supports_file_renames: bool,
-) -> std::result::Result<Option<RenamableFilesystemEntry>, String> {
+) -> std::result::Result<Option<RenamableFilesystemNode>, String> {
     // Resolve the filesystem link at the cursor and the path within it.
     let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
         return Ok(None);
@@ -1029,7 +1028,7 @@ fn renamable_filesystem_entry_at(
         return Ok(None);
     };
 
-    // The client renames the entry on disk, which requires a saved wiki and a capable client.
+    // The client renames the node on disk, which requires a saved wiki and a capable client.
     let Some(wiki_path) = local_path(uri) else {
         return Err("Save the wiki before renaming the files it links to.".to_owned());
     };
@@ -1037,7 +1036,7 @@ fn renamable_filesystem_entry_at(
         return Err("This editor does not support renaming files.".to_owned());
     }
 
-    // Require the linked entry to exist as the kind the link names, other than the wiki directory
+    // Require the linked node to exist as the kind the link names, other than the wiki directory
     // and the wiki itself, resolving it from the wiki's containing directory as validation does.
     let wiki_directory = wiki_path
         .parent()
@@ -1056,7 +1055,7 @@ fn renamable_filesystem_entry_at(
         return Err("The wiki cannot be renamed through one of its own links.".to_owned());
     }
 
-    Ok(Some(RenamableFilesystemEntry {
+    Ok(Some(RenamableFilesystemNode {
         wiki,
         wiki_directory: wiki_directory.to_owned(),
         path_source_range,
@@ -1094,7 +1093,7 @@ fn check_rename_destination(
     Ok(())
 }
 
-// Find the outermost directory that moving an entry out of it would leave containing nothing but
+// Find the outermost directory that moving a node out of it would leave containing nothing but
 // empty directories. A directory is kept if it will contain the new path or a directory link names
 // it, and the search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
@@ -1893,7 +1892,7 @@ mod tests {
         diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
         document_symbol_for_document, formatting_for_document, goto_definition_for_document,
         hover_for_document, lsp_position, prepare_rename_for_document, references_for_document,
-        rename_filesystem_entry_for_document, rename_text_node_for_document,
+        rename_filesystem_node_for_document, rename_text_node_for_document,
         reveal_range_command_url,
     };
     use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
@@ -2739,7 +2738,7 @@ mod tests {
         delete: true,
     };
 
-    // Apply a filesystem rename's text edits to a source, and return the result with the entry
+    // Apply a filesystem rename's text edits to a source, and return the result with the node
     // rename's old and new URIs and the URIs of the directories it deletes.
     fn apply_filesystem_rename(
         source: &str,
@@ -2754,7 +2753,7 @@ mod tests {
             deletions @ ..,
         ] = operations.as_slice()
         else {
-            panic!("a filesystem rename should edit the wiki and then rename one entry");
+            panic!("a filesystem rename should edit the wiki and then rename one node");
         };
         assert_eq!(text_document_edit.text_document.version, Some(7_i32));
 
@@ -2774,7 +2773,9 @@ mod tests {
             .iter()
             .map(|operation| {
                 let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
-                    panic!("a filesystem rename should only delete entries after renaming one");
+                    panic!(
+                        "a filesystem rename should only delete directories after renaming a node",
+                    );
                 };
                 assert_eq!(
                     deletion
@@ -2813,7 +2814,7 @@ mod tests {
         );
     }
 
-    // Explain why a filesystem link's entry cannot be renamed before asking for a new name.
+    // Explain why a filesystem node cannot be renamed before asking for a new name.
     #[test]
     fn rename_preparation_rejects_unrenamable_entries() {
         let source = concat!(
@@ -2873,7 +2874,7 @@ mod tests {
         fs::create_dir(directory.join("notes")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let workspace_edit = rename_filesystem_entry_for_document(
+        let workspace_edit = rename_filesystem_node_for_document(
             &uri,
             source,
             7,
@@ -2917,7 +2918,7 @@ mod tests {
         fs::write(directory.join("images.txt"), "images").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let workspace_edit = rename_filesystem_entry_for_document(
+        let workspace_edit = rename_filesystem_node_for_document(
             &uri,
             source,
             7,
@@ -2954,7 +2955,7 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert!(
-            rename_filesystem_entry_for_document(
+            rename_filesystem_node_for_document(
                 &uri,
                 source,
                 7,
@@ -2966,7 +2967,7 @@ mod tests {
             .is_none(),
         );
         assert_eq!(
-            rename_filesystem_entry_for_document(
+            rename_filesystem_node_for_document(
                 &uri,
                 source,
                 7,
@@ -3002,7 +3003,7 @@ mod tests {
         fs::write(directory.join("f/g/h.txt"), "h").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let deleted_uris = |character, new_name, file_operation_support| {
-            let workspace_edit = rename_filesystem_entry_for_document(
+            let workspace_edit = rename_filesystem_node_for_document(
                 &uri,
                 source,
                 7,
@@ -3071,7 +3072,7 @@ mod tests {
         fs::create_dir(directory.join("images")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let rename = |uri: &Uri, character, new_name, file_operation_support| {
-            rename_filesystem_entry_for_document(
+            rename_filesystem_node_for_document(
                 uri,
                 source,
                 7,
@@ -3104,7 +3105,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "./", ALL_FILE_OPERATIONS),
-            "An entry cannot be renamed to the wiki directory.",
+            "A file or directory cannot be renamed to the wiki directory.",
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
