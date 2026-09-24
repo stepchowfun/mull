@@ -47,10 +47,11 @@ pub struct Wiki {
 }
 
 impl TextNode {
-    // Render the node for a Markdown preview without exposing Mull's delimiter escapes.
-    pub fn to_markdown<F>(&self, mut text_link_url: F) -> String
+    // Render the node for a Markdown preview without exposing Mull's delimiter escapes, linking
+    // each link to the destination the callback provides, if any.
+    pub fn to_markdown<F>(&self, mut link_url: F) -> String
     where
-        F: FnMut(&str) -> Option<String>,
+        F: FnMut(&Link) -> Option<String>,
     {
         // Render each parsed link with its semantic destination while retaining surrounding prose.
         let mut content = String::new();
@@ -75,12 +76,11 @@ impl TextNode {
                     content.push_str(&render_markdown_prose(&self.content[copied_through..start]));
                     let target = &self.content[start + '['.len_utf8()..index];
                     content.push_str(&match links.next() {
-                        Some(Link::Text { title, .. }) => {
-                            let url = text_link_url(title);
-                            render_markdown_text_link(target, url.as_deref())
+                        Some(link @ Link::Text { .. }) => {
+                            render_markdown_text_link(target, link_url(link).as_deref())
                         }
-                        Some(Link::File { .. } | Link::Directory { .. }) => {
-                            render_markdown_filesystem_link(target)
+                        Some(link @ (Link::File { .. } | Link::Directory { .. })) => {
+                            render_markdown_filesystem_link(target, link_url(link).as_deref())
                         }
                         None => render_markdown_text_link(target, None),
                     });
@@ -193,8 +193,9 @@ fn render_markdown_text_link(target: &str, url: Option<&str>) -> String {
     }
 }
 
-// Render a filesystem link as inline code without exposing Mull delimiter escapes.
-fn render_markdown_filesystem_link(target: &str) -> String {
+// Render a filesystem link as inline code without exposing Mull delimiter escapes, linking it to an
+// optional destination.
+fn render_markdown_filesystem_link(target: &str, url: Option<&str>) -> String {
     // Use a fence longer than every backtick run occurring in the link text.
     let source = format!("[{}]", unescape_link_delimiters(target));
     let longest_run = source
@@ -204,8 +205,13 @@ fn render_markdown_filesystem_link(target: &str) -> String {
         .unwrap_or(0);
     let fence = "`".repeat(longest_run + 1);
 
-    // The surrounding brackets keep the content distinct from either side of the fence.
-    format!("{fence}{source}{fence}")
+    // The surrounding brackets keep the content distinct from either side of the fence, and angle
+    // brackets let the destination contain characters such as parentheses.
+    let code = format!("{fence}{source}{fence}");
+    match url {
+        Some(url) => format!("[{code}](<{url}>)"),
+        None => code,
+    }
 }
 
 #[cfg(test)]
@@ -263,8 +269,11 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|title| {
-                (title == "Home").then(|| "command:mull.revealRange?destination".to_owned())
+            node.to_markdown(|link| match link {
+                Link::Text { title, .. } if title == "Home" => {
+                    Some("command:mull.revealRange?destination".to_owned())
+                }
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
             }),
             concat!(
                 "# Greeting\n\nLiteral &#91;brackets&#93; and ",
@@ -286,7 +295,7 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_title| None),
+            node.to_markdown(|_link| None),
             "# A&#42;B&#42; &#91;C&#93;(d) &lt;e&gt; &#35;",
         );
     }
@@ -307,12 +316,13 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_title| None),
+            node.to_markdown(|_link| None),
             "# Greeting\n\nSee &#91;Missing&#93;.",
         );
     }
 
-    // Distinguish file and directory links from prose with Markdown code styling.
+    // Distinguish file and directory links from prose with Markdown code styling, linking those
+    // with destinations.
     #[test]
     fn filesystem_link_markdown() {
         let node = TextNode {
@@ -334,8 +344,10 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_title| None),
-            "# Files\n\n`[./notes.txt]` and ``[./odd`name/]``",
+            node.to_markdown(|link| {
+                matches!(link, Link::File { .. }).then(|| "file:///wiki/notes.txt".to_owned())
+            }),
+            "# Files\n\n[`[./notes.txt]`](<file:///wiki/notes.txt>) and ``[./odd`name/]``",
         );
     }
 
