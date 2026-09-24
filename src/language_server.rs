@@ -585,7 +585,7 @@ fn completion_for_document(
 
     // Parse either the original source or a temporary source with the active link closed.
     let (wiki, replacement_source_range) =
-        completion_context(local_path(uri).as_deref(), source_contents, cursor_offset)?;
+        text_link_context(local_path(uri).as_deref(), source_contents, cursor_offset)?;
 
     // Present node titles deterministically and replace the whole link, including its delimiters,
     // so the cursor ends up after the closing `]`.
@@ -1154,7 +1154,7 @@ fn filesystem_link_completions(
 }
 
 // Parse enough of an active text link to identify the source range a completion should replace.
-fn completion_context(
+fn text_link_context(
     source_path: Option<&Path>,
     source_contents: &str,
     byte_offset: usize,
