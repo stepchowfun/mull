@@ -14,9 +14,9 @@ See also [My favorite painting].
 
 # My favorite painting
 
-My favorite painting is [./images/girl_with_a_pearl_earring.jpg]
+My favorite painting is [/images/girl_with_a_pearl_earring.jpg]
 
-[./images/]
+[/images/]
 
 If you rename or delete that file, Mull will tell you that the link is broken. You can be confident that there are no "dangling" files.
 

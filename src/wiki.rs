@@ -2,11 +2,12 @@ use crate::error::SourceRange;
 use std::{collections::HashMap, fmt, path::PathBuf};
 
 // These strings define the wiki format's extension and structural markers. A link whose target
-// starts with `./` is a filesystem link, which names a directory if it ends with `/`.
+// starts with `/` is a filesystem link, relative to the wiki's directory, which names a directory
+// if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
-pub const FILESYSTEM_LINK_PREFIX: &str = "./";
+pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // This title identifies the root of every wiki's text-link graph.
@@ -32,7 +33,7 @@ pub enum Link {
 // This struct represents a text node in a wiki.
 #[derive(Clone, Debug)]
 pub struct TextNode {
-    pub title: String,   // Non-empty, one line, trimmed, and not starting with `./`
+    pub title: String,   // Non-empty, one line, trimmed, and not starting with `/`
     pub content: String, // No leading or trailing whitespace, and lines are trimmed at the end
     pub links: Vec<Link>,
     pub depth: Option<usize>, // Minimum text-link distance from the root
@@ -327,7 +328,7 @@ mod tests {
     fn filesystem_link_markdown() {
         let node = TextNode {
             title: "Files".to_owned(),
-            content: "[./notes.txt] and [./odd`name/]".to_owned(),
+            content: "[/notes.txt] and [/odd`name/]".to_owned(),
             links: vec![
                 Link::File {
                     path: "notes.txt".into(),
@@ -347,7 +348,7 @@ mod tests {
             node.to_markdown(|link| {
                 matches!(link, Link::File { .. }).then(|| "file:///wiki/notes.txt".to_owned())
             }),
-            "# Files\n\n[`[./notes.txt]`](<file:///wiki/notes.txt>) and ``[./odd`name/]``",
+            "# Files\n\n[`[/notes.txt]`](<file:///wiki/notes.txt>) and ``[/odd`name/]``",
         );
     }
 

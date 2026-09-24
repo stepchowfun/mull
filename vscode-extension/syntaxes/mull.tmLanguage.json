@@ -94,7 +94,7 @@
       },
       "patterns": [
         {
-          "match": "(?<=\\[)([ \\t]*)(\\./)",
+          "match": "(?<=\\[)([ \\t]*)(/)",
           "captures": {
             "2": {
               "name": "keyword.other.link-kind.mull"
