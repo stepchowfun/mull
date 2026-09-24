@@ -976,12 +976,10 @@ fn rename_filesystem_node_for_document(
     let edits = filesystem_rename_edits(wiki, source_contents, old_path, &new_path, is_directory);
 
     // Edit the wiki at the version the edits were computed from, then rename the entry.
-    let (Some(old_uri), Some(new_uri)) = (
-        Uri::from_file_path(&old_absolute_path),
-        Uri::from_file_path(&new_absolute_path),
-    ) else {
-        return Err(format!("Path {} cannot be renamed.", old_path.code_path()));
-    };
+    let old_uri = Uri::from_file_path(&old_absolute_path)
+        .expect("a path within a saved wiki's directory should be absolute");
+    let new_uri = Uri::from_file_path(&new_absolute_path)
+        .expect("a path within a saved wiki's directory should be absolute");
     let mut operations = vec![
         DocumentChangeOperation::Edit(TextDocumentEdit {
             text_document: OptionalVersionedTextDocumentIdentifier {
@@ -1013,11 +1011,11 @@ fn rename_filesystem_node_for_document(
     if file_operation_support.delete
         && let Some(directory) =
             outermost_directory_emptied_by_rename(wiki, wiki_directory, old_path, &new_path)
-        && let Some(uri) = Uri::from_file_path(wiki_directory.join(directory))
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
-                uri,
+                uri: Uri::from_file_path(wiki_directory.join(directory))
+                    .expect("a path within a saved wiki's directory should be absolute"),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
                     ignore_if_not_exists: Some(true),
@@ -1425,10 +1423,7 @@ fn renamable_filesystem_node_at(
         Some(Link::Directory { path, source_range }) => (true, path.clone(), *source_range),
         Some(Link::Text { .. }) | None => return Ok(None),
     };
-    let Some(path_source_range) = filesystem_link_path_source_range(source_contents, source_range)
-    else {
-        return Ok(None);
-    };
+    let path_source_range = filesystem_link_path_source_range(source_contents, source_range);
 
     // The client renames the node on disk, which requires a saved wiki and a capable client.
     let Some(wiki_path) = local_path(uri) else {
@@ -1518,11 +1513,7 @@ fn filesystem_rename_edits(
         }
 
         // Replace the link's path, keeping anything below a renamed directory.
-        let Some(path_source_range) =
-            filesystem_link_path_source_range(source_contents, *source_range)
-        else {
-            continue;
-        };
+        let path_source_range = filesystem_link_path_source_range(source_contents, *source_range);
         edits.push((
             path_source_range,
             render_link_path(
@@ -1711,26 +1702,28 @@ fn text_link_target_source_range(
     })
 }
 
-// Locate the path of a complete filesystem link, excluding its delimiters, prefix, and surrounding
-// whitespace.
+// Locate the path of a filesystem link that the parser produced from the given source, excluding
+// its delimiters, prefix, and surrounding whitespace.
 fn filesystem_link_path_source_range(
     source_contents: &str,
     source_range: SourceRange,
-) -> Option<SourceRange> {
+) -> SourceRange {
     // Trim the link's inner text as the parser does, then skip the filesystem-link prefix.
-    let target_source_range = text_link_target_source_range(source_contents, source_range)?;
+    let target_source_range = text_link_target_source_range(source_contents, source_range)
+        .expect("a parsed link should be delimited by square brackets");
     let target = &source_contents[target_source_range.start..target_source_range.end];
     let trimmed_target = target.trim();
     let path = trimmed_target
         .strip_prefix(FILE_LINK_PREFIX)
-        .or_else(|| trimmed_target.strip_prefix(DIRECTORY_LINK_PREFIX))?;
+        .or_else(|| trimmed_target.strip_prefix(DIRECTORY_LINK_PREFIX))
+        .expect("a parsed filesystem link should start with a filesystem-link prefix");
     let start = target_source_range.start
         + (target.len() - target.trim_start().len())
         + (trimmed_target.len() - path.len());
-    Some(SourceRange {
+    SourceRange {
         start,
         end: start + path.len(),
-    })
+    }
 }
 
 // Collect every complete text-link range that resolves to a title.
