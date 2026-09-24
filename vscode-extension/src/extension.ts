@@ -11,6 +11,10 @@ const execFileAsync = promisify(execFile);
 // [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = 'mull.revealRange';
 
+// This private command reveals the directory of a clicked directory link in the explorer.
+// [group:reveal_in_explorer_command]
+const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
+
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
@@ -67,10 +71,19 @@ async function revealRange(
   editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 
+// Reveal a directory supplied by a language-server document link in the explorer.
+async function revealInExplorer(uriString: string): Promise<void> {
+  // VS Code's command expects a URI object, which a command link can only pass as a string.
+  await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
+}
+
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Expose only the navigation command embedded in Mull's hover Markdown.
+  // Expose the navigation commands embedded in Mull's hover Markdown and document links.
   context.subscriptions.push(vscode.commands.registerCommand(REVEAL_RANGE_COMMAND, revealRange));
+  context.subscriptions.push(
+    vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),
+  );
 
   // Resolve the configured executable before constructing the server process.
   const executablePath = vscode.workspace.getConfiguration('mull').get('executablePath', 'mull');
