@@ -14,7 +14,7 @@ Each node starts with a `# Title`. The content comes after the title and is writ
 
 To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
 
-Here's an example wiki:
+Here's an example wiki with 3 nodes:
 
 ````md
 # Home
