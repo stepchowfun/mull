@@ -51,7 +51,7 @@ Mull verifies the following:
 - Links have valid targets. Links can point to other nodes or local files or directories.
 - All nodes and files in the directory containing the wiki are reachable from the special `Home` node, which must exist.
 
-Mull also formats the wiki for you. It determines the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you need to link to it from somewhere. Dangling nodes are not allowed. This promotes a basic form of organization that makes Mull different from other wiki software. If you delete all the links to a node, Mull will report that the node isn't reachable.
+Mull also formats the wiki for you. It determines the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you need to link to it from somewhere. If you remove all the links to a node, Mull will report that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
 Just as every node must be linked from the wiki, every file in the directory containing the wiki must also be linked from the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the contained files. If the wiki contains `[/]` (a link to the wiki root directory), then all files are covered.
 
