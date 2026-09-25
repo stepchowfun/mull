@@ -4,6 +4,8 @@
 
 *Mull* is a tool for managing a local personal knowledge wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a Visual Studio Code / Cursor extension which provides syntax highlighting, formatting, validation, and language server features like navigation, hover previews, etc.
 
+![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshot.png)
+
 ## An example wiki
 
 A wiki is just a text file with a `.mull` extension.
