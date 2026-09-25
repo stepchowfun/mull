@@ -2,39 +2,22 @@
 
 Welcome to the example wiki!
 
-A wiki is made out of *nodes* which can link to each other. This is the [Home] node, which is the starting point for every wiki.
+This is the [Home] node, which is the starting point for every wiki.
 
-[Poem] is another node. It's easy to link to other nodes!
+[My favorite art] is another node. It's easy to link to other nodes!
 
-If you want to use square brackets without creating links, you can escape them with backslashes like \[ and \].
+# My favorite art
 
-See [What does Mull actually check?] for an overview of how Mull helps you maintain a wiki like this.
+- My favorite poem is [First Fig].
+- My favorite painting is [/girl_with_a_pearl_earring.jpg] by Johannes Vermeer.
 
-See also [My favorite painting].
+# First Fig
 
-# My favorite painting
+```
+My candle burns at both ends;
+    It will not last the night;
+But ah, my foes, and oh, my friends—
+    It gives a lovely light!
+```
 
-My favorite painting is [/images/girl_with_a_pearl_earring.jpg]
-
-[/images/]
-
-If you rename or delete that file, Mull will tell you that the link is broken. You can be confident that there are no "dangling" files.
-
-Every file in this directory must be referenced by the wiki.
-
-# Poem
-
-Rain taps softly on the glass,\
-Silver moments drift and pass.\
-Night unfolds its quiet light,\
-Stars bloom gently into sight.
-
-# What does Mull actually check?
-
-Mull checks the following:
-
-- Node titles are unique. Two nodes can't share the same title, since links to them would be ambiguous.
-- Links are valid. If a node or file is renamed or deleted, any links to it must be updated accordingly.
-- All nodes and files are reachable from the special [Home] node, which must exist.
-
-Mull also formats the wiki for you. It controls the ordering of the nodes, ensures that there's a single space between the `#` and the title of a node, etc.
+—Edna St. Vincent Millay
