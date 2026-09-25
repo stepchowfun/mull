@@ -8,11 +8,13 @@
 
 ## An example wiki
 
-A wiki is a text file with a `.mull` extension.
+A *wiki* is a text file with a `.mull` extension containing nodes.
 
 Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
 
 To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
+
+Here's an example wiki:
 
 ````md
 # Home
