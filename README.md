@@ -4,15 +4,17 @@
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
-*Mull* is a tool for managing a local personal knowledge wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a Visual Studio Code / Cursor extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
+*Mull* is a tool for managing a local personal knowledge wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
 
 ## An example wiki
 
-A wiki is just a text file with a `.mull` extension.
+A *wiki* is a text file with a `.mull` extension containing nodes.
 
-Each node starts with a `# Heading`, serving as the title of the node. The content comes after the title and is written in Markdown.
+Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
 
 To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
+
+Here's an example wiki with 3 nodes:
 
 ````md
 # Home
@@ -49,11 +51,12 @@ Mull verifies the following:
 - The wiki has valid syntax (links are closed, etc.).
 - Node titles are unique.
 - Links have valid targets. Links can point to other nodes or local files or directories.
-- All nodes and files in the directory containing the wiki are reachable from the special `Home` node, which must exist.
+- All nodes are reachable from the special `Home` node, which must exist.
+- All files nested in the directory containing the wiki are linked to from the wiki.
 
-Mull also formats the wiki for you. It determines the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you need to link to it from somewhere. If you remove all the links to a node, Mull will report that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
+Mull also formats the wiki for you. It determines the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will report that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every node must be linked from the wiki, every file in the directory containing the wiki must also be linked from the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the contained files. If the wiki contains `[/]` (a link to the wiki root directory), then all files are covered.
+Just as every node must be linked to from the wiki, the same is true of files nested in the directory containing the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the wiki root directory), then all files are covered.
 
 ## What does the IDE extension do?
 
