@@ -2,9 +2,9 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-*Mull* is a tool for managing a local personal knowledge wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a Visual Studio Code / Cursor extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
-
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshot.png)
+
+*Mull* is a tool for managing a local personal knowledge wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a Visual Studio Code / Cursor extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
 
 ## An example wiki
 
@@ -12,7 +12,7 @@ A wiki is just a text file with a `.mull` extension.
 
 Each node starts with a `# Heading`, serving as the title of the node. The content comes after the title and is written in Markdown.
 
-To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/girl_with_a_pearl_earring.jpg]`.
+To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
 
 ````md
 # Home
@@ -26,7 +26,7 @@ This is the [Home] node, which is the starting point for every wiki.
 # My favorite art
 
 - My favorite poem is [First Fig].
-- My favorite painting is [/girl_with_a_pearl_earring.jpg] by Johannes Vermeer.
+- My favorite painting is [/mona_lisa.jpg] by Leonardo da Vinci.
 
 # First Fig
 
