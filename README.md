@@ -56,7 +56,7 @@ Mull verifies the following:
 
 Mull also formats the wiki for you. It determines the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will report that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every node must be linked to from the wiki, the same is true of files nested in the directory containing the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the contained files. If the wiki contains `[/]` (a link to the wiki root directory), then all files are covered.
+Just as every node must be linked to from the wiki, the same is true of files nested in the directory containing the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the wiki root directory), then all files are covered.
 
 ## What does the IDE extension do?
 
