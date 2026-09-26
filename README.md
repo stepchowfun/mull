@@ -27,19 +27,20 @@ This is the [Home] node, which is the starting point for every wiki.
 
 # My favorite art
 
-- My favorite poem is [First Fig].
+- My favorite poem is [To make a prairie].
 - My favorite painting is [/mona_lisa.jpg] by Leonardo da Vinci.
 
-# First Fig
+# To make a prairie
 
 ```
-My candle burns at both ends;
-    It will not last the night;
-But ah, my foes, and oh, my friends—
-    It gives a lovely light!
+To make a prairie it takes a clover and one bee,
+One clover, and a bee,
+And revery.
+The revery alone will do,
+If bees are few.
 ```
 
-—Edna St. Vincent Millay
+—Emily Dickinson
 ````
 
 ## What does Mull check?
