@@ -47,13 +47,13 @@ If bees are few.
 
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
-Mull verifies the essential structural properties:
+Mull verifies these structural properties:
 
 - The wiki has valid syntax (links are closed, etc.).
 - Node titles are unique.
 - Links have valid targets. A link can point to a `[node]`, `[/file]`, or `[/directory/]`.
 
-It also verifies the following connectivity properties:
+It also verifies these connectivity properties:
 
 - All nodes are reachable by following links from the `Home` node, which must exist.
 - All files nested in the directory containing the wiki are linked to from the wiki.
