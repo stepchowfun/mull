@@ -47,7 +47,7 @@ use tower_lsp_server::{
     },
 };
 
-// Wait briefly after edits so filesystem validation does not run on every keystroke.
+// Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
 // This extension command reveals a source range for clickable text links in hover previews.
@@ -69,7 +69,7 @@ struct PendingCheck {
 }
 
 impl PendingCheck {
-    // Stop the check whether or not it has started. Aborting the task stops it if it has not
+    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
     // started checking, and setting its flag stops it if it has already started.
     fn cancel(self) {
         self.cancellation.cancel();
@@ -135,7 +135,7 @@ impl Backend {
         let mut open_documents = self
             .documents
             .lock()
-            .expect("the open-document mutex should not be poisoned");
+            .expect("The open-document mutex shouldn't be poisoned.");
         let document = open_documents.entry(uri).or_insert_with(|| OpenDocument {
             contents: String::new(),
             version,
@@ -150,7 +150,7 @@ impl Backend {
         document.generation = document
             .generation
             .checked_add(1)
-            .expect("a document generation should fit in a u64");
+            .expect("A document generation should fit in a u64.");
         let generation = document.generation;
 
         // Check outside the asynchronous executor and publish only if the snapshot is still
@@ -179,7 +179,7 @@ impl Backend {
                 };
                 if documents
                     .lock()
-                    .expect("the open-document mutex should not be poisoned")
+                    .expect("The open-document mutex shouldn't be poisoned.")
                     .get(&diagnostic_uri)
                     .is_some_and(|document| document.generation == generation)
                 {
@@ -192,13 +192,13 @@ impl Backend {
         });
     }
 
-    // Recheck the most recent snapshot immediately after it is saved.
+    // Recheck the most recent snapshot immediately after it's saved.
     fn recheck_saved_document(&self, uri: Uri, contents: Option<String>) {
         // Copy the snapshot before scheduling, without retaining the lock across that operation.
         let snapshot = self
             .documents
             .lock()
-            .expect("the open-document mutex should not be poisoned")
+            .expect("The open-document mutex shouldn't be poisoned.")
             .get_mut(&uri)
             .map(|document| {
                 if let Some(contents) = contents {
@@ -218,7 +218,7 @@ impl Backend {
         let snapshots = self
             .documents
             .lock()
-            .expect("the open-document mutex should not be poisoned")
+            .expect("The open-document mutex shouldn't be poisoned.")
             .iter()
             .filter(|(uri, _document)| !changed_uris.contains(uri))
             .map(|(uri, document)| (uri.clone(), document.contents.clone(), document.version))
@@ -240,7 +240,7 @@ impl Backend {
     fn document_snapshot(&self, uri: &Uri) -> Option<(String, i32)> {
         self.documents
             .lock()
-            .expect("the open-document mutex should not be poisoned")
+            .expect("The open-document mutex shouldn't be poisoned.")
             .get(uri)
             .map(|document| (document.contents.clone(), document.version))
     }
@@ -508,7 +508,7 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the occurrence that the editor should select for rename, or explain why the
-        // filesystem node a link targets cannot be renamed before the user enters a new name.
+        // filesystem node a link targets can't be renamed before the user enters a new name.
         let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
@@ -600,7 +600,7 @@ impl LanguageServer for Backend {
         let document = self
             .documents
             .lock()
-            .expect("the open-document mutex should not be poisoned")
+            .expect("The open-document mutex shouldn't be poisoned.")
             .remove(&params.text_document.uri);
         if let Some(pending_check) = document.and_then(|document| document.pending_check) {
             pending_check.cancel();
@@ -668,7 +668,7 @@ fn goto_definition_for_document(
     source_contents: &str,
     cursor: Position,
 ) -> Option<GotoDefinitionResponse> {
-    // Parse only the wiki syntax because navigation does not require filesystem validation.
+    // Parse only the wiki syntax because navigation doesn't require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let (node, origin_source_range) = node_at(
         &wiki,
@@ -689,7 +689,7 @@ fn goto_definition_for_document(
 
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering does not require filesystem validation.
+    // Parse only the wiki syntax because hovering doesn't require filesystem validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let (node, source_range) = node_at(
         &wiki,
@@ -729,7 +729,7 @@ fn references_for_document(
     cursor: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
-    // Parse only the wiki syntax because finding references does not require validation.
+    // Parse only the wiki syntax because finding references doesn't require validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let (node, _source_range) = node_at(
         &wiki,
@@ -762,7 +762,7 @@ fn document_highlight_for_document(
     source_contents: &str,
     cursor: Position,
 ) -> Option<Vec<DocumentHighlight>> {
-    // Parse only the wiki syntax because document highlights do not require validation.
+    // Parse only the wiki syntax because document highlights don't require validation.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
     let byte_offset = byte_offset(source_contents, cursor)?;
 
@@ -778,7 +778,7 @@ fn document_highlight_for_document(
         highlights
     } else {
         // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        // A text link reaches this branch only when its target does not exist, so it has nothing
+        // A text link reaches this branch only when its target doesn't exist, so it has nothing
         // to highlight.
         let link = link_at(&wiki, byte_offset).filter(|link| !matches!(link, Link::Text { .. }))?;
         filesystem_link_source_ranges(&wiki, link)
@@ -801,7 +801,7 @@ fn document_highlight_for_document(
 }
 
 // Identify the source occurrence that should be selected before renaming a node, file, or
-// directory, or explain why the filesystem node a link targets cannot be renamed.
+// directory, or explain why the filesystem node a link targets can't be renamed.
 fn prepare_rename_for_document(
     uri: &Uri,
     source_contents: &str,
@@ -906,21 +906,21 @@ fn rename_text_node_for_document(
         return Ok(None);
     };
 
-    // Normalize surrounding whitespace, then reject titles that the parser would not accept: those
+    // Normalize surrounding whitespace, then reject titles that the parser wouldn't accept: those
     // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
     if new_name
         .chars()
         .any(|character| matches!(character, '\r' | '\n'))
     {
-        return Err("A node title cannot contain a line break.".to_owned());
+        return Err("A node title can't contain a line break.".to_owned());
     }
     let new_title = new_name.trim();
     if new_title.is_empty() {
-        return Err("A node title cannot be empty.".to_owned());
+        return Err("A node title can't be empty.".to_owned());
     }
     if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Err(format!(
-            "A node title cannot start with `{FILESYSTEM_LINK_PREFIX}`.",
+            "A node title can't start with `{FILESYSTEM_LINK_PREFIX}`.",
         ));
     }
     if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
@@ -995,7 +995,7 @@ fn rename_filesystem_node_for_document(
         return Ok(Some(WorkspaceEdit::default()));
     }
     if new_path.as_os_str().is_empty() {
-        return Err("A file or directory cannot be renamed to the wiki directory.".to_owned());
+        return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
     }
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
@@ -1057,7 +1057,7 @@ fn rename_filesystem_node_for_document(
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
                 uri: Uri::from_file_path(wiki_directory.join(directory))
-                    .expect("a path within a saved wiki's directory should be absolute"),
+                    .expect("A path within a saved wiki's directory should be absolute."),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
                     ignore_if_not_exists: Some(true),
@@ -1072,7 +1072,7 @@ fn rename_filesystem_node_for_document(
     }))
 }
 
-// Produce a whole-document formatting edit for any wiki that parses, even if it is invalid.
+// Produce a whole-document formatting edit for any wiki that parses, even if it's invalid.
 fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextEdit>> {
     // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
     let rendered_wiki = parser::parse(local_path(uri).as_deref(), source_contents)
@@ -1259,7 +1259,7 @@ struct FilesystemLinkContext {
 
 // Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
 fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<FilesystemLinkContext> {
-    // Confine the search to the cursor's line, since links cannot contain line breaks.
+    // Confine the search to the cursor's line, since links can't contain line breaks.
     let line_start = source_contents[..cursor]
         .rfind('\n')
         .map_or(0, |index| index + '\n'.len_utf8());
@@ -1269,7 +1269,7 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
     let line = &source_contents[line_start..line_end];
     let line = line.strip_suffix('\r').unwrap_or(line);
 
-    // Ignore titles, which cannot contain links.
+    // Ignore titles, which can't contain links.
     if line == TITLE_MARKER || line.starts_with(TITLE_PREFIX) {
         return None;
     }
@@ -1341,7 +1341,7 @@ fn filesystem_link_completions(
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    // Descend only along the typed directory so large subtrees are read only once they are named,
+    // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
     let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory) else {
         return Vec::new();
@@ -1436,7 +1436,7 @@ fn text_link_context(
         return Some((wiki, source_range));
     }
 
-    // Close a link at the cursor temporarily so completion works while it is being authored.
+    // Close a link at the cursor temporarily so completion works while it's being authored.
     let mut completed_source = source_contents.to_owned();
     completed_source.insert(byte_offset, ']');
     let wiki = parser::parse(source_path, &completed_source).ok()?;
@@ -1481,7 +1481,7 @@ fn text_link_completions(
         .collect()
 }
 
-// This describes the filesystem node targeted by the link at the cursor, once it is known to be
+// This describes the filesystem node targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
 struct RenamableFilesystemNode {
     wiki_directory: PathBuf,
@@ -1512,7 +1512,7 @@ fn renamable_filesystem_node_at(
         return Err("Save the wiki before renaming the files it links to.".to_owned());
     };
     if !supports_file_renames {
-        return Err("This editor does not support renaming files.".to_owned());
+        return Err("This editor doesn't support renaming files.".to_owned());
     }
 
     // Require the linked node to exist as the kind the link names, other than the wiki directory
@@ -1522,16 +1522,16 @@ fn renamable_filesystem_node_at(
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if old_path.as_os_str().is_empty() {
-        return Err("The wiki directory cannot be renamed.".to_owned());
+        return Err("The wiki directory can't be renamed.".to_owned());
     }
     let kind = if is_directory { "Directory" } else { "File" };
     if !fs::metadata(wiki_directory.join(&old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
-        return Err(format!("{kind} {} does not exist.", old_path.code_path()));
+        return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
     }
     if old_path == relative_path(wiki_directory, &wiki_path) {
-        return Err("The wiki cannot be renamed through one of its own links.".to_owned());
+        return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
     Ok(Some(RenamableFilesystemNode {
@@ -1571,7 +1571,7 @@ fn check_rename_destination(
         .find(|ancestor| wiki_directory.join(ancestor).exists())
         && !wiki_directory.join(ancestor).is_dir()
     {
-        return Err(format!("Path {} is not a directory.", ancestor.code_path()));
+        return Err(format!("Path {} isn't a directory.", ancestor.code_path()));
     }
     Ok(())
 }
@@ -1618,9 +1618,9 @@ fn filesystem_rename_edits(
 fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
     DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
         old_uri: Uri::from_file_path(old_path)
-            .expect("a path within a saved wiki's directory should be absolute"),
+            .expect("A path within a saved wiki's directory should be absolute."),
         new_uri: Uri::from_file_path(new_path)
-            .expect("a path within a saved wiki's directory should be absolute"),
+            .expect("A path within a saved wiki's directory should be absolute."),
         options: None,
         annotation_id: None,
     }))
@@ -1632,7 +1632,7 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .expect("a renamed node should have a UTF-8 name");
+        .expect("A renamed node should have a UTF-8 name.");
     (1..=u32::MAX)
         .map(|attempt| {
             path.with_file_name(if attempt == 1 {
@@ -1642,7 +1642,7 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
             })
         })
         .find(|candidate| fs::symlink_metadata(candidate).is_err())
-        .expect("an unused temporary name should exist")
+        .expect("An unused temporary name should exist.")
 }
 
 // Find the outermost directory that moving a node out of it would leave containing nothing but
@@ -1799,7 +1799,7 @@ fn filesystem_link_path_source_range(
 ) -> SourceRange {
     // Trim the link's inner text as the parser does. The leading `/` is part of the path.
     let target_source_range = text_link_target_source_range(source_contents, source_range)
-        .expect("a parsed link should be delimited by square brackets");
+        .expect("A parsed link should be delimited by square brackets.");
     let target = &source_contents[target_source_range.start..target_source_range.end];
     let start = target_source_range.start + (target.len() - target.trim_start().len());
     SourceRange {
@@ -1890,11 +1890,11 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
 
 // Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
 fn lsp_position(source_contents: &str, byte_offset: usize) -> Position {
-    // Source ranges originate at character boundaries and cannot extend beyond the source.
+    // Source ranges originate at character boundaries and can't extend beyond the source.
     let byte_offset = byte_offset.min(source_contents.len());
     let prefix = source_contents
         .get(..byte_offset)
-        .expect("source ranges should end on UTF-8 character boundaries");
+        .expect("Source ranges should end on UTF-8 character boundaries.");
     Position::new(
         u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(u32::MAX),
         u32::try_from(
@@ -1957,11 +1957,11 @@ fn filesystem_link_target(wiki_directory: &Path, link: &Link) -> Option<Uri> {
 
     // Open a file directly, and reveal a directory through the extension.
     let target_uri = Uri::from_file_path(&target_path)
-        .expect("a path within a saved wiki's directory should be absolute");
+        .expect("A path within a saved wiki's directory should be absolute.");
     Some(if is_directory {
         reveal_in_explorer_command_url(&target_uri)
             .parse()
-            .expect("a command URL should be a valid URI")
+            .expect("A command URL should be a valid URI.")
     } else {
         target_uri
     })
@@ -1982,7 +1982,7 @@ fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
         "command:{REVEAL_IN_EXPLORER_COMMAND}?{}",
         utf8_percent_encode(
             &serde_json::to_string(&[directory_uri.as_str()])
-                .expect("a list of strings should serialize to JSON"),
+                .expect("A list of strings should serialize to JSON."),
             NON_ALPHANUMERIC,
         ),
     )
@@ -2019,7 +2019,7 @@ fn diagnostic(
     }
 }
 
-// Convert only file-scheme URIs because the URI library does not enforce this distinction.
+// Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
 fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
     uri.scheme()
         .as_str()
@@ -2072,7 +2072,7 @@ mod tests {
     // Compute diagnostics for a check which nothing cancels.
     fn diagnostics(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
         diagnostics_for_document(uri, source_contents, &CancellationFlag::default())
-            .expect("a check without cancellation should complete")
+            .expect("A check without cancellation should complete.")
     }
 
     // This guard owns a temporary wiki directory and removes it after each test.
@@ -2159,7 +2159,7 @@ mod tests {
         for uri in uris {
             let response = document_symbol_for_document(&uri, source, true).unwrap();
             let DocumentSymbolResponse::Nested(symbols) = response else {
-                panic!("text nodes should be represented as nested document symbols");
+                panic!("Text nodes should be represented as nested document symbols.");
             };
             assert_eq!(
                 symbols
@@ -2194,7 +2194,7 @@ mod tests {
             // Fall back to universally supported flat symbols at each title range.
             let response = document_symbol_for_document(&uri, source, false).unwrap();
             let DocumentSymbolResponse::Flat(symbols) = response else {
-                panic!("clients without hierarchy support should receive flat symbols");
+                panic!("Clients without hierarchy support should receive flat symbols.");
             };
             assert_eq!(
                 symbols
@@ -2293,7 +2293,7 @@ mod tests {
             vec!["Greeting", "Home", "Other"],
         );
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("a completion should replace the link");
+            panic!("A completion should replace the link.");
         };
         let link_range = Range::new(Position::new(2, 0), Position::new(2, 4));
         assert_eq!(edit.range, link_range);
@@ -2303,7 +2303,7 @@ mod tests {
         let completions =
             completion_for_document(&untitled_uri(), source, Position::new(2, 0)).unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("a completion should replace the link");
+            panic!("A completion should replace the link.");
         };
         assert_eq!(edit.range, link_range);
     }
@@ -2319,7 +2319,7 @@ mod tests {
             .find(|completion| completion.label == "Greeting")
             .unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
-            panic!("a completion should replace the unfinished link");
+            panic!("A completion should replace the unfinished link.");
         };
 
         assert_eq!(
@@ -2341,7 +2341,7 @@ mod tests {
             .find(|completion| completion.label == "Greeting")
             .unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
-            panic!("a completion should replace the link");
+            panic!("A completion should replace the link.");
         };
 
         // Apply the edit to confirm the link is closed exactly once.
@@ -2363,7 +2363,7 @@ mod tests {
             .find(|completion| completion.label == "A[B]")
             .unwrap();
         let Some(CompletionTextEdit::Edit(edit)) = &bracketed.text_edit else {
-            panic!("a completion should encode the title as a text link");
+            panic!("A completion should encode the title as a text link.");
         };
 
         assert_eq!(bracketed.filter_text.as_deref(), Some("[A\\[B\\]"));
@@ -2386,7 +2386,7 @@ mod tests {
             .iter()
             .map(|completion| {
                 let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
-                    panic!("a completion should replace part of the link");
+                    panic!("A completion should replace part of the link.");
                 };
                 (
                     completion.label.as_str(),
@@ -2508,7 +2508,7 @@ mod tests {
         );
     }
 
-    // Decline filesystem completions where the parser would not recognize a valid link path.
+    // Decline filesystem completions where the parser wouldn't recognize a valid link path.
     #[test]
     fn completions_ignore_invalid_filesystem_contexts() {
         let source = "# [/\n\n[/../] \\[/";
@@ -2541,10 +2541,10 @@ mod tests {
             goto_definition_for_document(&untitled_uri(), source, Position::new(0, 3)).unwrap();
 
         let GotoDefinitionResponse::Link(links) = definition else {
-            panic!("a title should have one definition");
+            panic!("A title should have one definition.");
         };
         let [link] = links.as_slice() else {
-            panic!("a title should have exactly one definition");
+            panic!("A title should have exactly one definition.");
         };
         let title_range = Range::new(Position::new(0, 2), Position::new(0, 6));
         assert_eq!(link.origin_selection_range, Some(title_range));
@@ -2560,10 +2560,10 @@ mod tests {
         let definition = goto_definition_for_document(&uri, source, Position::new(2, 5)).unwrap();
 
         let GotoDefinitionResponse::Link(links) = definition else {
-            panic!("a text link should have one definition");
+            panic!("A text link should have one definition.");
         };
         let [link] = links.as_slice() else {
-            panic!("a text link should have exactly one definition");
+            panic!("A text link should have exactly one definition.");
         };
         assert_eq!(link.target_uri, uri);
         assert_eq!(
@@ -2589,7 +2589,7 @@ mod tests {
         let hover = hover_for_document(&uri, source, Position::new(2, 5)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("a node preview should use markup content");
+            panic!("A node preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         let home_url =
@@ -2619,7 +2619,7 @@ mod tests {
         let hover = hover_for_document(&uri, source, Position::new(2, 2)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("a node preview should use markup content");
+            panic!("A node preview should use markup content.");
         };
         let file_uri = Uri::from_file_path(directory.join("notes.txt")).unwrap();
         let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
@@ -2642,7 +2642,7 @@ mod tests {
         // Leave filesystem links unlinked in an unsaved wiki.
         let hover = hover_for_document(&untitled_uri(), source, Position::new(2, 2)).unwrap();
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("a node preview should use markup content");
+            panic!("A node preview should use markup content.");
         };
         assert_eq!(
             contents.value,
@@ -2659,7 +2659,7 @@ mod tests {
         let hover = hover_for_document(&uri, source, Position::new(4, 4)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("a node preview should use markup content");
+            panic!("A node preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         assert_eq!(contents.value, "# Greeting\n\nHello!");
@@ -2786,7 +2786,7 @@ mod tests {
         assert!(document_highlight_for_document(&uri, source, Position::new(0, 0)).is_none());
     }
 
-    // Highlight nothing for a text link whose target does not exist.
+    // Highlight nothing for a text link whose target doesn't exist.
     #[test]
     fn document_highlights_ignore_unresolved_text_links() {
         let source = "# Home\n\n[Missing]";
@@ -2949,7 +2949,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title cannot be empty.",
+            "A node title can't be empty.",
         );
         assert_eq!(
             rename_for_document(
@@ -2961,7 +2961,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title cannot contain a line break.",
+            "A node title can't contain a line break.",
         );
         assert_eq!(
             rename_for_document(
@@ -2985,7 +2985,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title cannot start with `/`.",
+            "A node title can't start with `/`.",
         );
     }
 
@@ -3002,7 +3002,7 @@ mod tests {
         workspace_edit: WorkspaceEdit,
     ) -> (String, Uri, Uri, Vec<Uri>) {
         let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
-            panic!("a filesystem rename should consist of document change operations");
+            panic!("A filesystem rename should consist of document change operations.");
         };
         let [
             DocumentChangeOperation::Edit(text_document_edit),
@@ -3010,7 +3010,7 @@ mod tests {
             deletions @ ..,
         ] = operations.as_slice()
         else {
-            panic!("a filesystem rename should edit the wiki and then rename one node");
+            panic!("A filesystem rename should edit the wiki and then rename one node.");
         };
         assert_eq!(text_document_edit.text_document.version, Some(7_i32));
 
@@ -3018,7 +3018,7 @@ mod tests {
         let mut applied = source.to_owned();
         for edit in text_document_edit.edits.iter().rev() {
             let OneOf::Left(edit) = edit else {
-                panic!("a filesystem rename should not annotate its edits");
+                panic!("A filesystem rename shouldn't annotate its edits.");
             };
             let start = byte_offset(source, edit.range.start).unwrap();
             let end = byte_offset(source, edit.range.end).unwrap();
@@ -3031,7 +3031,7 @@ mod tests {
             .map(|operation| {
                 let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
                     panic!(
-                        "a filesystem rename should only delete directories after renaming a node",
+                        "A filesystem rename should only delete directories after renaming a node.",
                     );
                 };
                 assert_eq!(
@@ -3116,7 +3116,7 @@ mod tests {
         );
     }
 
-    // Explain why a filesystem node cannot be renamed before asking for a new name.
+    // Explain why a filesystem node can't be renamed before asking for a new name.
     #[test]
     fn rename_preparation_rejects_unrenamable_entries() {
         let source = "# Home\n\n[/notes.txt] [/missing.txt] [/] [/wiki.mull]";
@@ -3139,19 +3139,16 @@ mod tests {
         );
         assert_eq!(
             prepare(&uri, 2, false),
-            "This editor does not support renaming files.",
+            "This editor doesn't support renaming files.",
         );
-        assert_eq!(
-            prepare(&uri, 14, true),
-            "File `missing.txt` does not exist.",
-        );
+        assert_eq!(prepare(&uri, 14, true), "File `missing.txt` doesn't exist.");
         assert_eq!(
             prepare(&uri, 29, true),
-            "The wiki directory cannot be renamed.",
+            "The wiki directory can't be renamed.",
         );
         assert_eq!(
             prepare(&uri, 33, true),
-            "The wiki cannot be renamed through one of its own links.",
+            "The wiki can't be renamed through one of its own links.",
         );
     }
 
@@ -3218,7 +3215,7 @@ mod tests {
         );
     }
 
-    // Treat renaming a filesystem node to its own path, however it is written, as a no-op.
+    // Treat renaming a filesystem node to its own path, however it's written, as a no-op.
     #[test]
     fn rename_to_same_path_does_nothing() {
         let source = "# Home\n\n[/notes.txt]";
@@ -3294,7 +3291,7 @@ mod tests {
             vec![directory_uri("f/g")],
         );
 
-        // Skip deletions when the client cannot perform them.
+        // Skip deletions when the client can't perform them.
         assert_eq!(
             deleted_uris(
                 2,
@@ -3332,7 +3329,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
-            panic!("a filesystem rename should consist of document change operations");
+            panic!("A filesystem rename should consist of document change operations.");
         };
         let [
             DocumentChangeOperation::Op(ResourceOp::Rename(to_temporary)),
@@ -3340,10 +3337,10 @@ mod tests {
             DocumentChangeOperation::Op(ResourceOp::Rename(from_temporary)),
         ] = operations.as_slice()
         else {
-            panic!("the text edit should separate a rename to a temporary path from a rename out");
+            panic!("The text edit should separate a rename to a temporary path from a rename out.");
         };
 
-        // Skip the temporary name that is already taken.
+        // Skip the temporary name that's already taken.
         let temporary_uri = Uri::from_file_path(directory.join(".images.mull-rename-2")).unwrap();
         assert_eq!(
             (&to_temporary.old_uri, &to_temporary.new_uri),
@@ -3364,7 +3361,7 @@ mod tests {
         let mut applied = source.to_owned();
         for edit in text_document_edit.edits.iter().rev() {
             let OneOf::Left(edit) = edit else {
-                panic!("a filesystem rename should not annotate its edits");
+                panic!("A filesystem rename shouldn't annotate its edits.");
             };
             let start = byte_offset(source, edit.range.start).unwrap();
             let end = byte_offset(source, edit.range.end).unwrap();
@@ -3376,7 +3373,7 @@ mod tests {
         );
     }
 
-    // Reject filesystem renames which the parser, the filesystem, or the editor cannot support.
+    // Reject filesystem renames which the parser, the filesystem, or the editor can't support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
         let source = "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull]";
@@ -3412,7 +3409,7 @@ mod tests {
                     delete: true,
                 },
             ),
-            "This editor does not support renaming files.",
+            "This editor doesn't support renaming files.",
         );
         assert_eq!(
             rename(&uri, 2, "../notes.txt", ALL_FILE_OPERATIONS),
@@ -3420,7 +3417,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "/", ALL_FILE_OPERATIONS),
-            "A file or directory cannot be renamed to the wiki directory.",
+            "A file or directory can't be renamed to the wiki directory.",
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
@@ -3428,19 +3425,19 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
-            "Path `notes.txt` is not a directory.",
+            "Path `notes.txt` isn't a directory.",
         );
         assert_eq!(
             rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),
-            "File `missing.txt` does not exist.",
+            "File `missing.txt` doesn't exist.",
         );
         assert_eq!(
             rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),
-            "The wiki directory cannot be renamed.",
+            "The wiki directory can't be renamed.",
         );
         assert_eq!(
             rename(&uri, 44, "renamed.mull", ALL_FILE_OPERATIONS),
-            "The wiki cannot be renamed through one of its own links.",
+            "The wiki can't be renamed through one of its own links.",
         );
     }
 
@@ -3458,7 +3455,7 @@ mod tests {
 
         // Expect the file link and then the directory link.
         let [file_link, directory_link] = links.as_slice() else {
-            panic!("only the two links with existing targets should be clickable");
+            panic!("Only the two links with existing targets should be clickable.");
         };
         assert_eq!(
             file_link.range,
@@ -3494,11 +3491,11 @@ mod tests {
     // Apply the single text edit of a code action's workspace edit to a source.
     fn apply_code_action(uri: &Uri, source: &str, action: &CodeActionOrCommand) -> String {
         let CodeActionOrCommand::CodeAction(action) = action else {
-            panic!("a code action should not be a bare command");
+            panic!("A code action shouldn't be a bare command.");
         };
         let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
         let [edit] = changes[uri].as_slice() else {
-            panic!("a code action should make exactly one edit");
+            panic!("A code action should make exactly one edit.");
         };
         let start = byte_offset(source, edit.range.start).unwrap();
         let end = byte_offset(source, edit.range.end).unwrap();
@@ -3528,10 +3525,10 @@ mod tests {
         )
         .unwrap();
         let [action] = actions.as_slice() else {
-            panic!("a missing destination should have exactly one code action");
+            panic!("A missing destination should have exactly one code action.");
         };
         let CodeActionOrCommand::CodeAction(code_action) = action else {
-            panic!("a code action should not be a bare command");
+            panic!("A code action shouldn't be a bare command.");
         };
         assert_eq!(code_action.title, "Create node `Greeting`");
         assert_eq!(code_action.kind, Some(CodeActionKind::QUICKFIX));
@@ -3579,10 +3576,10 @@ mod tests {
         )
         .unwrap();
         let [action] = actions.as_slice() else {
-            panic!("a missing home node should have exactly one code action");
+            panic!("A missing home node should have exactly one code action.");
         };
         let CodeActionOrCommand::CodeAction(code_action) = action else {
-            panic!("a code action should not be a bare command");
+            panic!("A code action shouldn't be a bare command.");
         };
         assert_eq!(code_action.title, "Create node `Home`");
         assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
@@ -3599,7 +3596,7 @@ mod tests {
         );
     }
 
-    // Offer to create a home node only when it is missing and the request starts the document.
+    // Offer to create a home node only when it's missing and the request starts the document.
     #[test]
     fn code_actions_omit_unneeded_home_nodes() {
         let uri = untitled_uri();
@@ -3640,7 +3637,7 @@ mod tests {
         assert!(references_for_document(&uri, source, Position::new(2, 4), false).is_none());
     }
 
-    // Omit navigation results when the deliberately simple parser cannot produce a wiki.
+    // Omit navigation results when the deliberately simple parser can't produce a wiki.
     #[test]
     fn navigation_requires_parseable_source() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected]";

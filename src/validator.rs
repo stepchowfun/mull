@@ -71,10 +71,7 @@ fn validate_text_links(
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
         errors.push(Error::new(
-            &format!(
-                "The wiki does not contain a {} node.",
-                HOME_TITLE.code_str(),
-            ),
+            &format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str()),
             source_path,
             None,
             None,
@@ -120,7 +117,7 @@ fn validate_text_links(
         errors.extend(unreachable_titles.into_iter().map(|(title, source_range)| {
             Error::new(
                 &format!(
-                    "Node {} is not reachable from {}.",
+                    "There's no way to get to {} starting from {}.",
                     title.code_str(),
                     HOME_TITLE.code_str(),
                 ),
@@ -245,7 +242,7 @@ fn validate_filesystem_links(
                 )),
                 Link::Text { .. } => {
                     // Text links were skipped above [ref:filesystem_links_only].
-                    unreachable!("text links were already skipped")
+                    unreachable!("Text links were already skipped.")
                 }
             }
             if errors.len() >= MAX_FILESYSTEM_ERRORS {
@@ -367,9 +364,9 @@ fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) 
             path.code_path(),
             "/".code_str(),
         ),
-        Link::File { .. } => format!("{} is not a file.", path.code_path()),
-        Link::Directory { .. } => format!("{} is not a directory.", path.code_path()),
-        Link::Text { .. } => unreachable!("only filesystem links have targets"),
+        Link::File { .. } => format!("{} isn't a file.", path.code_path()),
+        Link::Directory { .. } => format!("{} isn't a directory.", path.code_path()),
+        Link::Text { .. } => unreachable!("Only filesystem links have targets."),
     }
 }
 
@@ -415,7 +412,7 @@ fn find_unreferenced_filesystem_links(
     // Stop traversing once the remaining error budget is exhausted.
     let mut errors = Vec::<Error>::new();
     for result in walker_builder.build() {
-        // Stop between entries so a superseded check does not walk the rest of the tree.
+        // Stop between entries so a superseded check doesn't walk the rest of the tree.
         if cancellation.is_cancelled() {
             return Outcome::Cancelled;
         }
@@ -442,7 +439,7 @@ fn find_unreferenced_filesystem_links(
         if file_type.is_file() && !referenced_files.contains(path) {
             errors.push(Error::new(
                 &format!(
-                    "File {} is not referenced.",
+                    "File {} isn't referenced.",
                     relative_path(wiki_directory, path).code_path(),
                 ),
                 Some(wiki_path),
@@ -666,7 +663,7 @@ mod tests {
         let photo_path = Path::new("images").join("photo.jpg");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains(&format!(
-            "File `{}` is not referenced.",
+            "File `{}` isn't referenced.",
             photo_path.display(),
         )));
     }
@@ -753,7 +750,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "File `second.txt` is not referenced.",
+            "File `second.txt` isn't referenced.",
         ));
     }
 
@@ -803,7 +800,7 @@ mod tests {
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
-    // Report a broken symlink because its target cannot be classified.
+    // Report a broken symlink because its target can't be classified.
     #[cfg(unix)]
     #[test]
     fn broken_symlink() {
@@ -894,7 +891,7 @@ mod tests {
         ));
         assert!(contains_error(
             &errors,
-            "File `notes.txt` is not referenced.",
+            "File `notes.txt` isn't referenced.",
         ));
         assert!(contains_error(
             &errors,
@@ -902,11 +899,11 @@ mod tests {
         ));
         assert!(contains_error(
             &errors,
-            &format!("File `{}` is not referenced.", photo_path.display()),
+            &format!("File `{}` isn't referenced.", photo_path.display()),
         ));
     }
 
-    // Reject text links that do not correspond to any node in the wiki.
+    // Reject text links that don't correspond to any node in the wiki.
     #[test]
     fn missing_text_link() {
         let directory = TestDirectory::new();
@@ -950,16 +947,16 @@ mod tests {
         assert!(contains_error(&errors, "Node `Missing` not found."));
         assert!(contains_error(
             &errors,
-            "Node `Orphan` is not reachable from `Home`.",
+            "There's no way to get to `Orphan` starting from `Home`.",
         ));
         assert!(contains_error(&errors, "`missing.txt` not found."));
         assert!(contains_error(
             &errors,
-            "File `unreferenced.txt` is not referenced.",
+            "File `unreferenced.txt` isn't referenced.",
         ));
     }
 
-    // Reject an empty text link because node titles cannot be empty.
+    // Reject an empty text link because node titles can't be empty.
     #[test]
     fn empty_text_link() {
         let directory = TestDirectory::new();
@@ -980,11 +977,11 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "The wiki does not contain a `Home` node.",
+            "The wiki doesn't contain a `Home` node.",
         ));
     }
 
-    // Reject nodes that cannot be reached transitively from Home.
+    // Reject nodes that can't be reached transitively from Home.
     #[test]
     fn unreachable_nodes() {
         let directory = TestDirectory::new();
@@ -994,11 +991,11 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert!(contains_error(
             &errors,
-            "Node `Alpha` is not reachable from `Home`.",
+            "There's no way to get to `Alpha` starting from `Home`.",
         ));
         assert!(contains_error(
             &errors,
-            "Node `Zulu` is not reachable from `Home`.",
+            "There's no way to get to `Zulu` starting from `Home`.",
         ));
     }
 
@@ -1013,7 +1010,7 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert!(contains_error(
             &errors,
-            "File `unreferenced.txt` is not referenced.",
+            "File `unreferenced.txt` isn't referenced.",
         ));
 
         // Request cancellation before validating the same fixture again.

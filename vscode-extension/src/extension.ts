@@ -30,13 +30,13 @@ async function reportMissingMull(
 ): Promise<void> {
   // Record both an actionable explanation and the underlying launch failure.
   outputChannel.error(
-    `Mull could not be found. Install Mull or configure mull.executablePath. ${INSTALLATION_URL}`,
+    `Mull couldn't be found. Install Mull or configure mull.executablePath. ${INSTALLATION_URL}`,
   );
   outputChannel.debug(String(error));
 
   // Offer direct access to the two ways to resolve the problem [tag:missing_mull_actions].
   const action = await vscode.window.showErrorMessage(
-    'Mull could not be found.',
+    "Mull couldn't be found.",
     INSTALLATION_ACTION,
     CONFIGURATION_ACTION,
   );

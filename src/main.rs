@@ -119,7 +119,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
         }
         wikis.sort();
 
-        // Reject multiple wikis because there is no unambiguous choice.
+        // Reject multiple wikis because there's no unambiguous choice.
         if wikis.len() > 1 {
             let file_names = wikis
                 .iter()
@@ -171,7 +171,7 @@ async fn entry() -> Result<(), Vec<Error>> {
         }
     };
 
-    // Select the wiki and make its path relative when it is contained in the current directory.
+    // Select the wiki and make its path relative when it's contained in the current directory.
     let wiki_path = relative_path(
         &env::current_dir().map_err(|error| {
             vec![Error::new(
@@ -198,7 +198,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     })?;
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
         vec![Error::new(
-            "The wiki is not valid UTF-8.",
+            "The wiki isn't valid UTF-8.",
             Some(&wiki_path),
             None,
             Some(Rc::new(error)),
@@ -233,7 +233,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     } else {
         return Err(vec![Error::new(
             &format!(
-                "The wiki is not formatted correctly. {} can fix it.\n\n{}",
+                "The wiki isn't formatted correctly. {} can fix it.\n\n{}",
                 "mull fix".code_str(),
                 TextDiff::from_lines(&wiki_contents, &rendered_wiki)
                     .unified_diff()
