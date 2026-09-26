@@ -53,7 +53,7 @@ Mull verifies the essential structural properties:
 - Node titles are unique.
 - Links have valid targets. A link can point to a `[node]`, `[/file]`, or `[/directory/]`.
 
-Additionally, Mull verifies the following connectivity properties:
+It also verifies the following connectivity properties:
 
 - All nodes are reachable by following links from the `Home` node, which must exist.
 - All files nested in the directory containing the wiki are linked to from the wiki.
