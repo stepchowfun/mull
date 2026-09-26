@@ -222,28 +222,8 @@ fn validate_filesystem_links(
                 Link::Directory { .. } if metadata.is_dir() => {
                     referenced_directories.insert(target);
                 }
-                Link::File { .. } if metadata.is_dir() => errors.push(Error::new(
-                    &format!(
-                        "{} is a directory, so its link must end with {}.",
-                        path.code_path(),
-                        "/".code_str(),
-                    ),
-                    Some(wiki_path),
-                    Some((source_contents, source_range)),
-                    None,
-                )),
-                Link::File { .. } => errors.push(Error::new(
-                    &format!("{} is not a file.", path.code_path()),
-                    Some(wiki_path),
-                    Some((source_contents, source_range)),
-                    None,
-                )),
-                Link::Directory { .. } => errors.push(Error::new(
-                    &format!(
-                        "{} is not a directory, so its link must not end with {}.",
-                        path.code_path(),
-                        "/".code_str(),
-                    ),
+                Link::File { .. } | Link::Directory { .. } => errors.push(Error::new(
+                    &wrong_target_type_message(link, path, &metadata),
                     Some(wiki_path),
                     Some((source_contents, source_range)),
                     None,
@@ -279,6 +259,26 @@ fn validate_filesystem_links(
     errors.extend(unreferenced_errors);
 
     Outcome::Completed(errors)
+}
+
+// Explain why a filesystem link's target has the wrong type, suggesting a change to the link's
+// trailing `/` only when that change would fix the link.
+fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> String {
+    match link {
+        Link::File { .. } if metadata.is_dir() => format!(
+            "{} is a directory, so its link must end with {}.",
+            path.code_path(),
+            "/".code_str(),
+        ),
+        Link::Directory { .. } if metadata.is_file() => format!(
+            "{} is a file, so its link must not end with {}.",
+            path.code_path(),
+            "/".code_str(),
+        ),
+        Link::File { .. } => format!("{} is not a file.", path.code_path()),
+        Link::Directory { .. } => format!("{} is not a directory.", path.code_path()),
+        Link::Text { .. } => unreachable!("only filesystem links have targets"),
+    }
 }
 
 // Find unreferenced files within a budget while pruning covered directories.
@@ -769,7 +769,7 @@ mod tests {
         ));
         assert!(contains_error(
             &errors,
-            "`notes.txt` is not a directory, so its link must not end with `/`.",
+            "`notes.txt` is a file, so its link must not end with `/`.",
         ));
         assert!(contains_error(
             &errors,
