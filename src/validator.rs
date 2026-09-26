@@ -7,7 +7,8 @@ use crate::{
     wiki_tree::wiki_tree_walker,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -167,6 +168,7 @@ fn validate_filesystem_links(
     // Track valid targets while visiting nodes and links in deterministic order.
     let mut referenced_files = HashSet::<PathBuf>::new();
     let mut referenced_directories = HashSet::<PathBuf>::new();
+    let mut listings = DirectoryListings::new();
     let mut errors = Vec::<Error>::new();
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
@@ -214,6 +216,19 @@ fn validate_filesystem_links(
                 }
             };
 
+            // Require the path to be spelled as it is on disk, and track the target by that
+            // spelling so it matches the entries found when walking the wiki's directory.
+            let (spelled_path, misspelling) = check_spelling(wiki_directory, path, &mut listings);
+            if let Some(message) = misspelling {
+                errors.push(Error::new(
+                    &message,
+                    Some(wiki_path),
+                    Some((source_contents, source_range)),
+                    None,
+                ));
+            }
+            let target = wiki_directory.join(spelled_path);
+
             // Retain correctly typed targets and report links with the wrong type.
             match link {
                 Link::File { .. } if metadata.is_file() => {
@@ -259,6 +274,83 @@ fn validate_filesystem_links(
     errors.extend(unreferenced_errors);
 
     Outcome::Completed(errors)
+}
+
+// These are the names of the entries in each directory, listed at most once per validation. A
+// directory that can't be listed has no names.
+type DirectoryListings = HashMap<PathBuf, Option<HashSet<OsString>>>;
+
+// Compare each component of an existing target's path with the names of the entries on disk.
+// Filesystems that ignore case or Unicode normalization find a target even when its path is spelled
+// differently, but such a link would break on other filesystems and wouldn't match the names found
+// when walking the wiki's directory. Return the path as spelled on disk, where that can be
+// determined, with a message describing any misspelling.
+fn check_spelling(
+    wiki_directory: &Path,
+    path: &Path,
+    listings: &mut DirectoryListings,
+) -> (PathBuf, Option<String>) {
+    let mut written = PathBuf::new();
+    let mut spelled = PathBuf::new();
+    let mut misspelled = false;
+    let mut unmatched = None;
+    for component in path.components() {
+        // Accept a name that its directory lists, or any name in a directory that can't be listed.
+        let name = component.as_os_str();
+        written.push(name);
+        let directory = wiki_directory.join(&spelled);
+        let names = listings.entry(directory.clone()).or_insert_with(|| {
+            fs::read_dir(&directory).ok().map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| fs::DirEntry::file_name(&entry))
+                    .collect()
+            })
+        });
+        let Some(names) = names else {
+            spelled.push(name);
+            continue;
+        };
+        if names.contains(name) {
+            spelled.push(name);
+            continue;
+        }
+
+        // Find the entry that the name refers to, preferring the first in sorted order if aliases
+        // lead to the same place.
+        let target = fs::canonicalize(directory.join(name)).ok();
+        let mut candidates = names
+            .iter()
+            .filter(|candidate| {
+                target.is_some() && fs::canonicalize(directory.join(candidate)).ok() == target
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        let actual = candidates.first().map(|candidate| (*candidate).clone());
+
+        // Continue with the name on disk, remembering the first name that has none.
+        misspelled = true;
+        if actual.is_none() && unmatched.is_none() {
+            unmatched = Some(written.clone());
+        }
+        spelled.push(actual.as_deref().unwrap_or(name));
+    }
+
+    // Describe the whole path's spelling on disk, or else the first name that has no match.
+    let message = match unmatched {
+        Some(unmatched) => Some(format!(
+            "{} doesn't match the spelling of any name on disk.",
+            unmatched.code_path(),
+        )),
+        None => misspelled.then(|| {
+            format!(
+                "{} is spelled {} on disk.",
+                path.code_path(),
+                spelled.code_path(),
+            )
+        }),
+    };
+    (spelled, message)
 }
 
 // Explain why a filesystem link's target has the wrong type, suggesting a change to the link's
@@ -745,6 +837,43 @@ mod tests {
                 .iter()
                 .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
         );
+    }
+
+    // Require links to spell paths as they are on disk. A filesystem that ignores case finds the
+    // target anyway, so report the spelling instead, without also reporting the target as
+    // unreferenced. A case-sensitive filesystem doesn't find the target at all.
+    #[test]
+    fn misspelled_paths() {
+        let directory = TestDirectory::new();
+        fs::create_dir(directory.path().join("images")).unwrap();
+        fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
+        let wiki = parse("# Home\n[/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
+
+        // Describe each misspelled path as a whole, however many of its components differ.
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        if fs::metadata(directory.path().join("IMAGES")).is_ok() {
+            let photo_path = Path::new("images").join("photo.jpg");
+            assert_eq!(errors.len(), 3);
+            assert!(contains_error(
+                &errors,
+                "`Images` is spelled `images` on disk.",
+            ));
+            for written in [
+                Path::new("images").join("Photo.jpg"),
+                Path::new("IMAGES").join("PHOTO.JPG"),
+            ] {
+                assert!(contains_error(
+                    &errors,
+                    &format!(
+                        "`{}` is spelled `{}` on disk.",
+                        written.display(),
+                        photo_path.display(),
+                    ),
+                ));
+            }
+        } else {
+            assert!(contains_error(&errors, "not found."));
+        }
     }
 
     // Reject a filesystem link whose target has the wrong type.
