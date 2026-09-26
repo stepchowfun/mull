@@ -129,7 +129,7 @@ For example, the following will install Mull into the working directory:
 curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | PREFIX=. sh
 ```
 
-Note that if you change the installation path via `PREFIX`, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
+Note that if you change the installation path, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
 
 If you prefer not to use this installation method, you can download the binary from the [releases page](https://github.com/stepchowfun/mull/releases), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`).
 
