@@ -9,7 +9,7 @@ use crate::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::wiki_tree_walker,
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -1370,6 +1370,16 @@ fn filesystem_link_completions(
             continue;
         }
 
+        // Omit a directory which a link couldn't name because it contains no files.
+        if file_type.is_dir()
+            && !matches!(
+                visibility(wiki_directory, path, &CancellationFlag::default()).assume_completed(),
+                Ok(Visibility::Visible),
+            )
+        {
+            continue;
+        }
+
         // Leave a directory's link open for its children, and close a file's link.
         let escaped_name = escape_link_delimiters(name);
         let (label, kind, new_text, replacement_end, command) = if file_type.is_dir() {
@@ -2454,13 +2464,15 @@ mod tests {
     }
 
     // Complete the children of the directory named by an unfinished link, replacing only the
-    // component being typed.
+    // component being typed and omitting directories without files.
     #[test]
     fn completions_list_nested_directories() {
         let source = "# Home\n\n[/images/r";
         let wiki = TestWiki::new(source);
         let directory = wiki.path().parent().unwrap();
         fs::create_dir_all(directory.join("images/raw/large")).unwrap();
+        fs::write(directory.join("images/raw/large/photo.tiff"), "photo").unwrap();
+        fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions = completion_for_document(&uri, source, Position::new(2, 10)).unwrap();
