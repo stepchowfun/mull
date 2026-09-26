@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stopped offering directories without such files as completions.
 
 ### Fixed
-- Treated a dangling symlink as nonexistent instead of failing the whole check, since symlinks are treated as their targets.
+- Reported a broken symlink as such, once, at a link to it or through it if there is one, instead of failing the walk of the wiki directory. A broken symlink that an ignore rule excludes is no longer reported.
 - Reported the correct spelling of a misspelled symlink when other symlinks point to the same target, instead of suggesting one of the others and reporting the symlink as unreferenced.
 
 ## [0.28.0] - 2026-09-25
