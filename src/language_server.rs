@@ -816,8 +816,9 @@ fn prepare_rename_for_document(
         return Ok(None);
     };
 
-    // Select only the path of a filesystem link and seed the rename prompt with its decoded text
-    // as written.
+    // Select only the path of a filesystem link between its leading `/` and any trailing `/`, and
+    // seed the rename prompt with its decoded text as written. The rename writes both slashes
+    // itself, so the new name needs neither.
     if let Some(filesystem_node) = renamable_filesystem_node_at(
         &wiki,
         uri,
@@ -825,12 +826,20 @@ fn prepare_rename_for_document(
         cursor_offset,
         supports_file_renames,
     )? {
+        let path_source_range = filesystem_node.path_source_range;
+        let path_source = &source_contents[path_source_range.start..path_source_range.end];
+        let start_trimmed = path_source.trim_start_matches('/');
+        let trimmed = start_trimmed.trim_end_matches('/');
+        let start = path_source_range.end - start_trimmed.len();
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: lsp_range(source_contents, filesystem_node.path_source_range),
-            placeholder: unescape_link_delimiters(
-                &source_contents[filesystem_node.path_source_range.start
-                    ..filesystem_node.path_source_range.end],
+            range: lsp_range(
+                source_contents,
+                SourceRange {
+                    start,
+                    end: start + trimmed.len(),
+                },
             ),
+            placeholder: unescape_link_delimiters(trimmed),
         }));
     }
 
@@ -3075,21 +3084,34 @@ mod tests {
         assert!(rename(6, "Start").is_none());
     }
 
-    // Prepare to rename a filesystem link by selecting its decoded path as written.
+    // Prepare to rename a filesystem link by selecting its decoded path as written, without its
+    // leading `/` or a directory's trailing `/`.
     #[test]
     fn rename_preparation_selects_filesystem_paths() {
-        let source = "# Home\n\n[ /a\\[1\\].txt ]";
+        let source = "# Home\n\n[ /a\\[1\\].txt ] [/images/raw/]";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("a[1].txt"), "a").unwrap();
+        let directory = wiki.path().parent().unwrap();
+        fs::write(directory.join("a[1].txt"), "a").unwrap();
+        fs::create_dir_all(directory.join("images/raw")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let prepare = |character| {
+            prepare_rename_for_document(&uri, source, Position::new(2, character), true)
+                .unwrap()
+                .unwrap()
+        };
 
         assert_eq!(
-            prepare_rename_for_document(&uri, source, Position::new(2, 4), true)
-                .unwrap()
-                .unwrap(),
+            prepare(4),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 2), Position::new(2, 13)),
-                placeholder: "/a[1].txt".to_owned(),
+                range: Range::new(Position::new(2, 3), Position::new(2, 13)),
+                placeholder: "a[1].txt".to_owned(),
+            },
+        );
+        assert_eq!(
+            prepare(18),
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: Range::new(Position::new(2, 18), Position::new(2, 28)),
+                placeholder: "images/raw".to_owned(),
             },
         );
     }
