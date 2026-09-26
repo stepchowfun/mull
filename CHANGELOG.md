@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-09-25
+
+### Changed
+- Required filesystem links to spell each path exactly as it is on disk. On filesystems that ignore case or Unicode normalization, a link with a different spelling was accepted, but its target was then reported as unreferenced, and the link would break on other filesystems. Such links are now reported with the spelling on disk.
+- Reported a directory link to a file as needing no trailing `/`, and a link to something that is neither a file nor a directory without suggesting a change to its trailing `/`.
+
 ## [0.27.1] - 2026-09-25
 
 ### Changed
