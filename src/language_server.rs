@@ -988,49 +988,54 @@ fn rename_filesystem_node_for_document(
     if new_path.as_os_str().is_empty() {
         return Err("A file or directory cannot be renamed to the wiki directory.".to_owned());
     }
-    if is_directory && new_path.starts_with(old_path) {
-        return Err(format!(
-            "Directory {} cannot be moved into itself.",
-            old_path.code_path(),
-        ));
-    }
 
-    // Require the destination to be free and creatable.
-    check_rename_destination(wiki_directory, old_path, &new_path)?;
+    // Require the destination to be free and creatable, unless a directory moves into itself. Then
+    // everything at its destination moves along with it, so nothing there can conflict.
+    let moves_into_itself = is_directory && new_path.starts_with(old_path);
+    if !moves_into_itself {
+        check_rename_destination(wiki_directory, old_path, &new_path)?;
+    }
     let old_absolute_path = wiki_directory.join(old_path);
     let new_absolute_path = wiki_directory.join(&new_path);
 
     // Rewrite the path of every link to the renamed entry.
     let edits = filesystem_rename_edits(wiki, source_contents, old_path, &new_path, is_directory);
 
-    // Edit the wiki at the version the edits were computed from, then rename the entry.
-    let old_uri = Uri::from_file_path(&old_absolute_path)
-        .expect("a path within a saved wiki's directory should be absolute");
-    let new_uri = Uri::from_file_path(&new_absolute_path)
-        .expect("a path within a saved wiki's directory should be absolute");
-    let mut operations = vec![
-        DocumentChangeOperation::Edit(TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier {
-                uri: uri.clone(),
-                version: Some(version),
-            },
-            edits: edits
-                .into_iter()
-                .map(|(source_range, new_text)| {
-                    OneOf::Left(TextEdit::new(
-                        lsp_range(source_contents, source_range),
-                        new_text,
-                    ))
-                })
-                .collect(),
-        }),
-        DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
-            old_uri,
-            new_uri,
-            options: None,
-            annotation_id: None,
-        })),
-    ];
+    // Edit the wiki at the version the edits were computed from.
+    let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
+        text_document: OptionalVersionedTextDocumentIdentifier {
+            uri: uri.clone(),
+            version: Some(version),
+        },
+        edits: edits
+            .into_iter()
+            .map(|(source_range, new_text)| {
+                OneOf::Left(TextEdit::new(
+                    lsp_range(source_contents, source_range),
+                    new_text,
+                ))
+            })
+            .collect(),
+    });
+
+    // Rename the node. No filesystem can move a directory into itself directly, so such a move
+    // goes through a temporary sibling, from which the directory moves to its new path, recreating
+    // its old path as a parent. VS Code validates a run of renames before performing any of them,
+    // so the text edit separates the two renames to let the first one happen before the second is
+    // validated.
+    let mut operations = if moves_into_itself {
+        let temporary_path = unused_sibling_path(&old_absolute_path);
+        vec![
+            rename_operation(&old_absolute_path, &temporary_path),
+            text_document_edit,
+            rename_operation(&temporary_path, &new_absolute_path),
+        ]
+    } else {
+        vec![
+            text_document_edit,
+            rename_operation(&old_absolute_path, &new_absolute_path),
+        ]
+    };
 
     // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
     // before performing any of them, so a nested empty directory would block deleting its parent.
@@ -1598,6 +1603,37 @@ fn filesystem_rename_edits(
     // Present the edits in source order.
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
     edits
+}
+
+// Build an operation that renames a node from one absolute path to another.
+fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
+    DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+        old_uri: Uri::from_file_path(old_path)
+            .expect("a path within a saved wiki's directory should be absolute"),
+        new_uri: Uri::from_file_path(new_path)
+            .expect("a path within a saved wiki's directory should be absolute"),
+        options: None,
+        annotation_id: None,
+    }))
+}
+
+// Choose an unused, hidden name beside a node for a temporary rename. Staying in the same directory
+// keeps the rename on the same filesystem.
+fn unused_sibling_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a renamed node should have a UTF-8 name");
+    (1..=u32::MAX)
+        .map(|attempt| {
+            path.with_file_name(if attempt == 1 {
+                format!(".{name}.mull-rename")
+            } else {
+                format!(".{name}.mull-rename-{attempt}")
+            })
+        })
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+        .expect("an unused temporary name should exist")
 }
 
 // Find the outermost directory that moving a node out of it would leave containing nothing but
@@ -3250,6 +3286,74 @@ mod tests {
         );
     }
 
+    // Move a directory into itself through an unused temporary sibling, with the text edit between
+    // the two renames, and update links to the directory and to everything within it.
+    #[test]
+    fn rename_moves_directories_into_themselves() {
+        let source = "# Home\n\n[/images/] [/images/photo.jpg] [/notes.txt]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::create_dir_all(directory.join("images/raw")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join(".images.mull-rename")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let workspace_edit = rename_for_document(
+            &uri,
+            source,
+            7,
+            Position::new(2, 2),
+            "images/raw",
+            ALL_FILE_OPERATIONS,
+        )
+        .unwrap()
+        .unwrap();
+        let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
+            panic!("a filesystem rename should consist of document change operations");
+        };
+        let [
+            DocumentChangeOperation::Op(ResourceOp::Rename(to_temporary)),
+            DocumentChangeOperation::Edit(text_document_edit),
+            DocumentChangeOperation::Op(ResourceOp::Rename(from_temporary)),
+        ] = operations.as_slice()
+        else {
+            panic!("the text edit should separate a rename to a temporary path from a rename out");
+        };
+
+        // Skip the temporary name that is already taken.
+        let temporary_uri = Uri::from_file_path(directory.join(".images.mull-rename-2")).unwrap();
+        assert_eq!(
+            (&to_temporary.old_uri, &to_temporary.new_uri),
+            (
+                &Uri::from_file_path(directory.join("images")).unwrap(),
+                &temporary_uri,
+            ),
+        );
+        assert_eq!(
+            (&from_temporary.old_uri, &from_temporary.new_uri),
+            (
+                &temporary_uri,
+                &Uri::from_file_path(directory.join("images/raw")).unwrap(),
+            ),
+        );
+
+        // Links to the directory and to its contents follow it, and other links are unchanged.
+        let mut applied = source.to_owned();
+        for edit in text_document_edit.edits.iter().rev() {
+            let OneOf::Left(edit) = edit else {
+                panic!("a filesystem rename should not annotate its edits");
+            };
+            let start = byte_offset(source, edit.range.start).unwrap();
+            let end = byte_offset(source, edit.range.end).unwrap();
+            applied.replace_range(start..end, &edit.new_text);
+        }
+        assert_eq!(
+            applied,
+            "# Home\n\n[/images/raw/] [/images/raw/photo.jpg] [/notes.txt]",
+        );
+    }
+
     // Reject filesystem renames which the parser, the filesystem, or the editor cannot support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
@@ -3303,10 +3407,6 @@ mod tests {
         assert_eq!(
             rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
             "Path `notes.txt` is not a directory.",
-        );
-        assert_eq!(
-            rename(&uri, 14, "images/raw", ALL_FILE_OPERATIONS),
-            "Directory `images` cannot be moved into itself.",
         );
         assert_eq!(
             rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),
