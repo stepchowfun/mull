@@ -8,12 +8,12 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Er
     let mut overrides = OverrideBuilder::new(wiki_directory);
     overrides
         .add("!.git/")
-        .expect("the static .git override should be valid")
+        .expect("The static .git override should be valid.")
         .add("!.hg/")
-        .expect("the static .hg override should be valid");
+        .expect("The static .hg override should be valid.");
     let overrides = overrides.build()?;
 
-    // Consult ignore files only within the wiki tree, whether or not it is a Git repository.
+    // Consult ignore files only within the wiki tree, whether or not it's a Git repository.
     let mut walker_builder = WalkBuilder::new(wiki_directory);
     walker_builder
         .current_dir(wiki_directory)

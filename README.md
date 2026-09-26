@@ -123,7 +123,7 @@ The installation script supports the following optional environment variables:
 - `VERSION=x.y.z` (defaults to the latest version)
 - `PREFIX=/path/to/install` (defaults to `/usr/local/bin`)
 
-Note that if you change the installation path via `PREFIX`, you will also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
+Note that if you change the installation path via `PREFIX`, you'll also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
 
 For example, the following will install Mull into the working directory:
 

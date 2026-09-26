@@ -105,7 +105,7 @@ impl TextNode {
 // Render nodes in the wiki's heading-and-content format.
 impl fmt::Display for TextNode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Omit the content separator when there is no content.
+        // Omit the content separator when there's no content.
         if self.content.is_empty() {
             writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
         } else {
@@ -221,7 +221,7 @@ mod tests {
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
-    // Use a harmless range when testing rendering, which does not inspect source locations.
+    // Use a harmless range when testing rendering, which doesn't inspect source locations.
     const SOURCE_RANGE: SourceRange = SourceRange { start: 0, end: 0 };
 
     // Ensure nodes are rendered in the wiki's source format.
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
     }
 
-    // Ensure empty nodes do not contain a redundant content separator.
+    // Ensure empty nodes don't contain a redundant content separator.
     #[test]
     fn empty_node_display() {
         let node = TextNode {

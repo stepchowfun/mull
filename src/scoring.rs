@@ -20,7 +20,7 @@ pub fn populate_depths(wiki: &mut Wiki) {
         // Every title enters the queue only after its depth is assigned [ref:queued_node_depths].
         let depth = wiki.text_nodes[&title]
             .depth
-            .expect("queued nodes should have a depth");
+            .expect("Queued nodes should have a depth.");
         let text_links = wiki.text_nodes[&title]
             .links
             .iter()

@@ -19,7 +19,7 @@ mod tests {
         );
     }
 
-    // Preserve a path that is outside the base directory.
+    // Preserve a path that's outside the base directory.
     #[test]
     fn outside_path() {
         assert_eq!(

@@ -36,12 +36,12 @@ impl<T> Outcome<T> {
         }
     }
 
-    // Retrieve the value of a computation which was given a flag that is never set.
+    // Retrieve the value of a computation which was given a flag that's never set.
     pub fn assume_completed(self) -> T {
         match self {
             Self::Completed(value) => value,
             Self::Cancelled => {
-                unreachable!("a computation without cancellation should not be cancelled")
+                unreachable!("A computation without cancellation shouldn't be cancelled.")
             }
         }
     }

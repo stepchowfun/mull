@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Required filesystem links to spell each path exactly as it is on disk. On filesystems that ignore case or Unicode normalization, a link with a different spelling was accepted, but its target was then reported as unreferenced, and the link would break on other filesystems. Such links are now reported with the spelling on disk.
-- Reported a directory link to a file as needing no trailing `/`, and a link to something that is neither a file nor a directory without suggesting a change to its trailing `/`.
+- Reported a directory link to a file as needing no trailing `/`, and a link to something that's neither a file nor a directory without suggesting a change to its trailing `/`.
 
 ## [0.27.1] - 2026-09-25
 
@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.26.1] - 2026-09-24
 
 ### Changed
-- Highlighted text links and filesystem links in the VS Code extension with the scopes that Markdown uses for link text and link destinations, so they are distinct and match each theme's Markdown links.
+- Highlighted text links and filesystem links in the VS Code extension with the scopes that Markdown uses for link text and link destinations, so they're distinct and match each theme's Markdown links.
 
 ## [0.26.0] - 2026-09-24
 
@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Replaced the `file:` and `dir:` link prefixes with `./`. A link whose target starts with `./` is a filesystem link, and a trailing `/` marks a directory, so `[./notes.txt]` is a file, `[./images/]` is a directory, and `[./]` is the wiki directory. Node titles may no longer start with `./`.
 - Formatted filesystem links with their `./` and, for a directory, a trailing `/`.
-- Reported a filesystem link whose trailing `/` does not match the kind of its target.
+- Reported a filesystem link whose trailing `/` doesn't match the kind of its target.
 - Offered both files and directories when completing any filesystem link.
 
 ## [0.23.0] - 2026-09-24
@@ -101,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made language-server go to definition on a node's title return the node itself, so editors can fall back to finding its references.
 
 ### Changed
-- Rejected node titles that start with `file:` or `dir:`, since text links cannot target them.
+- Rejected node titles that start with `file:` or `dir:`, since text links can't target them.
 - Made language-server completions replace the whole text link, including its delimiters.
 - Excluded trailing whitespace from the node ranges used by language-server outlines and go to definition.
 

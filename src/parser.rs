@@ -62,7 +62,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                 errors.extend(node_errors);
             }
 
-            // Start a node for the title if it is valid.
+            // Start a node for the title if it's valid.
             match parse_title(raw_title, source_path, source_contents, line_source_range) {
                 Ok(title_source_range) => {
                     pending_node = Some(PendingNode {
@@ -81,7 +81,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
         {
             // Report only the first non-whitespace content outside a valid node.
             errors.push(Error::new(
-                "This content is not in any node.",
+                "This content isn't in any node.",
                 source_path,
                 Some((
                     source_contents,
@@ -118,7 +118,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
 }
 
 // Locate the title that follows a title marker, rejecting titles that are empty after surrounding
-// whitespace is stripped, as well as titles that text links could not target because they would
+// whitespace is stripped, as well as titles that text links couldn't target because they would
 // become filesystem links.
 fn parse_title(
     raw_title: &str,
@@ -149,7 +149,7 @@ fn parse_title(
     } else {
         Err(Error::new(
             &format!(
-                "This title cannot start with {}.",
+                "This title can't start with {}.",
                 FILESYSTEM_LINK_PREFIX.code_str(),
             ),
             source_path,
@@ -290,7 +290,7 @@ fn parse_content(
             }
             ']' => {
                 // The preceding arm rejected a missing link start [ref:missing_link_start].
-                let start = link_start.take().expect("the link start was checked above");
+                let start = link_start.take().expect("The link start was checked.");
                 let inner_start = start + '['.len_utf8();
                 let trimmed_target = original_content[inner_start..index].trim();
                 let link_source_range = SourceRange {
@@ -339,7 +339,7 @@ fn parse_content(
     }
 
     // Retain the content following the final link, then normalize the finished content. Links
-    // cannot contain line breaks, and each ends with a delimiter, so normalizing never changes one.
+    // can't contain line breaks, and each ends with a delimiter, so normalizing never changes one.
     content.push_str(&original_content[copied_through..]);
     (normalize_lines(&content), links, errors)
 }
@@ -437,7 +437,7 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
             Component::CurDir => None,
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 // Escaping components were rejected above [ref:filesystem_path_components].
-                unreachable!("filesystem link path components were already validated")
+                unreachable!("Filesystem link path components were already validated.")
             }
         })
         .collect())
@@ -454,7 +454,7 @@ pub fn render_link_path(path: &Path, is_directory: bool) -> String {
             component
                 .as_os_str()
                 .to_str()
-                .expect("link paths should come from UTF-8 text")
+                .expect("Link paths should come from UTF-8 text.")
         })
         .collect::<Vec<_>>();
     let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
         assert_eq!(wiki.text_nodes["Home"].source_range.end, 41);
         let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
-            panic!("the parsed link should be a text link");
+            panic!("The parsed link should be a text link.");
         };
         assert_eq!(&source[source_range.start..source_range.end], "[Greeting]");
     }
@@ -573,7 +573,7 @@ mod tests {
         let source = "# Home\nSee [Grüße].\n# Grüße";
         let wiki = parse_test(source).unwrap();
         let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
-            panic!("the parsed link should be a text link");
+            panic!("The parsed link should be a text link.");
         };
 
         assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
@@ -662,7 +662,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_fails!(result, "Path `notes/../notes.txt` must not contain `..`.");
     }
 
-    // Reject opening link delimiters that are not closed.
+    // Reject opening link delimiters that aren't closed.
     #[test]
     fn unclosed_link() {
         assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
@@ -736,7 +736,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn content_before_title() {
         assert_fails!(
             parse_test("Introduction\n# Home"),
-            "This content is not in any node.",
+            "This content isn't in any node.",
         );
     }
 
@@ -759,12 +759,12 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             assert!(
                 error
                     .to_string()
-                    .contains("This title cannot start with `/`."),
+                    .contains("This title can't start with `/`."),
             );
         }
     }
 
-    // Do not reinterpret content after an invalid title as content before the first title.
+    // Don't reinterpret content after an invalid title as content before the first title.
     #[test]
     fn content_after_empty_title() {
         let errors = parse_test("# Home\n\nfoo\n\n#\n\nbar").unwrap_err();
@@ -792,7 +792,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("This content is not in any node."),
+                .contains("This content isn't in any node."),
         );
     }
 
@@ -857,7 +857,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("This content is not in any node"),
+                .contains("This content isn't in any node"),
         );
         assert!(errors[1].to_string().contains("This title is empty"));
         assert!(
