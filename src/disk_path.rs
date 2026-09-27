@@ -58,6 +58,8 @@ pub struct Misspelling {
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
 // disk. An editor or a user may spell the wiki's path differently if the filesystem ignores case.
+// The directory's own spelling doesn't matter, since it's only a prefix from which every other path
+// is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
 pub struct WikiDirectory {
     path: PathBuf,
