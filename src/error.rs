@@ -16,7 +16,7 @@ pub struct SourceRange {
 }
 
 // This describes an edit that would resolve an error, which an editor can offer as a quick fix.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Fix {
     // Declare a node with this title.
     CreateNode(String),

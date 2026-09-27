@@ -1773,55 +1773,63 @@ fn document_symbol_for_document(
     })
 }
 
-// Offer the fixes that the checker attached to the diagnostics at an editor range, merging the
-// diagnostics that the same node would resolve.
+// Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
+// every diagnostic it was attached to.
 fn code_action_for_document(
     uri: &Uri,
     source_contents: &str,
     diagnostics: &[Diagnostic],
 ) -> Option<CodeActionResponse> {
-    // Parse the current snapshot so a stale diagnostic doesn't lead to a node declared twice.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let mut resolved = BTreeMap::<&str, Vec<Diagnostic>>::new();
+    // Collect the distinct fixes, reading each from the data that `diagnostic_from_error` wrote.
+    let mut fixes = BTreeMap::<Fix, Vec<Diagnostic>>::new();
     for diagnostic in diagnostics {
-        if let Some(title) = diagnostic
+        let Some(fix) = diagnostic
             .data
             .as_ref()
             .and_then(|data| data.get(CREATE_NODE_FIX))
             .and_then(serde_json::Value::as_str)
-            && !wiki.text_nodes.contains_key(title)
-        {
-            resolved.entry(title).or_default().push(diagnostic.clone());
-        }
+            .map(|title| Fix::CreateNode(title.to_owned()))
+        else {
+            continue;
+        };
+        fixes.entry(fix).or_default().push(diagnostic.clone());
     }
 
-    // Prepend the home node, and append any other node after a blank line, leaving its placement
-    // to the formatter.
-    let actions = resolved
+    // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let actions = fixes
         .into_iter()
-        .map(|(title, diagnostics)| {
-            let edit = if title == HOME_TITLE {
-                let separator = if source_contents.is_empty() { "" } else { "\n" };
-                TextEdit::new(
-                    Range::new(Position::new(0, 0), Position::new(0, 0)),
-                    format!("{TITLE_PREFIX}{title}\n{separator}"),
-                )
-            } else {
-                let separator = if source_contents.ends_with("\n\n") {
-                    ""
-                } else if source_contents.ends_with('\n') {
-                    "\n"
-                } else {
-                    "\n\n"
-                };
-                let end = lsp_position(source_contents, source_contents.len());
-                TextEdit::new(
-                    Range::new(end, end),
-                    format!("{separator}{TITLE_PREFIX}{title}\n"),
-                )
+        .filter_map(|(fix, diagnostics)| {
+            let (title, edit) = match fix {
+                Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
+                Fix::CreateNode(title) => {
+                    // Prepend the home node, and append any other node after a blank line, leaving
+                    // its placement to the formatter.
+                    let edit = if title == HOME_TITLE {
+                        let separator = if source_contents.is_empty() { "" } else { "\n" };
+                        TextEdit::new(
+                            Range::new(Position::new(0, 0), Position::new(0, 0)),
+                            format!("{TITLE_PREFIX}{title}\n{separator}"),
+                        )
+                    } else {
+                        let separator = if source_contents.ends_with("\n\n") {
+                            ""
+                        } else if source_contents.ends_with('\n') {
+                            "\n"
+                        } else {
+                            "\n\n"
+                        };
+                        let end = lsp_position(source_contents, source_contents.len());
+                        TextEdit::new(
+                            Range::new(end, end),
+                            format!("{separator}{TITLE_PREFIX}{title}\n"),
+                        )
+                    };
+                    (format!("Create node {}", title.code_str()), edit)
+                }
             };
-            CodeActionOrCommand::CodeAction(CodeAction {
-                title: format!("Create node {}", title.code_str()),
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title,
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(diagnostics),
                 edit: Some(WorkspaceEdit {
@@ -1830,7 +1838,7 @@ fn code_action_for_document(
                 }),
                 is_preferred: Some(true),
                 ..CodeAction::default()
-            })
+            }))
         })
         .collect::<Vec<_>>();
 
