@@ -15,6 +15,13 @@ pub struct SourceRange {
     pub end: usize,   // Exclusive
 }
 
+// This describes an edit that would resolve an error, which an editor can offer as a quick fix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Fix {
+    // Declare a node with this title.
+    CreateNode(String),
+}
+
 // This is the primary error type we'll be using everywhere.
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -23,6 +30,7 @@ pub struct Error {
     source_path: Option<PathBuf>,
     listing: Option<String>,
     reason: Option<Rc<dyn error::Error>>,
+    fix: Option<Box<Fix>>,
 }
 
 impl Error {
@@ -47,6 +55,15 @@ impl Error {
             source_path: source_path.map(Path::to_owned),
             listing: source_listing,
             reason,
+            fix: None,
+        }
+    }
+
+    // Record an edit that would resolve the error.
+    pub fn with_fix(self, fix: Fix) -> Self {
+        Self {
+            fix: Some(Box::new(fix)),
+            ..self
         }
     }
 
@@ -65,6 +82,9 @@ impl Error {
     }
     pub fn reason(&self) -> Option<&(dyn error::Error + 'static)> {
         self.reason.as_deref()
+    }
+    pub fn fix(&self) -> Option<&Fix> {
+        self.fix.as_deref()
     }
 }
 

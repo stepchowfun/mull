@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.31.2] - 2026-09-27
 
 ### Fixed
-- Attached the quick fix that creates a missing `Home` node only to the diagnostic reporting it. It was also offered as the preferred fix for every other diagnostic without a source location, such as a file that isn't linked to, since all of them are reported at the start of the document.
+- Attached the quick fix that creates a missing `Home` node only to the diagnostic reporting it. It was also offered as the preferred fix for every other diagnostic without a source location, such as a file that isn't linked to, since all of them are reported at the start of the document. Quick fixes now come from the diagnostics they fix, so one fix covers every diagnostic it resolves, such as several links to the same missing node.
 
 ## [0.31.1] - 2026-09-27
 

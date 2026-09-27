@@ -1,11 +1,10 @@
 use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
-    error::{Error, SourceRange},
+    error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
-    validator::{missing_home_message, missing_node_message},
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
         TITLE_PREFIX, TextNode, Wiki,
@@ -15,7 +14,7 @@ use crate::{
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
@@ -54,6 +53,9 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // This extension command reveals a source range for clickable text links in hover previews.
 // Keep this in sync with [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
+
+// A diagnostic's data holds the title of a node that declaring would fix it under this key.
+const CREATE_NODE_FIX: &str = "createNode";
 
 // This extension command reveals the directory of a clicked directory link in the explorer.
 // Keep this in sync with [group:reveal_in_explorer_command].
@@ -556,7 +558,6 @@ impl LanguageServer for Backend {
         Ok(code_action_for_document(
             &params.text_document.uri,
             &contents,
-            params.range,
             &params.context.diagnostics,
         ))
     }
@@ -643,15 +644,23 @@ fn diagnostics_for_document(
 
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
-    // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    diagnostic(
-        source_contents,
-        error.source_range(),
-        error.reason().map_or_else(
-            || error.message().to_owned(),
-            |reason| format!("{}\n\nReason: {reason}", error.message()),
-        ),
-    )
+    // Include an underlying reason without including terminal prefixes, paths, or source listings,
+    // and carry any fix along so a code action request can offer it.
+    Diagnostic {
+        data: error.fix().map(|fix| match fix {
+            Fix::CreateNode(title) => {
+                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
+            }
+        }),
+        ..diagnostic(
+            source_contents,
+            error.source_range(),
+            error.reason().map_or_else(
+                || error.message().to_owned(),
+                |reason| format!("{}\n\nReason: {reason}", error.message()),
+            ),
+        )
+    }
 }
 
 // Complete the link target at an editor position with node titles or filesystem paths.
@@ -1764,100 +1773,69 @@ fn document_symbol_for_document(
     })
 }
 
-// Offer to create a missing home node or the missing destination of a text link at an editor range.
+// Offer the fixes that the checker attached to the diagnostics at an editor range, merging the
+// diagnostics that the same node would resolve.
 fn code_action_for_document(
     uri: &Uri,
     source_contents: &str,
-    range: Range,
     diagnostics: &[Diagnostic],
 ) -> Option<CodeActionResponse> {
-    // Parse only the wiki syntax so fixes are available before the debounced check completes.
+    // Parse the current snapshot so a stale diagnostic doesn't lead to a node declared twice.
     let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let mut actions = Vec::new();
-
-    // Prepend a missing home node where its diagnostic is reported, since it has no source range.
-    // Other diagnostics without source ranges are reported there too, so recognize the home node's
-    // by its message.
-    let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
-    if range.start == document_start.start && !wiki.text_nodes.contains_key(HOME_TITLE) {
-        let separator = if source_contents.is_empty() { "" } else { "\n" };
-        actions.push(create_node_action(
-            uri,
-            HOME_TITLE,
-            TextEdit::new(
-                document_start,
-                format!("{TITLE_PREFIX}{HOME_TITLE}\n{separator}"),
-            ),
-            diagnostics,
-            |diagnostic| {
-                diagnostic.range == document_start && diagnostic.message == missing_home_message()
-            },
-        ));
+    let mut resolved = BTreeMap::<&str, Vec<Diagnostic>>::new();
+    for diagnostic in diagnostics {
+        if let Some(title) = diagnostic
+            .data
+            .as_ref()
+            .and_then(|data| data.get(CREATE_NODE_FIX))
+            .and_then(serde_json::Value::as_str)
+            && !wiki.text_nodes.contains_key(title)
+        {
+            resolved.entry(title).or_default().push(diagnostic.clone());
+        }
     }
 
-    // Append the missing destination of a text link after a blank line, leaving its placement to
-    // the formatter, and recognize its diagnostic by the link's range and the message. Skip empty
-    // targets, which no title can declare.
-    if let Some(byte_offset) = byte_offset(source_contents, range.start)
-        && let Some(Link::Text {
-            title,
-            source_range,
-        }) = link_at(&wiki, byte_offset)
-        && !title.is_empty()
-        && !wiki.text_nodes.contains_key(title)
-    {
-        let separator = if source_contents.ends_with("\n\n") {
-            ""
-        } else if source_contents.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        let end = lsp_position(source_contents, source_contents.len());
-        actions.push(create_node_action(
-            uri,
-            title,
-            TextEdit::new(
-                Range::new(end, end),
-                format!("{separator}{TITLE_PREFIX}{title}\n"),
-            ),
-            diagnostics,
-            |diagnostic| {
-                diagnostic.range == lsp_range(source_contents, *source_range)
-                    && diagnostic.message == missing_node_message(title)
-            },
-        ));
-    }
+    // Prepend the home node, and append any other node after a blank line, leaving its placement
+    // to the formatter.
+    let actions = resolved
+        .into_iter()
+        .map(|(title, diagnostics)| {
+            let edit = if title == HOME_TITLE {
+                let separator = if source_contents.is_empty() { "" } else { "\n" };
+                TextEdit::new(
+                    Range::new(Position::new(0, 0), Position::new(0, 0)),
+                    format!("{TITLE_PREFIX}{title}\n{separator}"),
+                )
+            } else {
+                let separator = if source_contents.ends_with("\n\n") {
+                    ""
+                } else if source_contents.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+                let end = lsp_position(source_contents, source_contents.len());
+                TextEdit::new(
+                    Range::new(end, end),
+                    format!("{separator}{TITLE_PREFIX}{title}\n"),
+                )
+            };
+            CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("Create node {}", title.code_str()),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(diagnostics),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+                    ..WorkspaceEdit::default()
+                }),
+                is_preferred: Some(true),
+                ..CodeAction::default()
+            })
+        })
+        .collect::<Vec<_>>();
 
     // Report the absence of fixes as no response.
     (!actions.is_empty()).then_some(actions)
-}
-
-// Describe a preferred quick fix that declares a node and resolves the diagnostics it recognizes.
-fn create_node_action(
-    uri: &Uri,
-    title: &str,
-    edit: TextEdit,
-    diagnostics: &[Diagnostic],
-    resolves: impl Fn(&Diagnostic) -> bool,
-) -> CodeActionOrCommand {
-    CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Create node `{title}`"),
-        kind: Some(CodeActionKind::QUICKFIX),
-        diagnostics: Some(
-            diagnostics
-                .iter()
-                .filter(|diagnostic| resolves(diagnostic))
-                .cloned()
-                .collect(),
-        ),
-        edit: Some(WorkspaceEdit {
-            changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
-            ..WorkspaceEdit::default()
-        }),
-        is_preferred: Some(true),
-        ..CodeAction::default()
-    })
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
@@ -3653,36 +3631,23 @@ mod tests {
         applied
     }
 
-    // Create the missing destination of a text link, resolving its diagnostic.
+    // Create the missing destination of text links, resolving every diagnostic the node would fix
+    // and no others.
     #[test]
     fn code_actions_create_missing_nodes() {
-        let source = "# Home\n\n[Greeting]";
+        let source = "# Home\n\n[Greeting] [Greeting]";
         let uri = untitled_uri();
-        let link_range = Range::new(Position::new(2, 0), Position::new(2, 10));
-        let link_diagnostic = diagnostics(&uri, source).remove(0);
-        let other_diagnostic = Diagnostic {
-            range: Range::new(Position::new(0, 0), Position::new(0, 1)),
-            ..link_diagnostic.clone()
-        };
+        let link_diagnostics = diagnostics(&uri, source);
+        assert_eq!(link_diagnostics.len(), 2);
         let unrelated_diagnostic = Diagnostic {
+            data: None,
             message: "Something else is wrong with this link.".to_owned(),
-            ..link_diagnostic.clone()
+            ..link_diagnostics[0].clone()
         };
-        assert_eq!(link_diagnostic.range, link_range);
 
-        // Resolve only the link's missing-destination diagnostic, not others at other ranges or
-        // with other messages.
-        let actions = code_action_for_document(
-            &uri,
-            source,
-            Range::new(Position::new(2, 3), Position::new(2, 3)),
-            &[
-                other_diagnostic,
-                unrelated_diagnostic,
-                link_diagnostic.clone(),
-            ],
-        )
-        .unwrap();
+        let mut request_diagnostics = link_diagnostics.clone();
+        request_diagnostics.push(unrelated_diagnostic);
+        let actions = code_action_for_document(&uri, source, &request_diagnostics).unwrap();
         let [action] = actions.as_slice() else {
             panic!("A missing destination should have exactly one code action.");
         };
@@ -3691,12 +3656,12 @@ mod tests {
         };
         assert_eq!(code_action.title, "Create node `Greeting`");
         assert_eq!(code_action.kind, Some(CodeActionKind::QUICKFIX));
-        assert_eq!(code_action.diagnostics, Some(vec![link_diagnostic]));
+        assert_eq!(code_action.diagnostics, Some(link_diagnostics));
         assert_eq!(code_action.is_preferred, Some(true));
 
         // Confirm that the created node makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
-        assert_eq!(applied, "# Home\n\n[Greeting]\n\n# Greeting\n");
+        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting\n");
         assert!(diagnostics(&uri, &applied).is_empty());
     }
 
@@ -3705,13 +3670,7 @@ mod tests {
     fn code_actions_reuse_trailing_line_breaks() {
         let source = "# Home\n\n[Greeting]\n";
         let uri = untitled_uri();
-        let actions = code_action_for_document(
-            &uri,
-            source,
-            Range::new(Position::new(2, 1), Position::new(2, 1)),
-            &[],
-        )
-        .unwrap();
+        let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
 
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
@@ -3719,27 +3678,21 @@ mod tests {
         );
     }
 
-    // Create a missing home node at the start of the document, where its diagnostic is reported.
+    // Create a missing home node at the start of the document, resolving only its diagnostic
+    // among those without source ranges, which are all reported there.
     #[test]
     fn code_actions_create_missing_home_nodes() {
         let uri = untitled_uri();
-        let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
         let home_diagnostic = diagnostics(&uri, "").remove(0);
-        assert_eq!(home_diagnostic.range, document_start);
-
-        // Resolve only the home node's diagnostic, not others without source ranges.
         let unrelated_diagnostic = Diagnostic {
-            range: document_start,
+            data: None,
             message: "File `notes.txt` isn't linked to.".to_owned(),
-            ..Diagnostic::default()
+            ..home_diagnostic.clone()
         };
-        let actions = code_action_for_document(
-            &uri,
-            "",
-            document_start,
-            &[home_diagnostic.clone(), unrelated_diagnostic],
-        )
-        .unwrap();
+
+        let actions =
+            code_action_for_document(&uri, "", &[home_diagnostic.clone(), unrelated_diagnostic])
+                .unwrap();
         let [action] = actions.as_slice() else {
             panic!("A missing home node should have exactly one code action.");
         };
@@ -3754,40 +3707,31 @@ mod tests {
 
         // Separate the home node from the nodes that follow it.
         let source = "# Greeting\n";
-        let actions = code_action_for_document(&uri, source, document_start, &[]).unwrap();
+        let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
             "# Home\n\n# Greeting\n",
         );
     }
 
-    // Offer to create a home node only when it's missing and the request starts the document.
+    // Skip a fix from a stale diagnostic whose node now exists.
     #[test]
-    fn code_actions_omit_unneeded_home_nodes() {
+    fn code_actions_skip_stale_fixes() {
         let uri = untitled_uri();
-        let at = |line, character| {
-            let position = Position::new(line, character);
-            Range::new(position, position)
-        };
+        let stale_diagnostics = diagnostics(&uri, "");
 
-        assert!(code_action_for_document(&uri, "# Home\n", at(0, 0), &[]).is_none());
-        assert!(code_action_for_document(&uri, "# Greeting\n", at(0, 3), &[]).is_none());
+        assert!(code_action_for_document(&uri, "# Home\n", &stale_diagnostics).is_none());
     }
 
-    // Offer to create nodes only for text links whose destinations are missing and declarable.
+    // Offer no fixes for diagnostics that declaring a node wouldn't resolve.
     #[test]
-    fn code_actions_ignore_other_contexts() {
+    fn code_actions_ignore_other_diagnostics() {
         let source = "# Home\n\n[Home] [] [/notes.txt] prose";
         let uri = untitled_uri();
-        let actions_at = |character| {
-            let position = Position::new(2, character);
-            code_action_for_document(&uri, source, Range::new(position, position), &[])
-        };
+        let source_diagnostics = diagnostics(&uri, source);
+        assert!(!source_diagnostics.is_empty());
 
-        assert!(actions_at(1).is_none());
-        assert!(actions_at(8).is_none());
-        assert!(actions_at(14).is_none());
-        assert!(actions_at(29).is_none());
+        assert!(code_action_for_document(&uri, source, &source_diagnostics).is_none());
     }
 
     // Leave filesystem links to ordinary editor and filesystem navigation.
