@@ -4,10 +4,10 @@ use crate::{
     disk_path::{DirectoryListings, DiskPath, WikiDirectory, entry_identity},
     error::{Error, SourceRange},
     format::CodePath,
-    parser::{self, normalize_link_path, render_link_path},
+    parser,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
-        escape_link_delimiters, unescape_link_delimiters,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
+        TextNode, Wiki, escape_link_delimiters, unescape_link_delimiters,
     },
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -969,8 +969,8 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
                     source_contents,
                     wiki.text_nodes.get(title)?.title_source_range,
                 ),
-                Link::File { .. } | Link::Directory { .. } => Some(
-                    filesystem_link_target(wiki_directory.as_ref()?, link, &mut listings)?
+                Link::Filesystem { target, .. } => Some(
+                    filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
                         .as_str()
                         .to_owned(),
                 ),
@@ -1050,7 +1050,7 @@ fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
                 title: link_title,
                 source_range,
             } if link_title == title => Some(*source_range),
-            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+            Link::Text { .. } | Link::Filesystem { .. } => None,
         })
         .collect::<Vec<_>>();
     source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
@@ -1081,8 +1081,10 @@ fn document_highlight_for_document(
         // Filesystem links have no declaration in the wiki, so every matching link is a reference.
         // A text link reaches this branch only when its target doesn't exist, so it has nothing
         // to highlight.
-        let link = link_at(&wiki, byte_offset).filter(|link| !matches!(link, Link::Text { .. }))?;
-        filesystem_link_source_ranges(&wiki, link)
+        let Some(Link::Filesystem { target, .. }) = link_at(&wiki, byte_offset) else {
+            return None;
+        };
+        filesystem_link_source_ranges(&wiki, target)
             .into_iter()
             .map(|source_range| (source_range, DocumentHighlightKind::READ))
             .collect()
@@ -1101,29 +1103,18 @@ fn document_highlight_for_document(
     )
 }
 
-// Collect every complete filesystem-link range with the same kind and path as a target.
-fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
+// Collect every complete filesystem-link range with the same target.
+fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<SourceRange> {
     // Match logical paths without resolving symlinks, just as filesystem validation does.
     wiki.text_nodes
         .values()
         .flat_map(|node| &node.links)
-        .filter_map(|link| match (link, target) {
-            (
-                Link::File { path, source_range },
-                Link::File {
-                    path: target_path, ..
-                },
-            )
-            | (
-                Link::Directory { path, source_range },
-                Link::Directory {
-                    path: target_path, ..
-                },
-            ) if path == target_path => Some(*source_range),
-            (
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-            ) => None,
+        .filter_map(|link| match link {
+            Link::Filesystem {
+                target: link_target,
+                source_range,
+            } if link_target == target => Some(*source_range),
+            Link::Text { .. } | Link::Filesystem { .. } => None,
         })
         .collect()
 }
@@ -1308,8 +1299,8 @@ fn rename_filesystem_node_for_document(
     // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
     let Some(RenamableFilesystemNode {
         wiki_directory,
+        old_target,
         old_path,
-        is_directory,
         ..
     }) = renamable_filesystem_node_at(
         wiki,
@@ -1322,13 +1313,14 @@ fn rename_filesystem_node_for_document(
         return Ok(None);
     };
 
-    // Accept only a new path which the parser would accept in a link. A new path written exactly
-    // like the old one, which is spelled as on disk, changes nothing.
-    let new_path = normalize_link_path(new_name.trim())?;
-    if new_path.as_path() == old_path.as_path() {
+    // Accept only a new path which the parser would accept in a link, for a node of the same kind.
+    // A new target written exactly like the old one, which is spelled as on disk, changes nothing.
+    let is_directory = old_target.is_directory();
+    let new_target = FilesystemTarget::from_name(new_name.trim(), is_directory)?;
+    if new_target == old_target {
         return Ok(Some(WorkspaceEdit::default()));
     }
-    if new_path.is_wiki_directory() {
+    if new_target.path().is_wiki_directory() {
         return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
     }
 
@@ -1338,7 +1330,7 @@ fn rename_filesystem_node_for_document(
     // go wrong. For example, a directory which will contain the node could look empty after the
     // rename and be deleted along with it.
     let new_path = wiki_directory
-        .spell_destination(&new_path)
+        .spell_destination(new_target.path())
         .map_err(|error| error.message)?;
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
@@ -1351,7 +1343,7 @@ fn rename_filesystem_node_for_document(
     let new_absolute_path = wiki_directory.resolve(&new_path);
 
     // Rewrite the path of every link to the renamed entry.
-    let edits = filesystem_rename_edits(wiki, source_contents, &old_path, &new_path, is_directory);
+    let edits = filesystem_rename_edits(wiki, source_contents, &old_target, &new_target);
 
     // Edit the wiki at the version the edits were computed from.
     let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
@@ -1420,8 +1412,8 @@ fn rename_filesystem_node_for_document(
 struct RenamableFilesystemNode {
     wiki_directory: WikiDirectory,
     path_source_range: SourceRange,
+    old_target: FilesystemTarget,
     old_path: DiskPath,
-    is_directory: bool,
 }
 
 // Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
@@ -1433,12 +1425,16 @@ fn renamable_filesystem_node_at(
     cursor_offset: usize,
     supports_file_renames: bool,
 ) -> std::result::Result<Option<RenamableFilesystemNode>, String> {
-    // Resolve the filesystem link at the cursor and the path within it.
-    let (is_directory, old_path, source_range) = match link_at(wiki, cursor_offset) {
-        Some(Link::File { path, source_range }) => (false, path.clone(), *source_range),
-        Some(Link::Directory { path, source_range }) => (true, path.clone(), *source_range),
-        Some(Link::Text { .. }) | None => return Ok(None),
+    // Resolve the filesystem link at the cursor and its target.
+    let Some(Link::Filesystem {
+        target: old_target,
+        source_range,
+    }) = link_at(wiki, cursor_offset)
+    else {
+        return Ok(None);
     };
+    let (is_directory, old_path, source_range) =
+        (old_target.is_directory(), old_target.path(), *source_range);
     let path_source_range = filesystem_link_path_source_range(source_contents, source_range);
 
     // The client renames the node on disk, which requires a saved wiki and a capable client.
@@ -1465,7 +1461,7 @@ fn renamable_filesystem_node_at(
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
     let old_path = wiki_directory
-        .spell(&old_path, &mut DirectoryListings::new())
+        .spell(old_path, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
     if old_path == *wiki_directory.wiki_path() {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
@@ -1474,8 +1470,8 @@ fn renamable_filesystem_node_at(
     Ok(Some(RenamableFilesystemNode {
         wiki_directory,
         path_source_range,
+        old_target: old_target.clone(),
         old_path,
-        is_directory,
     }))
 }
 
@@ -1540,39 +1536,37 @@ fn check_rename_destination(
     Ok(())
 }
 
-// Rewrite the path of every link to a renamed entry. Renaming a directory also moves everything
+// Rewrite the target of every link to a renamed entry. Renaming a directory also moves everything
 // within it, while a file is referenced only by file links with its exact path.
 fn filesystem_rename_edits(
     wiki: &Wiki,
     source_contents: &str,
-    old_path: &DiskPath,
-    new_path: &DiskPath,
-    is_directory: bool,
+    old_target: &FilesystemTarget,
+    new_target: &FilesystemTarget,
 ) -> Vec<(SourceRange, String)> {
-    // Select filesystem links at the renamed path or, for a directory, within it.
+    // Move each link to the renamed entry or, for a directory, to anything within it.
     let mut edits = Vec::new();
     for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
-        let (Link::File { path, source_range } | Link::Directory { path, source_range }) = link
+        let Link::Filesystem {
+            target,
+            source_range,
+        } = link
         else {
             continue;
         };
-        let Some(suffix) = path.strip_prefix(old_path) else {
-            continue;
+        let moved_target = if old_target.is_directory() {
+            target.moved(old_target.path(), new_target.path())
+        } else {
+            (target == old_target).then(|| new_target.clone())
         };
-        if !is_directory
-            && (matches!(link, Link::Directory { .. }) || !suffix.as_os_str().is_empty())
-        {
-            continue;
-        }
 
-        // Replace the link's path, keeping anything below a renamed directory.
-        edits.push((
-            filesystem_link_path_source_range(source_contents, *source_range),
-            render_link_path(
-                &new_path.as_path().join(suffix),
-                matches!(link, Link::Directory { .. }),
-            ),
-        ));
+        // Replace the link's target with its canonical text.
+        if let Some(moved_target) = moved_target {
+            edits.push((
+                filesystem_link_path_source_range(source_contents, *source_range),
+                moved_target.text().to_owned(),
+            ));
+        }
     }
 
     // Present the edits in source order.
@@ -1825,11 +1819,14 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
         .values()
         .flat_map(|node| &node.links)
         .filter_map(|link| {
-            let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) = link
+            let Link::Filesystem {
+                target,
+                source_range,
+            } = link
             else {
                 return None;
             };
-            let tooltip = if matches!(link, Link::Directory { .. }) {
+            let tooltip = if target.is_directory() {
                 "Reveal in Explorer"
             } else {
                 "Open file"
@@ -1838,7 +1835,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
                 range: lsp_range(source_contents, *source_range),
                 target: Some(filesystem_link_target(
                     &wiki_directory,
-                    link,
+                    target,
                     &mut listings,
                 )?),
                 tooltip: Some(tooltip.to_owned()),
@@ -1862,16 +1859,13 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
 // differently than on disk leads nowhere, just as the checker reports it.
 fn filesystem_link_target(
     wiki_directory: &WikiDirectory,
-    link: &Link,
+    target: &FilesystemTarget,
     listings: &mut DirectoryListings,
 ) -> Option<Uri> {
     // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
     // names.
-    let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
-        return None;
-    };
-    let is_directory = matches!(link, Link::Directory { .. });
-    let target_path = wiki_directory.resolve(&wiki_directory.spell(path, listings).ok()?);
+    let is_directory = target.is_directory();
+    let target_path = wiki_directory.resolve(&wiki_directory.spell(target.path(), listings).ok()?);
     if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
         return None;
     }
@@ -1948,9 +1942,7 @@ fn node_at<'a>(
 fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
     wiki.text_nodes.values().find_map(|node| {
         node.links.iter().find(|link| {
-            let (Link::Text { source_range, .. }
-            | Link::File { source_range, .. }
-            | Link::Directory { source_range, .. }) = link;
+            let source_range = link.source_range();
             source_range.start <= byte_offset && byte_offset < source_range.end
         })
     })

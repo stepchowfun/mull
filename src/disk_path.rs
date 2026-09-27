@@ -1,4 +1,4 @@
-use crate::{format::CodePath, parser::LinkPath, path_util::relative_path};
+use crate::{format::CodePath, path_util::relative_path, wiki::LinkPath};
 use colored::ColoredString;
 use std::{
     collections::{HashMap, HashSet},

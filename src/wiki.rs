@@ -1,5 +1,13 @@
-use crate::{error::SourceRange, parser::LinkPath};
-use std::{collections::HashMap, fmt};
+use crate::{
+    error::SourceRange,
+    format::{CodePath, CodeStr},
+};
+use colored::ColoredString;
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Component, Path, PathBuf},
+};
 
 // These strings define the wiki format's extension and structural markers. A link whose target
 // starts with `/` is a filesystem link, relative to the wiki's directory, which names a directory
@@ -20,14 +28,166 @@ pub enum Link {
         title: String,
         source_range: SourceRange,
     },
-    File {
-        path: LinkPath,
+    Filesystem {
+        target: FilesystemTarget,
         source_range: SourceRange,
     },
-    Directory {
-        path: LinkPath,
-        source_range: SourceRange,
-    },
+}
+
+impl Link {
+    // Locate the link's source occurrence, whatever its kind.
+    pub fn source_range(&self) -> SourceRange {
+        match self {
+            Link::Text { source_range, .. } | Link::Filesystem { source_range, .. } => {
+                *source_range
+            }
+        }
+    }
+}
+
+// This is the target of a filesystem link in canonical form, which parsing establishes once: its
+// path, whether it names a directory, and the link text for both. Writing the link back is then
+// just a matter of using that text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilesystemTarget {
+    text: String,
+    path: LinkPath,
+    is_directory: bool,
+}
+
+impl FilesystemTarget {
+    // Parse the text of a filesystem link between its delimiters, which starts with `/` and names a
+    // directory if it also ends with one. Describe any problem with a message.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = unescape_link_delimiters(text);
+        let Some(path) = text.strip_prefix(FILESYSTEM_LINK_PREFIX) else {
+            return Err(format!(
+                "A filesystem link must start with {}.",
+                FILESYSTEM_LINK_PREFIX.code_str(),
+            ));
+        };
+        Self::from_name(path, text.ends_with(DIRECTORY_LINK_SUFFIX))
+    }
+
+    // Parse a path written without link syntax or escapes, such as a rename's new name, for a
+    // target of the given kind. The path is relative to the wiki directory even if it starts with
+    // `/`, and it must stay inside the wiki's logical tree.
+    pub fn from_name(path: &str, is_directory: bool) -> Result<Self, String> {
+        // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A
+        // root or prefix makes the path absolute.
+        let path = Path::new(path.trim_start_matches('/'));
+        if path
+            .components()
+            .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+        {
+            return Err(format!(
+                "Path {} must be relative to the wiki directory.",
+                path.code_path(),
+            ));
+        }
+
+        // A parent component could lead outside the wiki directory.
+        if path
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            return Err(format!(
+                "Path {} must not contain {}.",
+                path.code_path(),
+                "..".code_str(),
+            ));
+        }
+
+        // Normalize harmless current-directory components without resolving symlinks.
+        Ok(Self::canonical(
+            path.components()
+                .filter_map(|component| match component {
+                    Component::Normal(component) => Some(component),
+                    Component::CurDir => None,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                        // Escaping components were rejected above [ref:filesystem_path_components].
+                        unreachable!("Filesystem link path components were already validated.")
+                    }
+                })
+                .collect(),
+            is_directory,
+        ))
+    }
+
+    // Move this target from one directory to another, keeping its kind, if it's the directory or
+    // lies within it.
+    pub fn moved(&self, from: &LinkPath, to: &LinkPath) -> Option<Self> {
+        let suffix = self.path.0.strip_prefix(&from.0).ok()?;
+        Some(Self::canonical(to.0.join(suffix), self.is_directory))
+    }
+
+    // Expose the link text: `/` and the path's components, followed by `/` for a directory, with
+    // any link delimiters escaped.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    // Expose the path relative to the wiki directory.
+    pub fn path(&self) -> &LinkPath {
+        &self.path
+    }
+
+    // Determine whether the target is a directory.
+    pub fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+
+    // Establish the canonical form of a normalized path, which is the only place that decides how
+    // a filesystem link is written. The wiki directory is always a directory, written as `/`.
+    fn canonical(path: PathBuf, is_directory: bool) -> Self {
+        // Join the components with the separator that links use on every platform. Link paths come
+        // from UTF-8 text.
+        let components = path
+            .components()
+            .map(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .expect("Link paths should come from UTF-8 text.")
+            })
+            .collect::<Vec<_>>();
+        let is_directory = is_directory || components.is_empty();
+        let mut text = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
+        if is_directory && !components.is_empty() {
+            text.push_str(DIRECTORY_LINK_SUFFIX);
+        }
+
+        // Escape the finished text once, as it will appear in the source.
+        Self {
+            text: escape_link_delimiters(&text),
+            path: LinkPath(path),
+            is_directory,
+        }
+    }
+}
+
+// This is a filesystem link's path relative to the wiki directory, without any root, prefix, `.`,
+// or `..` components. It's spelled as written, which may differ from the names on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkPath(PathBuf);
+
+impl LinkPath {
+    // Expose the path for display and for resolving it against the wiki directory.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    // Determine whether this path is the wiki directory itself.
+    pub fn is_wiki_directory(&self) -> bool {
+        self.0.as_os_str().is_empty()
+    }
+}
+
+// Format a link path for human-facing diagnostic output.
+impl CodePath for LinkPath {
+    fn code_path(&self) -> ColoredString {
+        self.0.code_path()
+    }
 }
 
 // This struct represents a text node in a wiki.
@@ -80,7 +240,7 @@ impl TextNode {
                         Some(link @ Link::Text { .. }) => {
                             render_markdown_text_link(target, link_url(link).as_deref())
                         }
-                        Some(link @ (Link::File { .. } | Link::Directory { .. })) => {
+                        Some(link @ Link::Filesystem { .. }) => {
                             render_markdown_filesystem_link(target, link_url(link).as_deref())
                         }
                         None => render_markdown_text_link(target, None),
@@ -217,8 +377,8 @@ fn render_markdown_filesystem_link(target: &str, url: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Link, TextNode, Wiki};
-    use crate::{error::SourceRange, parser::normalize_link_path};
+    use super::{FilesystemTarget, Link, TextNode, Wiki};
+    use crate::error::SourceRange;
     use std::collections::HashMap;
 
     // Use a harmless range when testing rendering, which doesn't inspect source locations.
@@ -274,7 +434,7 @@ mod tests {
                 Link::Text { title, .. } if title == "Home" => {
                     Some("command:mull.revealRange?destination".to_owned())
                 }
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+                Link::Text { .. } | Link::Filesystem { .. } => None,
             }),
             concat!(
                 "# Greeting\n\nLiteral &#91;brackets&#93; and ",
@@ -330,12 +490,12 @@ mod tests {
             title: "Files".to_owned(),
             content: "[/notes.txt] and [/odd`name/]".to_owned(),
             links: vec![
-                Link::File {
-                    path: normalize_link_path("notes.txt").unwrap(),
+                Link::Filesystem {
+                    target: FilesystemTarget::parse("/notes.txt").unwrap(),
                     source_range: SOURCE_RANGE,
                 },
-                Link::Directory {
-                    path: normalize_link_path("odd`name").unwrap(),
+                Link::Filesystem {
+                    target: FilesystemTarget::parse("/odd`name/").unwrap(),
                     source_range: SOURCE_RANGE,
                 },
             ],
@@ -345,11 +505,69 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|link| {
-                matches!(link, Link::File { .. }).then(|| "file:///wiki/notes.txt".to_owned())
+            node.to_markdown(|link| match link {
+                Link::Filesystem { target, .. } if !target.is_directory() => {
+                    Some("file:///wiki/notes.txt".to_owned())
+                }
+                Link::Text { .. } | Link::Filesystem { .. } => None,
             }),
             "# Files\n\n[`[/notes.txt]`](<file:///wiki/notes.txt>) and ``[/odd`name/]``",
         );
+    }
+
+    // Establish a filesystem link's canonical text when parsing it, which parses back to itself.
+    #[test]
+    fn filesystem_target_canonical_text() {
+        for (text, canonical, is_directory) in [
+            ("/notes.txt", "/notes.txt", false),
+            ("//images/./raw//", "/images/raw/", true),
+            ("/a\\[1\\]/b.txt", "/a\\[1\\]/b.txt", false),
+            ("/", "/", true),
+            ("/.", "/", true),
+        ] {
+            let target = FilesystemTarget::parse(text).unwrap();
+            assert_eq!(target.text(), canonical);
+            assert_eq!(target.is_directory(), is_directory);
+            assert_eq!(FilesystemTarget::parse(target.text()).unwrap(), target);
+        }
+    }
+
+    // Reject filesystem link paths which would escape the wiki's logical tree.
+    #[test]
+    fn filesystem_target_escaping_paths() {
+        assert!(FilesystemTarget::parse("/../notes.txt").is_err());
+        assert!(FilesystemTarget::parse("notes.txt").is_err());
+    }
+
+    // Write a name without link syntax in the canonical form for the given kind, escaping any link
+    // delimiters.
+    #[test]
+    fn filesystem_target_from_name() {
+        let target = FilesystemTarget::from_name("photos/a[1]/", false).unwrap();
+        assert_eq!(target.text(), "/photos/a\\[1\\]");
+        assert_eq!(
+            FilesystemTarget::from_name("photos", true).unwrap().text(),
+            "/photos/",
+        );
+    }
+
+    // Move a target along with a directory containing it, keeping its kind.
+    #[test]
+    fn filesystem_target_moved() {
+        let directory = FilesystemTarget::parse("/photos/").unwrap();
+        let destination = FilesystemTarget::parse("/archive/photos/").unwrap();
+        let moved = |text| {
+            FilesystemTarget::parse(text)
+                .unwrap()
+                .moved(directory.path(), destination.path())
+                .map(|target| target.text().to_owned())
+        };
+        assert_eq!(moved("/photos/"), Some("/archive/photos/".to_owned()));
+        assert_eq!(
+            moved("/photos/cat.jpg"),
+            Some("/archive/photos/cat.jpg".to_owned()),
+        );
+        assert_eq!(moved("/photographs/cat.jpg"), None);
     }
 
     // Ensure a wiki containing an empty node has only its trailing line break.

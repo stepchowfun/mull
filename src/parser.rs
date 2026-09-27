@@ -1,15 +1,13 @@
 use crate::{
-    disk_path::DiskPath,
     error::{Error, SourceRange},
-    format::{CodePath, CodeStr},
+    format::CodeStr,
     scoring::populate_depths,
     wiki::{
-        DIRECTORY_LINK_SUFFIX, FILESYSTEM_LINK_PREFIX, Link, TITLE_MARKER, TITLE_PREFIX, TextNode,
-        Wiki, escape_link_delimiters, unescape_link_delimiters,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
+        unescape_link_delimiters,
     },
 };
-use colored::ColoredString;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 // This struct retains the source information needed to finish a node at its next boundary.
 struct PendingNode {
@@ -306,11 +304,10 @@ fn parse_content(
                     link_source_range,
                 );
 
-                // Write a filesystem link's path in its normalized form, and keep any other target
+                // Write a filesystem link's target in its canonical form, and keep any other target
                 // as written.
                 let formatted_target = match &link {
-                    Ok(Link::File { path, .. }) => render_link_path(path.as_path(), false),
-                    Ok(Link::Directory { path, .. }) => render_link_path(path.as_path(), true),
+                    Ok(Link::Filesystem { target, .. }) => target.text().to_owned(),
                     Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
                 match link {
@@ -355,11 +352,9 @@ fn parse_link(
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
-    // Unescape delimiters before converting the target into its semantic link type. A filesystem
-    // link starts with `/` and names a directory if it also ends with one.
-    let target = unescape_link_delimiters(target);
+    // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        let path = normalize_link_path(&target).map_err(|message| {
+        let target = FilesystemTarget::parse(target).map_err(|message| {
             Error::new(
                 &message,
                 source_path,
@@ -367,120 +362,16 @@ fn parse_link(
                 None,
             )
         })?;
-        Ok(if target.ends_with(DIRECTORY_LINK_SUFFIX) {
-            Link::Directory { path, source_range }
-        } else {
-            Link::File { path, source_range }
+        Ok(Link::Filesystem {
+            target,
+            source_range,
         })
     } else {
         Ok(Link::Text {
-            title: target,
+            title: unescape_link_delimiters(target),
             source_range,
         })
     }
-}
-
-// Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
-// directory, with any link delimiters escaped. The wiki directory is written as `/`.
-pub fn render_link_path(path: &Path, is_directory: bool) -> String {
-    // Join the components with the separator that links use on every platform. Link paths come
-    // from UTF-8 text.
-    let components = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("Link paths should come from UTF-8 text.")
-        })
-        .collect::<Vec<_>>();
-    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
-
-    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
-    // directory.
-    if is_directory && !components.is_empty() {
-        rendered.push_str(DIRECTORY_LINK_SUFFIX);
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
-}
-
-// This is a filesystem link's path relative to the wiki directory, without any root, prefix, `.`,
-// or `..` components. It's spelled as written, which may differ from the names on disk.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinkPath(PathBuf);
-
-impl LinkPath {
-    // Expose the path for display and for resolving it against the wiki directory.
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-
-    // Determine whether this path is the wiki directory itself.
-    pub fn is_wiki_directory(&self) -> bool {
-        self.0.as_os_str().is_empty()
-    }
-
-    // Find what follows a path spelled as on disk in this path as written. Only a path spelled
-    // exactly like the prefix has one, and any other spelling is reported as misspelled.
-    pub fn strip_prefix(&self, prefix: &DiskPath) -> Option<&Path> {
-        self.0.strip_prefix(prefix.as_path()).ok()
-    }
-}
-
-// Format a link path for human-facing diagnostic output.
-impl CodePath for LinkPath {
-    fn code_path(&self) -> ColoredString {
-        self.0.code_path()
-    }
-}
-
-// Normalize a filesystem link path, which is relative to the wiki directory even if it starts with
-// `/`, while keeping it inside the wiki's logical tree. Describe any problem with a message.
-pub fn normalize_link_path(path: &str) -> Result<LinkPath, String> {
-    // Interpret the path relative to the wiki directory, even with the leading `/` of a filesystem
-    // link. What remains may be empty, which denotes the wiki directory itself.
-    let parsed_path = Path::new(path.trim_start_matches('/'));
-
-    // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A root
-    // or prefix makes the path absolute.
-    if parsed_path
-        .components()
-        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
-    {
-        return Err(format!(
-            "Path {} must be relative to the wiki directory.",
-            parsed_path.code_path(),
-        ));
-    }
-
-    // A parent component could lead outside the wiki directory.
-    if parsed_path
-        .components()
-        .any(|component| component == Component::ParentDir)
-    {
-        return Err(format!(
-            "Path {} must not contain {}.",
-            parsed_path.code_path(),
-            "..".code_str(),
-        ));
-    }
-
-    // Normalize harmless current-directory components without resolving symlinks.
-    Ok(LinkPath(
-        parsed_path
-            .components()
-            .filter_map(|component| match component {
-                Component::Normal(component) => Some(component),
-                Component::CurDir => None,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                    // Escaping components were rejected above [ref:filesystem_path_components].
-                    unreachable!("Filesystem link path components were already validated.")
-                }
-            })
-            .collect(),
-    ))
 }
 
 // Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
@@ -531,8 +422,11 @@ mod tests {
             .iter()
             .map(|link| match link {
                 Link::Text { title, .. } => format!("text:{title}"),
-                Link::File { path, .. } => format!("file:{}", path.as_path().display()),
-                Link::Directory { path, .. } => format!("dir:{}", path.as_path().display()),
+                Link::Filesystem { target, .. } => format!(
+                    "{}:{}",
+                    if target.is_directory() { "dir" } else { "file" },
+                    target.path().as_path().display(),
+                ),
             })
             .collect()
     }

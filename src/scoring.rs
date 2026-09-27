@@ -26,7 +26,7 @@ pub fn populate_depths(wiki: &mut Wiki) {
             .iter()
             .filter_map(|link| match link {
                 Link::Text { title, .. } => Some(title.clone()),
-                Link::File { .. } | Link::Directory { .. } => None,
+                Link::Filesystem { .. } => None,
             })
             .collect::<Vec<_>>();
         for text_link in text_links {
