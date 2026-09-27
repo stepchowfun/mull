@@ -623,10 +623,9 @@ fn diagnostics_for_document(
     cancellation: &CancellationFlag,
 ) -> Option<Vec<Diagnostic>> {
     // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
-    let Outcome::Completed(result) =
-        analyze(local_path(uri).as_deref(), source_contents, cancellation)
-    else {
-        return None;
+    let result = match analyze(local_path(uri).as_deref(), source_contents, cancellation) {
+        Outcome::Completed(result) => result,
+        Outcome::Cancelled => return None,
     };
 
     // Preserve independent Mull errors as independent editor diagnostics.
