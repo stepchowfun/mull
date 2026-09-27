@@ -1300,7 +1300,7 @@ fn rename_text_node_for_document(
 
 // Rename the file or directory of a filesystem link on disk and update every link to it or, for a
 // directory, to anything within it. The client creates any missing directories, and directories
-// that the rename leaves empty are deleted when the client supports it.
+// that contained nothing but the renamed node are deleted when the client supports it.
 fn rename_filesystem_node_for_document(
     wiki: &Wiki,
     uri: &Uri,
@@ -1624,10 +1624,11 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
     }))
 }
 
-// Find the outermost directory that moving a node out of it would leave containing nothing but
-// empty directories. A directory is kept if it will contain the new path, but not merely because a
-// directory link names it, since such a link only stands for the files within the directory. The
-// search never reaches the wiki directory itself.
+// Find the outermost directory whose only entry is the node being moved, directly or through
+// directories whose only entry leads to it. Any other entry keeps a directory, even an empty
+// directory or an ignored file. A directory is also kept if it will contain the new path, but not
+// merely because a directory link names it, since such a link only stands for the files within the
+// directory. The search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
     wiki_directory: &Path,
     old_path: &Path,
@@ -3279,8 +3280,8 @@ mod tests {
         );
     }
 
-    // Leave missing directories to the client, and delete the outermost directory a rename leaves
-    // containing only empty directories, keeping any which will contain the new path.
+    // Leave missing directories to the client, and delete the outermost directory which contained
+    // nothing but the renamed node, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
