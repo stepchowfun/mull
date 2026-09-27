@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.7] - 2026-09-27
+
+### Changed
+- Reworded error messages so that similar problems are described the same way, and so that a broken rule is stated in general terms. For example, an unlinked file is reported as ``File `x` isn't linked to.``, a duplicate heading as ``Node `X` already exists.``, and an empty heading as "A node title can't be empty.", just as a rename to such a title is refused.
+
 ## [0.29.6] - 2026-09-27
 
 ### Changed
