@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-09-27
+
+### Changed
+- Let a backslash escape a following backslash in a node's content, as in Markdown, in addition to `[` and `]`. So `\\[Home]` is a literal backslash followed by a link, and `[Five\\]` links to a node titled `Five\`, which previously couldn't be linked to. Any other backslash is still a literal character. In an existing wiki, this changes the meaning of `\\` before a square bracket and of `\\` inside a link.
+- Escaped backslashes in the titles and paths that completions and renames insert.
+
+### Fixed
+- Showed a backslash before an escaped square bracket correctly in hover previews, rather than as a raw `&#91;`. Content outside links now reaches the preview unchanged, since Mull's escapes are also Markdown escapes.
+
 ## [0.31.3] - 2026-09-27
 
 ### Fixed
