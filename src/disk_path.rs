@@ -3,15 +3,16 @@ use colored::ColoredString;
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
-    fs,
+    fs, io,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 // A path relative to the wiki directory whose components are spelled exactly as the names in their
 // directories' listings. Comparing such paths as written then agrees with the filesystem, whether
-// or not it ignores case. The exceptions, kept as written, are a component within a directory that
-// can't be listed and the final name of a rename's destination, which the rename checks itself.
-// Such a path describes the disk when it was spelled, so it shouldn't outlive a check or request.
+// or not it ignores case. The exception, kept as written, is the final name of a rename's
+// destination, which the rename checks itself. Such a path describes the disk when it was spelled,
+// so it shouldn't outlive a check or request.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DiskPath(PathBuf);
 
@@ -49,11 +50,14 @@ impl CodePath for DiskPath {
     }
 }
 
-// This is a misspelled path, along with its spelling on disk if every component has one.
+// This explains why a path's spelling isn't confirmed: it's misspelled, along with its spelling on
+// disk if every component has one, or a directory along it can't be listed, for an underlying
+// reason.
 #[derive(Debug)]
-pub struct Misspelling {
+pub struct SpellingError {
     pub message: String,
     pub spelled: Option<DiskPath>,
+    pub reason: Option<Rc<io::Error>>,
 }
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
@@ -80,11 +84,11 @@ impl WikiDirectory {
         let wiki_path =
             match check_spelling(&path, relative_wiki_path, &mut DirectoryListings::new()) {
                 Ok(spelled) => DiskPath(spelled),
-                Err(Misspelling {
+                Err(SpellingError {
                     spelled: Some(spelled),
                     ..
                 }) => spelled,
-                Err(Misspelling { spelled: None, .. }) => DiskPath(relative_wiki_path.to_owned()),
+                Err(SpellingError { spelled: None, .. }) => DiskPath(relative_wiki_path.to_owned()),
             };
         Self { path, wiki_path }
     }
@@ -121,7 +125,7 @@ impl WikiDirectory {
         &self,
         path: &LinkPath,
         listings: &mut DirectoryListings,
-    ) -> Result<DiskPath, Misspelling> {
+    ) -> Result<DiskPath, SpellingError> {
         check_spelling(&self.path, path.as_path(), listings).map(DiskPath)
     }
 
@@ -129,7 +133,7 @@ impl WikiDirectory {
     // other names don't exist, so they have no other spelling. The final name is kept as written
     // even if it exists: the rename refuses such a destination, other than within a directory
     // moving into itself, where nothing will exist at the time of the move.
-    pub fn spell_destination(&self, path: &LinkPath) -> Result<DiskPath, Misspelling> {
+    pub fn spell_destination(&self, path: &LinkPath) -> Result<DiskPath, SpellingError> {
         let path = path.as_path();
         let Some(ancestor) = path
             .ancestors()
@@ -146,8 +150,8 @@ impl WikiDirectory {
 }
 
 // These are the names of the entries in each directory, listed at most once per validation or
-// rename. A directory that can't be listed has no names.
-pub type DirectoryListings = HashMap<PathBuf, Option<HashSet<OsString>>>;
+// rename, or else why a directory can't be listed.
+pub type DirectoryListings = HashMap<PathBuf, Result<HashSet<OsString>, Rc<io::Error>>>;
 
 // Compare each component of an existing target's path with the names of the entries on disk.
 // Filesystems that ignore case or Unicode normalization find a target even when its path is spelled
@@ -158,27 +162,43 @@ fn check_spelling(
     wiki_directory: &Path,
     path: &Path,
     listings: &mut DirectoryListings,
-) -> Result<PathBuf, Misspelling> {
+) -> Result<PathBuf, SpellingError> {
     let mut written = PathBuf::new();
     let mut spelled = PathBuf::new();
     let mut misspelled = false;
     let mut unmatched = None;
     for component in path.components() {
-        // Accept a name that its directory lists, or any name in a directory that can't be listed.
+        // Accept a name that its directory lists. If the directory can't be listed, the spelling
+        // can't be checked at all.
         let name = component.as_os_str();
         written.push(name);
         let directory = wiki_directory.join(&spelled);
-        let names = listings.entry(directory.clone()).or_insert_with(|| {
-            fs::read_dir(&directory).ok().map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| fs::DirEntry::file_name(&entry))
-                    .collect()
-            })
-        });
-        let Some(names) = names else {
-            spelled.push(name);
-            continue;
+        let names = match listings.entry(directory.clone()).or_insert_with(|| {
+            fs::read_dir(&directory)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| fs::DirEntry::file_name(&entry))
+                        .collect()
+                })
+                .map_err(Rc::new)
+        }) {
+            Ok(names) => names,
+            Err(error) => {
+                return Err(SpellingError {
+                    message: format!(
+                        "Unable to list {}, so the spelling of {} can't be checked.",
+                        if spelled.as_os_str().is_empty() {
+                            "the wiki directory".to_owned()
+                        } else {
+                            spelled.code_path().to_string()
+                        },
+                        path.code_path(),
+                    ),
+                    spelled: None,
+                    reason: Some(error.clone()),
+                });
+            }
         };
         if names.contains(name) {
             spelled.push(name);
@@ -207,20 +227,22 @@ fn check_spelling(
 
     // Describe the whole path's spelling on disk, or else the first name that has no match.
     match unmatched {
-        Some(unmatched) => Err(Misspelling {
+        Some(unmatched) => Err(SpellingError {
             message: format!(
                 "{} doesn't match the spelling of any name on disk.",
                 unmatched.code_path(),
             ),
             spelled: None,
+            reason: None,
         }),
-        None if misspelled => Err(Misspelling {
+        None if misspelled => Err(SpellingError {
             message: format!(
                 "{} is spelled {} on disk.",
                 path.code_path(),
                 spelled.code_path(),
             ),
             spelled: Some(DiskPath(spelled)),
+            reason: None,
         }),
         None => Ok(spelled),
     }
