@@ -1350,6 +1350,18 @@ fn rename_filesystem_node_for_document(
     // path exists, so it's a prefix of the new one exactly when it's one of the new one's existing
     // ancestors.
     let moves_into_itself = is_directory && new_ancestor.starts_with(&old_path);
+    if is_directory
+        && !moves_into_itself
+        && resolves_within(&wiki_directory.resolve(&new_ancestor), &old_absolute_path)
+            .unwrap_or(false)
+    {
+        // A move into itself goes through a temporary sibling, which would leave the symlink
+        // leading nowhere, so refuse to move a directory into itself through one.
+        return Err(format!(
+            "{} can't be moved into itself through a symlink.",
+            old_path.code_path(),
+        ));
+    }
     if !moves_into_itself {
         check_rename_destination(
             &wiki_directory,
@@ -1625,22 +1637,29 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // Find the outermost directory whose only entry is the node being moved, directly or through
 // directories whose only entry leads to it. Any other entry keeps a directory, even an empty
 // directory or an ignored file. A directory is also kept if it will contain the new path, which,
-// since it exists, is when it contains the new path's deepest existing ancestor. It isn't kept
-// merely because a directory link names it, since such a link only stands for the files within the
-// directory. The search never reaches the wiki directory itself.
+// since it exists, is when the new path's deepest existing ancestor leads into it, even through a
+// symlink, or if that can't be determined. It isn't kept merely because a directory link names
+// it, since such a link only stands for the files within the directory. The search never reaches
+// the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
     wiki_directory: &WikiDirectory,
     old_path: &SpelledPath,
     new_ancestor: &SpelledPath,
 ) -> Option<SpelledPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
+    let new_ancestor_absolute_path = wiki_directory.resolve(new_ancestor);
     let mut emptied_directory = None;
     let mut removed_entry = old_path.clone();
     while let Some(directory) = removed_entry
         .parent()
         .filter(|directory| !directory.is_wiki_directory())
     {
-        if new_ancestor.starts_with(&directory) {
+        if resolves_within(
+            &new_ancestor_absolute_path,
+            &wiki_directory.resolve(&directory),
+        )
+        .unwrap_or(true)
+        {
             break;
         }
         let Ok(mut entries) = fs::read_dir(wiki_directory.resolve(&directory)) else {
@@ -1658,6 +1677,16 @@ fn outermost_directory_emptied_by_rename(
         removed_entry = directory;
     }
     emptied_directory
+}
+
+// Determine whether a path leads into a directory, or to the directory itself, once symlinks are
+// resolved. Report nothing if either can't be resolved.
+fn resolves_within(path: &Path, directory: &Path) -> Option<bool> {
+    Some(
+        fs::canonicalize(path)
+            .ok()?
+            .starts_with(fs::canonicalize(directory).ok()?),
+    )
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it's invalid.
@@ -3336,6 +3365,41 @@ mod tests {
                 },
             ),
             Vec::<Uri>::new(),
+        );
+    }
+
+    // Keep a directory that a new path leads into through a symlink, rather than deleting the node
+    // just moved into it, and refuse to move a directory into itself through a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn rename_through_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let source = "# Home\n\n[/d/x.txt] [/d/] [/alias/]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.path().parent().unwrap();
+        fs::create_dir(directory.join("d")).unwrap();
+        fs::write(directory.join("d/x.txt"), "x").unwrap();
+        symlink("d", directory.join("alias")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let rename = |character, new_name| {
+            rename_for_document(
+                &uri,
+                source,
+                7,
+                Position::new(2, character),
+                new_name,
+                ALL_FILE_OPERATIONS,
+            )
+        };
+
+        let (applied, _old_uri, _new_uri, deleted_uris) =
+            apply_filesystem_rename(source, rename(2, "alias/y.txt").unwrap().unwrap());
+        assert_eq!(applied, "# Home\n\n[/alias/y.txt] [/d/] [/alias/]");
+        assert_eq!(deleted_uris, Vec::<Uri>::new());
+        assert_eq!(
+            rename(13, "alias/sub").unwrap_err(),
+            "`d` can't be moved into itself through a symlink.",
         );
     }
 
