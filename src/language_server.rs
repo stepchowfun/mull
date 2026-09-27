@@ -1564,7 +1564,7 @@ fn filesystem_rename_edits(
         if let Some(moved_target) = moved_target {
             edits.push((
                 filesystem_link_path_source_range(source_contents, *source_range),
-                moved_target.text().to_owned(),
+                moved_target.text(),
             ));
         }
     }

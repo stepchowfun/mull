@@ -307,7 +307,7 @@ fn parse_content(
                 // Write a filesystem link's target in its canonical form, and keep any other target
                 // as written.
                 let formatted_target = match &link {
-                    Ok(Link::Filesystem { target, .. }) => target.text().to_owned(),
+                    Ok(Link::Filesystem { target, .. }) => target.text(),
                     Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
                 match link {

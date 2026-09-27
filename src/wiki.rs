@@ -45,12 +45,10 @@ impl Link {
     }
 }
 
-// This is the target of a filesystem link in canonical form, which parsing establishes once: its
-// path, whether it names a directory, and the link text for both. Writing the link back is then
-// just a matter of using that text.
+// This is the target of a filesystem link in canonical form, which parsing establishes once: a
+// normalized path and whether it names a directory. The link text follows from those alone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilesystemTarget {
-    text: String,
     path: LinkPath,
     is_directory: bool,
 }
@@ -99,7 +97,7 @@ impl FilesystemTarget {
         }
 
         // Normalize harmless current-directory components without resolving symlinks.
-        Ok(Self::canonical(
+        Ok(Self::new(
             path.components()
                 .filter_map(|component| match component {
                     Component::Normal(component) => Some(component),
@@ -118,13 +116,32 @@ impl FilesystemTarget {
     // lies within it.
     pub fn moved(&self, from: &LinkPath, to: &LinkPath) -> Option<Self> {
         let suffix = self.path.0.strip_prefix(&from.0).ok()?;
-        Some(Self::canonical(to.0.join(suffix), self.is_directory))
+        Some(Self::new(to.0.join(suffix), self.is_directory))
     }
 
-    // Expose the link text: `/` and the path's components, followed by `/` for a directory, with
-    // any link delimiters escaped.
-    pub fn text(&self) -> &str {
-        &self.text
+    // Write the link text: `/` and the path's components, followed by `/` for a directory, with any
+    // link delimiters escaped. This is the only place that decides how a link is written.
+    pub fn text(&self) -> String {
+        // Join the components with the separator that links use on every platform. Link paths come
+        // from UTF-8 text.
+        let components = self
+            .path
+            .0
+            .components()
+            .map(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .expect("Link paths should come from UTF-8 text.")
+            })
+            .collect::<Vec<_>>();
+        let mut text = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
+        if self.is_directory && !components.is_empty() {
+            text.push_str(DIRECTORY_LINK_SUFFIX);
+        }
+
+        // Escape the finished text once, as it will appear in the source.
+        escape_link_delimiters(&text)
     }
 
     // Expose the path relative to the wiki directory.
@@ -137,31 +154,11 @@ impl FilesystemTarget {
         self.is_directory
     }
 
-    // Establish the canonical form of a normalized path, which is the only place that decides how
-    // a filesystem link is written. The wiki directory is always a directory, written as `/`.
-    fn canonical(path: PathBuf, is_directory: bool) -> Self {
-        // Join the components with the separator that links use on every platform. Link paths come
-        // from UTF-8 text.
-        let components = path
-            .components()
-            .map(|component| {
-                component
-                    .as_os_str()
-                    .to_str()
-                    .expect("Link paths should come from UTF-8 text.")
-            })
-            .collect::<Vec<_>>();
-        let is_directory = is_directory || components.is_empty();
-        let mut text = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
-        if is_directory && !components.is_empty() {
-            text.push_str(DIRECTORY_LINK_SUFFIX);
-        }
-
-        // Escape the finished text once, as it will appear in the source.
+    // Create a target from a normalized path. The wiki directory is always a directory.
+    fn new(path: PathBuf, is_directory: bool) -> Self {
         Self {
-            text: escape_link_delimiters(&text),
+            is_directory: is_directory || path.as_os_str().is_empty(),
             path: LinkPath(path),
-            is_directory,
         }
     }
 }
@@ -528,7 +525,7 @@ mod tests {
             let target = FilesystemTarget::parse(text).unwrap();
             assert_eq!(target.text(), canonical);
             assert_eq!(target.is_directory(), is_directory);
-            assert_eq!(FilesystemTarget::parse(target.text()).unwrap(), target);
+            assert_eq!(FilesystemTarget::parse(&target.text()).unwrap(), target);
         }
     }
 
@@ -560,7 +557,7 @@ mod tests {
             FilesystemTarget::parse(text)
                 .unwrap()
                 .moved(directory.path(), destination.path())
-                .map(|target| target.text().to_owned())
+                .map(|target| target.text())
         };
         assert_eq!(moved("/photos/"), Some("/archive/photos/".to_owned()));
         assert_eq!(
