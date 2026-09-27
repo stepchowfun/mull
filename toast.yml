@@ -168,7 +168,7 @@ tasks:
       - vscode-extension/node_modules
     command: |
       # Check the example wiki.
-      cargo-offline run -- --path example/wiki.mull check
+      cargo-offline run -- check --path example/wiki.mull
 
       # Check references with Tagref.
       tagref
