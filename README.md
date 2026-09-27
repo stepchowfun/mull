@@ -62,8 +62,6 @@ Mull formats the wiki for you. It chooses the ordering of the nodes in the file,
 
 Just as every node must be linked to from the wiki, the same is true of files nested in the directory containing the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the wiki root directory), all files are covered.
 
-Mull respects ignore files such as `.gitignore`, and it skips `.git` and `.hg` directories. Ignored files don't need to be linked to, and links can't point to them. Directories only matter for the files in them, so an empty directory doesn't need to be linked to, and a directory link must point to a directory containing at least one file that isn't ignored. Symlinks are treated like the files or directories they point to, so a symlink that doesn't point to anything is an error.
-
 ## What does the IDE extension do?
 
 ![Renaming a link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/refactoring.png)
