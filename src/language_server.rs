@@ -1814,19 +1814,18 @@ fn code_action_for_document(
             let (title, edit) = match fix {
                 Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
                 Fix::CreateNode(title) => {
-                    // Prepend the home node, and insert any other node after the first node linking
-                    // to it, or else at the end of the wiki, leaving its final placement to the
-                    // formatter.
+                    // Prepend the home node, and insert any other node after the last node that
+                    // starts before the end of its first diagnostic, which is the node linking to
+                    // it, or else at the end of the wiki. The formatter decides where it ends up.
                     let linking_node = diagnostics
                         .iter()
-                        .filter_map(|diagnostic| {
-                            byte_offset(source_contents, diagnostic.range.start)
-                        })
+                        .filter_map(|diagnostic| byte_offset(source_contents, diagnostic.range.end))
                         .min()
                         .and_then(|offset| {
-                            wiki.text_nodes.values().find(|node| {
-                                node.source_range.start <= offset && offset < node.source_range.end
-                            })
+                            wiki.text_nodes
+                                .values()
+                                .filter(|node| node.source_range.start < offset)
+                                .max_by_key(|node| node.source_range.start)
                         });
                     let edit = if title == HOME_TITLE {
                         let separator = if source_contents.is_empty() { "" } else { "\n" };
@@ -2115,7 +2114,11 @@ mod tests {
         prepare_rename_for_document, references_for_document, rename_for_document,
         reveal_range_command_url,
     };
-    use crate::{cancellation::CancellationFlag, error::SourceRange, parser};
+    use crate::{
+        cancellation::CancellationFlag,
+        error::{Fix, SourceRange},
+        parser,
+    };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
         fs,
@@ -3691,6 +3694,35 @@ mod tests {
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
             "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Greeting\n\n# Last\n\n[Greeting]\n",
+        );
+    }
+
+    // Insert the created node after the last node that a diagnostic touches, even if the diagnostic
+    // spans several nodes or ends between them.
+    #[test]
+    fn code_actions_insert_after_last_touched_nodes() {
+        let source = "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n";
+        let uri = untitled_uri();
+        let fix_diagnostic = |start, end| Diagnostic {
+            range: Range::new(start, end),
+            data: Some(serde_json::to_value(Fix::CreateNode("New".to_owned())).unwrap()),
+            ..Diagnostic::default()
+        };
+        let apply = |diagnostic| {
+            let actions = code_action_for_document(&uri, source, &[diagnostic]).unwrap();
+            apply_code_action(&uri, source, &actions[0])
+        };
+
+        // Insert after the second node when the diagnostic spans into it.
+        assert_eq!(
+            apply(fix_diagnostic(Position::new(4, 0), Position::new(8, 3))),
+            "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n\n# New\n",
+        );
+
+        // Insert after the first node when the diagnostic ends in the blank line after it.
+        assert_eq!(
+            apply(fix_diagnostic(Position::new(4, 0), Position::new(7, 0))),
+            "# Home\n\n[First]\n\n# First\n\nText.\n\n# New\n\n# Second\n\nText.\n",
         );
     }
 
