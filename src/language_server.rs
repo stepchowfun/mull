@@ -2665,7 +2665,7 @@ mod tests {
         assert_eq!(
             contents.value,
             format!(
-                "# Greeting\n\nLiteral \\[brackets\\] and \
+                "# Greeting\n\nLiteral [brackets] and \
                     [&#91;Home&#93;]({home_url}).",
             ),
         );

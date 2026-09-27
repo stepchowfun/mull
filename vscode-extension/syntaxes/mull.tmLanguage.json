@@ -81,7 +81,8 @@
       ]
     },
     "escapes": {
-      "match": "\\\\[\\\\\\[\\]]"
+      "name": "constant.character.escape.mull",
+      "match": "\\\\[\\\\\\[\\]#]"
     },
     "links": {
       "patterns": [
@@ -139,7 +140,7 @@
       "patterns": [
         {
           "name": "constant.character.escape.mull",
-          "match": "\\\\[\\\\\\[\\]]"
+          "match": "\\\\[\\\\\\[\\]#]"
         },
         {
           "name": "invalid.illegal.unexpected-opening-delimiter.mull",
