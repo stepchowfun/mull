@@ -1,18 +1,15 @@
 use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
+    disk_path::{DirectoryListings, WikiDirectory, check_spelling, entry_identity},
     error::{Error, SourceRange},
     format::CodePath,
     parser::{self, normalize_link_path, render_link_path},
-    path_util::relative_path,
     wiki::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::{
-        DirectoryListings, Visibility, check_spelling, entry_identity, relative_wiki_path,
-        visibility, wiki_tree_walker,
-    },
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -770,44 +767,41 @@ fn filesystem_link_completions(
     context: &FilesystemLinkContext,
 ) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let wiki_directory = WikiDirectory::new(wiki_path);
 
     // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
-    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory) else {
+    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory.path()) else {
         return Vec::new();
     };
     walker_builder
         .max_depth(Some(context.directory.components().count() + 1))
         .filter_entry({
-            let wiki_directory = wiki_directory.to_owned();
-            let relative_wiki_path = relative_wiki_path(&wiki_directory, wiki_path);
+            let wiki_directory = wiki_directory.clone();
             let directory = context.directory.clone();
             move |entry| {
-                let path = relative_path(&wiki_directory, entry.path());
-                path != relative_wiki_path
-                    && (directory.starts_with(path) || path.parent() == Some(directory.as_path()))
+                let path = wiki_directory.entry_path(entry);
+                path != *wiki_directory.wiki_path()
+                    && (directory.starts_with(path.as_path())
+                        || path.as_path().parent() == Some(directory.as_path()))
             }
         });
 
     // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
-        let path = relative_path(wiki_directory, entry.path());
+        let path = wiki_directory.entry_path(&entry);
         let (Some(file_type), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
             continue;
         };
-        if path.parent() != Some(context.directory.as_path()) {
+        if path.as_path().parent() != Some(context.directory.as_path()) {
             continue;
         }
 
         // Omit a directory which a link couldn't name because it contains no files.
         if file_type.is_dir()
             && !matches!(
-                visibility(wiki_directory, path, &CancellationFlag::default()).assume_completed(),
+                visibility(&wiki_directory, &path, &CancellationFlag::default()).assume_completed(),
                 Ok(Visibility::Visible),
             )
         {
@@ -1348,10 +1342,10 @@ fn rename_filesystem_node_for_document(
         .ancestors()
         .skip(1)
         .find(|ancestor| wiki_directory.join(ancestor).exists())
-        && let (_, Some(message)) =
+        && let Err(misspelling) =
             check_spelling(wiki_directory, ancestor, &mut DirectoryListings::new())
     {
-        return Err(message);
+        return Err(misspelling.message);
     }
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
@@ -1477,16 +1471,16 @@ fn renamable_filesystem_node_at(
     {
         return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
     }
-    if old_path == relative_wiki_path(wiki_directory, &wiki_path) {
+    if old_path == WikiDirectory::new(&wiki_path).wiki_path().as_path() {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
-    if let (_, Some(message)) =
+    if let Err(misspelling) =
         check_spelling(wiki_directory, &old_path, &mut DirectoryListings::new())
     {
-        return Err(message);
+        return Err(misspelling.message);
     }
 
     Ok(Some(RenamableFilesystemNode {
@@ -1882,7 +1876,7 @@ fn filesystem_link_target(
     let is_directory = matches!(link, Link::Directory { .. });
     let target_path = wiki_directory.join(path);
     if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory)
-        || check_spelling(wiki_directory, path, listings).1.is_some()
+        || check_spelling(wiki_directory, path, listings).is_err()
     {
         return None;
     }

@@ -1,6 +1,7 @@
 mod analyzer;
 mod assertions;
 mod cancellation;
+mod disk_path;
 mod error;
 mod format;
 mod language_server;
