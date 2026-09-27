@@ -14,8 +14,6 @@ Each node starts with a `# Title`. The content comes after the title and is writ
 
 To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
 
-Put a backslash before a `[`, `]`, or `#` to pass it to Markdown rather than having Mull interpret it, like `\[text\](url)` for a Markdown link or `\# Heading` for a heading. Write `\\` for a backslash that comes before one of those characters.
-
 Here's an example wiki with 3 nodes:
 
 ````md
