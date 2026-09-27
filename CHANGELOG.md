@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-09-27
+
+### Changed
+- Removed Mull's escapes from content before it reaches Markdown in hover previews, so any Markdown can be written. For example, `\[text\](url)` is now a Markdown link rather than literal text. Write `\\\[` for a bracket that Markdown should also treat as literal.
+- Let a backslash escape a following `#` in content, like `\# Heading` for a Markdown heading, which a line starting with `#` can't express because it starts a node. In an existing wiki, this changes the meaning of `\#` inside a link.
+- Highlighted escapes outside links in the VS Code extension.
+
+### Fixed
+- Kept the text before a link in a hover preview from changing the link. A `!` right before a link made it an image, and a literal backslash right before a link hid it.
+
 ## [0.32.0] - 2026-09-27
 
 ### Changed
