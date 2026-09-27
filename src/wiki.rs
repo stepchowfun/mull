@@ -222,7 +222,10 @@ impl TextNode {
                             Some(link @ Link::Filesystem { .. }) => {
                                 render_markdown_filesystem_link(&target, link_url(link).as_deref())
                             }
-                            None => render_markdown_text_link(&target, None),
+                            None => {
+                                // The parser recorded a link for every delimiter pair.
+                                unreachable!("Every link in a node's content should be parsed.")
+                            }
                         }
                         .0,
                     );
