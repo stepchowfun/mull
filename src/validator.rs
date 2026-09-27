@@ -303,6 +303,31 @@ fn inaccessible_target_error(
     }
 }
 
+// Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
+// link's trailing `/` only when that change would fix the link.
+fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    match link {
+        Link::File { .. } if metadata.is_file() => None,
+        Link::Directory { .. } if metadata.is_dir() => None,
+        Link::File { .. } if metadata.is_dir() => Some(format!(
+            "{} is a directory, so its link must end with {}.",
+            path.code_path(),
+            "/".code_str(),
+        )),
+        Link::Directory { .. } if metadata.is_file() => Some(format!(
+            "{} is a file, so its link must not end with {}.",
+            path.code_path(),
+            "/".code_str(),
+        )),
+        Link::File { .. } => Some(format!("{} isn't a file.", path.code_path())),
+        Link::Directory { .. } => Some(format!("{} isn't a directory.", path.code_path())),
+        Link::Text { .. } => {
+            // Text links were skipped before checking targets [ref:filesystem_links_only].
+            unreachable!("Only filesystem links have targets.")
+        }
+    }
+}
+
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
 // it, where `path` is the link's path and `spelled_path` is its spelling on disk.
 fn visibility_error(
@@ -337,31 +362,6 @@ fn visibility_error(
             None,
         ))
     })
-}
-
-// Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
-// link's trailing `/` only when that change would fix the link.
-fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> Option<String> {
-    match link {
-        Link::File { .. } if metadata.is_file() => None,
-        Link::Directory { .. } if metadata.is_dir() => None,
-        Link::File { .. } if metadata.is_dir() => Some(format!(
-            "{} is a directory, so its link must end with {}.",
-            path.code_path(),
-            "/".code_str(),
-        )),
-        Link::Directory { .. } if metadata.is_file() => Some(format!(
-            "{} is a file, so its link must not end with {}.",
-            path.code_path(),
-            "/".code_str(),
-        )),
-        Link::File { .. } => Some(format!("{} isn't a file.", path.code_path())),
-        Link::Directory { .. } => Some(format!("{} isn't a directory.", path.code_path())),
-        Link::Text { .. } => {
-            // Text links were skipped before checking targets [ref:filesystem_links_only].
-            unreachable!("Only filesystem links have targets.")
-        }
-    }
 }
 
 // Find unreferenced files within a budget while pruning covered directories.
