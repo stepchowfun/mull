@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.1] - 2026-09-27
+
+### Fixed
+- Kept a directory that a rename moves a file into through a symlink. Previously, renaming `d/x.txt` to `lnk/y.txt`, where `lnk` is a symlink to `d`, deleted `d` along with the file it had just moved into it.
+- Refused to move a directory into itself through a symlink, which rewrote its links before failing to move it.
+
 ## [0.31.0] - 2026-09-27
 
 ### Changed
