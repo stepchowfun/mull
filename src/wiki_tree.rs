@@ -1,6 +1,7 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
     format::CodePath,
+    path_util::relative_path,
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::{
@@ -90,6 +91,18 @@ pub fn visibility(
     } else {
         Visibility::Ignored
     }))
+}
+
+// Find the wiki's path relative to its directory, spelled as it is on disk. An editor or a user may
+// spell the wiki's path differently on a filesystem that ignores case, but it must match the
+// spellings found when walking the wiki's directory and required of links.
+pub fn relative_wiki_path(wiki_directory: &Path, wiki_path: &Path) -> PathBuf {
+    check_spelling(
+        wiki_directory,
+        relative_path(wiki_directory, wiki_path),
+        &mut DirectoryListings::new(),
+    )
+    .0
 }
 
 // These are the names of the entries in each directory, listed at most once per validation or

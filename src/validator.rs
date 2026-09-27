@@ -4,7 +4,10 @@ use crate::{
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{DirectoryListings, Visibility, check_spelling, visibility, wiki_tree_walker},
+    wiki_tree::{
+        DirectoryListings, Visibility, check_spelling, relative_wiki_path, visibility,
+        wiki_tree_walker,
+    },
 };
 use std::{
     collections::HashSet,
@@ -394,7 +397,7 @@ fn find_unreferenced_filesystem_links(
     // Prune subtrees covered by explicit directory links.
     walker_builder.filter_entry({
         let wiki_directory = wiki_directory.to_owned();
-        let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
+        let relative_wiki_path = relative_wiki_path(&wiki_directory, wiki_path);
         let referenced_directories = referenced_directories.clone();
         move |entry| {
             // Exclude the wiki and prune directories already covered by their links.
@@ -617,6 +620,19 @@ mod tests {
         let wiki = parse("# Home").unwrap();
 
         assert!(validate(&wiki, &wiki_path).is_ok());
+    }
+
+    // Recognize the wiki even when its path is spelled differently than on disk, which only a
+    // filesystem that ignores case finds.
+    #[test]
+    fn misspelled_wiki_path() {
+        let directory = TestDirectory::new();
+        let wiki_path = directory.path().join("WIKI.mull");
+        let wiki = parse("# Home").unwrap();
+
+        if fs::metadata(&wiki_path).is_ok() {
+            assert!(validate(&wiki, &wiki_path).is_ok());
+        }
     }
 
     // Preserve a lexical containing-directory path without requiring canonicalization.
