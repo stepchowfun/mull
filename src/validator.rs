@@ -325,16 +325,16 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
 }
 
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
-// it, where `path` is the link's path and `target` is its spelling on disk.
+// it, where `path` is the link's path and `spelled` is its spelling on disk.
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     path: &Path,
-    target: &SpelledPath,
+    spelled: &SpelledPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
-    visibility(wiki_directory, target, cancellation).map(|result| {
+    visibility(wiki_directory, spelled, cancellation).map(|result| {
         let message = match result {
             Ok(Visibility::Visible) => return None,
             Ok(Visibility::Empty) => format!(

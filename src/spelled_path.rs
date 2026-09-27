@@ -42,11 +42,12 @@ impl SpelledPath {
         self.0.file_name()
     }
 
-    // Compare each component of an existing target's path with the names of the entries on disk.
-    // Filesystems that ignore case or Unicode normalization find a target even when its path is
-    // spelled differently, but such a link would break on other filesystems and wouldn't match the
-    // names found when walking the wiki's directory. Return the path as spelled on disk, or
-    // describe the misspelling along with the spelling on disk if every component has one.
+    // Spell a path, relative to a directory, as it is on disk, by comparing each component with the
+    // names in its parent directory's listing. Filesystems that ignore case or Unicode
+    // normalization find an entry even when its path is spelled differently, but such a path would
+    // break on other filesystems and wouldn't match the names found when walking the directory.
+    // Explain why the spelling isn't confirmed: either the path is misspelled, along with its
+    // spelling on disk if every component has one, or a directory along it can't be listed.
     fn spell(
         wiki_directory: &Path,
         path: &Path,
