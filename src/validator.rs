@@ -32,10 +32,25 @@ pub fn validate(
         return Outcome::Cancelled;
     }
 
-    // Check the filesystem relative to the wiki's containing directory.
+    // Check the filesystem relative to the wiki's containing directory, which requires the wiki's
+    // own path to be spelled as on disk.
+    let wiki_directory = match WikiDirectory::new(wiki_path) {
+        Ok(wiki_directory) => wiki_directory,
+        Err(error) => {
+            errors.push(Error::new(
+                &error.message,
+                Some(wiki_path),
+                None,
+                error
+                    .reason
+                    .map(|reason| reason as Rc<dyn std::error::Error>),
+            ));
+            return Outcome::Completed(errors_to_result(errors));
+        }
+    };
     validate_filesystem_links(
         wiki,
-        &WikiDirectory::new(wiki_path),
+        &wiki_directory,
         wiki_path,
         source_contents,
         cancellation,
@@ -188,10 +203,10 @@ fn validate_filesystem_links(
                 }
             };
 
-            // Require the path to be spelled as it is on disk, and track the target by that
-            // spelling so it matches the entries found when walking the wiki's directory.
-            let (spelled, is_spelled) = match wiki_directory.spell(target, &mut listings) {
-                Ok(spelled) => (Some(spelled), true),
+            // Require the path to be spelled exactly as on disk, so it matches the entries found
+            // when walking the wiki's directory. A misspelled link doesn't cover its target.
+            let spelled = match wiki_directory.spell(target, &mut listings) {
+                Ok(spelled) => Some(spelled),
                 Err(error) => {
                     errors.push(Error::new(
                         &error.message,
@@ -201,7 +216,7 @@ fn validate_filesystem_links(
                             .reason
                             .map(|reason| reason as Rc<dyn std::error::Error>),
                     ));
-                    (error.spelled, false)
+                    None
                 }
             };
 
@@ -221,7 +236,7 @@ fn validate_filesystem_links(
 
             // Require the target to be a file which isn't ignored, or a directory containing such a
             // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
-            if let (Some(spelled), true) = (&spelled, is_spelled) {
+            if let Some(spelled) = &spelled {
                 match visibility_error(
                     wiki_directory,
                     wiki_path,
@@ -614,8 +629,8 @@ mod tests {
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
-    // Recognize the wiki even when its path is spelled differently than on disk, which only a
-    // filesystem that ignores case finds.
+    // Reject the wiki's own path spelled differently than on disk, which only a filesystem that
+    // ignores case finds.
     #[test]
     fn misspelled_wiki_path() {
         let directory = TestDirectory::new();
@@ -623,7 +638,10 @@ mod tests {
         let wiki = parse("# Home").unwrap();
 
         if fs::metadata(&wiki_path).is_ok() {
-            assert!(validate(&wiki, &wiki_path).is_ok());
+            assert!(contains_error(
+                &validate(&wiki, &wiki_path).unwrap_err(),
+                "`WIKI.mull` doesn't match the spelling of any name on disk.",
+            ));
         }
     }
 
@@ -854,31 +872,6 @@ mod tests {
         );
     }
 
-    // Identify a misspelled symlink by the entry itself rather than its target, which other
-    // symlinks may share. A case-sensitive filesystem doesn't find the target at all.
-    #[cfg(unix)]
-    #[test]
-    fn misspelled_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let directory = TestDirectory::new();
-        fs::write(directory.path().join("target.txt"), "content").unwrap();
-        symlink("target.txt", directory.path().join("first.txt")).unwrap();
-        symlink("target.txt", directory.path().join("second.txt")).unwrap();
-        let wiki = parse("# Home\n[/target.txt] [/first.txt] [/SECOND.txt]").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        if fs::metadata(directory.path().join("SECOND.txt")).is_ok() {
-            assert_eq!(errors.len(), 1);
-            assert!(contains_error(
-                &errors,
-                "`SECOND.txt` is spelled `second.txt` on disk.",
-            ));
-        } else {
-            assert!(contains_error(&errors, "not found."));
-        }
-    }
-
     // Report a directory symlink cycle instead of recursing indefinitely.
     #[cfg(unix)]
     #[test]
@@ -901,9 +894,9 @@ mod tests {
         );
     }
 
-    // Require links to spell paths as they are on disk. A filesystem that ignores case finds the
-    // target anyway, so report the spelling instead, without also reporting the target as
-    // unreferenced. A case-sensitive filesystem doesn't find the target at all.
+    // Require links to spell paths exactly as they are on disk. A filesystem that ignores case
+    // finds the target anyway, but the misspelled link doesn't cover it. A case-sensitive
+    // filesystem doesn't find the target at all.
     #[test]
     fn misspelled_paths() {
         let directory = TestDirectory::new();
@@ -911,27 +904,22 @@ mod tests {
         fs::write(directory.path().join("images/photo.jpg"), "photo").unwrap();
         let wiki = parse("# Home\n[/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
 
-        // Describe each misspelled path as a whole, however many of its components differ.
+        // Report the first misspelled name along each path.
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         if fs::metadata(directory.path().join("IMAGES")).is_ok() {
             let photo_path = Path::new("images").join("photo.jpg");
-            assert_eq!(errors.len(), 3);
-            assert!(contains_error(
-                &errors,
-                "`Images` is spelled `images` on disk.",
-            ));
-            for written in [
-                Path::new("images").join("Photo.jpg"),
-                Path::new("IMAGES").join("PHOTO.JPG"),
+            let misspelled_photo_path = Path::new("images").join("Photo.jpg");
+            assert_eq!(errors.len(), 4);
+            for message in [
+                "`Images` doesn't match the spelling of any name on disk.".to_owned(),
+                format!(
+                    "`{}` doesn't match the spelling of any name on disk.",
+                    misspelled_photo_path.display(),
+                ),
+                "`IMAGES` doesn't match the spelling of any name on disk.".to_owned(),
+                format!("File `{}` isn't linked to.", photo_path.display()),
             ] {
-                assert!(contains_error(
-                    &errors,
-                    &format!(
-                        "`{}` is spelled `{}` on disk.",
-                        written.display(),
-                        photo_path.display(),
-                    ),
-                ));
+                assert!(contains_error(&errors, &message));
             }
         } else {
             assert!(contains_error(&errors, "not found."));

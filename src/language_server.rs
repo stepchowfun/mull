@@ -765,7 +765,9 @@ fn filesystem_link_completions(
     context: &FilesystemLinkContext,
 ) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
-    let wiki_directory = WikiDirectory::new(wiki_path);
+    let Ok(wiki_directory) = WikiDirectory::new(wiki_path) else {
+        return Vec::new();
+    };
 
     // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
@@ -956,7 +958,9 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
     // in a saved wiki, its filesystem links to their targets.
     let wiki_path = local_path(uri);
-    let wiki_directory = wiki_path.as_deref().map(WikiDirectory::new);
+    let wiki_directory = wiki_path
+        .as_deref()
+        .and_then(|wiki_path| WikiDirectory::new(wiki_path).ok());
     let mut listings = DirectoryListings::new();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -1461,7 +1465,7 @@ fn renamable_filesystem_node_at(
 
     // Require the linked node to exist as the kind the link names, other than the wiki directory,
     // resolving it from the wiki's containing directory as validation does.
-    let wiki_directory = WikiDirectory::new(&wiki_path);
+    let wiki_directory = WikiDirectory::new(&wiki_path).map_err(|error| error.message)?;
     if old_target.is_wiki_directory() {
         return Err("The wiki directory can't be renamed.".to_owned());
     }
@@ -1824,7 +1828,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
     // Resolve filesystem links from the directory containing a saved, parseable wiki.
     let wiki_path = local_path(uri)?;
     let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
-    let wiki_directory = WikiDirectory::new(&wiki_path);
+    let wiki_directory = WikiDirectory::new(&wiki_path).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut listings = DirectoryListings::new();
@@ -3476,18 +3480,18 @@ mod tests {
         if fs::metadata(directory.join("IMAGES")).is_ok() {
             assert_eq!(
                 rename(&uri, 58, "renamed.txt", ALL_FILE_OPERATIONS),
-                "`NOTES.txt` is spelled `notes.txt` on disk.",
+                "`NOTES.txt` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
                 rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
-                "`IMAGES` is spelled `images` on disk.",
+                "`IMAGES` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
                 rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
-                "`IMAGES` is spelled `images` on disk.",
+                "`IMAGES` doesn't match the spelling of any name on disk.",
             );
 
-            // Recognize the wiki even when the editor spells its path differently than on disk.
+            // Reject a wiki whose path the editor spells differently than on disk.
             assert_eq!(
                 rename(
                     &Uri::from_file_path(directory.join("WIKI.mull")).unwrap(),
@@ -3495,7 +3499,7 @@ mod tests {
                     "renamed.mull",
                     ALL_FILE_OPERATIONS,
                 ),
-                "The wiki can't be renamed through one of its own links.",
+                "`WIKI.mull` doesn't match the spelling of any name on disk.",
             );
 
             // Reject a rename which only changes the case of a name, which VS Code would skip.
