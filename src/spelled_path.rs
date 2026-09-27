@@ -56,7 +56,6 @@ impl SpelledPath {
         let mut written = PathBuf::new();
         let mut spelled = PathBuf::new();
         let mut misspelled = false;
-        let mut unmatched = None;
         for component in path.components() {
             // Accept a name that its directory lists. If the directory can't be listed, the
             // spelling can't be checked at all.
@@ -105,27 +104,26 @@ impl SpelledPath {
                 })
                 .collect::<Vec<_>>();
             candidates.sort();
-            let actual = candidates.first().map(|candidate| (*candidate).clone());
 
-            // Continue with the name on disk, remembering the first name that has none.
+            // Continue with the name on disk, or stop at a name that has none, since nothing
+            // beneath it can be checked.
+            let Some(actual) = candidates.first() else {
+                return Err(SpellingError {
+                    message: format!(
+                        "{} doesn't match the spelling of any name on disk.",
+                        written.code_path(),
+                    ),
+                    spelled: None,
+                    reason: None,
+                });
+            };
             misspelled = true;
-            if actual.is_none() && unmatched.is_none() {
-                unmatched = Some(written.clone());
-            }
-            spelled.push(actual.as_deref().unwrap_or(name));
+            spelled.push(actual);
         }
 
-        // Describe the whole path's spelling on disk, or else the first name that has no match.
-        match unmatched {
-            Some(unmatched) => Err(SpellingError {
-                message: format!(
-                    "{} doesn't match the spelling of any name on disk.",
-                    unmatched.code_path(),
-                ),
-                spelled: None,
-                reason: None,
-            }),
-            None if misspelled => Err(SpellingError {
+        // Describe the whole path's spelling on disk if it differs from how it's written.
+        if misspelled {
+            Err(SpellingError {
                 message: format!(
                     "{} is spelled {} on disk.",
                     path.code_path(),
@@ -133,8 +131,9 @@ impl SpelledPath {
                 ),
                 spelled: Some(SpelledPath(spelled)),
                 reason: None,
-            }),
-            None => Ok(SpelledPath(spelled)),
+            })
+        } else {
+            Ok(SpelledPath(spelled))
         }
     }
 }
@@ -273,4 +272,32 @@ pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
 #[cfg(not(unix))]
 pub fn entry_identity(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DirectoryListings, WikiDirectory};
+    use crate::wiki::FilesystemTarget;
+    use std::{env, fs, process};
+
+    // Report the first name that matches nothing on disk, rather than failing to list a directory
+    // that doesn't exist beneath it.
+    #[test]
+    fn missing_component() {
+        let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull"));
+
+        let error = wiki_directory
+            .spell(
+                &FilesystemTarget::parse("/missing/file.txt").unwrap(),
+                &mut DirectoryListings::new(),
+            )
+            .unwrap_err();
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(
+            error.message,
+            "`missing` doesn't match the spelling of any name on disk.",
+        );
+    }
 }
