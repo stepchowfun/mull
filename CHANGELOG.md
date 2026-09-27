@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.2] - 2026-09-26
+
+### Fixed
+- Recognized the wiki itself when its path is spelled differently than on disk, as when checking `WIKI.mull` for `wiki.mull` on a filesystem that ignores case. The checker reported the wiki as unreferenced, completion offered it, and a link to it could rename it.
+
 ## [0.29.1] - 2026-09-26
 
 ### Changed

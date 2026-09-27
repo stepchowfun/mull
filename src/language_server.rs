@@ -10,7 +10,8 @@ use crate::{
         escape_link_delimiters, unescape_link_delimiters,
     },
     wiki_tree::{
-        DirectoryListings, Visibility, check_spelling, entry_identity, visibility, wiki_tree_walker,
+        DirectoryListings, Visibility, check_spelling, entry_identity, relative_wiki_path,
+        visibility, wiki_tree_walker,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -783,7 +784,7 @@ fn filesystem_link_completions(
         .max_depth(Some(context.directory.components().count() + 1))
         .filter_entry({
             let wiki_directory = wiki_directory.to_owned();
-            let relative_wiki_path = relative_path(&wiki_directory, wiki_path).to_owned();
+            let relative_wiki_path = relative_wiki_path(&wiki_directory, wiki_path);
             let directory = context.directory.clone();
             move |entry| {
                 let path = relative_path(&wiki_directory, entry.path());
@@ -1476,7 +1477,7 @@ fn renamable_filesystem_node_at(
     {
         return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
     }
-    if old_path == relative_path(wiki_directory, &wiki_path) {
+    if old_path == relative_wiki_path(wiki_directory, &wiki_path) {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
@@ -3497,6 +3498,17 @@ mod tests {
             assert_eq!(
                 rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
                 "`IMAGES` is spelled `images` on disk.",
+            );
+
+            // Recognize the wiki even when the editor spells its path differently than on disk.
+            assert_eq!(
+                rename(
+                    &Uri::from_file_path(directory.join("WIKI.mull")).unwrap(),
+                    44,
+                    "renamed.mull",
+                    ALL_FILE_OPERATIONS,
+                ),
+                "The wiki can't be renamed through one of its own links.",
             );
 
             // Reject a rename which only changes the case of a name, which VS Code would skip.
