@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.2] - 2026-09-27
+
+### Fixed
+- Attached the quick fix that creates a missing `Home` node only to the diagnostic reporting it. It was also offered as the preferred fix for every other diagnostic without a source location, such as a file that isn't linked to, since all of them are reported at the start of the document.
+
 ## [0.31.1] - 2026-09-27
 
 ### Fixed
