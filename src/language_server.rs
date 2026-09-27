@@ -3845,7 +3845,7 @@ mod tests {
 
     #[test]
     fn errors_without_ranges_point_to_document_start() {
-        let error = crate::error::Error::new("Something went wrong.", None, None, None);
+        let error = crate::error::Error::new("Something went wrong.", None, None, None, None);
         let diagnostic = diagnostic_from_error("# Home\n", &error);
 
         assert_eq!(
@@ -3861,6 +3861,7 @@ mod tests {
             "Something went wrong.",
             Some(Path::new("wiki.mull")),
             Some((source, SourceRange { start: 0, end: 9 })),
+            None,
             None,
         );
         let diagnostic = diagnostic_from_error(source, &error);

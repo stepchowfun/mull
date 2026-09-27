@@ -44,6 +44,7 @@ pub fn validate(
                 error
                     .reason
                     .map(|reason| reason as Rc<dyn std::error::Error>),
+                None,
             ));
             return Outcome::Completed(errors_to_result(errors));
         }
@@ -74,15 +75,13 @@ fn validate_text_links(
     // would fix.
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
-        errors.push(
-            Error::new(
-                &format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str()),
-                source_path,
-                None,
-                None,
-            )
-            .with_fix(Fix::CreateNode(HOME_TITLE.to_owned())),
-        );
+        errors.push(Error::new(
+            &format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str()),
+            source_path,
+            None,
+            None,
+            Some(Fix::CreateNode(HOME_TITLE.to_owned())),
+        ));
     }
 
     // Validate text-link targets deterministically.
@@ -105,6 +104,7 @@ fn validate_text_links(
                             source_path,
                             source_context,
                             None,
+                            None,
                         )
                     } else {
                         Error::new(
@@ -112,8 +112,8 @@ fn validate_text_links(
                             source_path,
                             source_context,
                             None,
+                            Some(Fix::CreateNode(title.clone())),
                         )
-                        .with_fix(Fix::CreateNode(title.clone()))
                     });
                 }
                 Link::Text { .. } | Link::Filesystem { .. } => {}
@@ -140,6 +140,7 @@ fn validate_text_links(
                 source_path,
                 Some((source_contents, source_range)),
                 None,
+                None,
             )
         }));
     }
@@ -160,6 +161,7 @@ fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec
                 "Save the wiki to validate this filesystem link.",
                 None,
                 Some((source_contents, *source_range)),
+                None,
                 None,
             )),
             Link::Text { .. } => None,
@@ -226,6 +228,7 @@ fn validate_filesystem_links(
                         error
                             .reason
                             .map(|reason| reason as Rc<dyn std::error::Error>),
+                        None,
                     ));
                     None
                 }
@@ -237,6 +240,7 @@ fn validate_filesystem_links(
                     &message,
                     Some(wiki_path),
                     Some((source_contents, source_range)),
+                    None,
                     None,
                 ));
                 if errors.len() >= MAX_FILESYSTEM_ERRORS {
@@ -310,6 +314,7 @@ fn inaccessible_target_error(
             Some(wiki_path),
             Some(source_context),
             None,
+            None,
         )
     } else {
         Error::new(
@@ -317,6 +322,7 @@ fn inaccessible_target_error(
             Some(wiki_path),
             Some(source_context),
             Some(Rc::new(error)),
+            None,
         )
     }
 }
@@ -374,6 +380,7 @@ fn visibility_error(
                     Some(wiki_path),
                     Some(source_context),
                     Some(Rc::new(error)),
+                    None,
                 ));
             }
         };
@@ -381,6 +388,7 @@ fn visibility_error(
             &message,
             Some(wiki_path),
             Some(source_context),
+            None,
             None,
         ))
     })
@@ -412,6 +420,7 @@ fn find_unreferenced_filesystem_links(
                 Some(wiki_path),
                 None,
                 Some(Rc::new(error)),
+                None,
             )]);
         }
     };
@@ -443,6 +452,7 @@ fn find_unreferenced_filesystem_links(
                     Some(wiki_path),
                     None,
                     Some(Rc::new(error)),
+                    None,
                 ));
                 if errors.len() >= maximum_errors {
                     break;
@@ -458,6 +468,7 @@ fn find_unreferenced_filesystem_links(
             errors.push(Error::new(
                 &format!("File {} isn't linked to.", path.code_path()),
                 Some(wiki_path),
+                None,
                 None,
                 None,
             ));

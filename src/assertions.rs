@@ -72,9 +72,9 @@ mod tests {
     #[test]
     fn assert_fails_match() {
         let success: Result<usize, Vec<Error>> = Err(vec![
-            Error::new("foo bar", None, None, None),
-            Error::new("foo search string bar", None, None, None),
-            Error::new("foo bar", None, None, None),
+            Error::new("foo bar", None, None, None, None),
+            Error::new("foo search string bar", None, None, None, None),
+            Error::new("foo bar", None, None, None, None),
         ]);
 
         assert_fails!(success, "search string");
@@ -84,9 +84,9 @@ mod tests {
     #[should_panic(expected = "the expected message wasn't found")]
     fn assert_fails_mismatch() {
         let success: Result<usize, Vec<Error>> = Err(vec![
-            Error::new("foo", None, None, None),
-            Error::new("bar", None, None, None),
-            Error::new("baz", None, None, None),
+            Error::new("foo", None, None, None, None),
+            Error::new("bar", None, None, None, None),
+            Error::new("baz", None, None, None, None),
         ]);
 
         assert_fails!(success, "search string");

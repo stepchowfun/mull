@@ -88,6 +88,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
                     trim_source_range(source_contents, line_source_range),
                 )),
                 None,
+                None,
             ));
             reported_content_before_title = true;
         }
@@ -143,6 +144,7 @@ fn parse_title(
             source_path,
             Some((source_contents, line_source_range)),
             None,
+            None,
         ))
     } else if !title.starts_with(FILESYSTEM_LINK_PREFIX) {
         Ok(title_source_range)
@@ -154,6 +156,7 @@ fn parse_title(
             ),
             source_path,
             Some((source_contents, title_source_range)),
+            None,
             None,
         ))
     }
@@ -198,6 +201,7 @@ fn insert_node(
             source_path,
             Some((source_contents, title_source_range)),
             None,
+            None,
         ));
     }
 
@@ -236,6 +240,17 @@ fn parse_content(
     let mut link_has_line_break = false;
     let mut previous_was_backslash = false;
 
+    // Report a syntax error at a range of the source.
+    let syntax_error = |message: &str, error_source_range| {
+        Error::new(
+            message,
+            source_path,
+            Some((source_contents, error_source_range)),
+            None,
+            None,
+        )
+    };
+
     for (index, character) in original_content.char_indices() {
         let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
         previous_was_backslash = character == '\\';
@@ -258,22 +273,18 @@ fn parse_content(
                 start: source_range.start + start,
                 end: source_range.start + index + character.len_utf8(),
             };
-            errors.push(Error::new(
+            errors.push(syntax_error(
                 "A link can't contain a line break.",
-                source_path,
-                Some((source_contents, link_source_range)),
-                None,
+                link_source_range,
             ));
             link_has_line_break = true;
         }
 
         // Interpret unescaped square brackets as link delimiters.
         match character {
-            '[' if link_start.is_some() => errors.push(Error::new(
+            '[' if link_start.is_some() => errors.push(syntax_error(
                 "Unexpected opening link delimiter.",
-                source_path,
-                Some((source_contents, character_source_range)),
-                None,
+                character_source_range,
             )),
             '[' => {
                 link_start = Some(index);
@@ -281,11 +292,9 @@ fn parse_content(
             }
             ']' if link_start.is_none() => {
                 // Reject a closing delimiter without an opening delimiter [tag:missing_link_start].
-                errors.push(Error::new(
+                errors.push(syntax_error(
                     "Unexpected closing link delimiter.",
-                    source_path,
-                    Some((source_contents, character_source_range)),
-                    None,
+                    character_source_range,
                 ));
             }
             ']' => {
@@ -331,12 +340,7 @@ fn parse_content(
             start: source_range.start + start,
             end: source_range.start + start + '['.len_utf8(),
         };
-        errors.push(Error::new(
-            "Unclosed link.",
-            source_path,
-            Some((source_contents, link_source_range)),
-            None,
-        ));
+        errors.push(syntax_error("Unclosed link.", link_source_range));
     }
 
     // Retain the content following the final link, then normalize the finished content. Links
@@ -361,6 +365,7 @@ fn parse_link(
                 &message,
                 source_path,
                 Some((source_contents, source_range)),
+                None,
                 None,
             )
         })?;
