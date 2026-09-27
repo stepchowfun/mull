@@ -54,9 +54,6 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // Keep this in sync with [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
-// A diagnostic's data holds the title of a node that declaring would fix it under this key.
-const CREATE_NODE_FIX: &str = "createNode";
-
 // This extension command reveals the directory of a clicked directory link in the explorer.
 // Keep this in sync with [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
@@ -674,11 +671,7 @@ fn diagnostic(
         source: Some(env!("CARGO_PKG_NAME").to_owned()),
         message,
         // Carry any fix along, since the editor sends it back with a code action request.
-        data: fix.map(|fix| match fix {
-            Fix::CreateNode(title) => {
-                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
-            }
-        }),
+        data: fix.map(|fix| serde_json::to_value(fix).expect("A fix should serialize to JSON.")),
         ..Diagnostic::default()
     }
 }
@@ -1800,15 +1793,13 @@ fn code_action_for_document(
     source_contents: &str,
     diagnostics: &[Diagnostic],
 ) -> Option<CodeActionResponse> {
-    // Collect the distinct fixes, reading each from the data that `diagnostic_from_error` wrote.
+    // Collect the distinct fixes, reading each from the data that `diagnostic` wrote.
     let mut fixes = BTreeMap::<Fix, Vec<Diagnostic>>::new();
     for diagnostic in diagnostics {
         let Some(fix) = diagnostic
             .data
-            .as_ref()
-            .and_then(|data| data.get(CREATE_NODE_FIX))
-            .and_then(serde_json::Value::as_str)
-            .map(|title| Fix::CreateNode(title.to_owned()))
+            .clone()
+            .and_then(|data| serde_json::from_value::<Fix>(data).ok())
         else {
             continue;
         };

@@ -383,6 +383,7 @@ dependencies = [
  "colored",
  "ignore",
  "percent-encoding",
+ "serde",
  "serde_json",
  "similar",
  "tokio",

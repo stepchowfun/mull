@@ -1,5 +1,6 @@
 use crate::format::CodePath;
 use colored::{Colorize, control::SHOULD_COLORIZE};
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::{max, min},
     error, fmt,
@@ -15,8 +16,9 @@ pub struct SourceRange {
     pub end: usize,   // Exclusive
 }
 
-// This describes an edit that would resolve an error, which an editor can offer as a quick fix.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+// This describes an edit that would resolve an error, which an editor can offer as a quick fix. It
+// travels to the editor and back as JSON.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Fix {
     // Declare a node with this title.
     CreateNode(String),
