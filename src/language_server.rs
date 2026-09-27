@@ -6,8 +6,8 @@ use crate::{
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki, escape_link_delimiters, unescape_link_delimiters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
+        TITLE_PREFIX, TextNode, Wiki,
     },
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -739,10 +739,9 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
     // [ref:filesystem_path_components].
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let mut directory = PathBuf::new();
-    for component in Path::new(&unescape_link_delimiters(
-        typed_directory.trim_start_matches('/'),
-    ))
-    .components()
+    for component in
+        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape())
+            .components()
     {
         match component {
             Component::Normal(component) => directory.push(component),
@@ -808,7 +807,7 @@ fn filesystem_link_completions(
         }
 
         // Leave a directory's link open for its children, and close a file's link.
-        let escaped_name = escape_link_delimiters(name);
+        let escaped_name = ContentText::escape(name).into_string();
         let (label, kind, new_text, replacement_end, command) = if file_type.is_dir() {
             (
                 format!("{name}/"),
@@ -903,7 +902,7 @@ fn text_link_completions(
     titles
         .into_iter()
         .map(|title| {
-            let escaped_title = escape_link_delimiters(title);
+            let escaped_title = ContentText::escape(title).into_string();
             CompletionItem {
                 label: title.clone(),
                 kind: Some(CompletionItemKind::REFERENCE),
@@ -962,18 +961,20 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: node.to_markdown(|link| match link {
-                Link::Text { title, .. } => reveal_range_command_url(
-                    uri,
-                    source_contents,
-                    wiki.text_nodes.get(title)?.title_source_range,
-                ),
-                Link::Filesystem { target, .. } => Some(
-                    filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
-                        .as_str()
-                        .to_owned(),
-                ),
-            }),
+            value: node
+                .to_markdown(|link| match link {
+                    Link::Text { title, .. } => reveal_range_command_url(
+                        uri,
+                        source_contents,
+                        wiki.text_nodes.get(title)?.title_source_range,
+                    ),
+                    Link::Filesystem { target, .. } => Some(
+                        filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
+                            .as_str()
+                            .to_owned(),
+                    ),
+                })
+                .into_string(),
         }),
         range: Some(lsp_range(source_contents, source_range)),
     })
@@ -1157,7 +1158,7 @@ fn prepare_rename_for_document(
                     end: start + trimmed.len(),
                 },
             ),
-            placeholder: unescape_link_delimiters(trimmed),
+            placeholder: ContentText::from_source(trimmed).unescape(),
         }));
     }
 
@@ -1252,7 +1253,8 @@ fn rename_text_node_for_document(
         return Err(format!("Node `{new_title}` already exists."));
     }
 
-    // Replace the declaration literally and encode the title inside every matching text link.
+    // Replace the declaration literally, since a heading isn't content, and escape the title inside
+    // every matching text link.
     let mut edits = vec![(node.title_source_range, new_title.to_owned())];
     for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
         if let Link::Text {
@@ -1263,7 +1265,10 @@ fn rename_text_node_for_document(
             && let Some(target_source_range) =
                 text_link_target_source_range(source_contents, *source_range)
         {
-            edits.push((target_source_range, escape_link_delimiters(new_title)));
+            edits.push((
+                target_source_range,
+                ContentText::escape(new_title).into_string(),
+            ));
         }
     }
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
@@ -1571,7 +1576,7 @@ fn filesystem_rename_edits(
         if let Some(moved_target) = moved_target {
             edits.push((
                 filesystem_link_path_source_range(source_contents, *source_range),
-                moved_target.text(),
+                moved_target.text().into_string(),
             ));
         }
     }
