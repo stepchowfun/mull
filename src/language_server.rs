@@ -7,7 +7,7 @@ use crate::{
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
-        TITLE_PREFIX, TextNode, Wiki,
+        TITLE_PREFIX, TextNode, Wiki, unescaped_characters,
     },
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -731,14 +731,8 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
     // delimiters as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
-    let mut previous_was_backslash = false;
-    for (index, character) in line.char_indices() {
+    for (index, character) in unescaped_characters(line) {
         let offset = line_start + index;
-        let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
-        previous_was_backslash = character == '\\';
-        if is_escaped_delimiter {
-            continue;
-        }
         if offset < cursor {
             match character {
                 '[' => opening_delimiter = Some(offset),
@@ -2671,7 +2665,7 @@ mod tests {
         assert_eq!(
             contents.value,
             format!(
-                "# Greeting\n\nLiteral &#91;brackets&#93; and \
+                "# Greeting\n\nLiteral \\[brackets\\] and \
                     [&#91;Home&#93;]({home_url}).",
             ),
         );

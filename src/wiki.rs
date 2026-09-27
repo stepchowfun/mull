@@ -58,8 +58,8 @@ pub struct TextNode {
 }
 
 impl TextNode {
-    // Render the node for a Markdown preview without exposing Mull's delimiter escapes, linking
-    // each link to the destination the callback provides, if any.
+    // Render the node for a Markdown preview, linking each link to the destination the callback
+    // provides, if any. Prose is already Markdown, since Mull's escapes are also Markdown escapes.
     pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
     where
         F: FnMut(&Link) -> Option<String>,
@@ -70,14 +70,7 @@ impl TextNode {
         let mut copied_through = 0;
         let mut link_start = None;
         let mut links = self.links.iter();
-        let mut previous_was_backslash = false;
-        for (index, character) in source.char_indices() {
-            let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
-            previous_was_backslash = character == '\\';
-            if is_escaped_delimiter {
-                continue;
-            }
-
+        for (index, character) in unescaped_characters(source) {
             // Track complete unescaped delimiter pairs, which the parser guarantees are valid.
             match character {
                 '[' => link_start = Some(index),
@@ -85,7 +78,7 @@ impl TextNode {
                     let Some(start) = link_start.take() else {
                         continue;
                     };
-                    content.push_str(&render_markdown_prose(&source[copied_through..start]).0);
+                    content.push_str(&source[copied_through..start]);
                     let target = ContentText::from_source(&source[start + '['.len_utf8()..index]);
                     content.push_str(
                         &match links.next() {
@@ -107,7 +100,7 @@ impl TextNode {
                 _ => {}
             }
         }
-        content.push_str(&render_markdown_prose(&source[copied_through..]).0);
+        content.push_str(&source[copied_through..]);
 
         // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
         let title = render_markdown_literal(&self.title).0;
@@ -136,15 +129,21 @@ impl fmt::Display for TextNode {
     }
 }
 
-// This is text as it appears in a node's content, where `[` and `]` delimit links and `\[` and `\]`
-// are literal brackets. A heading isn't content: a node's title appears in its heading as is.
+// This is text as it appears in a node's content, where `[` and `]` delimit links and a backslash
+// escapes a following `[`, `]`, or backslash, as in Markdown [ref:content_escapes]. A heading isn't
+// content: a node's title appears in its heading as is.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContentText(String);
 
 impl ContentText {
     // Escape plain text, such as a node title or a path, so it retains its meaning in content.
     pub fn escape(plain: &str) -> Self {
-        Self(plain.replace('[', "\\[").replace(']', "\\]"))
+        Self(
+            plain
+                .replace('\\', "\\\\")
+                .replace('[', "\\[")
+                .replace(']', "\\]"),
+        )
     }
 
     // Accept text that's already written as content, such as part of a wiki's source.
@@ -152,9 +151,20 @@ impl ContentText {
         Self(source.to_owned())
     }
 
-    // Decode escaped delimiters into plain text, as the parser does.
+    // Decode escaped delimiters and backslashes into plain text, as the parser does.
     pub fn unescape(&self) -> String {
-        self.0.replace("\\[", "[").replace("\\]", "]")
+        let mut plain = String::new();
+        let mut characters = self.0.chars().peekable();
+        while let Some(character) = characters.next() {
+            plain.push(if character == '\\' {
+                characters
+                    .next_if(|&next| is_escapable(next))
+                    .unwrap_or(character)
+            } else {
+                character
+            });
+        }
+        plain
     }
 
     // Expose the text as written, such as to scan it for delimiters.
@@ -166,6 +176,22 @@ impl ContentText {
     pub fn into_string(self) -> String {
         self.0
     }
+}
+
+// Scan content for the characters which aren't escaped, such as unescaped link delimiters. A
+// backslash escapes a following `[`, `]`, or backslash, as in Markdown [tag:content_escapes].
+pub fn unescaped_characters(content: &str) -> impl Iterator<Item = (usize, char)> {
+    let mut previous_was_escape = false;
+    content.char_indices().filter(move |&(_, character)| {
+        let is_escaped = previous_was_escape && is_escapable(character);
+        previous_was_escape = character == '\\' && !is_escaped;
+        !is_escaped
+    })
+}
+
+// Determine whether a backslash escapes a character in content.
+fn is_escapable(character: char) -> bool {
+    matches!(character, '\\' | '[' | ']')
 }
 
 // These are the source occurrences through which a node can reference a target.
@@ -327,12 +353,6 @@ impl Markdown {
     }
 }
 
-// Hide Mull delimiter escapes in prose, which is part of a node's content, while preserving any
-// intentional Markdown formatting.
-fn render_markdown_prose(prose: &str) -> Markdown {
-    Markdown(prose.replace("\\[", "&#91;").replace("\\]", "&#93;"))
-}
-
 // Render a text link, given the text between its delimiters, as ordinary bracketed text with an
 // optional Markdown destination.
 fn render_markdown_text_link(target: &ContentText, url: Option<&str>) -> Markdown {
@@ -434,12 +454,12 @@ mod tests {
         assert_eq!(node.to_string(), "# Greeting\n");
     }
 
-    // Hide Mull delimiter escapes while preserving links in Markdown previews.
+    // Pass prose through to Markdown previews, which share Mull's escapes, while rendering links.
     #[test]
     fn node_markdown() {
         let node = TextNode {
             title: "Greeting".to_owned(),
-            content: ContentText::from_source("Literal \\[brackets\\] and [Home]."),
+            content: ContentText::from_source(r"Literal \[brackets\] and \\[Home]."),
             links: vec![Link::Text {
                 title: "Home".to_owned(),
                 source_range: SOURCE_RANGE,
@@ -458,7 +478,9 @@ mod tests {
             })
             .into_string(),
             concat!(
-                "# Greeting\n\nLiteral &#91;brackets&#93; and ",
+                r"# Greeting
+
+Literal \[brackets\] and \\",
                 "[&#91;Home&#93;](command:mull.revealRange?destination).",
             ),
         );
@@ -554,6 +576,18 @@ mod tests {
             assert_eq!(target.is_directory(), is_directory);
             assert_eq!(FilesystemTarget::parse(&target.text()).unwrap(), target);
         }
+    }
+
+    // Escape delimiters and backslashes in plain text, and decode only those escapes, leaving any
+    // other backslash as is.
+    #[test]
+    fn content_text_escaping() {
+        assert_eq!(ContentText::escape(r"a\[b]\c\").as_str(), r"a\\\[b\]\\c\\");
+        assert_eq!(
+            ContentText::from_source(r"a\\\[b\]\\c\\").unescape(),
+            r"a\[b]\c\",
+        );
+        assert_eq!(ContentText::from_source(r"\a\\\").unescape(), r"\a\\");
     }
 
     // Reject filesystem link paths which would escape the wiki's logical tree.
