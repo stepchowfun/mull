@@ -2060,7 +2060,8 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
         line_end
     };
 
-    // Reject positions that split a surrogate pair or extend past the line's contents.
+    // Reject positions that split a surrogate pair, and clamp positions past the line's contents to
+    // its end, as the protocol specifies.
     let requested_character = usize::try_from(position.character).ok()?;
     let mut utf16_character = 0;
     for (index, character) in source_contents[line_start..content_end].char_indices() {
@@ -2072,7 +2073,7 @@ fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
             return None;
         }
     }
-    (utf16_character == requested_character).then_some(content_end)
+    Some(content_end)
 }
 
 // Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
@@ -2186,18 +2187,21 @@ mod tests {
         assert_eq!(lsp_position(source, source.len()), Position::new(1, 7));
     }
 
-    // Convert editor positions back to byte offsets without splitting Unicode characters.
+    // Convert editor positions back to byte offsets without splitting Unicode characters, clamping
+    // positions past the end of a line to its end.
     #[test]
     fn byte_offsets_use_utf16_code_units() {
         let source = "zero\n😀 café";
 
         assert_eq!(byte_offset(source, Position::new(0, 0)), Some(0));
+        assert_eq!(byte_offset(source, Position::new(0, 9)), Some(4));
         assert_eq!(byte_offset(source, Position::new(1, 0)), Some(5));
         assert_eq!(byte_offset(source, Position::new(1, 1)), None);
         assert_eq!(byte_offset(source, Position::new(1, 2)), Some(9));
         assert_eq!(byte_offset(source, Position::new(1, 7)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(1, 8)), None);
+        assert_eq!(byte_offset(source, Position::new(1, 8)), Some(source.len()));
         assert_eq!(byte_offset(source, Position::new(2, 0)), None);
+        assert_eq!(byte_offset("ab\r\ncd", Position::new(0, 9)), Some(2));
     }
 
     // Encode a document URI and UTF-16 title range for the trusted editor command.
