@@ -702,6 +702,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // in a saved wiki, its filesystem links to their targets.
     let wiki_path = local_path(uri);
     let wiki_directory = wiki_path.as_deref().map(wiki_directory);
+    let mut listings = DirectoryListings::new();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -712,7 +713,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
                     wiki.text_nodes.get(title)?.title_source_range,
                 ),
                 Link::File { .. } | Link::Directory { .. } => Some(
-                    filesystem_link_target(wiki_directory?, link)?
+                    filesystem_link_target(wiki_directory?, link, &mut listings)?
                         .as_str()
                         .to_owned(),
                 ),
@@ -1231,6 +1232,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
     let wiki_directory = wiki_directory(&wiki_path);
 
     // Link each filesystem link to its target, skipping any that the checker would report.
+    let mut listings = DirectoryListings::new();
     let mut document_links = wiki
         .text_nodes
         .values()
@@ -1247,7 +1249,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
             };
             Some(DocumentLink {
                 range: lsp_range(source_contents, *source_range),
-                target: Some(filesystem_link_target(wiki_directory, link)?),
+                target: Some(filesystem_link_target(wiki_directory, link, &mut listings)?),
                 tooltip: Some(tooltip.to_owned()),
                 data: None,
             })
@@ -1557,6 +1559,14 @@ fn renamable_filesystem_node_at(
     }
     if old_path == relative_path(wiki_directory, &wiki_path) {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
+    }
+
+    // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
+    // would update only the links spelled like this one, breaking any spelled correctly.
+    if let (_, Some(message)) =
+        check_spelling(wiki_directory, &old_path, &mut DirectoryListings::new())
+    {
+        return Err(message);
     }
 
     Ok(Some(RenamableFilesystemNode {
@@ -1956,16 +1966,22 @@ fn reveal_range_command_url(
 }
 
 // Find where following a filesystem link should lead: a file opens in the editor, and a directory
-// is revealed in the explorer. A link whose target is missing or of the wrong kind leads nowhere,
-// just as the checker reports it.
-fn filesystem_link_target(wiki_directory: &Path, link: &Link) -> Option<Uri> {
-    // Require the target to exist as the kind of entry the link names.
+// is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
+// differently than on disk leads nowhere, just as the checker reports it.
+fn filesystem_link_target(
+    wiki_directory: &Path,
+    link: &Link,
+    listings: &mut DirectoryListings,
+) -> Option<Uri> {
+    // Require the target to exist as the kind of entry the link names, spelled as it is on disk.
     let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
         return None;
     };
     let is_directory = matches!(link, Link::Directory { .. });
     let target_path = wiki_directory.join(path);
-    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
+    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory)
+        || check_spelling(wiki_directory, path, listings).1.is_some()
+    {
         return None;
     }
 
@@ -3391,7 +3407,8 @@ mod tests {
     // Reject filesystem renames which the parser, the filesystem, or the editor can't support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
-        let source = "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull]";
+        let source =
+            "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.path().parent().unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -3455,9 +3472,13 @@ mod tests {
             "The wiki can't be renamed through one of its own links.",
         );
 
-        // Reject a new path through an existing directory spelled differently than on disk, which
-        // only a filesystem that ignores case finds.
+        // Reject a link or a new path through an existing directory spelled differently than on
+        // disk, which only a filesystem that ignores case finds.
         if fs::metadata(directory.join("IMAGES")).is_ok() {
+            assert_eq!(
+                rename(&uri, 58, "renamed.txt", ALL_FILE_OPERATIONS),
+                "`NOTES.txt` is spelled `notes.txt` on disk.",
+            );
             assert_eq!(
                 rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
                 "`IMAGES` is spelled `images` on disk.",
@@ -3470,10 +3491,11 @@ mod tests {
     }
 
     // Link files to themselves and directories to a command that reveals them, skipping links
-    // whose targets are missing or of the wrong kind.
+    // whose targets are missing, of the wrong kind, or spelled differently than on disk.
     #[test]
     fn document_links_open_existing_targets() {
-        let source = "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/]";
+        let source =
+            "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.path().parent().unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
