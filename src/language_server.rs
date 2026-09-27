@@ -3,7 +3,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     format::CodePath,
-    parser::{self, normalize_filesystem_path, render_link_path},
+    parser::{self, normalize_link_path, render_link_path},
     path_util::relative_path,
     wiki::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
@@ -991,7 +991,7 @@ fn rename_filesystem_node_for_document(
     let old_path = old_path.as_path();
 
     // Accept only a new path which the parser would accept in a link.
-    let new_path = normalize_filesystem_path(new_name.trim())?;
+    let new_path = normalize_link_path(new_name.trim())?;
     if new_path == old_path {
         return Ok(Some(WorkspaceEdit::default()));
     }

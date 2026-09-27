@@ -380,7 +380,7 @@ fn parse_filesystem_path(
     source_contents: &str,
     source_range: SourceRange,
 ) -> Result<PathBuf, Error> {
-    normalize_filesystem_path(path).map_err(|message| {
+    normalize_link_path(path).map_err(|message| {
         Error::new(
             &message,
             source_path,
@@ -418,7 +418,7 @@ pub fn render_link_path(path: &Path, is_directory: bool) -> String {
 
 // Normalize a filesystem link path, which is relative to the wiki directory even if it starts with
 // `/`, while keeping it inside the wiki's logical tree. Describe any problem with a message.
-pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
+pub fn normalize_link_path(path: &str) -> Result<PathBuf, String> {
     // Interpret the path relative to the wiki directory, even with the leading `/` of a filesystem
     // link. What remains may be empty, which denotes the wiki directory itself.
     let parsed_path = Path::new(path.trim_start_matches('/'));
