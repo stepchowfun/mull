@@ -20,6 +20,154 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
+// This struct represents a parsed wiki.
+#[derive(Clone, Debug, Default)]
+pub struct Wiki {
+    pub text_nodes: HashMap<String, TextNode>,
+}
+
+// Render nodes deterministically in depth order with titles breaking ties.
+impl fmt::Display for Wiki {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
+        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
+        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
+
+        // Add one line break between nodes because each node already ends with one.
+        for (index, (_title, node)) in nodes.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
+            write!(formatter, "{node}")?;
+        }
+
+        // Rendering succeeded.
+        Ok(())
+    }
+}
+
+// This struct represents a text node in a wiki.
+#[derive(Clone, Debug)]
+pub struct TextNode {
+    pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
+    pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
+    pub links: Vec<Link>,
+    pub depth: Option<usize>, // Minimum text-link distance from the root
+    pub source_range: SourceRange, // The complete node without leading or trailing whitespace
+    pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
+}
+
+impl TextNode {
+    // Render the node for a Markdown preview without exposing Mull's delimiter escapes, linking
+    // each link to the destination the callback provides, if any.
+    pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
+    where
+        F: FnMut(&Link) -> Option<String>,
+    {
+        // Render each parsed link with its semantic destination while retaining surrounding prose.
+        let source = self.content.as_str();
+        let mut content = String::new();
+        let mut copied_through = 0;
+        let mut link_start = None;
+        let mut links = self.links.iter();
+        let mut previous_was_backslash = false;
+        for (index, character) in source.char_indices() {
+            let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
+            previous_was_backslash = character == '\\';
+            if is_escaped_delimiter {
+                continue;
+            }
+
+            // Track complete unescaped delimiter pairs, which the parser guarantees are valid.
+            match character {
+                '[' => link_start = Some(index),
+                ']' => {
+                    let Some(start) = link_start.take() else {
+                        continue;
+                    };
+                    content.push_str(&render_markdown_prose(&source[copied_through..start]).0);
+                    let target = ContentText::from_source(&source[start + '['.len_utf8()..index]);
+                    content.push_str(
+                        &match links.next() {
+                            Some(link @ Link::Text { .. }) => {
+                                render_markdown_text_link(&target, link_url(link).as_deref())
+                            }
+                            Some(link @ Link::Filesystem { .. }) => {
+                                render_markdown_filesystem_link(&target, link_url(link).as_deref())
+                            }
+                            None => {
+                                // The parser recorded a link for every delimiter pair.
+                                unreachable!("Every link in a node's content should be parsed.")
+                            }
+                        }
+                        .0,
+                    );
+                    copied_through = index + character.len_utf8();
+                }
+                _ => {}
+            }
+        }
+        content.push_str(&render_markdown_prose(&source[copied_through..]).0);
+
+        // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
+        let title = render_markdown_literal(&self.title).0;
+        Markdown(if content.is_empty() {
+            format!("{TITLE_PREFIX}{title}")
+        } else {
+            format!("{TITLE_PREFIX}{title}\n\n{content}")
+        })
+    }
+}
+
+// Render nodes in the wiki's heading-and-content format.
+impl fmt::Display for TextNode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Omit the content separator when there's no content.
+        if self.content.as_str().is_empty() {
+            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
+        } else {
+            writeln!(
+                formatter,
+                "{TITLE_PREFIX}{}\n\n{}",
+                self.title,
+                self.content.as_str(),
+            )
+        }
+    }
+}
+
+// This is text as it appears in a node's content, where `[` and `]` delimit links and `\[` and `\]`
+// are literal brackets. A heading isn't content: a node's title appears in its heading as is.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ContentText(String);
+
+impl ContentText {
+    // Escape plain text, such as a node title or a path, so it retains its meaning in content.
+    pub fn escape(plain: &str) -> Self {
+        Self(plain.replace('[', "\\[").replace(']', "\\]"))
+    }
+
+    // Accept text that's already written as content, such as part of a wiki's source.
+    pub fn from_source(source: &str) -> Self {
+        Self(source.to_owned())
+    }
+
+    // Decode escaped delimiters into plain text, as the parser does.
+    pub fn unescape(&self) -> String {
+        self.0.replace("\\[", "[").replace("\\]", "]")
+    }
+
+    // Expose the text as written, such as to scan it for delimiters.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    // Release the text as written, such as for an edit to the source.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
 // These are the source occurrences through which a node can reference a target.
 #[derive(Clone, Debug)]
 pub enum Link {
@@ -167,154 +315,6 @@ impl FilesystemTarget {
     }
 }
 
-// This struct represents a text node in a wiki.
-#[derive(Clone, Debug)]
-pub struct TextNode {
-    pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
-    pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
-    pub links: Vec<Link>,
-    pub depth: Option<usize>, // Minimum text-link distance from the root
-    pub source_range: SourceRange, // The complete node without leading or trailing whitespace
-    pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
-}
-
-// This struct represents a parsed wiki.
-#[derive(Clone, Debug, Default)]
-pub struct Wiki {
-    pub text_nodes: HashMap<String, TextNode>,
-}
-
-impl TextNode {
-    // Render the node for a Markdown preview without exposing Mull's delimiter escapes, linking
-    // each link to the destination the callback provides, if any.
-    pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
-    where
-        F: FnMut(&Link) -> Option<String>,
-    {
-        // Render each parsed link with its semantic destination while retaining surrounding prose.
-        let source = self.content.as_str();
-        let mut content = String::new();
-        let mut copied_through = 0;
-        let mut link_start = None;
-        let mut links = self.links.iter();
-        let mut previous_was_backslash = false;
-        for (index, character) in source.char_indices() {
-            let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
-            previous_was_backslash = character == '\\';
-            if is_escaped_delimiter {
-                continue;
-            }
-
-            // Track complete unescaped delimiter pairs, which the parser guarantees are valid.
-            match character {
-                '[' => link_start = Some(index),
-                ']' => {
-                    let Some(start) = link_start.take() else {
-                        continue;
-                    };
-                    content.push_str(&render_markdown_prose(&source[copied_through..start]).0);
-                    let target = ContentText::from_source(&source[start + '['.len_utf8()..index]);
-                    content.push_str(
-                        &match links.next() {
-                            Some(link @ Link::Text { .. }) => {
-                                render_markdown_text_link(&target, link_url(link).as_deref())
-                            }
-                            Some(link @ Link::Filesystem { .. }) => {
-                                render_markdown_filesystem_link(&target, link_url(link).as_deref())
-                            }
-                            None => {
-                                // The parser recorded a link for every delimiter pair.
-                                unreachable!("Every link in a node's content should be parsed.")
-                            }
-                        }
-                        .0,
-                    );
-                    copied_through = index + character.len_utf8();
-                }
-                _ => {}
-            }
-        }
-        content.push_str(&render_markdown_prose(&source[copied_through..]).0);
-
-        // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
-        let title = render_markdown_literal(&self.title).0;
-        Markdown(if content.is_empty() {
-            format!("{TITLE_PREFIX}{title}")
-        } else {
-            format!("{TITLE_PREFIX}{title}\n\n{content}")
-        })
-    }
-}
-
-// Render nodes in the wiki's heading-and-content format.
-impl fmt::Display for TextNode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Omit the content separator when there's no content.
-        if self.content.as_str().is_empty() {
-            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
-        } else {
-            writeln!(
-                formatter,
-                "{TITLE_PREFIX}{}\n\n{}",
-                self.title,
-                self.content.as_str(),
-            )
-        }
-    }
-}
-
-// Render nodes deterministically in depth order with titles breaking ties.
-impl fmt::Display for Wiki {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
-        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
-
-        // Add one line break between nodes because each node already ends with one.
-        for (index, (_title, node)) in nodes.into_iter().enumerate() {
-            if index > 0 {
-                writeln!(formatter)?;
-            }
-            write!(formatter, "{node}")?;
-        }
-
-        // Rendering succeeded.
-        Ok(())
-    }
-}
-
-// This is text as it appears in a node's content, where `[` and `]` delimit links and `\[` and `\]`
-// are literal brackets. A heading isn't content: a node's title appears in its heading as is.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ContentText(String);
-
-impl ContentText {
-    // Escape plain text, such as a node title or a path, so it retains its meaning in content.
-    pub fn escape(plain: &str) -> Self {
-        Self(plain.replace('[', "\\[").replace(']', "\\]"))
-    }
-
-    // Accept text that's already written as content, such as part of a wiki's source.
-    pub fn from_source(source: &str) -> Self {
-        Self(source.to_owned())
-    }
-
-    // Decode escaped delimiters into plain text, as the parser does.
-    pub fn unescape(&self) -> String {
-        self.0.replace("\\[", "[").replace("\\]", "]")
-    }
-
-    // Expose the text as written, such as to scan it for delimiters.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    // Release the text as written, such as for an edit to the source.
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
 // This is Markdown for display. Only the rendering code in this module produces it, since it
 // encodes whatever text it's given.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -331,32 +331,6 @@ impl Markdown {
 // intentional Markdown formatting.
 fn render_markdown_prose(prose: &str) -> Markdown {
     Markdown(prose.replace("\\[", "&#91;").replace("\\]", "&#93;"))
-}
-
-// Render plain text literally in Markdown by replacing its syntax characters with entities. This
-// includes `#`, since a trailing sequence of them would otherwise close a heading.
-fn render_markdown_literal(text: &str) -> Markdown {
-    let mut rendered = String::new();
-    for character in text.chars() {
-        rendered.push_str(match character {
-            '&' => "&amp;",
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '\\' => "&#92;",
-            '`' => "&#96;",
-            '*' => "&#42;",
-            '_' => "&#95;",
-            '[' => "&#91;",
-            ']' => "&#93;",
-            '~' => "&#126;",
-            '#' => "&#35;",
-            _ => {
-                rendered.push(character);
-                continue;
-            }
-        });
-    }
-    Markdown(rendered)
 }
 
 // Render a text link, given the text between its delimiters, as ordinary bracketed text with an
@@ -393,6 +367,32 @@ fn render_markdown_filesystem_link(target: &ContentText, url: Option<&str>) -> M
         Some(url) => format!("[{code}](<{url}>)"),
         None => code,
     })
+}
+
+// Render plain text literally in Markdown by replacing its syntax characters with entities. This
+// includes `#`, since a trailing sequence of them would otherwise close a heading.
+fn render_markdown_literal(text: &str) -> Markdown {
+    let mut rendered = String::new();
+    for character in text.chars() {
+        rendered.push_str(match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '\\' => "&#92;",
+            '`' => "&#96;",
+            '*' => "&#42;",
+            '_' => "&#95;",
+            '[' => "&#91;",
+            ']' => "&#93;",
+            '~' => "&#126;",
+            '#' => "&#35;",
+            _ => {
+                rendered.push(character);
+                continue;
+            }
+        });
+    }
+    Markdown(rendered)
 }
 
 #[cfg(test)]
