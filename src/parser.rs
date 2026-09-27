@@ -344,16 +344,6 @@ fn parse_content(
     (normalize_lines(&content), links, errors)
 }
 
-// Format the trimmed target of a parsed link. A text link's target is kept as written, while a
-// filesystem link's path is written in its normalized form.
-fn format_link_target(trimmed_target: &str, link: &Link) -> String {
-    match link {
-        Link::Text { .. } => trimmed_target.to_owned(),
-        Link::File { path, .. } => render_link_path(path, false),
-        Link::Directory { path, .. } => render_link_path(path, true),
-    }
-}
-
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
@@ -441,6 +431,16 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
             }
         })
         .collect())
+}
+
+// Format the trimmed target of a parsed link. A text link's target is kept as written, while a
+// filesystem link's path is written in its normalized form.
+fn format_link_target(trimmed_target: &str, link: &Link) -> String {
+    match link {
+        Link::Text { .. } => trimmed_target.to_owned(),
+        Link::File { path, .. } => render_link_path(path, false),
+        Link::Directory { path, .. } => render_link_path(path, true),
+    }
 }
 
 // Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
