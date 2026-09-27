@@ -229,17 +229,37 @@ impl WikiDirectory {
     // Spell the deepest proper ancestor of a target that exists, which may be the wiki directory
     // itself, and return it with the rest of the target's path as written. None of the rest exists
     // except possibly the final name, which is never spelled, so a rename can tell whether it names
-    // the node being renamed.
+    // the node being renamed. An ancestor whose existence can't be determined is an error rather
+    // than a missing directory.
     pub fn spell_existing_ancestor(
         &self,
         target: &FilesystemTarget,
     ) -> Result<(SpelledPath, PathBuf), SpellingError> {
         let path = target.path();
-        let ancestor = path
-            .ancestors()
-            .skip(1)
-            .find(|ancestor| self.path.join(ancestor).exists())
-            .unwrap_or_else(|| Path::new(""));
+        let mut ancestor = Path::new("");
+        for candidate in path.ancestors().skip(1) {
+            match self.path.join(candidate).try_exists() {
+                Ok(true) => {
+                    ancestor = candidate;
+                    break;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(SpellingError {
+                        message: format!(
+                            "Unable to access {}.",
+                            if candidate.as_os_str().is_empty() {
+                                "the wiki directory".to_owned()
+                            } else {
+                                candidate.code_path().to_string()
+                            },
+                        ),
+                        spelled: None,
+                        reason: Some(Rc::new(error)),
+                    });
+                }
+            }
+        }
         Ok((
             SpelledPath::spell(&self.path, ancestor, &mut DirectoryListings::new())?,
             path.strip_prefix(ancestor)
@@ -276,6 +296,33 @@ mod tests {
     use super::{DirectoryListings, WikiDirectory};
     use crate::wiki::FilesystemTarget;
     use std::{env, fs, process};
+
+    // Report an ancestor whose existence can't be determined, rather than treating it as missing.
+    // Permissions don't restrict a superuser, so skip this where the ancestor remains accessible.
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_ancestor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = env::temp_dir().join(format!("mull-access-{}", process::id()));
+        let locked = directory.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull"));
+
+        let result = wiki_directory
+            .spell_existing_ancestor(&FilesystemTarget::parse("/locked/inner/file.txt").unwrap());
+        let accessible = locked.join("inner").try_exists().is_ok();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        if !accessible {
+            let inner_path = std::path::Path::new("locked").join("inner");
+            assert_eq!(
+                result.unwrap_err().message,
+                format!("Unable to access `{}`.", inner_path.display()),
+            );
+        }
+    }
 
     // Report the first name that matches nothing on disk, rather than failing to list a directory
     // that doesn't exist beneath it.
