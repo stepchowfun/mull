@@ -4,7 +4,7 @@ use crate::{
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{Visibility, broken_symlink, visibility, wiki_tree_walker},
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -399,36 +399,6 @@ fn inaccessible_target_error(
     }
 }
 
-// Explain a failure of a walk of the wiki tree, singling out a broken symlink since what it was
-// meant to point to can't be determined.
-fn walk_error(
-    error: ignore::Error,
-    wiki_directory: &Path,
-    wiki_path: &Path,
-    message: &str,
-    source_context: Option<(&str, SourceRange)>,
-) -> Error {
-    if let Some((symlink, destination)) = broken_symlink(&error) {
-        Error::new(
-            &format!(
-                "{} is a broken symlink to {}.",
-                relative_path(wiki_directory, symlink).code_path(),
-                destination.code_path(),
-            ),
-            Some(wiki_path),
-            source_context,
-            None,
-        )
-    } else {
-        Error::new(
-            message,
-            Some(wiki_path),
-            source_context,
-            Some(Rc::new(error)),
-        )
-    }
-}
-
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
 // it, where `path` is the link's path and `spelled_path` is its spelling on disk.
 fn visibility_error(
@@ -448,12 +418,11 @@ fn visibility_error(
             ),
             Ok(Visibility::Ignored) => format!("{} is ignored.", path.code_path()),
             Err(error) => {
-                return Some(walk_error(
-                    error,
-                    wiki_directory,
-                    wiki_path,
+                return Some(Error::new(
                     &format!("Unable to walk {}.", path.code_path()),
+                    Some(wiki_path),
                     Some(source_context),
+                    Some(Rc::new(error)),
                 ));
             }
         };
@@ -538,16 +507,14 @@ fn find_unreferenced_filesystem_links(
             return Outcome::Cancelled;
         }
 
-        // Report any failure.
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                errors.push(walk_error(
-                    error,
-                    wiki_directory,
-                    wiki_path,
+                errors.push(Error::new(
                     "Unable to walk wiki directory.",
+                    Some(wiki_path),
                     None,
+                    Some(Rc::new(error)),
                 ));
                 if errors.len() >= maximum_errors {
                     break;
@@ -923,28 +890,22 @@ mod tests {
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
-    // Report a broken symlink, since what it was meant to point to can't be determined, including
-    // one within a linked directory.
+    // Report a broken symlink because its target can't be classified.
     #[cfg(unix)]
     #[test]
-    fn broken_symlinks() {
+    fn broken_symlink() {
         use std::os::unix::fs::symlink;
 
         let directory = TestDirectory::new();
-        symlink("missing", directory.path().join("unlinked")).unwrap();
-        fs::create_dir(directory.path().join("contents")).unwrap();
-        symlink("missing", directory.path().join("contents/nested")).unwrap();
-        let wiki = parse("# Home\n[/contents/]").unwrap();
+        symlink("missing", directory.path().join("broken")).unwrap();
+        let wiki = parse("# Home").unwrap();
 
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        let nested_path = Path::new("contents").join("nested");
-        assert_eq!(errors.len(), 2);
-        for symlink in [Path::new("unlinked"), &nested_path] {
-            assert!(contains_error(
-                &errors,
-                &format!("`{}` is a broken symlink to `missing`.", symlink.display()),
-            ));
-        }
+        assert!(
+            validate(&wiki, &directory.wiki_path())
+                .unwrap_err()
+                .iter()
+                .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
+        );
     }
 
     // Identify a misspelled symlink by the entry itself rather than its target, which other

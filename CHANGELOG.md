@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stopped offering directories without such files as completions.
 
 ### Fixed
-- Reported a broken symlink as such instead of failing the walk of the wiki directory.
 - Reported the correct spelling of a misspelled symlink when other symlinks point to the same target, instead of suggesting one of the others and reporting the symlink as unreferenced.
 
 ## [0.28.0] - 2026-09-25

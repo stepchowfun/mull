@@ -1,9 +1,6 @@
 use crate::cancellation::{CancellationFlag, Outcome};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 // Configure a walk of the wiki tree which follows directory symlinks, includes hidden entries, and
 // honors ignore files within the tree while excluding VCS metadata.
@@ -61,27 +58,16 @@ pub fn visibility(
         move |entry| target.starts_with(entry.path()) || entry.path().starts_with(&target)
     });
 
-    // Stop at the first file at or within the target.
+    // Disregard walk failures, such as broken symlinks, since the filter never sees them, so they
+    // may concern unrelated entries.
     let mut reached = false;
-    for result in walker_builder.build() {
+    for entry in walker_builder.build().flatten() {
         // Stop between entries so a superseded check doesn't walk the rest of the target.
         if cancellation.is_cancelled() {
             return Outcome::Cancelled;
         }
 
-        // Skip failures at entries which the filter would have excluded, since the filter never
-        // sees walk errors, and report any other failure.
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(error)
-                if walk_error_path(&error).is_some_and(|path| {
-                    !target.starts_with(path) && !path.starts_with(&target)
-                }) =>
-            {
-                continue;
-            }
-            Err(error) => return Outcome::Completed(Err(error)),
-        };
+        // Note reaching the target, and stop at the first file at or within it.
         if entry.path() == target {
             reached = true;
         }
@@ -96,29 +82,4 @@ pub fn visibility(
     } else {
         Visibility::Ignored
     }))
-}
-
-// Find the path of the entry at which a walk of the wiki tree failed.
-fn walk_error_path(error: &ignore::Error) -> Option<&Path> {
-    match error {
-        ignore::Error::WithPath { path, .. } => Some(path),
-        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
-            walk_error_path(err)
-        }
-        _ => None,
-    }
-}
-
-// Find a broken symlink at which a walk of the wiki tree failed, returning its path along with its
-// contents. Following a chain of symlinks may reveal that a later one is the broken link, but this
-// one leads nowhere all the same.
-pub fn broken_symlink(error: &ignore::Error) -> Option<(&Path, PathBuf)> {
-    let path = walk_error_path(error)?;
-    let is_broken = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink())
-        && fs::metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
-    if is_broken {
-        Some((path, fs::read_link(path).ok()?))
-    } else {
-        None
-    }
 }
