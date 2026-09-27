@@ -10,9 +10,8 @@ use std::{
 
 // A path relative to the wiki directory whose components are spelled exactly as the names in their
 // directories' listings. Comparing such paths as written then agrees with the filesystem, whether
-// or not it ignores case. The exception, kept as written, is the final name of a rename's
-// destination, which the rename checks itself. Such a path describes the disk when it was spelled,
-// so it shouldn't outlive a check or request.
+// or not it ignores case. Such a path describes the disk when it was spelled, so it shouldn't
+// outlive a check or request.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SpelledPath(PathBuf);
 
@@ -156,13 +155,14 @@ pub struct SpellingError {
 }
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
-// disk. An editor or a user may spell the wiki's path differently if the filesystem ignores case.
+// disk if the wiki is there. An editor or a user may spell the wiki's path differently if the
+// filesystem ignores case.
 // The directory's own spelling doesn't matter, since it's only a prefix from which every other path
 // is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
 pub struct WikiDirectory {
     path: PathBuf,
-    wiki_path: SpelledPath,
+    wiki_path: Option<SpelledPath>,
 }
 
 impl WikiDirectory {
@@ -174,19 +174,19 @@ impl WikiDirectory {
             .unwrap_or_else(|| Path::new("."))
             .to_owned();
 
-        // Keep the path as given for a wiki that isn't on disk, which has no other spelling.
-        let relative_wiki_path = relative_path(&path, wiki_path);
-        let wiki_path =
-            match SpelledPath::spell(&path, relative_wiki_path, &mut DirectoryListings::new()) {
-                Ok(spelled)
-                | Err(SpellingError {
-                    spelled: Some(spelled),
-                    ..
-                }) => spelled,
-                Err(SpellingError { spelled: None, .. }) => {
-                    SpelledPath(relative_wiki_path.to_owned())
-                }
-            };
+        // Spell the wiki's path as on disk, however it's given, unless the wiki isn't there.
+        let wiki_path = match SpelledPath::spell(
+            &path,
+            relative_path(&path, wiki_path),
+            &mut DirectoryListings::new(),
+        ) {
+            Ok(spelled)
+            | Err(SpellingError {
+                spelled: Some(spelled),
+                ..
+            }) => Some(spelled),
+            Err(SpellingError { spelled: None, .. }) => None,
+        };
         Self { path, wiki_path }
     }
 
@@ -195,9 +195,9 @@ impl WikiDirectory {
         &self.path
     }
 
-    // Expose the wiki's path within the directory, spelled as on disk.
-    pub fn wiki_path(&self) -> &SpelledPath {
-        &self.wiki_path
+    // Expose the wiki's path within the directory, spelled as on disk, if the wiki is there.
+    pub fn wiki_path(&self) -> Option<&SpelledPath> {
+        self.wiki_path.as_ref()
     }
 
     // Locate a spelled path for filesystem operations.
@@ -226,28 +226,25 @@ impl WikiDirectory {
         SpelledPath::spell(&self.path, target.path(), listings)
     }
 
-    // Require the existing directories along a rename's new path to be spelled as on disk. The
-    // other names don't exist, so they have no other spelling. The final name is kept as written
-    // even if it exists: the rename refuses such a destination, other than within a directory
-    // moving into itself, where nothing will exist at the time of the move.
-    pub fn spell_destination(
+    // Spell the deepest proper ancestor of a target that exists, which may be the wiki directory
+    // itself, and return it with the rest of the target's path as written. None of the rest exists
+    // except possibly the final name, which is never spelled, so a rename can tell whether it names
+    // the node being renamed.
+    pub fn spell_existing_ancestor(
         &self,
         target: &FilesystemTarget,
-    ) -> Result<SpelledPath, SpellingError> {
+    ) -> Result<(SpelledPath, PathBuf), SpellingError> {
         let path = target.path();
-        let Some(ancestor) = path
+        let ancestor = path
             .ancestors()
             .skip(1)
             .find(|ancestor| self.path.join(ancestor).exists())
-        else {
-            return Ok(SpelledPath(path.to_owned()));
-        };
-        let spelled = SpelledPath::spell(&self.path, ancestor, &mut DirectoryListings::new())?;
-        Ok(SpelledPath(
-            spelled.0.join(
-                path.strip_prefix(ancestor)
-                    .expect("An ancestor of a path should be a prefix of it."),
-            ),
+            .unwrap_or_else(|| Path::new(""));
+        Ok((
+            SpelledPath::spell(&self.path, ancestor, &mut DirectoryListings::new())?,
+            path.strip_prefix(ancestor)
+                .expect("An ancestor of a path should be a prefix of it.")
+                .to_owned(),
         ))
     }
 }

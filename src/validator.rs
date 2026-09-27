@@ -397,7 +397,7 @@ fn find_unreferenced_filesystem_links(
         move |entry| {
             // Exclude the wiki and prune directories already covered by their links.
             let path = wiki_directory.entry_path(entry);
-            path != *wiki_directory.wiki_path() && !referenced_directories.contains(&path)
+            wiki_directory.wiki_path() != Some(&path) && !referenced_directories.contains(&path)
         }
     });
 

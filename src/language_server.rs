@@ -780,7 +780,7 @@ fn filesystem_link_completions(
             let directory = context.directory.clone();
             move |entry| {
                 let path = wiki_directory.entry_path(entry);
-                path != *wiki_directory.wiki_path()
+                wiki_directory.wiki_path() != Some(&path)
                     && (directory.starts_with(path.as_path())
                         || path.as_path().parent() == Some(directory.as_path()))
             }
@@ -1327,19 +1327,28 @@ fn rename_filesystem_node_for_document(
     // link would have to be. A filesystem that ignores case would otherwise put the node in a
     // directory whose path doesn't match the new path as written, and the comparisons below would
     // go wrong. For example, a directory which will contain the node could look empty after the
-    // rename and be deleted along with it.
-    let new_path = wiki_directory
-        .spell_destination(&new_target)
+    // rename and be deleted along with it. The rest of the new path doesn't exist, other than
+    // possibly its final name, so it has no other spelling.
+    let (new_ancestor, new_suffix) = wiki_directory
+        .spell_existing_ancestor(&new_target)
         .map_err(|error| error.message)?;
+    let old_absolute_path = wiki_directory.resolve(&old_path);
+    let new_absolute_path = wiki_directory.resolve(&new_ancestor).join(new_suffix);
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
-    // everything at its destination moves along with it, so nothing there can conflict.
-    let moves_into_itself = is_directory && new_path.starts_with(&old_path);
+    // everything at its destination moves along with it, so nothing there can conflict. The old
+    // path exists, so it's a prefix of the new one exactly when it's one of the new one's existing
+    // ancestors.
+    let moves_into_itself = is_directory && new_ancestor.starts_with(&old_path);
     if !moves_into_itself {
-        check_rename_destination(&wiki_directory, &old_path, &new_path)?;
+        check_rename_destination(
+            &wiki_directory,
+            &old_path,
+            new_target.path(),
+            &new_ancestor,
+            &new_absolute_path,
+        )?;
     }
-    let old_absolute_path = wiki_directory.resolve(&old_path);
-    let new_absolute_path = wiki_directory.resolve(&new_path);
 
     // Rewrite the path of every link to the renamed entry.
     let edits = filesystem_rename_edits(wiki, source_contents, &old_target, &new_target);
@@ -1386,7 +1395,7 @@ fn rename_filesystem_node_for_document(
     // directories once the renamed node has moved.
     if file_operation_support.delete
         && let Some(directory) =
-            outermost_directory_emptied_by_rename(&wiki_directory, &old_path, &new_path)
+            outermost_directory_emptied_by_rename(&wiki_directory, &old_path, &new_ancestor)
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
@@ -1462,7 +1471,7 @@ fn renamable_filesystem_node_at(
     let old_path = wiki_directory
         .spell(old_target, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
-    if old_path == *wiki_directory.wiki_path() {
+    if wiki_directory.wiki_path() == Some(&old_path) {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
@@ -1492,11 +1501,14 @@ fn filesystem_link_path_source_range(
 }
 
 // Require a rename's destination to be free. Missing directories will be created, but not beneath
-// an existing file.
+// an existing file. The new path is written as the user typed it, and its deepest existing
+// ancestor is spelled as on disk.
 fn check_rename_destination(
     wiki_directory: &WikiDirectory,
     old_path: &SpelledPath,
-    new_path: &SpelledPath,
+    new_path: &Path,
+    new_ancestor: &SpelledPath,
+    new_absolute_path: &Path,
 ) -> std::result::Result<(), String> {
     // Refuse to replace another node. Something exists at the new path if its own metadata can be
     // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
@@ -1504,10 +1516,9 @@ fn check_rename_destination(
     // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
     // spellings as the same file and silently skips the rename while still editing the links,
     // which leaves them misspelled.
-    let new_absolute_path = wiki_directory.resolve(new_path);
-    if fs::symlink_metadata(&new_absolute_path).is_ok() {
+    if fs::symlink_metadata(new_absolute_path).is_ok() {
         return Err(
-            if entry_identity(&new_absolute_path)
+            if entry_identity(new_absolute_path)
                 == entry_identity(&wiki_directory.resolve(old_path))
             {
                 format!(
@@ -1523,14 +1534,11 @@ fn check_rename_destination(
     }
 
     // Refuse to create a directory beneath an existing file.
-    if let Some(ancestor) = new_path
-        .as_path()
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| wiki_directory.path().join(ancestor).exists())
-        && !wiki_directory.path().join(ancestor).is_dir()
-    {
-        return Err(format!("Path {} isn't a directory.", ancestor.code_path()));
+    if !wiki_directory.resolve(new_ancestor).is_dir() {
+        return Err(format!(
+            "Path {} isn't a directory.",
+            new_ancestor.code_path(),
+        ));
     }
     Ok(())
 }
@@ -1606,13 +1614,14 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 
 // Find the outermost directory whose only entry is the node being moved, directly or through
 // directories whose only entry leads to it. Any other entry keeps a directory, even an empty
-// directory or an ignored file. A directory is also kept if it will contain the new path, but not
+// directory or an ignored file. A directory is also kept if it will contain the new path, which,
+// since it exists, is when it contains the new path's deepest existing ancestor. It isn't kept
 // merely because a directory link names it, since such a link only stands for the files within the
 // directory. The search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
     wiki_directory: &WikiDirectory,
     old_path: &SpelledPath,
-    new_path: &SpelledPath,
+    new_ancestor: &SpelledPath,
 ) -> Option<SpelledPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let mut emptied_directory = None;
@@ -1621,7 +1630,7 @@ fn outermost_directory_emptied_by_rename(
         .parent()
         .filter(|directory| !directory.is_wiki_directory())
     {
-        if new_path.starts_with(&directory) {
+        if new_ancestor.starts_with(&directory) {
             break;
         }
         let Ok(mut entries) = fs::read_dir(wiki_directory.resolve(&directory)) else {
