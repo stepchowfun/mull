@@ -33,17 +33,17 @@ pub fn validate(
     }
 
     // Check the filesystem relative to the wiki's containing directory.
-    let Outcome::Completed(filesystem_errors) = validate_filesystem_links(
+    validate_filesystem_links(
         wiki,
         &WikiDirectory::new(wiki_path),
         wiki_path,
         source_contents,
         cancellation,
-    ) else {
-        return Outcome::Cancelled;
-    };
-    errors.extend(filesystem_errors);
-    Outcome::Completed(errors_to_result(errors))
+    )
+    .map(|filesystem_errors| {
+        errors.extend(filesystem_errors);
+        errors_to_result(errors)
+    })
 }
 
 // Validate text-link targets and reachability from the home node.
@@ -70,25 +70,27 @@ fn validate_text_links(
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
-        // Report each missing target at the corresponding text-link occurrence.
+        // Report each missing target at the corresponding text-link occurrence. Filesystem links
+        // are checked separately.
         for link in &node.links {
-            if let Link::Text {
-                title,
-                source_range,
-            } = link
-                && !wiki.text_nodes.contains_key(title)
-            {
-                let message = if title.is_empty() {
-                    "This link is missing a target.".to_owned()
-                } else {
-                    format!("Node {} not found.", title.code_str())
-                };
-                errors.push(Error::new(
-                    &message,
-                    source_path,
-                    Some((source_contents, *source_range)),
-                    None,
-                ));
+            match link {
+                Link::Text {
+                    title,
+                    source_range,
+                } if !wiki.text_nodes.contains_key(title) => {
+                    let message = if title.is_empty() {
+                        "This link is missing a target.".to_owned()
+                    } else {
+                        format!("Node {} not found.", title.code_str())
+                    };
+                    errors.push(Error::new(
+                        &message,
+                        source_path,
+                        Some((source_contents, *source_range)),
+                        None,
+                    ));
+                }
+                Link::Text { .. } | Link::Filesystem { .. } => {}
             }
         }
     }
@@ -163,8 +165,9 @@ fn validate_filesystem_links(
             }
 
             // Skip text links, which have no filesystem targets.
-            let Link::Filesystem { target, .. } = link else {
-                continue;
+            let target = match link {
+                Link::Filesystem { target, .. } => target,
+                Link::Text { .. } => continue,
             };
             let (path, source_range) = (target.path(), link.source_range());
 
@@ -219,17 +222,17 @@ fn validate_filesystem_links(
             // Require the target to be a file which isn't ignored, or a directory containing such a
             // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
             if let (Some(spelled), true) = (&spelled, is_spelled) {
-                let Outcome::Completed(error) = visibility_error(
+                match visibility_error(
                     wiki_directory,
                     wiki_path,
                     path,
                     spelled,
                     (source_contents, source_range),
                     cancellation,
-                ) else {
-                    return Outcome::Cancelled;
-                };
-                errors.extend(error);
+                ) {
+                    Outcome::Completed(error) => errors.extend(error),
+                    Outcome::Cancelled => return Outcome::Cancelled,
+                }
             }
 
             // Track the target so the walk for unreferenced files accounts for it.
@@ -253,19 +256,18 @@ fn validate_filesystem_links(
 
     // Spend the remaining error budget on uncovered filesystem entries.
     let remaining_error_capacity = MAX_FILESYSTEM_ERRORS - errors.len();
-    let Outcome::Completed(unreferenced_errors) = find_unreferenced_filesystem_links(
+    find_unreferenced_filesystem_links(
         wiki_directory,
         wiki_path,
         &referenced_files,
         &referenced_directories,
         remaining_error_capacity,
         cancellation,
-    ) else {
-        return Outcome::Cancelled;
-    };
-    errors.extend(unreferenced_errors);
-
-    Outcome::Completed(errors)
+    )
+    .map(|unreferenced_errors| {
+        errors.extend(unreferenced_errors);
+        errors
+    })
 }
 
 // Explain why a filesystem link's target can't be accessed. A missing target needs no further
