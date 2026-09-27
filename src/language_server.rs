@@ -1,18 +1,15 @@
 use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
+    disk_path::{DirectoryListings, DiskPath, WikiDirectory, entry_identity},
     error::{Error, SourceRange},
     format::CodePath,
     parser::{self, normalize_link_path, render_link_path},
-    path_util::relative_path,
     wiki::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::{
-        DirectoryListings, Visibility, check_spelling, entry_identity, relative_wiki_path,
-        visibility, wiki_tree_walker,
-    },
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -770,44 +767,41 @@ fn filesystem_link_completions(
     context: &FilesystemLinkContext,
 ) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let wiki_directory = WikiDirectory::new(wiki_path);
 
     // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
-    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory) else {
+    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory.path()) else {
         return Vec::new();
     };
     walker_builder
         .max_depth(Some(context.directory.components().count() + 1))
         .filter_entry({
-            let wiki_directory = wiki_directory.to_owned();
-            let relative_wiki_path = relative_wiki_path(&wiki_directory, wiki_path);
+            let wiki_directory = wiki_directory.clone();
             let directory = context.directory.clone();
             move |entry| {
-                let path = relative_path(&wiki_directory, entry.path());
-                path != relative_wiki_path
-                    && (directory.starts_with(path) || path.parent() == Some(directory.as_path()))
+                let path = wiki_directory.entry_path(entry);
+                path != *wiki_directory.wiki_path()
+                    && (directory.starts_with(path.as_path())
+                        || path.as_path().parent() == Some(directory.as_path()))
             }
         });
 
     // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
-        let path = relative_path(wiki_directory, entry.path());
+        let path = wiki_directory.entry_path(&entry);
         let (Some(file_type), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
             continue;
         };
-        if path.parent() != Some(context.directory.as_path()) {
+        if path.as_path().parent() != Some(context.directory.as_path()) {
             continue;
         }
 
         // Omit a directory which a link couldn't name because it contains no files.
         if file_type.is_dir()
             && !matches!(
-                visibility(wiki_directory, path, &CancellationFlag::default()).assume_completed(),
+                visibility(&wiki_directory, &path, &CancellationFlag::default()).assume_completed(),
                 Ok(Visibility::Visible),
             )
         {
@@ -964,7 +958,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
     // in a saved wiki, its filesystem links to their targets.
     let wiki_path = local_path(uri);
-    let wiki_directory = wiki_path.as_deref().map(wiki_directory);
+    let wiki_directory = wiki_path.as_deref().map(WikiDirectory::new);
     let mut listings = DirectoryListings::new();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -976,7 +970,7 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
                     wiki.text_nodes.get(title)?.title_source_range,
                 ),
                 Link::File { .. } | Link::Directory { .. } => Some(
-                    filesystem_link_target(wiki_directory?, link, &mut listings)?
+                    filesystem_link_target(wiki_directory.as_ref()?, link, &mut listings)?
                         .as_str()
                         .to_owned(),
                 ),
@@ -1327,15 +1321,14 @@ fn rename_filesystem_node_for_document(
     else {
         return Ok(None);
     };
-    let wiki_directory = wiki_directory.as_path();
-    let old_path = old_path.as_path();
 
-    // Accept only a new path which the parser would accept in a link.
+    // Accept only a new path which the parser would accept in a link. A new path written exactly
+    // like the old one, which is spelled as on disk, changes nothing.
     let new_path = normalize_link_path(new_name.trim())?;
-    if new_path == old_path {
+    if new_path.as_path() == old_path.as_path() {
         return Ok(Some(WorkspaceEdit::default()));
     }
-    if new_path.as_os_str().is_empty() {
+    if new_path.is_wiki_directory() {
         return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
     }
 
@@ -1344,27 +1337,21 @@ fn rename_filesystem_node_for_document(
     // directory whose path doesn't match the new path as written, and the comparisons below would
     // go wrong. For example, a directory which will contain the node could look empty after the
     // rename and be deleted along with it.
-    if let Some(ancestor) = new_path
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| wiki_directory.join(ancestor).exists())
-        && let (_, Some(message)) =
-            check_spelling(wiki_directory, ancestor, &mut DirectoryListings::new())
-    {
-        return Err(message);
-    }
+    let new_path = wiki_directory
+        .spell_destination(&new_path)
+        .map_err(|misspelling| misspelling.message)?;
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
     // everything at its destination moves along with it, so nothing there can conflict.
-    let moves_into_itself = is_directory && new_path.starts_with(old_path);
+    let moves_into_itself = is_directory && new_path.starts_with(&old_path);
     if !moves_into_itself {
-        check_rename_destination(wiki_directory, old_path, &new_path)?;
+        check_rename_destination(&wiki_directory, &old_path, &new_path)?;
     }
-    let old_absolute_path = wiki_directory.join(old_path);
-    let new_absolute_path = wiki_directory.join(&new_path);
+    let old_absolute_path = wiki_directory.resolve(&old_path);
+    let new_absolute_path = wiki_directory.resolve(&new_path);
 
     // Rewrite the path of every link to the renamed entry.
-    let edits = filesystem_rename_edits(wiki, source_contents, old_path, &new_path, is_directory);
+    let edits = filesystem_rename_edits(wiki, source_contents, &old_path, &new_path, is_directory);
 
     // Edit the wiki at the version the edits were computed from.
     let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
@@ -1408,11 +1395,11 @@ fn rename_filesystem_node_for_document(
     // directories once the renamed node has moved.
     if file_operation_support.delete
         && let Some(directory) =
-            outermost_directory_emptied_by_rename(wiki_directory, old_path, &new_path)
+            outermost_directory_emptied_by_rename(&wiki_directory, &old_path, &new_path)
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
-                uri: Uri::from_file_path(wiki_directory.join(directory))
+                uri: Uri::from_file_path(wiki_directory.resolve(&directory))
                     .expect("A path within a saved wiki's directory should be absolute."),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
@@ -1431,9 +1418,9 @@ fn rename_filesystem_node_for_document(
 // This describes the filesystem node targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
 struct RenamableFilesystemNode {
-    wiki_directory: PathBuf,
+    wiki_directory: WikiDirectory,
     path_source_range: SourceRange,
-    old_path: PathBuf,
+    old_path: DiskPath,
     is_directory: bool,
 }
 
@@ -1462,35 +1449,30 @@ fn renamable_filesystem_node_at(
         return Err("This editor doesn't support renaming files.".to_owned());
     }
 
-    // Require the linked node to exist as the kind the link names, other than the wiki directory
-    // and the wiki itself, resolving it from the wiki's containing directory as validation does.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if old_path.as_os_str().is_empty() {
+    // Require the linked node to exist as the kind the link names, other than the wiki directory,
+    // resolving it from the wiki's containing directory as validation does.
+    let wiki_directory = WikiDirectory::new(&wiki_path);
+    if old_path.is_wiki_directory() {
         return Err("The wiki directory can't be renamed.".to_owned());
     }
     let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(wiki_directory.join(&old_path))
+    if !fs::metadata(wiki_directory.path().join(old_path.as_path()))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
         return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
     }
-    if old_path == relative_wiki_path(wiki_directory, &wiki_path) {
-        return Err("The wiki can't be renamed through one of its own links.".to_owned());
-    }
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
-    if let (_, Some(message)) =
-        check_spelling(wiki_directory, &old_path, &mut DirectoryListings::new())
-    {
-        return Err(message);
+    let old_path = wiki_directory
+        .spell(&old_path, &mut DirectoryListings::new())
+        .map_err(|misspelling| misspelling.message)?;
+    if old_path == *wiki_directory.wiki_path() {
+        return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
     Ok(Some(RenamableFilesystemNode {
-        wiki_directory: wiki_directory.to_owned(),
+        wiki_directory,
         path_source_range,
         old_path,
         is_directory,
@@ -1517,9 +1499,9 @@ fn filesystem_link_path_source_range(
 // Require a rename's destination to be free. Missing directories will be created, but not beneath
 // an existing file.
 fn check_rename_destination(
-    wiki_directory: &Path,
-    old_path: &Path,
-    new_path: &Path,
+    wiki_directory: &WikiDirectory,
+    old_path: &DiskPath,
+    new_path: &DiskPath,
 ) -> std::result::Result<(), String> {
     // Refuse to replace another node. Something exists at the new path if its own metadata can be
     // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
@@ -1527,10 +1509,11 @@ fn check_rename_destination(
     // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
     // spellings as the same file and silently skips the rename while still editing the links,
     // which leaves them misspelled.
-    let new_absolute_path = wiki_directory.join(new_path);
+    let new_absolute_path = wiki_directory.resolve(new_path);
     if fs::symlink_metadata(&new_absolute_path).is_ok() {
         return Err(
-            if entry_identity(&new_absolute_path) == entry_identity(&wiki_directory.join(old_path))
+            if entry_identity(&new_absolute_path)
+                == entry_identity(&wiki_directory.resolve(old_path))
             {
                 format!(
                     "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
@@ -1546,10 +1529,11 @@ fn check_rename_destination(
 
     // Refuse to create a directory beneath an existing file.
     if let Some(ancestor) = new_path
+        .as_path()
         .ancestors()
         .skip(1)
-        .find(|ancestor| wiki_directory.join(ancestor).exists())
-        && !wiki_directory.join(ancestor).is_dir()
+        .find(|ancestor| wiki_directory.path().join(ancestor).exists())
+        && !wiki_directory.path().join(ancestor).is_dir()
     {
         return Err(format!("Path {} isn't a directory.", ancestor.code_path()));
     }
@@ -1561,8 +1545,8 @@ fn check_rename_destination(
 fn filesystem_rename_edits(
     wiki: &Wiki,
     source_contents: &str,
-    old_path: &Path,
-    new_path: &Path,
+    old_path: &DiskPath,
+    new_path: &DiskPath,
     is_directory: bool,
 ) -> Vec<(SourceRange, String)> {
     // Select filesystem links at the renamed path or, for a directory, within it.
@@ -1572,10 +1556,12 @@ fn filesystem_rename_edits(
         else {
             continue;
         };
-        let Ok(suffix) = path.strip_prefix(old_path) else {
+        let Some(suffix) = path.strip_prefix(old_path) else {
             continue;
         };
-        if !is_directory && (matches!(link, Link::Directory { .. }) || path != old_path) {
+        if !is_directory
+            && (matches!(link, Link::Directory { .. }) || !suffix.as_os_str().is_empty())
+        {
             continue;
         }
 
@@ -1583,7 +1569,7 @@ fn filesystem_rename_edits(
         edits.push((
             filesystem_link_path_source_range(source_contents, *source_range),
             render_link_path(
-                &new_path.join(suffix),
+                &new_path.as_path().join(suffix),
                 matches!(link, Link::Directory { .. }),
             ),
         ));
@@ -1631,21 +1617,21 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // merely because a directory link names it, since such a link only stands for the files within the
 // directory. The search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
-    wiki_directory: &Path,
-    old_path: &Path,
-    new_path: &Path,
-) -> Option<PathBuf> {
+    wiki_directory: &WikiDirectory,
+    old_path: &DiskPath,
+    new_path: &DiskPath,
+) -> Option<DiskPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let mut emptied_directory = None;
-    let mut removed_entry = old_path;
+    let mut removed_entry = old_path.clone();
     while let Some(directory) = removed_entry
         .parent()
-        .filter(|directory| !directory.as_os_str().is_empty())
+        .filter(|directory| !directory.is_wiki_directory())
     {
-        if new_path.starts_with(directory) {
+        if new_path.starts_with(&directory) {
             break;
         }
-        let Ok(mut entries) = fs::read_dir(wiki_directory.join(directory)) else {
+        let Ok(mut entries) = fs::read_dir(wiki_directory.resolve(&directory)) else {
             break;
         };
         let contains_only_removed_entry = entries
@@ -1656,7 +1642,7 @@ fn outermost_directory_emptied_by_rename(
         if !contains_only_removed_entry {
             break;
         }
-        emptied_directory = Some(directory.to_owned());
+        emptied_directory = Some(directory.clone());
         removed_entry = directory;
     }
     emptied_directory
@@ -1830,7 +1816,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
     // Resolve filesystem links from the directory containing a saved, parseable wiki.
     let wiki_path = local_path(uri)?;
     let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
-    let wiki_directory = wiki_directory(&wiki_path);
+    let wiki_directory = WikiDirectory::new(&wiki_path);
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut listings = DirectoryListings::new();
@@ -1850,7 +1836,11 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
             };
             Some(DocumentLink {
                 range: lsp_range(source_contents, *source_range),
-                target: Some(filesystem_link_target(wiki_directory, link, &mut listings)?),
+                target: Some(filesystem_link_target(
+                    &wiki_directory,
+                    link,
+                    &mut listings,
+                )?),
                 tooltip: Some(tooltip.to_owned()),
                 data: None,
             })
@@ -1871,19 +1861,18 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
 // is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
 // differently than on disk leads nowhere, just as the checker reports it.
 fn filesystem_link_target(
-    wiki_directory: &Path,
+    wiki_directory: &WikiDirectory,
     link: &Link,
     listings: &mut DirectoryListings,
 ) -> Option<Uri> {
-    // Require the target to exist as the kind of entry the link names, spelled as it is on disk.
+    // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
+    // names.
     let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
         return None;
     };
     let is_directory = matches!(link, Link::Directory { .. });
-    let target_path = wiki_directory.join(path);
-    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory)
-        || check_spelling(wiki_directory, path, listings).1.is_some()
-    {
+    let target_path = wiki_directory.resolve(&wiki_directory.spell(path, listings).ok()?);
+    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
         return None;
     }
 
@@ -2000,14 +1989,6 @@ fn diagnostic(
         message,
         ..Diagnostic::default()
     }
-}
-
-// Find the directory that a saved wiki's filesystem links are relative to.
-fn wiki_directory(wiki_path: &Path) -> &Path {
-    wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
 }
 
 // Convert only file-scheme URIs because the URI library doesn't enforce this distinction.

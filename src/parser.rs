@@ -1,4 +1,5 @@
 use crate::{
+    disk_path::DiskPath,
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
     scoring::populate_depths,
@@ -7,6 +8,7 @@ use crate::{
         Wiki, escape_link_delimiters, unescape_link_delimiters,
     },
 };
+use colored::ColoredString;
 use std::path::{Component, Path, PathBuf};
 
 // This struct retains the source information needed to finish a node at its next boundary.
@@ -307,8 +309,8 @@ fn parse_content(
                 // Write a filesystem link's path in its normalized form, and keep any other target
                 // as written.
                 let formatted_target = match &link {
-                    Ok(Link::File { path, .. }) => render_link_path(path, false),
-                    Ok(Link::Directory { path, .. }) => render_link_path(path, true),
+                    Ok(Link::File { path, .. }) => render_link_path(path.as_path(), false),
+                    Ok(Link::Directory { path, .. }) => render_link_path(path.as_path(), true),
                     Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
                 match link {
@@ -404,9 +406,39 @@ pub fn render_link_path(path: &Path, is_directory: bool) -> String {
     escape_link_delimiters(&rendered)
 }
 
+// This is a filesystem link's path relative to the wiki directory, without any root, prefix, `.`,
+// or `..` components. It's spelled as written, which may differ from the names on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkPath(PathBuf);
+
+impl LinkPath {
+    // Expose the path for display and for resolving it against the wiki directory.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    // Determine whether this path is the wiki directory itself.
+    pub fn is_wiki_directory(&self) -> bool {
+        self.0.as_os_str().is_empty()
+    }
+
+    // Find what follows a path spelled as on disk in this path as written. Only a path spelled
+    // exactly like the prefix has one, and any other spelling is reported as misspelled.
+    pub fn strip_prefix(&self, prefix: &DiskPath) -> Option<&Path> {
+        self.0.strip_prefix(prefix.as_path()).ok()
+    }
+}
+
+// Format a link path for human-facing diagnostic output.
+impl CodePath for LinkPath {
+    fn code_path(&self) -> ColoredString {
+        self.0.code_path()
+    }
+}
+
 // Normalize a filesystem link path, which is relative to the wiki directory even if it starts with
 // `/`, while keeping it inside the wiki's logical tree. Describe any problem with a message.
-pub fn normalize_link_path(path: &str) -> Result<PathBuf, String> {
+pub fn normalize_link_path(path: &str) -> Result<LinkPath, String> {
     // Interpret the path relative to the wiki directory, even with the leading `/` of a filesystem
     // link. What remains may be empty, which denotes the wiki directory itself.
     let parsed_path = Path::new(path.trim_start_matches('/'));
@@ -436,17 +468,19 @@ pub fn normalize_link_path(path: &str) -> Result<PathBuf, String> {
     }
 
     // Normalize harmless current-directory components without resolving symlinks.
-    Ok(parsed_path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(component) => Some(component),
-            Component::CurDir => None,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                // Escaping components were rejected above [ref:filesystem_path_components].
-                unreachable!("Filesystem link path components were already validated.")
-            }
-        })
-        .collect())
+    Ok(LinkPath(
+        parsed_path
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(component) => Some(component),
+                Component::CurDir => None,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    // Escaping components were rejected above [ref:filesystem_path_components].
+                    unreachable!("Filesystem link path components were already validated.")
+                }
+            })
+            .collect(),
+    ))
 }
 
 // Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
@@ -497,8 +531,8 @@ mod tests {
             .iter()
             .map(|link| match link {
                 Link::Text { title, .. } => format!("text:{title}"),
-                Link::File { path, .. } => format!("file:{}", path.display()),
-                Link::Directory { path, .. } => format!("dir:{}", path.display()),
+                Link::File { path, .. } => format!("file:{}", path.as_path().display()),
+                Link::Directory { path, .. } => format!("dir:{}", path.as_path().display()),
             })
             .collect()
     }

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.3] - 2026-09-27
+
+### Changed
+- Represented filesystem paths spelled as on disk and link paths as written with distinct types, so the two can no longer be compared by accident. This caused the case-sensitivity bugs fixed in the previous few releases. There's no change in behavior.
+
 ## [0.29.2] - 2026-09-26
 
 ### Fixed

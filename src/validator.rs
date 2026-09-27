@@ -1,20 +1,13 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
+    disk_path::{DirectoryListings, DiskPath, Misspelling, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
-    path_util::relative_path,
+    parser::LinkPath,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{
-        DirectoryListings, Visibility, check_spelling, relative_wiki_path, visibility,
-        wiki_tree_walker,
-    },
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{collections::HashSet, fs, path::Path, rc::Rc};
 
 // Limit filesystem diagnostics so pathological wikis and directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
@@ -40,16 +33,10 @@ pub fn validate(
         return Outcome::Cancelled;
     }
 
-    // Derive every filesystem path from the wiki's containing directory.
-    let wiki_directory = wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-
-    // Check the filesystem relative to the resolved wiki directory.
+    // Check the filesystem relative to the wiki's containing directory.
     let Outcome::Completed(filesystem_errors) = validate_filesystem_links(
         wiki,
-        wiki_directory,
+        &WikiDirectory::new(wiki_path),
         wiki_path,
         source_contents,
         cancellation,
@@ -159,14 +146,14 @@ fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec
 // Validate filesystem links and coverage within a bounded error budget.
 fn validate_filesystem_links(
     wiki: &Wiki,
-    wiki_directory: &Path,
+    wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     source_contents: &str,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Track valid targets while visiting nodes and links in deterministic order.
-    let mut referenced_files = HashSet::<PathBuf>::new();
-    let mut referenced_directories = HashSet::<PathBuf>::new();
+    let mut referenced_files = HashSet::<DiskPath>::new();
+    let mut referenced_directories = HashSet::<DiskPath>::new();
     let mut listings = DirectoryListings::new();
     let mut errors = Vec::<Error>::new();
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
@@ -187,8 +174,7 @@ fn validate_filesystem_links(
             };
 
             // Follow symbolic links when classifying each target.
-            let target = wiki_directory.join(path);
-            let metadata = match fs::metadata(&target) {
+            let metadata = match fs::metadata(wiki_directory.path().join(path.as_path())) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
@@ -206,16 +192,18 @@ fn validate_filesystem_links(
 
             // Require the path to be spelled as it is on disk, and track the target by that
             // spelling so it matches the entries found when walking the wiki's directory.
-            let (spelled_path, misspelling) = check_spelling(wiki_directory, path, &mut listings);
-            if let Some(message) = &misspelling {
-                errors.push(Error::new(
-                    message,
-                    Some(wiki_path),
-                    Some((source_contents, source_range)),
-                    None,
-                ));
-            }
-            let target = wiki_directory.join(&spelled_path);
+            let (target, is_misspelled) = match wiki_directory.spell(path, &mut listings) {
+                Ok(target) => (Some(target), false),
+                Err(Misspelling { message, spelled }) => {
+                    errors.push(Error::new(
+                        &message,
+                        Some(wiki_path),
+                        Some((source_contents, source_range)),
+                        None,
+                    ));
+                    (spelled, true)
+                }
+            };
 
             // Report links with the wrong type.
             if let Some(message) = wrong_target_type_message(link, path, &metadata) {
@@ -233,12 +221,12 @@ fn validate_filesystem_links(
 
             // Require the target to be a file which isn't ignored, or a directory containing such a
             // file. Skip this for a misspelled path, which was already reported.
-            if misspelling.is_none() {
+            if let (Some(target), false) = (&target, is_misspelled) {
                 let Outcome::Completed(error) = visibility_error(
                     wiki_directory,
                     wiki_path,
                     path,
-                    &spelled_path,
+                    target,
                     (source_contents, source_range),
                     cancellation,
                 ) else {
@@ -248,10 +236,12 @@ fn validate_filesystem_links(
             }
 
             // Track the target so the walk for unreferenced files accounts for it.
-            if matches!(link, Link::File { .. }) {
-                referenced_files.insert(target);
-            } else {
-                referenced_directories.insert(target);
+            if let Some(target) = target {
+                if matches!(link, Link::File { .. }) {
+                    referenced_files.insert(target);
+                } else {
+                    referenced_directories.insert(target);
+                }
             }
             if errors.len() >= MAX_FILESYSTEM_ERRORS {
                 break 'nodes;
@@ -286,7 +276,7 @@ fn validate_filesystem_links(
 fn inaccessible_target_error(
     error: std::io::Error,
     wiki_path: &Path,
-    path: &Path,
+    path: &LinkPath,
     source_context: (&str, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
@@ -308,7 +298,11 @@ fn inaccessible_target_error(
 
 // Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
 // link's trailing `/` only when that change would fix the link.
-fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> Option<String> {
+fn wrong_target_type_message(
+    link: &Link,
+    path: &LinkPath,
+    metadata: &fs::Metadata,
+) -> Option<String> {
     match link {
         Link::File { .. } if metadata.is_file() => None,
         Link::Directory { .. } if metadata.is_dir() => None,
@@ -332,16 +326,16 @@ fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) 
 }
 
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
-// it, where `path` is the link's path and `spelled_path` is its spelling on disk.
+// it, where `path` is the link's path and `target` is its spelling on disk.
 fn visibility_error(
-    wiki_directory: &Path,
+    wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &Path,
-    spelled_path: &Path,
+    path: &LinkPath,
+    target: &DiskPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
-    visibility(wiki_directory, spelled_path, cancellation).map(|result| {
+    visibility(wiki_directory, target, cancellation).map(|result| {
         let message = match result {
             Ok(Visibility::Visible) => return None,
             Ok(Visibility::Empty) => format!(
@@ -369,20 +363,23 @@ fn visibility_error(
 
 // Find unreferenced files within a budget while pruning covered directories.
 fn find_unreferenced_filesystem_links(
-    wiki_directory: &Path,
+    wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    referenced_files: &HashSet<PathBuf>,
-    referenced_directories: &HashSet<PathBuf>,
+    referenced_files: &HashSet<DiskPath>,
+    referenced_directories: &HashSet<DiskPath>,
     maximum_errors: usize,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
-    if referenced_directories.contains(wiki_directory) {
+    if referenced_directories
+        .iter()
+        .any(DiskPath::is_wiki_directory)
+    {
         return Outcome::Completed(Vec::new());
     }
 
     // Walk the wiki tree with the same visibility rules as every other filesystem consumer.
-    let mut walker_builder = match wiki_tree_walker(wiki_directory) {
+    let mut walker_builder = match wiki_tree_walker(wiki_directory.path()) {
         Ok(walker_builder) => walker_builder,
         Err(error) => {
             return Outcome::Completed(vec![Error::new(
@@ -396,13 +393,12 @@ fn find_unreferenced_filesystem_links(
 
     // Prune subtrees covered by explicit directory links.
     walker_builder.filter_entry({
-        let wiki_directory = wiki_directory.to_owned();
-        let relative_wiki_path = relative_wiki_path(&wiki_directory, wiki_path);
+        let wiki_directory = wiki_directory.clone();
         let referenced_directories = referenced_directories.clone();
         move |entry| {
             // Exclude the wiki and prune directories already covered by their links.
-            relative_path(&wiki_directory, entry.path()) != relative_wiki_path
-                && !referenced_directories.contains(entry.path())
+            let path = wiki_directory.entry_path(entry);
+            path != *wiki_directory.wiki_path() && !referenced_directories.contains(&path)
         }
     });
 
@@ -429,16 +425,13 @@ fn find_unreferenced_filesystem_links(
                 continue;
             }
         };
-        let path = entry.path();
+        let path = wiki_directory.entry_path(&entry);
         let Some(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_file() && !referenced_files.contains(path) {
+        if file_type.is_file() && !referenced_files.contains(&path) {
             errors.push(Error::new(
-                &format!(
-                    "File {} isn't referenced.",
-                    relative_path(wiki_directory, path).code_path(),
-                ),
+                &format!("File {} isn't referenced.", path.code_path()),
                 Some(wiki_path),
                 None,
                 None,
