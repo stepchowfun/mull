@@ -139,7 +139,7 @@ fn parse_title(
     // Report an empty title at the whole line, since the title has no text of its own.
     if title.is_empty() {
         Err(Error::new(
-            "This title can't be empty.",
+            "A node title can't be empty.",
             source_path,
             Some((source_contents, line_source_range)),
             None,
@@ -149,7 +149,7 @@ fn parse_title(
     } else {
         Err(Error::new(
             &format!(
-                "This title can't start with {}.",
+                "A node title can't start with {}.",
                 FILESYSTEM_LINK_PREFIX.code_str(),
             ),
             source_path,
@@ -259,7 +259,7 @@ fn parse_content(
                 end: source_range.start + index + character.len_utf8(),
             };
             errors.push(Error::new(
-                "This link contains a line break.",
+                "A link can't contain a line break.",
                 source_path,
                 Some((source_contents, link_source_range)),
                 None,
@@ -589,7 +589,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn link_with_line_break() {
         assert_fails!(
             parse_test("# Home\nSee [Greeting\ncontinued]."),
-            "This link contains a line break.",
+            "A link can't contain a line break.",
         );
     }
 
@@ -669,7 +669,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("#   \nContent").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title can't be empty."));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A node title can't be empty."),
+        );
     }
 
     // Reject titles that text links would interpret as filesystem links.
@@ -682,7 +686,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
             assert!(
                 error
                     .to_string()
-                    .contains("This title can't start with `/`."),
+                    .contains("A node title can't start with `/`."),
             );
         }
     }
@@ -693,7 +697,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("# Home\n\nfoo\n\n#\n\nbar").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title can't be empty."));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A node title can't be empty."),
+        );
     }
 
     // Recognize a bare title marker so it can be reported as an empty title.
@@ -702,7 +710,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("#").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title can't be empty."));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A node title can't be empty."),
+        );
         assert!(errors[0].to_string().contains("1 │ #"));
     }
 
@@ -786,7 +798,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 .to_string()
                 .contains("This content isn't in any node"),
         );
-        assert!(errors[1].to_string().contains("This title can't be empty"));
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("A node title can't be empty"),
+        );
         assert!(
             errors[2]
                 .to_string()
