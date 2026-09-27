@@ -61,6 +61,12 @@ pub fn validate(
     })
 }
 
+// Describe a wiki without its home node. The language server recognizes this diagnostic by its
+// message, since it has no source range.
+pub fn missing_home_message() -> String {
+    format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str())
+}
+
 // Validate text-link targets and reachability from the home node.
 fn validate_text_links(
     wiki: &Wiki,
@@ -73,12 +79,7 @@ fn validate_text_links(
     // Require the root node from which every other node must be reachable.
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
-        errors.push(Error::new(
-            &format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str()),
-            source_path,
-            None,
-            None,
-        ));
+        errors.push(Error::new(&missing_home_message(), source_path, None, None));
     }
 
     // Validate text-link targets deterministically.

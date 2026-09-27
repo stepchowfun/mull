@@ -5,6 +5,7 @@ use crate::{
     format::{CodePath, CodeStr},
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
+    validator::missing_home_message,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
         TITLE_PREFIX, TextNode, Wiki,
@@ -1775,6 +1776,8 @@ fn code_action_for_document(
     let mut actions = Vec::new();
 
     // Prepend a missing home node where its diagnostic is reported, since it has no source range.
+    // Other diagnostics without source ranges are reported there too, so recognize the home node's
+    // by its message.
     let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
     if range.start == document_start.start && !wiki.text_nodes.contains_key(HOME_TITLE) {
         let separator = if source_contents.is_empty() { "" } else { "\n" };
@@ -1786,7 +1789,9 @@ fn code_action_for_document(
                 format!("{TITLE_PREFIX}{HOME_TITLE}\n{separator}"),
             ),
             diagnostics,
-            document_start,
+            |diagnostic| {
+                diagnostic.range == document_start && diagnostic.message == missing_home_message()
+            },
         ));
     }
 
@@ -1816,7 +1821,7 @@ fn code_action_for_document(
                 format!("{separator}{TITLE_PREFIX}{title}\n"),
             ),
             diagnostics,
-            lsp_range(source_contents, *source_range),
+            |diagnostic| diagnostic.range == lsp_range(source_contents, *source_range),
         ));
     }
 
@@ -1824,13 +1829,13 @@ fn code_action_for_document(
     (!actions.is_empty()).then_some(actions)
 }
 
-// Describe a preferred quick fix that declares a node and resolves the diagnostics at a range.
+// Describe a preferred quick fix that declares a node and resolves the diagnostics it recognizes.
 fn create_node_action(
     uri: &Uri,
     title: &str,
     edit: TextEdit,
     diagnostics: &[Diagnostic],
-    diagnostic_range: Range,
+    resolves: impl Fn(&Diagnostic) -> bool,
 ) -> CodeActionOrCommand {
     CodeActionOrCommand::CodeAction(CodeAction {
         title: format!("Create node `{title}`"),
@@ -1838,7 +1843,7 @@ fn create_node_action(
         diagnostics: Some(
             diagnostics
                 .iter()
-                .filter(|diagnostic| diagnostic.range == diagnostic_range)
+                .filter(|diagnostic| resolves(diagnostic))
                 .cloned()
                 .collect(),
         ),
@@ -3708,11 +3713,17 @@ mod tests {
         let home_diagnostic = diagnostics(&uri, "").remove(0);
         assert_eq!(home_diagnostic.range, document_start);
 
+        // Resolve only the home node's diagnostic, not others without source ranges.
+        let unrelated_diagnostic = Diagnostic {
+            range: document_start,
+            message: "File `notes.txt` isn't linked to.".to_owned(),
+            ..Diagnostic::default()
+        };
         let actions = code_action_for_document(
             &uri,
             "",
             document_start,
-            std::slice::from_ref(&home_diagnostic),
+            &[home_diagnostic.clone(), unrelated_diagnostic],
         )
         .unwrap();
         let [action] = actions.as_slice() else {
