@@ -4,10 +4,7 @@ use crate::{
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{
-        Visibility, WalkError, broken_symlink_along, classify_walk_error, visibility,
-        wiki_tree_walker,
-    },
+    wiki_tree::{Visibility, WalkError, classify_walk_error, visibility, wiki_tree_walker},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -192,15 +189,8 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    // Treat a broken symlink along the path as referenced so the walk for
-                    // unreferenced files doesn't report it again.
-                    let broken_symlink = broken_symlink_along(wiki_directory, path);
-                    if let Some((symlink, _)) = &broken_symlink {
-                        referenced_files.insert(wiki_directory.join(symlink));
-                    }
                     errors.push(inaccessible_target_error(
                         error,
-                        broken_symlink,
                         wiki_path,
                         path,
                         (source_contents, source_range),
@@ -384,26 +374,29 @@ fn entry_identity(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-// Explain why a filesystem link's target can't be accessed. A broken symlink along the path or a
-// missing target needs no further explanation, but any other failure keeps its underlying cause.
+// Explain why a filesystem link's target can't be accessed. A missing target needs no further
+// explanation, but any other failure keeps its underlying cause.
 fn inaccessible_target_error(
     error: std::io::Error,
-    broken_symlink: Option<(PathBuf, PathBuf)>,
     wiki_path: &Path,
     path: &Path,
     source_context: (&str, SourceRange),
 ) -> Error {
-    let (message, reason) = if let Some((symlink, destination)) = broken_symlink {
-        (broken_symlink_message(&symlink, &destination), None)
-    } else if error.kind() == std::io::ErrorKind::NotFound {
-        (format!("{} not found.", path.code_path()), None)
-    } else {
-        (
-            format!("Unable to access {}.", path.code_path()),
-            Some(Rc::new(error) as Rc<dyn std::error::Error>),
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Error::new(
+            &format!("{} not found.", path.code_path()),
+            Some(wiki_path),
+            Some(source_context),
+            None,
         )
-    };
-    Error::new(&message, Some(wiki_path), Some(source_context), reason)
+    } else {
+        Error::new(
+            &format!("Unable to access {}.", path.code_path()),
+            Some(wiki_path),
+            Some(source_context),
+            Some(Rc::new(error)),
+        )
+    }
 }
 
 // Describe a symlink which leads nowhere, given its path relative to the wiki directory.
@@ -447,7 +440,9 @@ fn visibility_error(
                 format!("Unable to walk {}.", path.code_path()),
                 Some(Rc::new(error) as Rc<dyn std::error::Error>),
             ),
-            Err(WalkError::Irrelevant) => unreachable!("The walk should skip irrelevant entries."),
+            Err(WalkError::Vanished) => {
+                unreachable!("The walk should skip entries which no longer exist.")
+            }
         };
         Some(Error::new(
             &message,
@@ -530,16 +525,12 @@ fn find_unreferenced_filesystem_links(
             return Outcome::Cancelled;
         }
 
-        // Report a broken symlink unless a link to it was already reported, skip an entry which
-        // no longer exists, and report any other failure.
+        // Skip an entry which no longer exists, and report any other failure.
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                errors.push(match classify_walk_error(wiki_directory, error) {
-                    WalkError::Irrelevant => continue,
-                    WalkError::BrokenSymlink { path, .. } if referenced_files.contains(&path) => {
-                        continue;
-                    }
+                errors.push(match classify_walk_error(error) {
+                    WalkError::Vanished => continue,
                     WalkError::BrokenSymlink { path, destination } => Error::new(
                         &broken_symlink_message(relative_path(wiki_directory, &path), &destination),
                         Some(wiki_path),
@@ -927,46 +918,28 @@ mod tests {
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
-    // Report a broken symlink, since what it was meant to point to can't be determined. Report it
-    // once, at a link to it or through it if there is one, or else as a problem with the wiki,
-    // unless an ignore rule excludes it.
+    // Report a broken symlink, since what it was meant to point to can't be determined, including
+    // one within a linked directory.
     #[cfg(unix)]
     #[test]
     fn broken_symlinks() {
         use std::os::unix::fs::symlink;
 
         let directory = TestDirectory::new();
-        fs::write(directory.path().join(".gitignore"), "ignored\n").unwrap();
-        symlink("missing", directory.path().join("ignored")).unwrap();
         symlink("missing", directory.path().join("unlinked")).unwrap();
-        symlink("missing", directory.path().join("linked")).unwrap();
-        symlink("missing", directory.path().join("traversed")).unwrap();
         fs::create_dir(directory.path().join("contents")).unwrap();
         symlink("missing", directory.path().join("contents/nested")).unwrap();
-        let wiki =
-            parse("# Home\n[/.gitignore] [/linked] [/traversed/file.txt] [/contents/]").unwrap();
+        let wiki = parse("# Home\n[/contents/]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         let nested_path = Path::new("contents").join("nested");
-        assert_eq!(errors.len(), 4);
-        for symlink in [
-            Path::new("unlinked"),
-            Path::new("linked"),
-            Path::new("traversed"),
-            &nested_path,
-        ] {
+        assert_eq!(errors.len(), 2);
+        for symlink in [Path::new("unlinked"), &nested_path] {
             assert!(contains_error(
                 &errors,
                 &format!("`{}` is a broken symlink to `missing`.", symlink.display()),
             ));
         }
-        assert_eq!(
-            errors
-                .iter()
-                .filter(|error| error.source_range().is_none())
-                .count(),
-            1,
-        );
     }
 
     // Identify a misspelled symlink by the entry itself rather than its target, which other

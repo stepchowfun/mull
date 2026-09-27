@@ -81,8 +81,8 @@ pub fn visibility(
             {
                 continue;
             }
-            Err(error) => match classify_walk_error(wiki_directory, error) {
-                WalkError::Irrelevant => continue,
+            Err(error) => match classify_walk_error(error) {
+                WalkError::Vanished => continue,
                 error => return Outcome::Completed(Err(error)),
             },
         };
@@ -105,9 +105,8 @@ pub fn visibility(
 // This describes why a walk of the wiki tree failed at an entry.
 #[derive(Debug)]
 pub enum WalkError {
-    // The entry doesn't matter, because it was removed during the walk or an ignore rule excludes
-    // it.
-    Irrelevant,
+    // The entry no longer exists, because it was removed during the walk.
+    Vanished,
 
     // The entry is a symlink which leads nowhere, so what it was meant to point to can't be
     // determined. The path includes the wiki directory, and the destination is the symlink's
@@ -119,56 +118,24 @@ pub enum WalkError {
 }
 
 // Explain a failure of a walk of the wiki tree at an entry.
-pub fn classify_walk_error(wiki_directory: &Path, error: ignore::Error) -> WalkError {
-    // Distinguish a broken symlink from an entry which simply no longer exists, disregarding one
-    // which an ignore rule excludes.
+pub fn classify_walk_error(error: ignore::Error) -> WalkError {
+    // Distinguish a broken symlink from an entry which simply no longer exists.
     if let Some(path) = walk_error_path(&error)
         && let Some(destination) = broken_symlink_destination(path)
     {
-        return if is_ignored_entry(wiki_directory, path) == Some(true) {
-            WalkError::Irrelevant
-        } else {
-            WalkError::BrokenSymlink {
-                path: path.to_owned(),
-                destination,
-            }
+        return WalkError::BrokenSymlink {
+            path: path.to_owned(),
+            destination,
         };
     }
     if error
         .io_error()
         .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     {
-        WalkError::Irrelevant
+        WalkError::Vanished
     } else {
         WalkError::Other(error)
     }
-}
-
-// Determine whether an ignore rule excludes an entry, which includes the wiki directory, at which a
-// walk failed. The walk fails at an entry before applying ignore rules to it, so walk to the entry
-// again without following symlinks, which finds the entry itself unless an ignore rule excludes it.
-// This requires the entry's ancestors to be directories rather than symlinks to them; otherwise,
-// it can't be determined.
-fn is_ignored_entry(wiki_directory: &Path, path: &Path) -> Option<bool> {
-    // Keep only the entry and its ancestors.
-    let parent = path.parent()?;
-    let mut walker_builder = wiki_tree_walker(wiki_directory).ok()?;
-    walker_builder.follow_links(false).filter_entry({
-        let path = path.to_owned();
-        move |entry| path.starts_with(entry.path())
-    });
-
-    // The entry is ignored if the walk reaches its parent but not the entry itself.
-    let mut reached_parent = false;
-    for entry in walker_builder.build().flatten() {
-        if entry.path() == path {
-            return Some(false);
-        }
-        if entry.path() == parent {
-            reached_parent = true;
-        }
-    }
-    reached_parent.then_some(true)
 }
 
 // Find the path of the entry at which a walk of the wiki tree failed.
@@ -180,19 +147,6 @@ fn walk_error_path(error: &ignore::Error) -> Option<&Path> {
         }
         _ => None,
     }
-}
-
-// Find the first component of a path, relative to the wiki directory, which is a broken symlink,
-// returning the path up to that component along with the symlink's contents.
-pub fn broken_symlink_along(wiki_directory: &Path, path: &Path) -> Option<(PathBuf, PathBuf)> {
-    let mut prefix = PathBuf::new();
-    for component in path.components() {
-        prefix.push(component);
-        if let Some(destination) = broken_symlink_destination(&wiki_directory.join(&prefix)) {
-            return Some((prefix, destination));
-        }
-    }
-    None
 }
 
 // Read the contents of a symlink which leads nowhere. Following a chain of symlinks may reveal
