@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.4] - 2026-09-27
+
+### Changed
+- Reported a filesystem link that goes through a directory that can't be listed, since the spelling of its path can't be checked. Previously, the path was accepted as written. Such a link can't start a rename or be followed, and a rename into such a directory is refused.
+
 ## [0.29.3] - 2026-09-27
 
 ### Changed
