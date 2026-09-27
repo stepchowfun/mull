@@ -657,6 +657,32 @@ fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     )
 }
 
+// Construct a Mull error diagnostic at a source range or at the start of the document, with any
+// fix that resolves it.
+fn diagnostic(
+    source_contents: &str,
+    source_range: Option<crate::error::SourceRange>,
+    message: String,
+    fix: Option<&Fix>,
+) -> Diagnostic {
+    Diagnostic {
+        range: lsp_range(
+            source_contents,
+            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
+        ),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(env!("CARGO_PKG_NAME").to_owned()),
+        message,
+        // Carry any fix along, since the editor sends it back with a code action request.
+        data: fix.map(|fix| match fix {
+            Fix::CreateNode(title) => {
+                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
+            }
+        }),
+        ..Diagnostic::default()
+    }
+}
+
 // Complete the link target at an editor position with node titles or filesystem paths.
 fn completion_for_document(
     uri: &Uri,
@@ -1999,32 +2025,6 @@ fn text_link_target_source_range(
         start,
         end: start + target_source.len(),
     })
-}
-
-// Construct a Mull error diagnostic at a source range or at the start of the document, with any
-// fix that resolves it.
-fn diagnostic(
-    source_contents: &str,
-    source_range: Option<crate::error::SourceRange>,
-    message: String,
-    fix: Option<&Fix>,
-) -> Diagnostic {
-    Diagnostic {
-        range: lsp_range(
-            source_contents,
-            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
-        ),
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some(env!("CARGO_PKG_NAME").to_owned()),
-        message,
-        // Carry any fix along, since the editor sends it back with a code action request.
-        data: fix.map(|fix| match fix {
-            Fix::CreateNode(title) => {
-                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
-            }
-        }),
-        ..Diagnostic::default()
-    }
 }
 
 // Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
