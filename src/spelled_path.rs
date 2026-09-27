@@ -41,25 +41,21 @@ impl SpelledPath {
         self.0.file_name()
     }
 
-    // Spell a path, relative to a directory, as it is on disk, by comparing each component with the
-    // names in its parent directory's listing. Filesystems that ignore case or Unicode
-    // normalization find an entry even when its path is spelled differently, but such a path would
-    // break on other filesystems and wouldn't match the names found when walking the directory.
-    // Explain why the spelling isn't confirmed: either the path is misspelled, along with its
-    // spelling on disk if every component has one, or a directory along it can't be listed.
+    // Require a path, relative to a directory, to be spelled exactly as the names in each of its
+    // directories' listings. Filesystems that ignore case or Unicode normalization find an entry
+    // even when its path is spelled differently, but such a path would break on other filesystems
+    // and wouldn't match the names found when walking the directory. No attempt is made to guess
+    // which name a misspelling refers to.
     fn spell(
         wiki_directory: &Path,
         path: &Path,
         listings: &mut DirectoryListings,
     ) -> Result<Self, SpellingError> {
-        let mut written = PathBuf::new();
         let mut spelled = PathBuf::new();
-        let mut misspelled = false;
         for component in path.components() {
-            // Accept a name that its directory lists. If the directory can't be listed, the
-            // spelling can't be checked at all.
+            // Accept a name only if its directory lists it exactly as written. If the directory
+            // can't be listed, the spelling can't be checked at all.
             let name = component.as_os_str();
-            written.push(name);
             let directory = wiki_directory.join(&spelled);
             let names = match listings.entry(directory.clone()).or_insert_with(|| {
                 fs::read_dir(&directory)
@@ -83,57 +79,22 @@ impl SpelledPath {
                             },
                             path.code_path(),
                         ),
-                        spelled: None,
                         reason: Some(error.clone()),
                     });
                 }
             };
-            if names.contains(name) {
-                spelled.push(name);
-                continue;
-            }
-
-            // Find the entry that the name refers to, preferring the first in sorted order if
-            // several entries are indistinguishable.
-            let identity = entry_identity(&directory.join(name));
-            let mut candidates = names
-                .iter()
-                .filter(|candidate| {
-                    identity.is_some() && entry_identity(&directory.join(candidate)) == identity
-                })
-                .collect::<Vec<_>>();
-            candidates.sort();
-
-            // Continue with the name on disk, or stop at a name that has none, since nothing
-            // beneath it can be checked.
-            let Some(actual) = candidates.first() else {
+            spelled.push(name);
+            if !names.contains(name) {
                 return Err(SpellingError {
                     message: format!(
                         "{} doesn't match the spelling of any name on disk.",
-                        written.code_path(),
+                        spelled.code_path(),
                     ),
-                    spelled: None,
                     reason: None,
                 });
-            };
-            misspelled = true;
-            spelled.push(actual);
+            }
         }
-
-        // Describe the whole path's spelling on disk if it differs from how it's written.
-        if misspelled {
-            Err(SpellingError {
-                message: format!(
-                    "{} is spelled {} on disk.",
-                    path.code_path(),
-                    spelled.code_path(),
-                ),
-                spelled: Some(SpelledPath(spelled)),
-                reason: None,
-            })
-        } else {
-            Ok(SpelledPath(spelled))
-        }
+        Ok(SpelledPath(spelled))
     }
 }
 
@@ -144,21 +105,18 @@ impl CodePath for SpelledPath {
     }
 }
 
-// This explains why a path's spelling isn't confirmed: it's misspelled, along with its spelling on
-// disk if every component has one, or a directory along it can't be listed, for an underlying
-// reason.
+// This explains why a path's spelling isn't confirmed: a name along it isn't listed as written, or
+// a directory along it can't be listed, for an underlying reason.
 #[derive(Debug)]
 pub struct SpellingError {
     pub message: String,
-    pub spelled: Option<SpelledPath>,
     pub reason: Option<Rc<io::Error>>,
 }
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
-// disk if the wiki is there. An editor or a user may spell the wiki's path differently if the
-// filesystem ignores case.
-// The directory's own spelling doesn't matter, since it's only a prefix from which every other path
-// is derived, and it's never compared with a path spelled independently of it.
+// disk if the wiki is there. The directory's own spelling doesn't matter, since it's only a prefix
+// from which every other path is derived, and it's never compared with a path spelled
+// independently of it.
 #[derive(Clone, Debug)]
 pub struct WikiDirectory {
     path: PathBuf,
@@ -166,28 +124,27 @@ pub struct WikiDirectory {
 }
 
 impl WikiDirectory {
-    // Find the directory containing a wiki, and spell the wiki's path within it.
-    pub fn new(wiki_path: &Path) -> Self {
+    // Find the directory containing a wiki, and require the wiki's path within it to be spelled as
+    // on disk, unless the wiki isn't there at all, as when it was deleted while open.
+    pub fn new(wiki_path: &Path) -> Result<Self, SpellingError> {
         let path = wiki_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .to_owned();
-
-        // Spell the wiki's path as on disk, however it's given, unless the wiki isn't there.
-        let wiki_path = match SpelledPath::spell(
+        let spelled_wiki_path = match SpelledPath::spell(
             &path,
             relative_path(&path, wiki_path),
             &mut DirectoryListings::new(),
         ) {
-            Ok(spelled)
-            | Err(SpellingError {
-                spelled: Some(spelled),
-                ..
-            }) => Some(spelled),
-            Err(SpellingError { spelled: None, .. }) => None,
+            Ok(spelled) => Some(spelled),
+            Err(_) if fs::symlink_metadata(wiki_path).is_err() => None,
+            Err(error) => return Err(error),
         };
-        Self { path, wiki_path }
+        Ok(Self {
+            path,
+            wiki_path: spelled_wiki_path,
+        })
     }
 
     // Expose the directory as given, which filesystem operations resolve paths against.
@@ -254,7 +211,6 @@ impl WikiDirectory {
                                 candidate.code_path().to_string()
                             },
                         ),
-                        spelled: None,
                         reason: Some(Rc::new(error)),
                     });
                 }
@@ -308,7 +264,7 @@ mod tests {
         let locked = directory.join("locked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull"));
+        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
 
         let result = wiki_directory.spell_existing_ancestor(
             &FilesystemTarget::parse(&ContentText::from_source("/locked/inner/file.txt")).unwrap(),
@@ -331,7 +287,7 @@ mod tests {
     fn missing_component() {
         let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
         fs::create_dir_all(&directory).unwrap();
-        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull"));
+        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
 
         let error = wiki_directory
             .spell(

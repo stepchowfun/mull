@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-09-27
+
+### Changed
+- Stopped guessing which name on disk a misspelled filesystem link refers to. A misspelling is now reported as ``` `x` doesn't match the spelling of any name on disk.```, and the link no longer covers the file it was meant to, which is reported as unlinked until the link is fixed. The guess could name the wrong file, such as another hard link to the same file.
+- Reported a wiki whose own path is spelled differently than on disk, as when running `mull check --path WIKI.mull` for `wiki.mull` on a filesystem that ignores case. Previously, the wiki's spelling on disk was guessed.
+
 ## [0.30.0] - 2026-09-27
 
 ### Changed
