@@ -315,8 +315,8 @@ impl ContentText {
     }
 }
 
-// This is Markdown for display. Only the renderers below produce it, since they encode whatever
-// text they're given.
+// This is Markdown for display. Only the rendering code in this module produces it, since it
+// encodes whatever text it's given.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Markdown(String);
 
