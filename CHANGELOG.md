@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.6] - 2026-09-27
+
+### Changed
+- Represented text as it appears in a node's content, where link delimiters are escaped, and Markdown for hover previews with distinct types, so neither can be mixed up with plain text such as a node title. There's no change in behavior.
+
 ## [0.29.5] - 2026-09-27
 
 ### Changed

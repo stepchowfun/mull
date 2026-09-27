@@ -294,7 +294,7 @@ pub fn entry_identity(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{DirectoryListings, WikiDirectory};
-    use crate::wiki::FilesystemTarget;
+    use crate::wiki::{ContentText, FilesystemTarget};
     use std::{env, fs, process};
 
     // Report an ancestor whose existence can't be determined, rather than treating it as missing.
@@ -310,8 +310,9 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull"));
 
-        let result = wiki_directory
-            .spell_existing_ancestor(&FilesystemTarget::parse("/locked/inner/file.txt").unwrap());
+        let result = wiki_directory.spell_existing_ancestor(
+            &FilesystemTarget::parse(&ContentText::from_source("/locked/inner/file.txt")).unwrap(),
+        );
         let accessible = locked.join("inner").try_exists().is_ok();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&directory).unwrap();
@@ -334,7 +335,7 @@ mod tests {
 
         let error = wiki_directory
             .spell(
-                &FilesystemTarget::parse("/missing/file.txt").unwrap(),
+                &FilesystemTarget::parse(&ContentText::from_source("/missing/file.txt")).unwrap(),
                 &mut DirectoryListings::new(),
             )
             .unwrap_err();

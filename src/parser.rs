@@ -3,8 +3,8 @@ use crate::{
     format::CodeStr,
     scoring::populate_depths,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
-        unescape_link_delimiters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
+        TextNode, Wiki,
     },
 };
 use std::path::Path;
@@ -207,7 +207,7 @@ fn insert_node(
             title.clone(),
             TextNode {
                 title,
-                content,
+                content: ContentText::from_source(&content),
                 links,
                 depth: None,
                 source_range,
@@ -307,7 +307,7 @@ fn parse_content(
                 // Write a filesystem link's target in its canonical form, and keep any other target
                 // as written.
                 let formatted_target = match &link {
-                    Ok(Link::Filesystem { target, .. }) => target.text(),
+                    Ok(Link::Filesystem { target, .. }) => target.text().into_string(),
                     Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
                 match link {
@@ -353,8 +353,10 @@ fn parse_link(
     source_range: SourceRange,
 ) -> Result<Link, Error> {
     // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
-    if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        let target = FilesystemTarget::parse(target).map_err(|message| {
+    // The target is part of a node's content, as written.
+    let target = ContentText::from_source(target);
+    if target.as_str().starts_with(FILESYSTEM_LINK_PREFIX) {
+        let target = FilesystemTarget::parse(&target).map_err(|message| {
             Error::new(
                 &message,
                 source_path,
@@ -368,7 +370,7 @@ fn parse_link(
         })
     } else {
         Ok(Link::Text {
-            title: unescape_link_delimiters(target),
+            title: target.unescape(),
             source_range,
         })
     }
@@ -440,12 +442,18 @@ mod tests {
 
         assert_eq!(wiki.text_nodes.len(), 2);
         assert_eq!(wiki.text_nodes["Home"].title, "Home");
-        assert_eq!(wiki.text_nodes["Home"].content, "Check out the [Greeting].");
+        assert_eq!(
+            wiki.text_nodes["Home"].content.as_str(),
+            "Check out the [Greeting].",
+        );
         assert_eq!(
             link_targets(&wiki.text_nodes["Home"].links),
             vec!["text:Greeting"],
         );
-        assert_eq!(wiki.text_nodes["Greeting"].content, "Hello,\nworld!");
+        assert_eq!(
+            wiki.text_nodes["Greeting"].content.as_str(),
+            "Hello,\nworld!",
+        );
         assert_eq!(wiki.text_nodes["Home"].title_source_range.start, 7);
         assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 11);
         assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
@@ -470,7 +478,7 @@ mod tests {
             vec!["text:Greeting", "text:About", "text:Greeting"],
         );
         assert_eq!(
-            wiki.text_nodes["Home"].content,
+            wiki.text_nodes["Home"].content.as_str(),
             "See [Greeting], [About], and [Greeting].",
         );
     }
@@ -543,7 +551,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].content,
+            wiki.text_nodes["Home"].content.as_str(),
             "[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]",
         );
     }
@@ -556,7 +564,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].content,
+            wiki.text_nodes["Home"].content.as_str(),
             "First\n\nSee [Home]\nand [Home] later.\nLast",
         );
     }
@@ -612,7 +620,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn non_title_hashes() {
         let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
 
-        assert_eq!(wiki.text_nodes["Home"].content, "## Subtitle\n#not a title");
+        assert_eq!(
+            wiki.text_nodes["Home"].content.as_str(),
+            "## Subtitle\n#not a title",
+        );
     }
 
     // Accept empty and whitespace-only wikis.
@@ -627,6 +638,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert!(
             parse_test("# Empty").unwrap().text_nodes["Empty"]
                 .content
+                .as_str()
                 .is_empty(),
         );
     }
@@ -636,7 +648,10 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
     fn windows_line_endings() {
         let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(wiki.text_nodes["Greeting"].content, "Hello, world!");
+        assert_eq!(
+            wiki.text_nodes["Greeting"].content.as_str(),
+            "Hello, world!",
+        );
     }
 
     // Reject non-whitespace content before the first title.
