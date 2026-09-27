@@ -1,8 +1,8 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    disk_path::{DirectoryListings, DiskPath, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
+    spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
     wiki::{FilesystemTarget, HOME_TITLE, Link, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -151,8 +151,8 @@ fn validate_filesystem_links(
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Track valid targets while visiting nodes and links in deterministic order.
-    let mut referenced_files = HashSet::<DiskPath>::new();
-    let mut referenced_directories = HashSet::<DiskPath>::new();
+    let mut referenced_files = HashSet::<SpelledPath>::new();
+    let mut referenced_directories = HashSet::<SpelledPath>::new();
     let mut listings = DirectoryListings::new();
     let mut errors = Vec::<Error>::new();
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
@@ -325,16 +325,16 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
 }
 
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
-// it, where `path` is the link's path and `target` is its spelling on disk.
+// it, where `path` is the link's path and `spelled` is its spelling on disk.
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     path: &Path,
-    target: &DiskPath,
+    spelled: &SpelledPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
-    visibility(wiki_directory, target, cancellation).map(|result| {
+    visibility(wiki_directory, spelled, cancellation).map(|result| {
         let message = match result {
             Ok(Visibility::Visible) => return None,
             Ok(Visibility::Empty) => format!(
@@ -364,15 +364,15 @@ fn visibility_error(
 fn find_unreferenced_filesystem_links(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    referenced_files: &HashSet<DiskPath>,
-    referenced_directories: &HashSet<DiskPath>,
+    referenced_files: &HashSet<SpelledPath>,
+    referenced_directories: &HashSet<SpelledPath>,
     maximum_errors: usize,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
     if referenced_directories
         .iter()
-        .any(DiskPath::is_wiki_directory)
+        .any(SpelledPath::is_wiki_directory)
     {
         return Outcome::Completed(Vec::new());
     }

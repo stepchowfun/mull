@@ -1,13 +1,13 @@
 mod analyzer;
 mod assertions;
 mod cancellation;
-mod disk_path;
 mod error;
 mod format;
 mod language_server;
 mod parser;
 mod path_util;
 mod scoring;
+mod spelled_path;
 mod validator;
 mod wiki;
 mod wiki_tree;
