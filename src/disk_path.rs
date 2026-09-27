@@ -83,8 +83,8 @@ impl WikiDirectory {
         let relative_wiki_path = relative_path(&path, wiki_path);
         let wiki_path =
             match check_spelling(&path, relative_wiki_path, &mut DirectoryListings::new()) {
-                Ok(spelled) => DiskPath(spelled),
-                Err(SpellingError {
+                Ok(spelled)
+                | Err(SpellingError {
                     spelled: Some(spelled),
                     ..
                 }) => spelled,
@@ -126,7 +126,7 @@ impl WikiDirectory {
         target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<DiskPath, SpellingError> {
-        check_spelling(&self.path, target.path(), listings).map(DiskPath)
+        check_spelling(&self.path, target.path(), listings)
     }
 
     // Require the existing directories along a rename's new path to be spelled as on disk. The
@@ -143,9 +143,12 @@ impl WikiDirectory {
             return Ok(DiskPath(path.to_owned()));
         };
         let spelled = check_spelling(&self.path, ancestor, &mut DirectoryListings::new())?;
-        Ok(DiskPath(spelled.join(path.strip_prefix(ancestor).expect(
-            "An ancestor of a path should be a prefix of it.",
-        ))))
+        Ok(DiskPath(
+            spelled.0.join(
+                path.strip_prefix(ancestor)
+                    .expect("An ancestor of a path should be a prefix of it."),
+            ),
+        ))
     }
 }
 
@@ -162,7 +165,7 @@ fn check_spelling(
     wiki_directory: &Path,
     path: &Path,
     listings: &mut DirectoryListings,
-) -> Result<PathBuf, SpellingError> {
+) -> Result<DiskPath, SpellingError> {
     let mut written = PathBuf::new();
     let mut spelled = PathBuf::new();
     let mut misspelled = false;
@@ -244,7 +247,7 @@ fn check_spelling(
             spelled: Some(DiskPath(spelled)),
             reason: None,
         }),
-        None => Ok(spelled),
+        None => Ok(DiskPath(spelled)),
     }
 }
 
