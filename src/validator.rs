@@ -67,6 +67,12 @@ pub fn missing_home_message() -> String {
     format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str())
 }
 
+// Describe a text link to a node that doesn't exist. The language server recognizes this
+// diagnostic by its message.
+pub fn missing_node_message(title: &str) -> String {
+    format!("Node {} not found.", title.code_str())
+}
+
 // Validate text-link targets and reachability from the home node.
 fn validate_text_links(
     wiki: &Wiki,
@@ -97,7 +103,7 @@ fn validate_text_links(
                     let message = if title.is_empty() {
                         "This link is missing a target.".to_owned()
                     } else {
-                        format!("Node {} not found.", title.code_str())
+                        missing_node_message(title)
                     };
                     errors.push(Error::new(
                         &message,

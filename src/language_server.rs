@@ -5,7 +5,7 @@ use crate::{
     format::{CodePath, CodeStr},
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
-    validator::missing_home_message,
+    validator::{missing_home_message, missing_node_message},
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
         TITLE_PREFIX, TextNode, Wiki,
@@ -1796,7 +1796,8 @@ fn code_action_for_document(
     }
 
     // Append the missing destination of a text link after a blank line, leaving its placement to
-    // the formatter. Skip empty targets, which no title can declare.
+    // the formatter, and recognize its diagnostic by the link's range and the message. Skip empty
+    // targets, which no title can declare.
     if let Some(byte_offset) = byte_offset(source_contents, range.start)
         && let Some(Link::Text {
             title,
@@ -1821,7 +1822,10 @@ fn code_action_for_document(
                 format!("{separator}{TITLE_PREFIX}{title}\n"),
             ),
             diagnostics,
-            |diagnostic| diagnostic.range == lsp_range(source_contents, *source_range),
+            |diagnostic| {
+                diagnostic.range == lsp_range(source_contents, *source_range)
+                    && diagnostic.message == missing_node_message(title)
+            },
         ));
     }
 
@@ -3660,13 +3664,23 @@ mod tests {
             range: Range::new(Position::new(0, 0), Position::new(0, 1)),
             ..link_diagnostic.clone()
         };
+        let unrelated_diagnostic = Diagnostic {
+            message: "Something else is wrong with this link.".to_owned(),
+            ..link_diagnostic.clone()
+        };
         assert_eq!(link_diagnostic.range, link_range);
 
+        // Resolve only the link's missing-destination diagnostic, not others at other ranges or
+        // with other messages.
         let actions = code_action_for_document(
             &uri,
             source,
             Range::new(Position::new(2, 3), Position::new(2, 3)),
-            &[other_diagnostic, link_diagnostic.clone()],
+            &[
+                other_diagnostic,
+                unrelated_diagnostic,
+                link_diagnostic.clone(),
+            ],
         )
         .unwrap();
         let [action] = actions.as_slice() else {
