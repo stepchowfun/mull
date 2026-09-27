@@ -357,13 +357,18 @@ fn parse_link(
     // link starts with `/` and names a directory if it also ends with one.
     let target = unescape_link_delimiters(target);
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        let is_directory = target.ends_with(DIRECTORY_LINK_SUFFIX);
-        parse_filesystem_path(&target, source_path, source_contents, source_range).map(|path| {
-            if is_directory {
-                Link::Directory { path, source_range }
-            } else {
-                Link::File { path, source_range }
-            }
+        let path = normalize_link_path(&target).map_err(|message| {
+            Error::new(
+                &message,
+                source_path,
+                Some((source_contents, source_range)),
+                None,
+            )
+        })?;
+        Ok(if target.ends_with(DIRECTORY_LINK_SUFFIX) {
+            Link::Directory { path, source_range }
+        } else {
+            Link::File { path, source_range }
         })
     } else {
         Ok(Link::Text {
@@ -371,23 +376,6 @@ fn parse_link(
             source_range,
         })
     }
-}
-
-// Parse a filesystem link path, attributing any problem to the link's source range.
-fn parse_filesystem_path(
-    path: &str,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Result<PathBuf, Error> {
-    normalize_link_path(path).map_err(|message| {
-        Error::new(
-            &message,
-            source_path,
-            Some((source_contents, source_range)),
-            None,
-        )
-    })
 }
 
 // Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
