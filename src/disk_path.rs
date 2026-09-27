@@ -1,16 +1,17 @@
-use crate::{format::CodePath, path_util::relative_path};
+use crate::{format::CodePath, parser::LinkPath, path_util::relative_path};
+use colored::ColoredString;
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
 };
 
 // A path relative to the wiki directory whose components are spelled exactly as the names in their
 // directories' listings. Comparing such paths as written then agrees with the filesystem, whether
-// or not it ignores case. The only exception is a component within a directory that can't be
-// listed, which is kept as written. Such a path describes the disk when it was spelled, so it
-// shouldn't outlive a single check or request.
+// or not it ignores case. The exceptions, kept as written, are a component within a directory that
+// can't be listed and the final name of a rename's destination, which the rename checks itself.
+// Such a path describes the disk when it was spelled, so it shouldn't outlive a check or request.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DiskPath(PathBuf);
 
@@ -28,6 +29,23 @@ impl DiskPath {
     // Determine whether this path is another or lies within it.
     pub fn starts_with(&self, other: &DiskPath) -> bool {
         self.0.starts_with(&other.0)
+    }
+
+    // Find the directory containing this path, which is spelled as on disk as well.
+    pub fn parent(&self) -> Option<DiskPath> {
+        self.0.parent().map(|parent| DiskPath(parent.to_owned()))
+    }
+
+    // Expose the final component's name.
+    pub fn file_name(&self) -> Option<&OsStr> {
+        self.0.file_name()
+    }
+}
+
+// Format a spelled path for human-facing diagnostic output.
+impl CodePath for DiskPath {
+    fn code_path(&self) -> ColoredString {
+        self.0.code_path()
     }
 }
 
@@ -79,6 +97,11 @@ impl WikiDirectory {
         &self.wiki_path
     }
 
+    // Locate a spelled path for filesystem operations.
+    pub fn resolve(&self, path: &DiskPath) -> PathBuf {
+        self.path.join(&path.0)
+    }
+
     // Spell the path of an entry found by walking the wiki directory, whose components come from
     // directory listings.
     pub fn entry_path(&self, entry: &ignore::DirEntry) -> DiskPath {
@@ -91,14 +114,32 @@ impl WikiDirectory {
         )
     }
 
-    // Require each component of an existing entry's path, relative to this directory, to be
-    // spelled as on disk.
+    // Require each component of an existing entry's path to be spelled as on disk.
     pub fn spell(
         &self,
-        path: &Path,
+        path: &LinkPath,
         listings: &mut DirectoryListings,
     ) -> Result<DiskPath, Misspelling> {
-        check_spelling(&self.path, path, listings).map(DiskPath)
+        check_spelling(&self.path, path.as_path(), listings).map(DiskPath)
+    }
+
+    // Require the existing directories along a rename's new path to be spelled as on disk. The
+    // other names don't exist, so they have no other spelling. The final name is kept as written
+    // even if it exists: the rename refuses such a destination, other than within a directory
+    // moving into itself, where nothing will exist at the time of the move.
+    pub fn spell_destination(&self, path: &LinkPath) -> Result<DiskPath, Misspelling> {
+        let path = path.as_path();
+        let Some(ancestor) = path
+            .ancestors()
+            .skip(1)
+            .find(|ancestor| self.path.join(ancestor).exists())
+        else {
+            return Ok(DiskPath(path.to_owned()));
+        };
+        let spelled = check_spelling(&self.path, ancestor, &mut DirectoryListings::new())?;
+        Ok(DiskPath(spelled.join(path.strip_prefix(ancestor).expect(
+            "An ancestor of a path should be a prefix of it.",
+        ))))
     }
 }
 
@@ -111,7 +152,7 @@ pub type DirectoryListings = HashMap<PathBuf, Option<HashSet<OsString>>>;
 // differently, but such a link would break on other filesystems and wouldn't match the names found
 // when walking the wiki's directory. Return the path as spelled on disk, or describe the
 // misspelling along with the spelling on disk if every component has one.
-pub fn check_spelling(
+fn check_spelling(
     wiki_directory: &Path,
     path: &Path,
     listings: &mut DirectoryListings,

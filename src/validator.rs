@@ -3,6 +3,7 @@ use crate::{
     disk_path::{DirectoryListings, DiskPath, Misspelling, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
+    parser::LinkPath,
     wiki::{HOME_TITLE, Link, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -173,7 +174,7 @@ fn validate_filesystem_links(
             };
 
             // Follow symbolic links when classifying each target.
-            let metadata = match fs::metadata(wiki_directory.path().join(path)) {
+            let metadata = match fs::metadata(wiki_directory.path().join(path.as_path())) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
@@ -275,7 +276,7 @@ fn validate_filesystem_links(
 fn inaccessible_target_error(
     error: std::io::Error,
     wiki_path: &Path,
-    path: &Path,
+    path: &LinkPath,
     source_context: (&str, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
@@ -297,7 +298,11 @@ fn inaccessible_target_error(
 
 // Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
 // link's trailing `/` only when that change would fix the link.
-fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> Option<String> {
+fn wrong_target_type_message(
+    link: &Link,
+    path: &LinkPath,
+    metadata: &fs::Metadata,
+) -> Option<String> {
     match link {
         Link::File { .. } if metadata.is_file() => None,
         Link::Directory { .. } if metadata.is_dir() => None,
@@ -325,7 +330,7 @@ fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) 
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &Path,
+    path: &LinkPath,
     target: &DiskPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,
@@ -426,7 +431,7 @@ fn find_unreferenced_filesystem_links(
         };
         if file_type.is_file() && !referenced_files.contains(&path) {
             errors.push(Error::new(
-                &format!("File {} isn't referenced.", path.as_path().code_path()),
+                &format!("File {} isn't referenced.", path.code_path()),
                 Some(wiki_path),
                 None,
                 None,

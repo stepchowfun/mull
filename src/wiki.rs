@@ -1,5 +1,5 @@
-use crate::error::SourceRange;
-use std::{collections::HashMap, fmt, path::PathBuf};
+use crate::{error::SourceRange, parser::LinkPath};
+use std::{collections::HashMap, fmt};
 
 // These strings define the wiki format's extension and structural markers. A link whose target
 // starts with `/` is a filesystem link, relative to the wiki's directory, which names a directory
@@ -21,11 +21,11 @@ pub enum Link {
         source_range: SourceRange,
     },
     File {
-        path: PathBuf,
+        path: LinkPath,
         source_range: SourceRange,
     },
     Directory {
-        path: PathBuf,
+        path: LinkPath,
         source_range: SourceRange,
     },
 }
@@ -218,7 +218,7 @@ fn render_markdown_filesystem_link(target: &str, url: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Link, TextNode, Wiki};
-    use crate::error::SourceRange;
+    use crate::{error::SourceRange, parser::normalize_link_path};
     use std::collections::HashMap;
 
     // Use a harmless range when testing rendering, which doesn't inspect source locations.
@@ -331,11 +331,11 @@ mod tests {
             content: "[/notes.txt] and [/odd`name/]".to_owned(),
             links: vec![
                 Link::File {
-                    path: "notes.txt".into(),
+                    path: normalize_link_path("notes.txt").unwrap(),
                     source_range: SOURCE_RANGE,
                 },
                 Link::Directory {
-                    path: "odd`name".into(),
+                    path: normalize_link_path("odd`name").unwrap(),
                     source_range: SOURCE_RANGE,
                 },
             ],
