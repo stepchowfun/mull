@@ -1580,7 +1580,7 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .expect("A renamed node should have a UTF-8 name.");
-    (1..=u32::MAX)
+    (1..=u64::MAX)
         .map(|attempt| {
             path.with_file_name(if attempt == 1 {
                 format!(".{name}.mull-rename")
