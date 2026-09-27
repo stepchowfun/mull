@@ -297,22 +297,24 @@ fn parse_content(
                     start: source_range.start + start,
                     end: source_range.start + index + character.len_utf8(),
                 };
-                let formatted_target = match parse_link(
+                let link = parse_link(
                     trimmed_target,
                     source_path,
                     source_contents,
                     link_source_range,
-                ) {
-                    Ok(link) => {
-                        let formatted_target = format_link_target(trimmed_target, &link);
-                        links.push(link);
-                        formatted_target
-                    }
-                    Err(error) => {
-                        errors.push(error);
-                        trimmed_target.to_owned()
-                    }
+                );
+
+                // Write a filesystem link's path in its normalized form, and keep any other target
+                // as written.
+                let formatted_target = match &link {
+                    Ok(Link::File { path, .. }) => render_link_path(path, false),
+                    Ok(Link::Directory { path, .. }) => render_link_path(path, true),
+                    Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
+                match link {
+                    Ok(link) => links.push(link),
+                    Err(error) => errors.push(error),
+                }
 
                 // Copy the prose before the link, then the link in its formatted form.
                 content.push_str(&original_content[copied_through..inner_start]);
@@ -431,16 +433,6 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
             }
         })
         .collect())
-}
-
-// Format the trimmed target of a parsed link. A text link's target is kept as written, while a
-// filesystem link's path is written in its normalized form.
-fn format_link_target(trimmed_target: &str, link: &Link) -> String {
-    match link {
-        Link::Text { .. } => trimmed_target.to_owned(),
-        Link::File { path, .. } => render_link_path(path, false),
-        Link::Directory { path, .. } => render_link_path(path, true),
-    }
 }
 
 // Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
