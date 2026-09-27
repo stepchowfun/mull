@@ -413,7 +413,7 @@ fn find_unreferenced_filesystem_links(
             Ok(entry) => entry,
             Err(error) => {
                 errors.push(Error::new(
-                    "Unable to walk wiki directory.",
+                    "Unable to walk the wiki directory.",
                     Some(wiki_path),
                     None,
                     Some(Rc::new(error)),
@@ -430,7 +430,7 @@ fn find_unreferenced_filesystem_links(
         };
         if file_type.is_file() && !referenced_files.contains(&path) {
             errors.push(Error::new(
-                &format!("File {} isn't referenced.", path.code_path()),
+                &format!("File {} isn't linked to.", path.code_path()),
                 Some(wiki_path),
                 None,
                 None,
@@ -664,10 +664,11 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         let photo_path = Path::new("images").join("photo.jpg");
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains(&format!(
-            "File `{}` isn't referenced.",
-            photo_path.display(),
-        )));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains(&format!("File `{}` isn't linked to.", photo_path.display())),
+        );
     }
 
     // Stop validating explicit filesystem links after reaching the diagnostic limit.
@@ -752,7 +753,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "File `second.txt` isn't referenced.",
+            "File `second.txt` isn't linked to.",
         ));
     }
 
@@ -845,7 +846,11 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
+                .any(|error| {
+                    error
+                        .to_string()
+                        .contains("Unable to walk the wiki directory.")
+                }),
         );
     }
 
@@ -888,7 +893,11 @@ mod tests {
             validate(&wiki, &directory.wiki_path())
                 .unwrap_err()
                 .iter()
-                .any(|error| error.to_string().contains("Unable to walk wiki directory.")),
+                .any(|error| {
+                    error
+                        .to_string()
+                        .contains("Unable to walk the wiki directory.")
+                }),
         );
     }
 
@@ -945,17 +954,14 @@ mod tests {
             &errors,
             "`images` is a directory, so its link must end with `/`.",
         ));
-        assert!(contains_error(
-            &errors,
-            "File `notes.txt` isn't referenced.",
-        ));
+        assert!(contains_error(&errors, "File `notes.txt` isn't linked to."));
         assert!(contains_error(
             &errors,
             "`notes.txt` is a file, so its link must not end with `/`.",
         ));
         assert!(contains_error(
             &errors,
-            &format!("File `{}` isn't referenced.", photo_path.display()),
+            &format!("File `{}` isn't linked to.", photo_path.display()),
         ));
     }
 
@@ -1063,7 +1069,7 @@ mod tests {
         assert!(contains_error(&errors, "`missing.txt` not found."));
         assert!(contains_error(
             &errors,
-            "File `unreferenced.txt` isn't referenced.",
+            "File `unreferenced.txt` isn't linked to.",
         ));
     }
 
@@ -1121,7 +1127,7 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert!(contains_error(
             &errors,
-            "File `unreferenced.txt` isn't referenced.",
+            "File `unreferenced.txt` isn't linked to.",
         ));
 
         // Request cancellation before validating the same fixture again.
