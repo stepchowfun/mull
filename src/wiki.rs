@@ -2,7 +2,6 @@ use crate::{
     error::SourceRange,
     format::{CodePath, CodeStr},
 };
-use colored::ColoredString;
 use std::{
     collections::HashMap,
     fmt,
@@ -49,7 +48,7 @@ impl Link {
 // normalized path and whether it names a directory. The link text follows from those alone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilesystemTarget {
-    path: LinkPath,
+    path: PathBuf,
     is_directory: bool,
 }
 
@@ -114,9 +113,9 @@ impl FilesystemTarget {
 
     // Move this target from one directory to another, keeping its kind, if it's the directory or
     // lies within it.
-    pub fn moved(&self, from: &LinkPath, to: &LinkPath) -> Option<Self> {
-        let suffix = self.path.0.strip_prefix(&from.0).ok()?;
-        Some(Self::new(to.0.join(suffix), self.is_directory))
+    pub fn moved(&self, from: &FilesystemTarget, to: &FilesystemTarget) -> Option<Self> {
+        let suffix = self.path.strip_prefix(&from.path).ok()?;
+        Some(Self::new(to.path.join(suffix), self.is_directory))
     }
 
     // Write the link text: `/` and the path's components, followed by `/` for a directory, with any
@@ -126,7 +125,6 @@ impl FilesystemTarget {
         // from UTF-8 text.
         let components = self
             .path
-            .0
             .components()
             .map(|component| {
                 component
@@ -144,9 +142,15 @@ impl FilesystemTarget {
         escape_link_delimiters(&text)
     }
 
-    // Expose the path relative to the wiki directory.
-    pub fn path(&self) -> &LinkPath {
+    // Expose the path relative to the wiki directory, without any root, prefix, `.`, or `..`
+    // components. It's spelled as written, which may differ from the names on disk.
+    pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    // Determine whether the target is the wiki directory itself.
+    pub fn is_wiki_directory(&self) -> bool {
+        self.path.as_os_str().is_empty()
     }
 
     // Determine whether the target is a directory.
@@ -158,32 +162,8 @@ impl FilesystemTarget {
     fn new(path: PathBuf, is_directory: bool) -> Self {
         Self {
             is_directory: is_directory || path.as_os_str().is_empty(),
-            path: LinkPath(path),
+            path,
         }
-    }
-}
-
-// This is a filesystem link's path relative to the wiki directory, without any root, prefix, `.`,
-// or `..` components. It's spelled as written, which may differ from the names on disk.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinkPath(PathBuf);
-
-impl LinkPath {
-    // Expose the path for display and for resolving it against the wiki directory.
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-
-    // Determine whether this path is the wiki directory itself.
-    pub fn is_wiki_directory(&self) -> bool {
-        self.0.as_os_str().is_empty()
-    }
-}
-
-// Format a link path for human-facing diagnostic output.
-impl CodePath for LinkPath {
-    fn code_path(&self) -> ColoredString {
-        self.0.code_path()
     }
 }
 
@@ -556,7 +536,7 @@ mod tests {
         let moved = |text| {
             FilesystemTarget::parse(text)
                 .unwrap()
-                .moved(directory.path(), destination.path())
+                .moved(&directory, &destination)
                 .map(|target| target.text())
         };
         assert_eq!(moved("/photos/"), Some("/archive/photos/".to_owned()));

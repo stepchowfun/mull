@@ -1320,7 +1320,7 @@ fn rename_filesystem_node_for_document(
     if new_target == old_target {
         return Ok(Some(WorkspaceEdit::default()));
     }
-    if new_target.path().is_wiki_directory() {
+    if new_target.is_wiki_directory() {
         return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
     }
 
@@ -1330,7 +1330,7 @@ fn rename_filesystem_node_for_document(
     // go wrong. For example, a directory which will contain the node could look empty after the
     // rename and be deleted along with it.
     let new_path = wiki_directory
-        .spell_destination(new_target.path())
+        .spell_destination(&new_target)
         .map_err(|error| error.message)?;
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
@@ -1448,11 +1448,11 @@ fn renamable_filesystem_node_at(
     // Require the linked node to exist as the kind the link names, other than the wiki directory,
     // resolving it from the wiki's containing directory as validation does.
     let wiki_directory = WikiDirectory::new(&wiki_path);
-    if old_path.is_wiki_directory() {
+    if old_target.is_wiki_directory() {
         return Err("The wiki directory can't be renamed.".to_owned());
     }
     let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(wiki_directory.path().join(old_path.as_path()))
+    if !fs::metadata(wiki_directory.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
         return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
@@ -1461,7 +1461,7 @@ fn renamable_filesystem_node_at(
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
     let old_path = wiki_directory
-        .spell(old_path, &mut DirectoryListings::new())
+        .spell(old_target, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
     if old_path == *wiki_directory.wiki_path() {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
@@ -1555,7 +1555,7 @@ fn filesystem_rename_edits(
             continue;
         };
         let moved_target = if old_target.is_directory() {
-            target.moved(old_target.path(), new_target.path())
+            target.moved(old_target, new_target)
         } else {
             (target == old_target).then(|| new_target.clone())
         };
@@ -1865,7 +1865,7 @@ fn filesystem_link_target(
     // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
     // names.
     let is_directory = target.is_directory();
-    let target_path = wiki_directory.resolve(&wiki_directory.spell(target.path(), listings).ok()?);
+    let target_path = wiki_directory.resolve(&wiki_directory.spell(target, listings).ok()?);
     if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
         return None;
     }

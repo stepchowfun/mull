@@ -3,7 +3,7 @@ use crate::{
     disk_path::{DirectoryListings, DiskPath, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, LinkPath, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{collections::HashSet, fs, path::Path, rc::Rc};
@@ -169,7 +169,7 @@ fn validate_filesystem_links(
             let (path, source_range) = (target.path(), link.source_range());
 
             // Follow symbolic links when classifying each target.
-            let metadata = match fs::metadata(wiki_directory.path().join(path.as_path())) {
+            let metadata = match fs::metadata(wiki_directory.path().join(path)) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
@@ -187,7 +187,7 @@ fn validate_filesystem_links(
 
             // Require the path to be spelled as it is on disk, and track the target by that
             // spelling so it matches the entries found when walking the wiki's directory.
-            let (spelled, is_spelled) = match wiki_directory.spell(path, &mut listings) {
+            let (spelled, is_spelled) = match wiki_directory.spell(target, &mut listings) {
                 Ok(spelled) => (Some(spelled), true),
                 Err(error) => {
                     errors.push(Error::new(
@@ -273,7 +273,7 @@ fn validate_filesystem_links(
 fn inaccessible_target_error(
     error: std::io::Error,
     wiki_path: &Path,
-    path: &LinkPath,
+    path: &Path,
     source_context: (&str, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
@@ -327,7 +327,7 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &LinkPath,
+    path: &Path,
     target: &DiskPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,

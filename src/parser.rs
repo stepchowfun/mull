@@ -425,7 +425,7 @@ mod tests {
                 Link::Filesystem { target, .. } => format!(
                     "{}:{}",
                     if target.is_directory() { "dir" } else { "file" },
-                    target.path().as_path().display(),
+                    target.path().display(),
                 ),
             })
             .collect()
