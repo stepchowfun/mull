@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.31.2] - 2026-09-27
 
+### Changed
+- Inserted the node that a quick fix creates for a missing link destination right after the first node linking to it, rather than at the end of the wiki. Formatting still moves it to its usual place.
+
 ### Fixed
 - Attached the quick fix that creates a missing `Home` node only to the diagnostic reporting it. It was also offered as the preferred fix for every other diagnostic without a source location, such as a file that isn't linked to, since all of them are reported at the start of the document. Quick fixes now come from the diagnostics they fix, so one fix covers every diagnostic it resolves, such as several links to the same missing node.
 

@@ -1814,14 +1814,29 @@ fn code_action_for_document(
             let (title, edit) = match fix {
                 Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
                 Fix::CreateNode(title) => {
-                    // Prepend the home node, and append any other node after a blank line, leaving
-                    // its placement to the formatter.
+                    // Prepend the home node, and insert any other node after the first node linking
+                    // to it, or else at the end of the wiki, leaving its final placement to the
+                    // formatter.
+                    let linking_node = diagnostics
+                        .iter()
+                        .filter_map(|diagnostic| {
+                            byte_offset(source_contents, diagnostic.range.start)
+                        })
+                        .min()
+                        .and_then(|offset| {
+                            wiki.text_nodes.values().find(|node| {
+                                node.source_range.start <= offset && offset < node.source_range.end
+                            })
+                        });
                     let edit = if title == HOME_TITLE {
                         let separator = if source_contents.is_empty() { "" } else { "\n" };
                         TextEdit::new(
                             Range::new(Position::new(0, 0), Position::new(0, 0)),
                             format!("{TITLE_PREFIX}{title}\n{separator}"),
                         )
+                    } else if let Some(node) = linking_node {
+                        let end = lsp_position(source_contents, node.source_range.end);
+                        TextEdit::new(Range::new(end, end), format!("\n\n{TITLE_PREFIX}{title}"))
                     } else {
                         let separator = if source_contents.ends_with("\n\n") {
                             ""
@@ -3662,20 +3677,34 @@ mod tests {
 
         // Confirm that the created node makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
-        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting\n");
+        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting");
         assert!(diagnostics(&uri, &applied).is_empty());
     }
 
-    // Separate the created node with exactly one blank line after a trailing line break.
+    // Insert the created node right after the first node linking to it, between blank lines.
     #[test]
-    fn code_actions_reuse_trailing_line_breaks() {
-        let source = "# Home\n\n[Greeting]\n";
+    fn code_actions_insert_after_linking_nodes() {
+        let source = "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Last\n\n[Greeting]\n";
         let uri = untitled_uri();
         let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
 
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n[Greeting]\n\n# Greeting\n",
+            "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Greeting\n\n# Last\n\n[Greeting]\n",
+        );
+    }
+
+    // Append the created node when a stale diagnostic's position is no longer within any node.
+    #[test]
+    fn code_actions_append_without_linking_nodes() {
+        let uri = untitled_uri();
+        let stale_diagnostics = diagnostics(&uri, "# Home\n\nSome text first, then [Greeting]\n");
+        let source = "# Home\n";
+
+        let actions = code_action_for_document(&uri, source, &stale_diagnostics).unwrap();
+        assert_eq!(
+            apply_code_action(&uri, source, &actions[0]),
+            "# Home\n\n# Greeting\n",
         );
     }
 
