@@ -9,6 +9,9 @@
       "include": "#secondary-headings"
     },
     {
+      "include": "#escapes"
+    },
+    {
       "include": "#links"
     },
     {
@@ -77,6 +80,9 @@
         }
       ]
     },
+    "escapes": {
+      "match": "\\\\[\\\\\\[\\]]"
+    },
     "links": {
       "patterns": [
         {
@@ -90,13 +96,13 @@
     "filesystem-links": {
       "name": "meta.link.filesystem.mull",
       "contentName": "markup.underline.link.path.mull",
-      "begin": "(?<!\\\\)\\[(?=[ \\t]*/)",
+      "begin": "\\[(?=[ \\t]*/)",
       "beginCaptures": {
         "0": {
           "name": "punctuation.definition.link.begin.mull"
         }
       },
-      "end": "(?<!\\\\)\\]|$",
+      "end": "\\]|$",
       "endCaptures": {
         "0": {
           "name": "punctuation.definition.link.end.mull"
@@ -111,13 +117,13 @@
     "text-links": {
       "name": "meta.link.text.mull",
       "contentName": "string.other.link.title.mull",
-      "begin": "(?<!\\\\)\\[",
+      "begin": "\\[",
       "beginCaptures": {
         "0": {
           "name": "punctuation.definition.link.begin.mull"
         }
       },
-      "end": "(?<!\\\\)\\]|$",
+      "end": "\\]|$",
       "endCaptures": {
         "0": {
           "name": "punctuation.definition.link.end.mull"
@@ -133,17 +139,17 @@
       "patterns": [
         {
           "name": "constant.character.escape.mull",
-          "match": "\\\\[\\[\\]]"
+          "match": "\\\\[\\\\\\[\\]]"
         },
         {
           "name": "invalid.illegal.unexpected-opening-delimiter.mull",
-          "match": "(?<!\\\\)\\["
+          "match": "\\["
         }
       ]
     },
     "unexpected-closing-delimiters": {
       "name": "invalid.illegal.unexpected-closing-delimiter.mull",
-      "match": "(?<!\\\\)\\]"
+      "match": "\\]"
     }
   },
   "scopeName": "source.mull"

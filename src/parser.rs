@@ -4,7 +4,7 @@ use crate::{
     scoring::populate_depths,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki,
+        TextNode, Wiki, unescaped_characters,
     },
 };
 use std::path::Path;
@@ -238,7 +238,6 @@ fn parse_content(
     let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
     let mut link_has_line_break = false;
-    let mut previous_was_backslash = false;
 
     // Report a syntax error at a range of the source.
     let syntax_error = |message: &str, error_source_range| {
@@ -251,13 +250,7 @@ fn parse_content(
         )
     };
 
-    for (index, character) in original_content.char_indices() {
-        let is_escaped_delimiter = previous_was_backslash && matches!(character, '[' | ']');
-        previous_was_backslash = character == '\\';
-        if is_escaped_delimiter {
-            continue;
-        }
-
+    for (index, character) in unescaped_characters(original_content) {
         // Locate the current character for any delimiter error.
         let character_source_range = SourceRange {
             start: source_range.start + index,
@@ -520,6 +513,25 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         assert_eq!(
             link_targets(&wiki.text_nodes["Home"].links),
             vec!["text:One]Two", "text:[Three", "text:Four"],
+        );
+    }
+
+    // Treat an escaped backslash as a literal character which doesn't escape what follows, and
+    // leave other backslashes as is.
+    #[test]
+    fn escaped_backslashes() {
+        let wiki = parse_test(
+            r"# Home
+See \\[Four], [Five\\], [A\B], and \\\[ignored\].
+# Four
+# Five\
+# A\B",
+        )
+        .unwrap();
+
+        assert_eq!(
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec!["text:Four", "text:Five\\", "text:A\\B"],
         );
     }
 
