@@ -105,8 +105,6 @@ Options:
   -h, --help     Print help
 ```
 
-The `check` and `fix` commands accept `--path <PATH>` to specify the path to the wiki, such as `mull check --path notes/wiki.mull`. Otherwise, Mull looks for a wiki in the current directory and its ancestors.
-
 ## Installation instructions
 
 To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension.
