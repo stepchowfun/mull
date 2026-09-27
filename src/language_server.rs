@@ -152,6 +152,7 @@ impl Backend {
                         &fallback_contents,
                         None,
                         format!("Mull was unable to check the wiki: {error}."),
+                        None,
                     )])
                 }) else {
                     return;
@@ -644,23 +645,16 @@ fn diagnostics_for_document(
 
 // Convert a structured Mull error into the representation expected by language clients.
 fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
-    // Include an underlying reason without including terminal prefixes, paths, or source listings,
-    // and carry any fix along so a code action request can offer it.
-    Diagnostic {
-        data: error.fix().map(|fix| match fix {
-            Fix::CreateNode(title) => {
-                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
-            }
-        }),
-        ..diagnostic(
-            source_contents,
-            error.source_range(),
-            error.reason().map_or_else(
-                || error.message().to_owned(),
-                |reason| format!("{}\n\nReason: {reason}", error.message()),
-            ),
-        )
-    }
+    // Include an underlying reason without including terminal prefixes, paths, or source listings.
+    diagnostic(
+        source_contents,
+        error.source_range(),
+        error.reason().map_or_else(
+            || error.message().to_owned(),
+            |reason| format!("{}\n\nReason: {reason}", error.message()),
+        ),
+        error.fix(),
+    )
 }
 
 // Complete the link target at an editor position with node titles or filesystem paths.
@@ -2007,11 +2001,13 @@ fn text_link_target_source_range(
     })
 }
 
-// Construct a Mull error diagnostic at a source range or at the start of the document.
+// Construct a Mull error diagnostic at a source range or at the start of the document, with any
+// fix that resolves it.
 fn diagnostic(
     source_contents: &str,
     source_range: Option<crate::error::SourceRange>,
     message: String,
+    fix: Option<&Fix>,
 ) -> Diagnostic {
     Diagnostic {
         range: lsp_range(
@@ -2021,6 +2017,12 @@ fn diagnostic(
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(env!("CARGO_PKG_NAME").to_owned()),
         message,
+        // Carry any fix along, since the editor sends it back with a code action request.
+        data: fix.map(|fix| match fix {
+            Fix::CreateNode(title) => {
+                std::iter::once((CREATE_NODE_FIX, title.as_str())).collect::<serde_json::Value>()
+            }
+        }),
         ..Diagnostic::default()
     }
 }
