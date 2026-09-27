@@ -79,7 +79,10 @@ impl TextNode {
                         continue;
                     };
                     content.push_str(
-                        &ContentText::from_source(&source[copied_through..start]).unescape(),
+                        &render_markdown_before_link(&ContentText::from_source(
+                            &source[copied_through..start],
+                        ))
+                        .0,
                     );
                     let target = ContentText::from_source(&source[start + '['.len_utf8()..index]);
                     content.push_str(
@@ -356,6 +359,33 @@ impl Markdown {
     }
 }
 
+// Render the prose before a link as Markdown which can't change the link, such as by escaping its
+// first character or making it an image, by writing such a trailing character as a reference.
+fn render_markdown_before_link(prose: &ContentText) -> Markdown {
+    // Determine whether text ends with a backslash which would escape what follows.
+    let ends_with_escape = |text: &str| {
+        text.chars()
+            .rev()
+            .take_while(|&character| character == '\\')
+            .count()
+            % 2
+            == 1
+    };
+
+    // Replace an escaping backslash or an unescaped `!` with the character it displays.
+    let mut markdown = prose.unescape();
+    if ends_with_escape(&markdown) {
+        markdown.pop();
+        markdown.push_str("&#92;");
+    } else if let Some(before) = markdown.strip_suffix('!')
+        && !ends_with_escape(before)
+    {
+        markdown.truncate(before.len());
+        markdown.push_str("&#33;");
+    }
+    Markdown(markdown)
+}
+
 // Render a text link, given the text between its delimiters, as ordinary bracketed text with an
 // optional Markdown destination.
 fn render_markdown_text_link(target: &ContentText, url: Option<&str>) -> Markdown {
@@ -484,6 +514,32 @@ mod tests {
             concat!(
                 "# Greeting\n\n[Text](url), \\, #, and ",
                 "[&#91;Home&#93;](command:mull.revealRange?destination).",
+            ),
+        );
+    }
+
+    // Keep the prose before a link from escaping the link or making it an image, while leaving
+    // escaped characters as they are.
+    #[test]
+    fn node_markdown_link_boundaries() {
+        let home = Link::Text {
+            title: "Home".to_owned(),
+            source_range: SOURCE_RANGE,
+        };
+        let node = TextNode {
+            title: "Greeting".to_owned(),
+            content: ContentText::from_source(r"\\[Home] ![Home] \![Home] \\\\[Home]"),
+            links: vec![home.clone(), home.clone(), home.clone(), home],
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+        };
+
+        assert_eq!(
+            node.to_markdown(|_| Some("url".to_owned())).into_string(),
+            concat!(
+                "# Greeting\n\n&#92;[&#91;Home&#93;](url) &#33;[&#91;Home&#93;](url) ",
+                r"\![&#91;Home&#93;](url) \\[&#91;Home&#93;](url)",
             ),
         );
     }

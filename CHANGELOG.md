@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Let a backslash escape a following `#` in content, like `\# Heading` for a Markdown heading, which a line starting with `#` can't express because it starts a node. In an existing wiki, this changes the meaning of `\#` inside a link.
 - Highlighted escapes outside links in the VS Code extension.
 
+### Fixed
+- Kept the text before a link in a hover preview from changing the link. A `!` right before a link made it an image, and a literal backslash right before a link hid it.
+
 ## [0.32.0] - 2026-09-27
 
 ### Changed
