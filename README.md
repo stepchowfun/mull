@@ -92,7 +92,7 @@ mull
 Here are the supported command-line options:
 
 ```
-Usage: mull [OPTIONS] [COMMAND]
+Usage: mull [COMMAND]
 
 Commands:
   check            Check a wiki
@@ -101,9 +101,8 @@ Commands:
   help             Print this message or the help of the given subcommand(s)
 
 Options:
-  -v, --version      Print version
-      --path <PATH>  Specify the path to the wiki
-  -h, --help         Print help
+  -v, --version  Print version
+  -h, --help     Print help
 ```
 
 ## Installation instructions

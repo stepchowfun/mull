@@ -20,7 +20,7 @@ use crate::{
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
-use clap::{ArgAction, Parser, Subcommand as ClapSubcommand};
+use clap::{ArgAction, Args, Parser, Subcommand as ClapSubcommand};
 use similar::TextDiff;
 use std::{
     env, fs,
@@ -45,9 +45,6 @@ struct Cli {
     #[arg(short, long, help = "Print version", action = ArgAction::Version)]
     _version: Option<bool>,
 
-    #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
-    path: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Option<Subcommand>,
 }
@@ -56,13 +53,20 @@ struct Cli {
 #[derive(ClapSubcommand)]
 enum Subcommand {
     #[command(about = "Check a wiki")]
-    Check,
+    Check(WikiArgs),
 
     #[command(about = "Fix a wiki (default)")]
-    Fix,
+    Fix(WikiArgs),
 
     #[command(about = "Start the language server (editors use this)")]
     LanguageServer,
+}
+
+// These are the arguments for the operations that act on a wiki.
+#[derive(Args, Default)]
+struct WikiArgs {
+    #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
+    path: Option<PathBuf>,
 }
 
 // Let the fun begin!
@@ -81,14 +85,15 @@ async fn entry() -> Result<(), Vec<Error>> {
     let cli = Cli::parse();
 
     // Start the language server without requiring a wiki, or select the requested wiki operation.
-    let should_fix = match cli.command.unwrap_or(Subcommand::Fix) {
-        Subcommand::Check => false,
-        Subcommand::Fix => true,
-        Subcommand::LanguageServer => {
-            language_server::run().await;
-            return Ok(());
-        }
-    };
+    let (should_fix, WikiArgs { path }) =
+        match cli.command.unwrap_or(Subcommand::Fix(WikiArgs::default())) {
+            Subcommand::Check(wiki_args) => (false, wiki_args),
+            Subcommand::Fix(wiki_args) => (true, wiki_args),
+            Subcommand::LanguageServer => {
+                language_server::run().await;
+                return Ok(());
+            }
+        };
 
     // Select the wiki and make its path relative when it's contained in the current directory.
     let wiki_path = relative_path(
@@ -100,7 +105,7 @@ async fn entry() -> Result<(), Vec<Error>> {
                 Some(Rc::new(error)),
             )]
         })?,
-        &cli.path
+        &path
             .map_or_else(find_wiki, Ok)
             .map_err(|error| vec![error])?,
     )
@@ -262,7 +267,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Subcommand};
+    use super::{Cli, Subcommand, WikiArgs};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -276,11 +281,11 @@ mod tests {
     fn parse_subcommands() {
         assert!(matches!(
             Cli::try_parse_from(["mull", "check"]).unwrap().command,
-            Some(Subcommand::Check),
+            Some(Subcommand::Check(_)),
         ));
         assert!(matches!(
             Cli::try_parse_from(["mull", "fix"]).unwrap().command,
-            Some(Subcommand::Fix),
+            Some(Subcommand::Fix(_)),
         ));
         assert!(matches!(
             Cli::try_parse_from(["mull", "language-server"])
@@ -290,11 +295,18 @@ mod tests {
         ));
     }
 
-    // Ensure an explicit wiki path can be parsed.
+    // Accept an explicit wiki path after the subcommand that acts on the wiki.
     #[test]
     fn parse_path() {
-        let cli = Cli::try_parse_from(["mull", "--path", "notes.mull", "check"]).unwrap();
-
-        assert_eq!(cli.path, Some(PathBuf::from("notes.mull")));
+        for subcommand in ["check", "fix"] {
+            let Some(Subcommand::Check(WikiArgs { path }) | Subcommand::Fix(WikiArgs { path })) =
+                Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull"])
+                    .unwrap()
+                    .command
+            else {
+                panic!("The {subcommand} subcommand should be parsed.");
+            };
+            assert_eq!(path, Some(PathBuf::from("notes.mull")));
+        }
     }
 }
