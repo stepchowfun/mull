@@ -1,6 +1,6 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    disk_path::{DirectoryListings, DiskPath, Misspelling, WikiDirectory},
+    disk_path::{DirectoryListings, DiskPath, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
     parser::LinkPath,
@@ -192,16 +192,18 @@ fn validate_filesystem_links(
 
             // Require the path to be spelled as it is on disk, and track the target by that
             // spelling so it matches the entries found when walking the wiki's directory.
-            let (target, is_misspelled) = match wiki_directory.spell(path, &mut listings) {
-                Ok(target) => (Some(target), false),
-                Err(Misspelling { message, spelled }) => {
+            let (target, is_spelled) = match wiki_directory.spell(path, &mut listings) {
+                Ok(target) => (Some(target), true),
+                Err(error) => {
                     errors.push(Error::new(
-                        &message,
+                        &error.message,
                         Some(wiki_path),
                         Some((source_contents, source_range)),
-                        None,
+                        error
+                            .reason
+                            .map(|reason| reason as Rc<dyn std::error::Error>),
                     ));
-                    (spelled, true)
+                    (error.spelled, false)
                 }
             };
 
@@ -220,8 +222,8 @@ fn validate_filesystem_links(
             }
 
             // Require the target to be a file which isn't ignored, or a directory containing such a
-            // file. Skip this for a misspelled path, which was already reported.
-            if let (Some(target), false) = (&target, is_misspelled) {
+            // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
+            if let (Some(target), true) = (&target, is_spelled) {
                 let Outcome::Completed(error) = visibility_error(
                     wiki_directory,
                     wiki_path,
@@ -801,6 +803,35 @@ mod tests {
         let wiki = parse("# Home\n[/wiki.txt]").unwrap();
 
         assert!(validate(&wiki, &wiki_path).is_ok());
+    }
+
+    // Report a link within a directory that can't be listed, since its spelling can't be checked.
+    // Permissions don't restrict a superuser, so skip this where the directory remains listable.
+    #[cfg(unix)]
+    #[test]
+    fn unlistable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TestDirectory::new();
+        let locked = directory.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("file.txt"), "file").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o311)).unwrap();
+        let wiki = parse("# Home\n[/locked/file.txt]").unwrap();
+
+        let listable = fs::read_dir(&locked).is_ok();
+        let result = validate(&wiki, &directory.wiki_path());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if !listable {
+            let file_path = Path::new("locked").join("file.txt");
+            assert!(contains_error(
+                &result.unwrap_err(),
+                &format!(
+                    "Unable to list `locked`, so the spelling of `{}` can't be checked.",
+                    file_path.display(),
+                ),
+            ));
+        }
     }
 
     // Report a broken symlink because its target can't be classified.

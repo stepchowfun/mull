@@ -1339,7 +1339,7 @@ fn rename_filesystem_node_for_document(
     // rename and be deleted along with it.
     let new_path = wiki_directory
         .spell_destination(&new_path)
-        .map_err(|misspelling| misspelling.message)?;
+        .map_err(|error| error.message)?;
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
     // everything at its destination moves along with it, so nothing there can conflict.
@@ -1466,7 +1466,7 @@ fn renamable_filesystem_node_at(
     // would update only the links spelled like this one, breaking any spelled correctly.
     let old_path = wiki_directory
         .spell(&old_path, &mut DirectoryListings::new())
-        .map_err(|misspelling| misspelling.message)?;
+        .map_err(|error| error.message)?;
     if old_path == *wiki_directory.wiki_path() {
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
