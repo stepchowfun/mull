@@ -1,10 +1,10 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    error::Error,
+    error::{Error, SourceRange},
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::wiki_tree_walker,
+    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -189,23 +189,12 @@ fn validate_filesystem_links(
             let metadata = match fs::metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    // A missing target needs no further explanation, but any other failure keeps
-                    // its underlying cause.
-                    errors.push(if error.kind() == std::io::ErrorKind::NotFound {
-                        Error::new(
-                            &format!("{} not found.", path.code_path()),
-                            Some(wiki_path),
-                            Some((source_contents, source_range)),
-                            None,
-                        )
-                    } else {
-                        Error::new(
-                            &format!("Unable to access {}.", path.code_path()),
-                            Some(wiki_path),
-                            Some((source_contents, source_range)),
-                            Some(Rc::new(error)),
-                        )
-                    });
+                    errors.push(inaccessible_target_error(
+                        error,
+                        wiki_path,
+                        path,
+                        (source_contents, source_range),
+                    ));
                     if errors.len() >= MAX_FILESYSTEM_ERRORS {
                         break 'nodes;
                     }
@@ -216,34 +205,51 @@ fn validate_filesystem_links(
             // Require the path to be spelled as it is on disk, and track the target by that
             // spelling so it matches the entries found when walking the wiki's directory.
             let (spelled_path, misspelling) = check_spelling(wiki_directory, path, &mut listings);
-            if let Some(message) = misspelling {
+            if let Some(message) = &misspelling {
+                errors.push(Error::new(
+                    message,
+                    Some(wiki_path),
+                    Some((source_contents, source_range)),
+                    None,
+                ));
+            }
+            let target = wiki_directory.join(&spelled_path);
+
+            // Report links with the wrong type.
+            if let Some(message) = wrong_target_type_message(link, path, &metadata) {
                 errors.push(Error::new(
                     &message,
                     Some(wiki_path),
                     Some((source_contents, source_range)),
                     None,
                 ));
+                if errors.len() >= MAX_FILESYSTEM_ERRORS {
+                    break 'nodes;
+                }
+                continue;
             }
-            let target = wiki_directory.join(spelled_path);
 
-            // Retain correctly typed targets and report links with the wrong type.
-            match link {
-                Link::File { .. } if metadata.is_file() => {
-                    referenced_files.insert(target);
-                }
-                Link::Directory { .. } if metadata.is_dir() => {
-                    referenced_directories.insert(target);
-                }
-                Link::File { .. } | Link::Directory { .. } => errors.push(Error::new(
-                    &wrong_target_type_message(link, path, &metadata),
-                    Some(wiki_path),
-                    Some((source_contents, source_range)),
-                    None,
-                )),
-                Link::Text { .. } => {
-                    // Text links were skipped above [ref:filesystem_links_only].
-                    unreachable!("Text links were already skipped.")
-                }
+            // Require the target to be a file which isn't ignored, or a directory containing such a
+            // file. Skip this for a misspelled path, which was already reported.
+            if misspelling.is_none() {
+                let Outcome::Completed(error) = visibility_error(
+                    wiki_directory,
+                    wiki_path,
+                    path,
+                    &spelled_path,
+                    (source_contents, source_range),
+                    cancellation,
+                ) else {
+                    return Outcome::Cancelled;
+                };
+                errors.extend(error);
+            }
+
+            // Track the target so the walk for unreferenced files accounts for it.
+            if matches!(link, Link::File { .. }) {
+                referenced_files.insert(target);
+            } else {
+                referenced_directories.insert(target);
             }
             if errors.len() >= MAX_FILESYSTEM_ERRORS {
                 break 'nodes;
@@ -313,13 +319,13 @@ fn check_spelling(
             continue;
         }
 
-        // Find the entry that the name refers to, preferring the first in sorted order if aliases
-        // lead to the same place.
-        let target = fs::canonicalize(directory.join(name)).ok();
+        // Find the entry that the name refers to, preferring the first in sorted order if several
+        // entries are indistinguishable.
+        let identity = entry_identity(&directory.join(name));
         let mut candidates = names
             .iter()
             .filter(|candidate| {
-                target.is_some() && fs::canonicalize(directory.join(candidate)).ok() == target
+                identity.is_some() && entry_identity(&directory.join(candidate)) == identity
             })
             .collect::<Vec<_>>();
         candidates.sort();
@@ -350,23 +356,107 @@ fn check_spelling(
     (spelled, message)
 }
 
-// Explain why a filesystem link's target has the wrong type, suggesting a change to the link's
-// trailing `/` only when that change would fix the link.
-fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> String {
+// Identify the directory entry that a path names without following a symlink in its last component,
+// so symlinks to the same target remain distinct.
+#[cfg(unix)]
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+// Identify the directory entry that a path names by its resolved target where entry identities
+// aren't available, which conflates symlinks to the same target.
+#[cfg(not(unix))]
+fn entry_identity(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
+// Explain why a filesystem link's target can't be accessed. A missing target needs no further
+// explanation, but any other failure keeps its underlying cause.
+fn inaccessible_target_error(
+    error: std::io::Error,
+    wiki_path: &Path,
+    path: &Path,
+    source_context: (&str, SourceRange),
+) -> Error {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Error::new(
+            &format!("{} not found.", path.code_path()),
+            Some(wiki_path),
+            Some(source_context),
+            None,
+        )
+    } else {
+        Error::new(
+            &format!("Unable to access {}.", path.code_path()),
+            Some(wiki_path),
+            Some(source_context),
+            Some(Rc::new(error)),
+        )
+    }
+}
+
+// Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
+// it, where `path` is the link's path and `spelled_path` is its spelling on disk.
+fn visibility_error(
+    wiki_directory: &Path,
+    wiki_path: &Path,
+    path: &Path,
+    spelled_path: &Path,
+    source_context: (&str, SourceRange),
+    cancellation: &CancellationFlag,
+) -> Outcome<Option<Error>> {
+    visibility(wiki_directory, spelled_path, cancellation).map(|result| {
+        let message = match result {
+            Ok(Visibility::Visible) => return None,
+            Ok(Visibility::Empty) => format!(
+                "{} doesn't contain any files that aren't ignored.",
+                path.code_path(),
+            ),
+            Ok(Visibility::Ignored) => format!("{} is ignored.", path.code_path()),
+            Err(error) => {
+                return Some(Error::new(
+                    &format!("Unable to walk {}.", path.code_path()),
+                    Some(wiki_path),
+                    Some(source_context),
+                    Some(Rc::new(error)),
+                ));
+            }
+        };
+        Some(Error::new(
+            &message,
+            Some(wiki_path),
+            Some(source_context),
+            None,
+        ))
+    })
+}
+
+// Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
+// link's trailing `/` only when that change would fix the link.
+fn wrong_target_type_message(link: &Link, path: &Path, metadata: &fs::Metadata) -> Option<String> {
     match link {
-        Link::File { .. } if metadata.is_dir() => format!(
+        Link::File { .. } if metadata.is_file() => None,
+        Link::Directory { .. } if metadata.is_dir() => None,
+        Link::File { .. } if metadata.is_dir() => Some(format!(
             "{} is a directory, so its link must end with {}.",
             path.code_path(),
             "/".code_str(),
-        ),
-        Link::Directory { .. } if metadata.is_file() => format!(
+        )),
+        Link::Directory { .. } if metadata.is_file() => Some(format!(
             "{} is a file, so its link must not end with {}.",
             path.code_path(),
             "/".code_str(),
-        ),
-        Link::File { .. } => format!("{} isn't a file.", path.code_path()),
-        Link::Directory { .. } => format!("{} isn't a directory.", path.code_path()),
-        Link::Text { .. } => unreachable!("Only filesystem links have targets."),
+        )),
+        Link::File { .. } => Some(format!("{} isn't a file.", path.code_path())),
+        Link::Directory { .. } => Some(format!("{} isn't a directory.", path.code_path())),
+        Link::Text { .. } => {
+            // Text links were skipped before checking targets [ref:filesystem_links_only].
+            unreachable!("Only filesystem links have targets.")
+        }
     }
 }
 
@@ -818,6 +908,31 @@ mod tests {
         );
     }
 
+    // Identify a misspelled symlink by the entry itself rather than its target, which other
+    // symlinks may share. A case-sensitive filesystem doesn't find the target at all.
+    #[cfg(unix)]
+    #[test]
+    fn misspelled_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join("target.txt"), "content").unwrap();
+        symlink("target.txt", directory.path().join("first.txt")).unwrap();
+        symlink("target.txt", directory.path().join("second.txt")).unwrap();
+        let wiki = parse("# Home\n[/target.txt] [/first.txt] [/SECOND.txt]").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        if fs::metadata(directory.path().join("SECOND.txt")).is_ok() {
+            assert_eq!(errors.len(), 1);
+            assert!(contains_error(
+                &errors,
+                "`SECOND.txt` is spelled `second.txt` on disk.",
+            ));
+        } else {
+            assert!(contains_error(&errors, "not found."));
+        }
+    }
+
     // Report a directory symlink cycle instead of recursing indefinitely.
     #[cfg(unix)]
     #[test]
@@ -900,6 +1015,61 @@ mod tests {
         assert!(contains_error(
             &errors,
             &format!("File `{}` isn't referenced.", photo_path.display()),
+        ));
+    }
+
+    // Require a directory link's target to contain a file which isn't ignored, however deeply.
+    #[test]
+    fn directory_without_files() {
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join(".gitignore"), "*.log\n").unwrap();
+        fs::create_dir_all(directory.path().join("empty/nested")).unwrap();
+        fs::create_dir(directory.path().join("logs")).unwrap();
+        fs::write(directory.path().join("logs/debug.log"), "debug").unwrap();
+        fs::create_dir_all(directory.path().join("deep/nested")).unwrap();
+        fs::write(directory.path().join("deep/nested/file.txt"), "file").unwrap();
+        let wiki = parse("# Home\n[/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "`empty` doesn't contain any files that aren't ignored.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "`logs` doesn't contain any files that aren't ignored.",
+        ));
+    }
+
+    // Reject links to ignored files and directories, including those within ignored directories.
+    #[test]
+    fn ignored_targets() {
+        let directory = TestDirectory::new();
+        fs::write(directory.path().join(".gitignore"), "build/\nsecret.txt\n").unwrap();
+        fs::write(directory.path().join("secret.txt"), "secret").unwrap();
+        fs::create_dir(directory.path().join("build")).unwrap();
+        fs::write(directory.path().join("build/output.txt"), "output").unwrap();
+        fs::create_dir(directory.path().join(".git")).unwrap();
+        fs::write(directory.path().join(".git/config"), "config").unwrap();
+        let wiki = parse(
+            "# Home\n[/.gitignore] [/secret.txt] [/build/] [/build/output.txt] [/.git/config]",
+        )
+        .unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        let output_path = Path::new("build").join("output.txt");
+        let config_path = Path::new(".git").join("config");
+        assert_eq!(errors.len(), 4);
+        assert!(contains_error(&errors, "`secret.txt` is ignored."));
+        assert!(contains_error(&errors, "`build` is ignored."));
+        assert!(contains_error(
+            &errors,
+            &format!("`{}` is ignored.", output_path.display()),
+        ));
+        assert!(contains_error(
+            &errors,
+            &format!("`{}` is ignored.", config_path.display()),
         ));
     }
 

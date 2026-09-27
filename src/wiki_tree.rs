@@ -1,3 +1,4 @@
+use crate::cancellation::{CancellationFlag, Outcome};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::path::Path;
 
@@ -23,4 +24,62 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Er
         .require_git(false)
         .overrides(overrides);
     Ok(walker_builder)
+}
+
+// This describes whether a walk of the wiki tree reaches a path.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Visibility {
+    // The walk reaches the file, or a file within the directory.
+    Visible,
+
+    // The walk reaches the directory but no file within it.
+    Empty,
+
+    // The walk never reaches the path, because an ignore rule excludes it or one of its ancestors.
+    Ignored,
+}
+
+// Determine whether a walk of the wiki tree reaches a path which is relative to the wiki directory.
+// The walk descends only along the path and into its target, stopping at the first file it finds
+// there, so it applies every ignore rule without reading unrelated subtrees.
+pub fn visibility(
+    wiki_directory: &Path,
+    path: &Path,
+    cancellation: &CancellationFlag,
+) -> Outcome<Result<Visibility, ignore::Error>> {
+    // Keep only the ancestors of the target and the entries within it.
+    let target = wiki_directory.join(path);
+    let mut walker_builder = match wiki_tree_walker(wiki_directory) {
+        Ok(walker_builder) => walker_builder,
+        Err(error) => return Outcome::Completed(Err(error)),
+    };
+    walker_builder.filter_entry({
+        let target = target.clone();
+        move |entry| target.starts_with(entry.path()) || entry.path().starts_with(&target)
+    });
+
+    // Disregard walk failures, such as broken symlinks, since the filter never sees them, so they
+    // may concern unrelated entries.
+    let mut reached = false;
+    for entry in walker_builder.build().flatten() {
+        // Stop between entries so a superseded check doesn't walk the rest of the target.
+        if cancellation.is_cancelled() {
+            return Outcome::Cancelled;
+        }
+
+        // Note reaching the target, and stop at the first file at or within it.
+        if entry.path() == target {
+            reached = true;
+        }
+        if entry.path().starts_with(&target) && entry.file_type().is_some_and(|t| t.is_file()) {
+            return Outcome::Completed(Ok(Visibility::Visible));
+        }
+    }
+
+    // Distinguish a directory without files from a path that the walk never reached.
+    Outcome::Completed(Ok(if reached {
+        Visibility::Empty
+    } else {
+        Visibility::Ignored
+    }))
 }

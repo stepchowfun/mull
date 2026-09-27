@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-09-26
+
+### Changed
+- Required a directory link to point to a directory containing at least one file that isn't ignored, however deeply nested, since directories only matter for the files in them.
+- Rejected links to ignored files and directories, including anything within an ignored directory or a `.git` or `.hg` directory.
+- Stopped offering directories without such files as completions.
+
+### Fixed
+- Reported the correct spelling of a misspelled symlink when other symlinks point to the same target, instead of suggesting one of the others and reporting the symlink as unreferenced.
+
 ## [0.28.0] - 2026-09-25
 
 ### Changed
