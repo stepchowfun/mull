@@ -1,6 +1,6 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    disk_path::{DiskPath, WikiDirectory},
+    spelled_path::{SpelledPath, WikiDirectory},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::path::Path;
@@ -47,7 +47,7 @@ pub enum Visibility {
 // without reading unrelated subtrees.
 pub fn visibility(
     wiki_directory: &WikiDirectory,
-    target: &DiskPath,
+    target: &SpelledPath,
     cancellation: &CancellationFlag,
 ) -> Outcome<Result<Visibility, ignore::Error>> {
     // Keep only the ancestors of the target and the entries within it.

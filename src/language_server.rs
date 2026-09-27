@@ -1,10 +1,10 @@
 use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
-    disk_path::{DirectoryListings, DiskPath, WikiDirectory, entry_identity},
     error::{Error, SourceRange},
     format::CodePath,
     parser,
+    spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     wiki::{
         FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX,
         TextNode, Wiki, escape_link_delimiters, unescape_link_delimiters,
@@ -1412,7 +1412,7 @@ struct RenamableFilesystemNode {
     wiki_directory: WikiDirectory,
     path_source_range: SourceRange,
     old_target: FilesystemTarget,
-    old_path: DiskPath,
+    old_path: SpelledPath,
 }
 
 // Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
@@ -1495,8 +1495,8 @@ fn filesystem_link_path_source_range(
 // an existing file.
 fn check_rename_destination(
     wiki_directory: &WikiDirectory,
-    old_path: &DiskPath,
-    new_path: &DiskPath,
+    old_path: &SpelledPath,
+    new_path: &SpelledPath,
 ) -> std::result::Result<(), String> {
     // Refuse to replace another node. Something exists at the new path if its own metadata can be
     // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
@@ -1611,9 +1611,9 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // directory. The search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
     wiki_directory: &WikiDirectory,
-    old_path: &DiskPath,
-    new_path: &DiskPath,
-) -> Option<DiskPath> {
+    old_path: &SpelledPath,
+    new_path: &SpelledPath,
+) -> Option<SpelledPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let mut emptied_directory = None;
     let mut removed_entry = old_path.clone();
