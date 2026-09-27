@@ -1,6 +1,6 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    error::{Error, SourceRange},
+    error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
     wiki::{FilesystemTarget, HOME_TITLE, Link, Wiki},
@@ -44,6 +44,7 @@ pub fn validate(
                 error
                     .reason
                     .map(|reason| reason as Rc<dyn std::error::Error>),
+                None,
             ));
             return Outcome::Completed(errors_to_result(errors));
         }
@@ -70,7 +71,8 @@ fn validate_text_links(
     // Keep graph diagnostics deterministic.
     let mut errors = Vec::<Error>::new();
 
-    // Require the root node from which every other node must be reachable.
+    // Require the root node from which every other node must be reachable, which declaring it
+    // would fix.
     let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
     if !has_home {
         errors.push(Error::new(
@@ -78,6 +80,7 @@ fn validate_text_links(
             source_path,
             None,
             None,
+            Some(Fix::CreateNode(HOME_TITLE.to_owned())),
         ));
     }
 
@@ -85,25 +88,33 @@ fn validate_text_links(
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
-        // Report each missing target at the corresponding text-link occurrence. Filesystem links
-        // are checked separately.
+        // Report each missing target at the corresponding text-link occurrence, which declaring
+        // the target would fix, unless it's empty, since no title can be. Filesystem links are
+        // checked separately.
         for link in &node.links {
             match link {
                 Link::Text {
                     title,
                     source_range,
                 } if !wiki.text_nodes.contains_key(title) => {
-                    let message = if title.is_empty() {
-                        "This link is missing a target.".to_owned()
+                    let source_context = Some((source_contents, *source_range));
+                    errors.push(if title.is_empty() {
+                        Error::new(
+                            "This link is missing a target.",
+                            source_path,
+                            source_context,
+                            None,
+                            None,
+                        )
                     } else {
-                        format!("Node {} not found.", title.code_str())
-                    };
-                    errors.push(Error::new(
-                        &message,
-                        source_path,
-                        Some((source_contents, *source_range)),
-                        None,
-                    ));
+                        Error::new(
+                            &format!("Node {} not found.", title.code_str()),
+                            source_path,
+                            source_context,
+                            None,
+                            Some(Fix::CreateNode(title.clone())),
+                        )
+                    });
                 }
                 Link::Text { .. } | Link::Filesystem { .. } => {}
             }
@@ -129,6 +140,7 @@ fn validate_text_links(
                 source_path,
                 Some((source_contents, source_range)),
                 None,
+                None,
             )
         }));
     }
@@ -149,6 +161,7 @@ fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec
                 "Save the wiki to validate this filesystem link.",
                 None,
                 Some((source_contents, *source_range)),
+                None,
                 None,
             )),
             Link::Text { .. } => None,
@@ -215,6 +228,7 @@ fn validate_filesystem_links(
                         error
                             .reason
                             .map(|reason| reason as Rc<dyn std::error::Error>),
+                        None,
                     ));
                     None
                 }
@@ -226,6 +240,7 @@ fn validate_filesystem_links(
                     &message,
                     Some(wiki_path),
                     Some((source_contents, source_range)),
+                    None,
                     None,
                 ));
                 if errors.len() >= MAX_FILESYSTEM_ERRORS {
@@ -299,6 +314,7 @@ fn inaccessible_target_error(
             Some(wiki_path),
             Some(source_context),
             None,
+            None,
         )
     } else {
         Error::new(
@@ -306,6 +322,7 @@ fn inaccessible_target_error(
             Some(wiki_path),
             Some(source_context),
             Some(Rc::new(error)),
+            None,
         )
     }
 }
@@ -363,6 +380,7 @@ fn visibility_error(
                     Some(wiki_path),
                     Some(source_context),
                     Some(Rc::new(error)),
+                    None,
                 ));
             }
         };
@@ -370,6 +388,7 @@ fn visibility_error(
             &message,
             Some(wiki_path),
             Some(source_context),
+            None,
             None,
         ))
     })
@@ -401,6 +420,7 @@ fn find_unreferenced_filesystem_links(
                 Some(wiki_path),
                 None,
                 Some(Rc::new(error)),
+                None,
             )]);
         }
     };
@@ -432,6 +452,7 @@ fn find_unreferenced_filesystem_links(
                     Some(wiki_path),
                     None,
                     Some(Rc::new(error)),
+                    None,
                 ));
                 if errors.len() >= maximum_errors {
                     break;
@@ -447,6 +468,7 @@ fn find_unreferenced_filesystem_links(
             errors.push(Error::new(
                 &format!("File {} isn't linked to.", path.code_path()),
                 Some(wiki_path),
+                None,
                 None,
                 None,
             ));

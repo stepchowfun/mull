@@ -103,6 +103,7 @@ async fn entry() -> Result<(), Vec<Error>> {
                 None,
                 None,
                 Some(Rc::new(error)),
+                None,
             )]
         })?,
         &path
@@ -118,6 +119,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             Some(&wiki_path),
             None,
             Some(Rc::new(error)),
+            None,
         )]
     })?;
     let wiki_contents = String::from_utf8(wiki_bytes).map_err(|error| {
@@ -126,6 +128,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             Some(&wiki_path),
             None,
             Some(Rc::new(error)),
+            None,
         )]
     })?;
 
@@ -149,6 +152,7 @@ async fn entry() -> Result<(), Vec<Error>> {
                 Some(&wiki_path),
                 None,
                 Some(Rc::new(error)),
+                None,
             )]
         })?;
 
@@ -164,6 +168,7 @@ async fn entry() -> Result<(), Vec<Error>> {
                     .header("wiki", "rendered"),
             ),
             Some(&wiki_path),
+            None,
             None,
             None,
         )]);
@@ -182,6 +187,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
             None,
             None,
             Some(Rc::new(error)),
+            None,
         )
     })?;
 
@@ -193,6 +199,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
                 None,
                 None,
                 Some(Rc::new(error)),
+                None,
             )
         })?;
         let mut wikis = Vec::<PathBuf>::new();
@@ -205,6 +212,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
                     None,
                     None,
                     Some(Rc::new(error)),
+                    None,
                 )
             })?;
             let path = entry.path();
@@ -219,6 +227,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
                         None,
                         None,
                         Some(Rc::new(error)),
+                        None,
                     )
                 })?;
                 if metadata.is_file() {
@@ -244,6 +253,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
                 None,
                 None,
                 None,
+                None,
             ));
         }
 
@@ -259,6 +269,7 @@ fn find_wiki() -> Result<PathBuf, Error> {
             "No wiki found in {} or its ancestors.",
             current_directory.code_path(),
         ),
+        None,
         None,
         None,
         None,

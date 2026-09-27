@@ -1,5 +1,6 @@
 use crate::format::CodePath;
 use colored::{Colorize, control::SHOULD_COLORIZE};
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::{max, min},
     error, fmt,
@@ -15,6 +16,14 @@ pub struct SourceRange {
     pub end: usize,   // Exclusive
 }
 
+// This describes an edit that would resolve an error, which an editor can offer as a quick fix. It
+// travels to the editor and back as JSON.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum Fix {
+    // Declare a node with this title.
+    CreateNode(String),
+}
+
 // This is the primary error type we'll be using everywhere.
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -23,15 +32,18 @@ pub struct Error {
     source_path: Option<PathBuf>,
     listing: Option<String>,
     reason: Option<Rc<dyn error::Error>>,
+    fix: Option<Box<Fix>>,
 }
 
 impl Error {
-    // Construct an error and render its source context for terminal output when available.
+    // Construct an error, with any edit that would resolve it, and render its source context for
+    // terminal output when available.
     pub fn new(
         message: &str,
         source_path: Option<&Path>,
         source_context: Option<(&str, SourceRange)>,
         reason: Option<Rc<dyn error::Error>>,
+        fix: Option<Fix>,
     ) -> Self {
         let (source_range, source_listing) =
             source_context.map_or((None, None), |(source_contents, source_range)| {
@@ -47,6 +59,7 @@ impl Error {
             source_path: source_path.map(Path::to_owned),
             listing: source_listing,
             reason,
+            fix: fix.map(Box::new),
         }
     }
 
@@ -65,6 +78,9 @@ impl Error {
     }
     pub fn reason(&self) -> Option<&(dyn error::Error + 'static)> {
         self.reason.as_deref()
+    }
+    pub fn fix(&self) -> Option<&Fix> {
+        self.fix.as_deref()
     }
 }
 
@@ -245,7 +261,7 @@ mod tests {
 
     #[test]
     fn new_no_source_path_context_reason() {
-        let error = Error::new("An error occurred.", None, None, None);
+        let error = Error::new("An error occurred.", None, None, None, None);
 
         assert_eq!(error.message(), "An error occurred.");
         assert!(error.source_path().is_none());
@@ -257,7 +273,13 @@ mod tests {
 
     #[test]
     fn new_with_source_path_no_context_reason() {
-        let error = Error::new("An error occurred.", Some(Path::new("foo")), None, None);
+        let error = Error::new(
+            "An error occurred.",
+            Some(Path::new("foo")),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(error.message(), "An error occurred.");
         assert_eq!(error.source_path(), Some(Path::new("foo")));
@@ -274,6 +296,7 @@ mod tests {
             None,
             Some((SOURCE_CONTENTS, SOURCE_RANGE)),
             None,
+            None,
         );
 
         assert_eq!(error.message(), "An error occurred.");
@@ -289,8 +312,14 @@ mod tests {
 
     #[test]
     fn new_with_reason_no_source_path_context() {
-        let reason = Error::new("A deeper error occurred.", None, None, None);
-        let error = Error::new("An error occurred.", None, None, Some(Rc::new(reason)));
+        let reason = Error::new("A deeper error occurred.", None, None, None, None);
+        let error = Error::new(
+            "An error occurred.",
+            None,
+            None,
+            Some(Rc::new(reason)),
+            None,
+        );
 
         assert_eq!(error.message(), "An error occurred.");
         assert!(error.source_path().is_none());
@@ -313,6 +342,7 @@ mod tests {
             Some(Path::new("foo")),
             Some((SOURCE_CONTENTS, SOURCE_RANGE)),
             None,
+            None,
         );
 
         assert_eq!(error.message(), "An error occurred.");
@@ -328,12 +358,13 @@ mod tests {
 
     #[test]
     fn new_with_source_context_reason_no_source_path() {
-        let reason = Error::new("A deeper error occurred.", None, None, None);
+        let reason = Error::new("A deeper error occurred.", None, None, None, None);
         let error = Error::new(
             "An error occurred.",
             None,
             Some((SOURCE_CONTENTS, SOURCE_RANGE)),
             Some(Rc::new(reason)),
+            None,
         );
 
         assert_eq!(error.message(), "An error occurred.");
@@ -355,12 +386,13 @@ mod tests {
 
     #[test]
     fn new_with_source_path_reason_no_context() {
-        let reason = Error::new("A deeper error occurred.", None, None, None);
+        let reason = Error::new("A deeper error occurred.", None, None, None, None);
         let error = Error::new(
             "An error occurred.",
             Some(Path::new("foo")),
             None,
             Some(Rc::new(reason)),
+            None,
         );
 
         assert_eq!(error.message(), "An error occurred.");
@@ -379,12 +411,13 @@ mod tests {
 
     #[test]
     fn new_with_source_path_context_reason() {
-        let reason = Error::new("A deeper error occurred.", None, None, None);
+        let reason = Error::new("A deeper error occurred.", None, None, None, None);
         let error = Error::new(
             "An error occurred.",
             Some(Path::new("foo")),
             Some((SOURCE_CONTENTS, SOURCE_RANGE)),
             Some(Rc::new(reason)),
+            None,
         );
 
         assert_eq!(error.message(), "An error occurred.");
@@ -463,7 +496,7 @@ mod tests {
     #[test]
     fn format_errors_single() {
         assert_eq!(
-            format_errors(&[Error::new("Something went wrong.", None, None, None)]),
+            format_errors(&[Error::new("Something went wrong.", None, None, None, None)]),
             "[Error] Something went wrong.",
         );
     }
@@ -472,9 +505,9 @@ mod tests {
     fn format_errors_double() {
         assert_eq!(
             format_errors(&[
-                Error::new("Something went kinda wrong.", None, None, None),
-                Error::new("Something went sorta wrong.", None, None, None),
-                Error::new("Something went very wrong.", None, None, None),
+                Error::new("Something went kinda wrong.", None, None, None, None),
+                Error::new("Something went sorta wrong.", None, None, None, None),
+                Error::new("Something went very wrong.", None, None, None, None),
             ]),
             "\
 [Error] Something went kinda wrong.
@@ -498,8 +531,9 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 ),
-                Error::new("Something went sorta wrong.", None, None, None),
+                Error::new("Something went sorta wrong.", None, None, None, None),
             ]),
             "\
 [Error] 1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502} \
