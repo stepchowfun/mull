@@ -3,8 +3,7 @@ use crate::{
     disk_path::{DirectoryListings, DiskPath, WikiDirectory},
     error::{Error, SourceRange},
     format::{CodePath, CodeStr},
-    parser::LinkPath,
-    wiki::{HOME_TITLE, Link, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{collections::HashSet, fs, path::Path, rc::Rc};
@@ -129,14 +128,12 @@ fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec
         .into_iter()
         .flat_map(|node| &node.links)
         .filter_map(|link| match link {
-            Link::File { source_range, .. } | Link::Directory { source_range, .. } => {
-                Some(Error::new(
-                    "Save the wiki to validate this filesystem link.",
-                    None,
-                    Some((source_contents, *source_range)),
-                    None,
-                ))
-            }
+            Link::Filesystem { source_range, .. } => Some(Error::new(
+                "Save the wiki to validate this filesystem link.",
+                None,
+                Some((source_contents, *source_range)),
+                None,
+            )),
             Link::Text { .. } => None,
         })
         .take(MAX_FILESYSTEM_ERRORS)
@@ -165,16 +162,14 @@ fn validate_filesystem_links(
                 return Outcome::Cancelled;
             }
 
-            // Skip text links before processing filesystem links [tag:filesystem_links_only].
-            let (path, source_range) = match link {
-                Link::Text { .. } => continue,
-                Link::File { path, source_range } | Link::Directory { path, source_range } => {
-                    (path, *source_range)
-                }
+            // Skip text links, which have no filesystem targets.
+            let Link::Filesystem { target, .. } = link else {
+                continue;
             };
+            let (path, source_range) = (target.path(), link.source_range());
 
             // Follow symbolic links when classifying each target.
-            let metadata = match fs::metadata(wiki_directory.path().join(path.as_path())) {
+            let metadata = match fs::metadata(wiki_directory.path().join(path)) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
@@ -192,8 +187,8 @@ fn validate_filesystem_links(
 
             // Require the path to be spelled as it is on disk, and track the target by that
             // spelling so it matches the entries found when walking the wiki's directory.
-            let (target, is_spelled) = match wiki_directory.spell(path, &mut listings) {
-                Ok(target) => (Some(target), true),
+            let (spelled, is_spelled) = match wiki_directory.spell(target, &mut listings) {
+                Ok(spelled) => (Some(spelled), true),
                 Err(error) => {
                     errors.push(Error::new(
                         &error.message,
@@ -208,7 +203,7 @@ fn validate_filesystem_links(
             };
 
             // Report links with the wrong type.
-            if let Some(message) = wrong_target_type_message(link, path, &metadata) {
+            if let Some(message) = wrong_target_type_message(target, &metadata) {
                 errors.push(Error::new(
                     &message,
                     Some(wiki_path),
@@ -223,12 +218,12 @@ fn validate_filesystem_links(
 
             // Require the target to be a file which isn't ignored, or a directory containing such a
             // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
-            if let (Some(target), true) = (&target, is_spelled) {
+            if let (Some(spelled), true) = (&spelled, is_spelled) {
                 let Outcome::Completed(error) = visibility_error(
                     wiki_directory,
                     wiki_path,
                     path,
-                    target,
+                    spelled,
                     (source_contents, source_range),
                     cancellation,
                 ) else {
@@ -238,11 +233,11 @@ fn validate_filesystem_links(
             }
 
             // Track the target so the walk for unreferenced files accounts for it.
-            if let Some(target) = target {
-                if matches!(link, Link::File { .. }) {
-                    referenced_files.insert(target);
+            if let Some(spelled) = spelled {
+                if target.is_directory() {
+                    referenced_directories.insert(spelled);
                 } else {
-                    referenced_directories.insert(target);
+                    referenced_files.insert(spelled);
                 }
             }
             if errors.len() >= MAX_FILESYSTEM_ERRORS {
@@ -278,7 +273,7 @@ fn validate_filesystem_links(
 fn inaccessible_target_error(
     error: std::io::Error,
     wiki_path: &Path,
-    path: &LinkPath,
+    path: &Path,
     source_context: (&str, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
@@ -300,30 +295,30 @@ fn inaccessible_target_error(
 
 // Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
 // link's trailing `/` only when that change would fix the link.
-fn wrong_target_type_message(
-    link: &Link,
-    path: &LinkPath,
-    metadata: &fs::Metadata,
-) -> Option<String> {
-    match link {
-        Link::File { .. } if metadata.is_file() => None,
-        Link::Directory { .. } if metadata.is_dir() => None,
-        Link::File { .. } if metadata.is_dir() => Some(format!(
+fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata) -> Option<String> {
+    let path = target.path();
+    if target.is_directory() {
+        if metadata.is_dir() {
+            None
+        } else if metadata.is_file() {
+            Some(format!(
+                "{} is a file, so its link must not end with {}.",
+                path.code_path(),
+                "/".code_str(),
+            ))
+        } else {
+            Some(format!("{} isn't a directory.", path.code_path()))
+        }
+    } else if metadata.is_file() {
+        None
+    } else if metadata.is_dir() {
+        Some(format!(
             "{} is a directory, so its link must end with {}.",
             path.code_path(),
             "/".code_str(),
-        )),
-        Link::Directory { .. } if metadata.is_file() => Some(format!(
-            "{} is a file, so its link must not end with {}.",
-            path.code_path(),
-            "/".code_str(),
-        )),
-        Link::File { .. } => Some(format!("{} isn't a file.", path.code_path())),
-        Link::Directory { .. } => Some(format!("{} isn't a directory.", path.code_path())),
-        Link::Text { .. } => {
-            // Text links were skipped before checking targets [ref:filesystem_links_only].
-            unreachable!("Only filesystem links have targets.")
-        }
+        ))
+    } else {
+        Some(format!("{} isn't a file.", path.code_path()))
     }
 }
 
@@ -332,7 +327,7 @@ fn wrong_target_type_message(
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &LinkPath,
+    path: &Path,
     target: &DiskPath,
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,

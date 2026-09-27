@@ -1,4 +1,4 @@
-use crate::{format::CodePath, parser::LinkPath, path_util::relative_path};
+use crate::{format::CodePath, path_util::relative_path, wiki::FilesystemTarget};
 use colored::ColoredString;
 use std::{
     collections::{HashMap, HashSet},
@@ -123,18 +123,18 @@ impl WikiDirectory {
     // Require each component of an existing entry's path to be spelled as on disk.
     pub fn spell(
         &self,
-        path: &LinkPath,
+        target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<DiskPath, SpellingError> {
-        check_spelling(&self.path, path.as_path(), listings).map(DiskPath)
+        check_spelling(&self.path, target.path(), listings).map(DiskPath)
     }
 
     // Require the existing directories along a rename's new path to be spelled as on disk. The
     // other names don't exist, so they have no other spelling. The final name is kept as written
     // even if it exists: the rename refuses such a destination, other than within a directory
     // moving into itself, where nothing will exist at the time of the move.
-    pub fn spell_destination(&self, path: &LinkPath) -> Result<DiskPath, SpellingError> {
-        let path = path.as_path();
+    pub fn spell_destination(&self, target: &FilesystemTarget) -> Result<DiskPath, SpellingError> {
+        let path = target.path();
         let Some(ancestor) = path
             .ancestors()
             .skip(1)

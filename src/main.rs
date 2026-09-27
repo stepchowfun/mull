@@ -65,96 +65,14 @@ enum Subcommand {
     LanguageServer,
 }
 
-// Find the nearest wiki in the current directory or one of its ancestors.
-fn find_wiki() -> Result<PathBuf, Error> {
-    // Start the search in the current working directory.
-    let current_directory = env::current_dir().map_err(|error| {
-        Error::new(
-            "Unable to determine the current directory.",
-            None,
-            None,
-            Some(Rc::new(error)),
-        )
-    })?;
-
-    // Search each directory from nearest to farthest, choosing files deterministically.
-    for directory in current_directory.ancestors() {
-        let entries = fs::read_dir(directory).map_err(|error| {
-            Error::new(
-                &format!("Unable to read {}.", directory.code_path()),
-                None,
-                None,
-                Some(Rc::new(error)),
-            )
-        })?;
-        let mut wikis = Vec::<PathBuf>::new();
-
-        // Inspect each directory entry and retain regular wikis.
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                Error::new(
-                    &format!("Unable to read an entry in {}.", directory.code_path()),
-                    None,
-                    None,
-                    Some(Rc::new(error)),
-                )
-            })?;
-            let path = entry.path();
-            let has_wiki_extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION));
-            if has_wiki_extension {
-                let metadata = fs::metadata(&path).map_err(|error| {
-                    Error::new(
-                        &format!("Unable to inspect {}.", path.code_path()),
-                        None,
-                        None,
-                        Some(Rc::new(error)),
-                    )
-                })?;
-                if metadata.is_file() {
-                    wikis.push(path);
-                }
-            }
-        }
-        wikis.sort();
-
-        // Reject multiple wikis because there's no unambiguous choice.
-        if wikis.len() > 1 {
-            let file_names = wikis
-                .iter()
-                .filter_map(|path| path.file_name())
-                .map(|file_name| Path::new(file_name).code_path().to_string())
-                .collect::<Vec<String>>()
-                .join(", ");
-            return Err(Error::new(
-                &format!(
-                    "Found multiple wikis in {}: {file_names}",
-                    directory.code_path(),
-                ),
-                None,
-                None,
-                None,
-            ));
-        }
-
-        // Return the wiki in this directory, if one exists.
-        if let Some(wiki) = wikis.into_iter().next() {
-            return Ok(wiki);
-        }
+// Let the fun begin!
+#[tokio::main]
+async fn main() {
+    // Jump to the entrypoint and handle any resulting errors.
+    if let Err(errors) = entry().await {
+        eprintln!("{}", format_errors(&errors));
+        exit(1);
     }
-
-    // Report that the search completed without finding a wiki.
-    Err(Error::new(
-        &format!(
-            "No wiki found in {} or its ancestors.",
-            current_directory.code_path(),
-        ),
-        None,
-        None,
-        None,
-    ))
 }
 
 // Run the requested operation.
@@ -250,14 +168,96 @@ async fn entry() -> Result<(), Vec<Error>> {
     Ok(())
 }
 
-// Let the fun begin!
-#[tokio::main]
-async fn main() {
-    // Jump to the entrypoint and handle any resulting errors.
-    if let Err(errors) = entry().await {
-        eprintln!("{}", format_errors(&errors));
-        exit(1);
+// Find the nearest wiki in the current directory or one of its ancestors.
+fn find_wiki() -> Result<PathBuf, Error> {
+    // Start the search in the current working directory.
+    let current_directory = env::current_dir().map_err(|error| {
+        Error::new(
+            "Unable to determine the current directory.",
+            None,
+            None,
+            Some(Rc::new(error)),
+        )
+    })?;
+
+    // Search each directory from nearest to farthest, choosing files deterministically.
+    for directory in current_directory.ancestors() {
+        let entries = fs::read_dir(directory).map_err(|error| {
+            Error::new(
+                &format!("Unable to read {}.", directory.code_path()),
+                None,
+                None,
+                Some(Rc::new(error)),
+            )
+        })?;
+        let mut wikis = Vec::<PathBuf>::new();
+
+        // Inspect each directory entry and retain regular wikis.
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                Error::new(
+                    &format!("Unable to read an entry in {}.", directory.code_path()),
+                    None,
+                    None,
+                    Some(Rc::new(error)),
+                )
+            })?;
+            let path = entry.path();
+            let has_wiki_extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION));
+            if has_wiki_extension {
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    Error::new(
+                        &format!("Unable to inspect {}.", path.code_path()),
+                        None,
+                        None,
+                        Some(Rc::new(error)),
+                    )
+                })?;
+                if metadata.is_file() {
+                    wikis.push(path);
+                }
+            }
+        }
+        wikis.sort();
+
+        // Reject multiple wikis because there's no unambiguous choice.
+        if wikis.len() > 1 {
+            let file_names = wikis
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|file_name| Path::new(file_name).code_path().to_string())
+                .collect::<Vec<String>>()
+                .join(", ");
+            return Err(Error::new(
+                &format!(
+                    "Found multiple wikis in {}: {file_names}",
+                    directory.code_path(),
+                ),
+                None,
+                None,
+                None,
+            ));
+        }
+
+        // Return the wiki in this directory, if one exists.
+        if let Some(wiki) = wikis.into_iter().next() {
+            return Ok(wiki);
+        }
     }
+
+    // Report that the search completed without finding a wiki.
+    Err(Error::new(
+        &format!(
+            "No wiki found in {} or its ancestors.",
+            current_directory.code_path(),
+        ),
+        None,
+        None,
+        None,
+    ))
 }
 
 #[cfg(test)]
