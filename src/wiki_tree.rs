@@ -172,7 +172,7 @@ pub fn check_spelling(
 // Identify the directory entry that a path names without following a symlink in its last component,
 // so symlinks to the same target remain distinct.
 #[cfg(unix)]
-fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
 
     fs::symlink_metadata(path)
@@ -183,6 +183,6 @@ fn entry_identity(path: &Path) -> Option<(u64, u64)> {
 // Identify the directory entry that a path names by its resolved target where entry identities
 // aren't available, which conflates symlinks to the same target.
 #[cfg(not(unix))]
-fn entry_identity(path: &Path) -> Option<PathBuf> {
+pub fn entry_identity(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }

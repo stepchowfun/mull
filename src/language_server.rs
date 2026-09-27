@@ -9,7 +9,9 @@ use crate::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::{DirectoryListings, Visibility, check_spelling, visibility, wiki_tree_walker},
+    wiki_tree::{
+        DirectoryListings, Visibility, check_spelling, entry_identity, visibility, wiki_tree_walker,
+    },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -1511,26 +1513,34 @@ fn filesystem_link_path_source_range(
     }
 }
 
-// Require a rename's destination to be free, other than by a change to the case of a name on a
-// case-insensitive filesystem, where both paths resolve to the same node. Missing directories will
-// be created, but not beneath an existing file.
+// Require a rename's destination to be free. Missing directories will be created, but not beneath
+// an existing file.
 fn check_rename_destination(
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
 ) -> std::result::Result<(), String> {
     // Refuse to replace another node. Something exists at the new path if its own metadata can be
-    // read, even if it's a broken symlink. The exception is a case-only rename on a
-    // case-insensitive filesystem, such as macOS's default one: there, `Photo.jpg` finds the node
-    // being renamed, `photo.jpg`, so the new path appears to exist. Canonicalizing a path yields
-    // the name's case as stored on disk, so both paths then canonicalize identically and the rename
-    // is allowed.
+    // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
+    // default one, the new path may instead name the node being renamed, spelled differently, as
+    // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
+    // spellings as the same file and silently skips the rename while still editing the links,
+    // which leaves them misspelled.
     let new_absolute_path = wiki_directory.join(new_path);
-    if fs::symlink_metadata(&new_absolute_path).is_ok()
-        && fs::canonicalize(&new_absolute_path).ok()
-            != fs::canonicalize(wiki_directory.join(old_path)).ok()
-    {
-        return Err(format!("Path {} already exists.", new_path.code_path()));
+    if fs::symlink_metadata(&new_absolute_path).is_ok() {
+        return Err(
+            if entry_identity(&new_absolute_path) == entry_identity(&wiki_directory.join(old_path))
+            {
+                format!(
+                    "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
+                        explorer instead, then fix its links.",
+                    old_path.code_path(),
+                    new_path.code_path(),
+                )
+            } else {
+                format!("Path {} already exists.", new_path.code_path())
+            },
+        );
     }
 
     // Refuse to create a directory beneath an existing file.
@@ -3486,6 +3496,18 @@ mod tests {
             assert_eq!(
                 rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
                 "`IMAGES` is spelled `images` on disk.",
+            );
+
+            // Reject a rename which only changes the case of a name, which VS Code would skip.
+            assert_eq!(
+                rename(&uri, 2, "NOTES.txt", ALL_FILE_OPERATIONS),
+                "`notes.txt` and `NOTES.txt` differ only in case, which VS Code can't rename. \
+                    Rename it in the explorer instead, then fix its links.",
+            );
+            assert_eq!(
+                rename(&uri, 15, "Images", ALL_FILE_OPERATIONS),
+                "`images` and `Images` differ only in case, which VS Code can't rename. Rename \
+                    it in the explorer instead, then fix its links.",
             );
         }
     }

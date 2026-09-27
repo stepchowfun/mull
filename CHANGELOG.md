@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rejected a rename whose new path goes through an existing directory spelled differently than on disk. On filesystems that ignore case, such a rename moved the file and then deleted the directory it had moved into, along with the file.
 - Rejected a rename starting from a link spelled differently than on disk, which updated only the links spelled like that one and broke any spelled correctly.
 - Stopped making links spelled differently than on disk clickable, just as for links whose targets are missing.
+- Rejected a rename that only changes the case of a name. VS Code skipped renaming the file but still updated its links, leaving them misspelled.
 
 ## [0.29.0] - 2026-09-26
 
