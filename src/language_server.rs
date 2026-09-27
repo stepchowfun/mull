@@ -2,7 +2,7 @@ use crate::{
     analyzer::analyze,
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
-    format::CodePath,
+    format::{CodePath, CodeStr},
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     wiki::{
@@ -1246,11 +1246,12 @@ fn rename_text_node_for_document(
     }
     if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Err(format!(
-            "A node title can't start with `{FILESYSTEM_LINK_PREFIX}`.",
+            "A node title can't start with {}.",
+            FILESYSTEM_LINK_PREFIX.code_str(),
         ));
     }
     if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
-        return Err(format!("Node `{new_title}` already exists."));
+        return Err(format!("Node {} already exists.", new_title.code_str()));
     }
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
@@ -1468,7 +1469,7 @@ fn renamable_filesystem_node_at(
     if !fs::metadata(wiki_directory.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
-        return Err(format!("{kind} {} doesn't exist.", old_path.code_path()));
+        return Err(format!("{kind} {} not found.", old_path.code_path()));
     }
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
@@ -1533,7 +1534,7 @@ fn check_rename_destination(
                     new_path.code_path(),
                 )
             } else {
-                format!("Path {} already exists.", new_path.code_path())
+                format!("{} already exists.", new_path.code_path())
             },
         );
     }
@@ -3171,7 +3172,7 @@ mod tests {
             prepare(&uri, 2, false),
             "This editor doesn't support renaming files.",
         );
-        assert_eq!(prepare(&uri, 14, true), "File `missing.txt` doesn't exist.");
+        assert_eq!(prepare(&uri, 14, true), "File `missing.txt` not found.");
         assert_eq!(
             prepare(&uri, 29, true),
             "The wiki directory can't be renamed.",
@@ -3451,7 +3452,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
-            "Path `other.txt` already exists.",
+            "`other.txt` already exists.",
         );
         assert_eq!(
             rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
@@ -3459,7 +3460,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),
-            "File `missing.txt` doesn't exist.",
+            "File `missing.txt` not found.",
         );
         assert_eq!(
             rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),

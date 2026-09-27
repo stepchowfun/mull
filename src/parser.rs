@@ -139,7 +139,7 @@ fn parse_title(
     // Report an empty title at the whole line, since the title has no text of its own.
     if title.is_empty() {
         Err(Error::new(
-            "This title is empty.",
+            "This title can't be empty.",
             source_path,
             Some((source_contents, line_source_range)),
             None,
@@ -194,7 +194,7 @@ fn insert_node(
     // Reject a title that has already been used.
     if wiki.text_nodes.contains_key(&title) {
         errors.push(Error::new(
-            &format!("Duplicate title {}.", title.code_str()),
+            &format!("Node {} already exists.", title.code_str()),
             source_path,
             Some((source_contents, title_source_range)),
             None,
@@ -669,7 +669,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("#   \nContent").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title is empty."));
+        assert!(errors[0].to_string().contains("This title can't be empty."));
     }
 
     // Reject titles that text links would interpret as filesystem links.
@@ -693,7 +693,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("# Home\n\nfoo\n\n#\n\nbar").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title is empty."));
+        assert!(errors[0].to_string().contains("This title can't be empty."));
     }
 
     // Recognize a bare title marker so it can be reported as an empty title.
@@ -702,7 +702,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("#").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("This title is empty."));
+        assert!(errors[0].to_string().contains("This title can't be empty."));
         assert!(errors[0].to_string().contains("1 │ #"));
     }
 
@@ -725,7 +725,11 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         let errors = parse_test("# Home\nFirst\n# Home\nSecond").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].to_string().contains("Duplicate title `Home`."));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Node `Home` already exists."),
+        );
         assert!(errors[0].to_string().contains("3 \u{2502} # Home"));
     }
 
@@ -782,7 +786,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
                 .to_string()
                 .contains("This content isn't in any node"),
         );
-        assert!(errors[1].to_string().contains("This title is empty"));
+        assert!(errors[1].to_string().contains("This title can't be empty"));
         assert!(
             errors[2]
                 .to_string()
