@@ -14,7 +14,7 @@ use crate::{
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
@@ -1052,7 +1052,7 @@ fn rename_filesystem_node_for_document(
     // directories once the renamed node has moved.
     if file_operation_support.delete
         && let Some(directory) =
-            outermost_directory_emptied_by_rename(wiki, wiki_directory, old_path, &new_path)
+            outermost_directory_emptied_by_rename(wiki_directory, old_path, &new_path)
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
@@ -1656,25 +1656,14 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
 }
 
 // Find the outermost directory that moving a node out of it would leave containing nothing but
-// empty directories. A directory is kept if it will contain the new path or a directory link names
-// it, and the search never reaches the wiki directory itself.
+// empty directories. A directory is kept if it will contain the new path, but not merely because a
+// directory link names it, since such a link only stands for the files within the directory. The
+// search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
-    wiki: &Wiki,
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
 ) -> Option<PathBuf> {
-    // Collect the directories that links name, which must survive the rename.
-    let linked_directories = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Directory { path, .. } => Some(path.as_path()),
-            Link::Text { .. } | Link::File { .. } => None,
-        })
-        .collect::<HashSet<_>>();
-
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let mut emptied_directory = None;
     let mut removed_entry = old_path;
@@ -1682,7 +1671,7 @@ fn outermost_directory_emptied_by_rename(
         .parent()
         .filter(|directory| !directory.as_os_str().is_empty())
     {
-        if new_path.starts_with(directory) || linked_directories.contains(directory) {
+        if new_path.starts_with(directory) {
             break;
         }
         let Ok(mut entries) = fs::read_dir(wiki_directory.join(directory)) else {
@@ -3250,8 +3239,7 @@ mod tests {
     }
 
     // Leave missing directories to the client, and delete the outermost directory a rename leaves
-    // containing only empty directories, keeping any which will contain the new path or which a
-    // directory link names.
+    // containing only empty directories, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
@@ -3297,10 +3285,10 @@ mod tests {
             vec![directory_uri("a/b")],
         );
 
-        // Keep a directory which a link names.
+        // Delete a directory even if a link names it, since the link only stands for its files.
         assert_eq!(
             deleted_uris(46, "h.txt", ALL_FILE_OPERATIONS),
-            vec![directory_uri("f/g")],
+            vec![directory_uri("f")],
         );
 
         // Skip deletions when the client can't perform them.
