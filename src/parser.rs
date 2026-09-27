@@ -390,6 +390,32 @@ fn parse_filesystem_path(
     })
 }
 
+// Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
+// directory, with any link delimiters escaped. The wiki directory is written as `/`.
+pub fn render_link_path(path: &Path, is_directory: bool) -> String {
+    // Join the components with the separator that links use on every platform. Link paths come
+    // from UTF-8 text.
+    let components = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("Link paths should come from UTF-8 text.")
+        })
+        .collect::<Vec<_>>();
+    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
+
+    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
+    // directory.
+    if is_directory && !components.is_empty() {
+        rendered.push_str(DIRECTORY_LINK_SUFFIX);
+    }
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
+}
+
 // Normalize a filesystem link path, which is relative to the wiki directory even if it starts with
 // `/`, while keeping it inside the wiki's logical tree. Describe any problem with a message.
 pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
@@ -433,32 +459,6 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
             }
         })
         .collect())
-}
-
-// Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
-// directory, with any link delimiters escaped. The wiki directory is written as `/`.
-pub fn render_link_path(path: &Path, is_directory: bool) -> String {
-    // Join the components with the separator that links use on every platform. Link paths come
-    // from UTF-8 text.
-    let components = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("Link paths should come from UTF-8 text.")
-        })
-        .collect::<Vec<_>>();
-    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
-
-    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
-    // directory.
-    if is_directory && !components.is_empty() {
-        rendered.push_str(DIRECTORY_LINK_SUFFIX);
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
 }
 
 // Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
