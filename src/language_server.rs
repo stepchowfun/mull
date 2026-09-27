@@ -3,18 +3,20 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, SourceRange},
     format::CodePath,
-    parser::{self, normalize_filesystem_path, render_link_path},
+    parser::{self, normalize_link_path, render_link_path},
     path_util::relative_path,
     wiki::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::{Visibility, visibility, wiki_tree_walker},
+    wiki_tree::{
+        DirectoryListings, Visibility, check_spelling, entry_identity, visibility, wiki_tree_walker,
+    },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering},
@@ -61,33 +63,16 @@ const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
-// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
-#[derive(Debug)]
-struct PendingCheck {
-    handle: JoinHandle<()>,
-    cancellation: CancellationFlag,
-}
+// Serve language-server requests over standard input and output until the client disconnects.
+pub async fn run() {
+    // Keep ANSI terminal escapes out of protocol diagnostics.
+    colored::control::set_override(false);
 
-impl PendingCheck {
-    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
-    // started checking, and setting its flag stops it if it has already started.
-    fn cancel(self) {
-        self.cancellation.cancel();
-        self.handle.abort();
-    }
-}
-
-// This state associates the latest editor contents with a pending diagnostic update. The client
-// assigns the version, which changes only when the contents do and is reported back with
-// diagnostics. The server assigns the generation, which increases every time a snapshot is
-// stored, including rechecks of unchanged contents after a save, so it identifies which snapshot
-// stale work was computed from.
-#[derive(Debug)]
-struct OpenDocument {
-    contents: String,
-    version: i32,
-    generation: u64,
-    pending_check: Option<PendingCheck>,
+    // Connect the backend to the standard streams reserved for LSP messages.
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let (service, socket) = LspService::new(Backend::new);
+    Server::new(stdin, stdout, socket).serve(service).await;
 }
 
 // This backend checks each open wiki and publishes its errors to the language client.
@@ -99,13 +84,6 @@ struct Backend {
     supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
     supports_watched_file_registration: AtomicBool,
-}
-
-// This records which file operations the client can perform within a versioned workspace edit.
-#[derive(Clone, Copy)]
-struct FileOperationSupport {
-    rename: bool,
-    delete: bool,
 }
 
 impl Backend {
@@ -611,6 +589,35 @@ impl LanguageServer for Backend {
     }
 }
 
+// This state associates the latest editor contents with a pending diagnostic update. The client
+// assigns the version, which changes only when the contents do and is reported back with
+// diagnostics. The server assigns the generation, which increases every time a snapshot is
+// stored, including rechecks of unchanged contents after a save, so it identifies which snapshot
+// stale work was computed from.
+#[derive(Debug)]
+struct OpenDocument {
+    contents: String,
+    version: i32,
+    generation: u64,
+    pending_check: Option<PendingCheck>,
+}
+
+// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
+#[derive(Debug)]
+struct PendingCheck {
+    handle: JoinHandle<()>,
+    cancellation: CancellationFlag,
+}
+
+impl PendingCheck {
+    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
+    // started checking, and setting its flag stops it if it has already started.
+    fn cancel(self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
 // Analyze an editor snapshot without checking its formatting.
 fn diagnostics_for_document(
     uri: &Uri,
@@ -634,6 +641,19 @@ fn diagnostics_for_document(
         },
         |_wiki| Vec::new(),
     ))
+}
+
+// Convert a structured Mull error into the representation expected by language clients.
+fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
+    // Include an underlying reason without including terminal prefixes, paths, or source listings.
+    diagnostic(
+        source_contents,
+        error.source_range(),
+        error.reason().map_or_else(
+            || error.message().to_owned(),
+            |reason| format!("{}\n\nReason: {reason}", error.message()),
+        ),
+    )
 }
 
 // Complete the link target at an editor position with node titles or filesystem paths.
@@ -660,593 +680,6 @@ fn completion_for_document(
         source_contents,
         replacement_source_range,
     ))
-}
-
-// Locate the node declared or linked at an editor position.
-fn goto_definition_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<GotoDefinitionResponse> {
-    // Parse only the wiki syntax because navigation doesn't require filesystem validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, origin_source_range) = node_at(
-        &wiki,
-        source_contents,
-        byte_offset(source_contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
-
-    // Identify the complete source link or title and the destination node while selecting its title
-    // on arrival.
-    Some(GotoDefinitionResponse::Link(vec![LocationLink {
-        origin_selection_range: Some(lsp_range(source_contents, origin_source_range)),
-        target_uri: uri.clone(),
-        target_range: lsp_range(source_contents, node.source_range),
-        target_selection_range: lsp_range(source_contents, node.title_source_range),
-    }]))
-}
-
-// Preview the destination of a text link at an editor position.
-fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering doesn't require filesystem validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, source_range) = node_at(
-        &wiki,
-        source_contents,
-        byte_offset(source_contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
-
-    // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
-    // in a saved wiki, its filesystem links to their targets.
-    let wiki_path = local_path(uri);
-    let wiki_directory = wiki_path.as_deref().map(wiki_directory);
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: node.to_markdown(|link| match link {
-                Link::Text { title, .. } => reveal_range_command_url(
-                    uri,
-                    source_contents,
-                    wiki.text_nodes.get(title)?.title_source_range,
-                ),
-                Link::File { .. } | Link::Directory { .. } => Some(
-                    filesystem_link_target(wiki_directory?, link)?
-                        .as_str()
-                        .to_owned(),
-                ),
-            }),
-        }),
-        range: Some(lsp_range(source_contents, source_range)),
-    })
-}
-
-// Locate every text link to the node at an editor position.
-fn references_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-    include_declaration: bool,
-) -> Option<Vec<Location>> {
-    // Parse only the wiki syntax because finding references doesn't require validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let (node, _source_range) = node_at(
-        &wiki,
-        source_contents,
-        byte_offset(source_contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
-
-    // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
-    if include_declaration {
-        source_ranges.push(node.title_source_range);
-    }
-    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
-
-    // Return every occurrence in source order within the current wiki.
-    Some(
-        source_ranges
-            .into_iter()
-            .map(|source_range| {
-                Location::new(uri.clone(), lsp_range(source_contents, source_range))
-            })
-            .collect(),
-    )
-}
-
-// Highlight related node or filesystem-link occurrences at an editor position.
-fn document_highlight_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-) -> Option<Vec<DocumentHighlight>> {
-    // Parse only the wiki syntax because document highlights don't require validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let byte_offset = byte_offset(source_contents, cursor)?;
-
-    // Distinguish a text-node declaration from its references.
-    let mut highlights = if let Some((node, _source_range)) =
-        node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)
-    {
-        let mut highlights = text_link_source_ranges(&wiki, &node.title)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect::<Vec<_>>();
-        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
-        highlights
-    } else {
-        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        // A text link reaches this branch only when its target doesn't exist, so it has nothing
-        // to highlight.
-        let link = link_at(&wiki, byte_offset).filter(|link| !matches!(link, Link::Text { .. }))?;
-        filesystem_link_source_ranges(&wiki, link)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect()
-    };
-
-    // Return every matching source occurrence in wiki order.
-    highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
-    Some(
-        highlights
-            .into_iter()
-            .map(|(source_range, kind)| DocumentHighlight {
-                range: lsp_range(source_contents, source_range),
-                kind: Some(kind),
-            })
-            .collect(),
-    )
-}
-
-// Identify the source occurrence that should be selected before renaming a node, file, or
-// directory, or explain why the filesystem node a link targets can't be renamed.
-fn prepare_rename_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    cursor: Position,
-    supports_file_renames: bool,
-) -> std::result::Result<Option<PrepareRenameResponse>, String> {
-    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
-    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Ok(None);
-    };
-    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
-        return Ok(None);
-    };
-
-    // Select only the path of a filesystem link between its leading `/` and any trailing `/`, and
-    // seed the rename prompt with its decoded text as written. The rename writes both slashes
-    // itself, so the new name needs neither.
-    if let Some(filesystem_node) = renamable_filesystem_node_at(
-        &wiki,
-        uri,
-        source_contents,
-        cursor_offset,
-        supports_file_renames,
-    )? {
-        let path_source_range = filesystem_node.path_source_range;
-        let path_source = &source_contents[path_source_range.start..path_source_range.end];
-        let start_trimmed = path_source.trim_start_matches('/');
-        let trimmed = start_trimmed.trim_end_matches('/');
-        let start = path_source_range.end - start_trimmed.len();
-        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: lsp_range(
-                source_contents,
-                SourceRange {
-                    start,
-                    end: start + trimmed.len(),
-                },
-            ),
-            placeholder: unescape_link_delimiters(trimmed),
-        }));
-    }
-
-    // Otherwise, resolve either a title declaration or text link.
-    let Some((node, source_range)) =
-        node_at(&wiki, source_contents, cursor_offset, LinkExtent::Target)
-    else {
-        return Ok(None);
-    };
-
-    // Select only the title text and seed the rename prompt with its decoded value.
-    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: lsp_range(source_contents, source_range),
-        placeholder: node.title.clone(),
-    }))
-}
-
-// Rename the filesystem node or text node at an editor position, along with every link to it.
-fn rename_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    version: i32,
-    cursor: Position,
-    new_name: &str,
-    file_operation_support: FileOperationSupport,
-) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
-    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Ok(None);
-    };
-    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
-        return Ok(None);
-    };
-
-    // Try the filesystem node a link targets, and otherwise fall back to a text node.
-    match rename_filesystem_node_for_document(
-        &wiki,
-        uri,
-        source_contents,
-        version,
-        cursor_offset,
-        new_name,
-        file_operation_support,
-    ) {
-        Ok(None) => {
-            rename_text_node_for_document(&wiki, uri, source_contents, cursor_offset, new_name)
-        }
-        result => result,
-    }
-}
-
-// Rename one text node and every text link that targets it.
-fn rename_text_node_for_document(
-    wiki: &Wiki,
-    uri: &Uri,
-    source_contents: &str,
-    cursor_offset: usize,
-    new_name: &str,
-) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the text node declared or linked at the cursor.
-    let Some((node, _source_range)) =
-        node_at(wiki, source_contents, cursor_offset, LinkExtent::Target)
-    else {
-        return Ok(None);
-    };
-
-    // Normalize surrounding whitespace, then reject titles that the parser wouldn't accept: those
-    // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
-    if new_name
-        .chars()
-        .any(|character| matches!(character, '\r' | '\n'))
-    {
-        return Err("A node title can't contain a line break.".to_owned());
-    }
-    let new_title = new_name.trim();
-    if new_title.is_empty() {
-        return Err("A node title can't be empty.".to_owned());
-    }
-    if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
-        return Err(format!(
-            "A node title can't start with `{FILESYSTEM_LINK_PREFIX}`.",
-        ));
-    }
-    if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
-        return Err(format!("Node `{new_title}` already exists."));
-    }
-
-    // Replace the declaration literally and encode the title inside every matching text link.
-    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
-    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
-        if let Link::Text {
-            title,
-            source_range,
-        } = link
-            && title == &node.title
-            && let Some(target_source_range) =
-                text_link_target_source_range(source_contents, *source_range)
-        {
-            edits.push((target_source_range, escape_link_delimiters(new_title)));
-        }
-    }
-    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
-
-    // Return one non-overlapping edit for each occurrence in the current document.
-    Ok(Some(WorkspaceEdit {
-        changes: Some(HashMap::from([(
-            uri.clone(),
-            edits
-                .into_iter()
-                .map(|(source_range, new_text)| {
-                    TextEdit::new(lsp_range(source_contents, source_range), new_text)
-                })
-                .collect(),
-        )])),
-        ..WorkspaceEdit::default()
-    }))
-}
-
-// Rename the file or directory of a filesystem link on disk and update every link to it or, for a
-// directory, to anything within it. The client creates any missing directories, and directories
-// that the rename leaves empty are deleted when the client supports it.
-fn rename_filesystem_node_for_document(
-    wiki: &Wiki,
-    uri: &Uri,
-    source_contents: &str,
-    version: i32,
-    cursor_offset: usize,
-    new_name: &str,
-    file_operation_support: FileOperationSupport,
-) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
-    let Some(RenamableFilesystemNode {
-        wiki_directory,
-        old_path,
-        is_directory,
-        ..
-    }) = renamable_filesystem_node_at(
-        wiki,
-        uri,
-        source_contents,
-        cursor_offset,
-        file_operation_support.rename,
-    )?
-    else {
-        return Ok(None);
-    };
-    let wiki_directory = wiki_directory.as_path();
-    let old_path = old_path.as_path();
-
-    // Accept only a new path which the parser would accept in a link.
-    let new_path = normalize_filesystem_path(new_name.trim())?;
-    if new_path == old_path {
-        return Ok(Some(WorkspaceEdit::default()));
-    }
-    if new_path.as_os_str().is_empty() {
-        return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
-    }
-
-    // Require the destination to be free and creatable, unless a directory moves into itself. Then
-    // everything at its destination moves along with it, so nothing there can conflict.
-    let moves_into_itself = is_directory && new_path.starts_with(old_path);
-    if !moves_into_itself {
-        check_rename_destination(wiki_directory, old_path, &new_path)?;
-    }
-    let old_absolute_path = wiki_directory.join(old_path);
-    let new_absolute_path = wiki_directory.join(&new_path);
-
-    // Rewrite the path of every link to the renamed entry.
-    let edits = filesystem_rename_edits(wiki, source_contents, old_path, &new_path, is_directory);
-
-    // Edit the wiki at the version the edits were computed from.
-    let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
-        text_document: OptionalVersionedTextDocumentIdentifier {
-            uri: uri.clone(),
-            version: Some(version),
-        },
-        edits: edits
-            .into_iter()
-            .map(|(source_range, new_text)| {
-                OneOf::Left(TextEdit::new(
-                    lsp_range(source_contents, source_range),
-                    new_text,
-                ))
-            })
-            .collect(),
-    });
-
-    // Rename the node. No filesystem can move a directory into itself directly, so such a move
-    // goes through a temporary sibling, from which the directory moves to its new path, recreating
-    // its old path as a parent. VS Code validates a run of renames before performing any of them,
-    // so the text edit separates the two renames to let the first one happen before the second is
-    // validated.
-    let mut operations = if moves_into_itself {
-        let temporary_path = unused_sibling_path(&old_absolute_path);
-        vec![
-            rename_operation(&old_absolute_path, &temporary_path),
-            text_document_edit,
-            rename_operation(&temporary_path, &new_absolute_path),
-        ]
-    } else {
-        vec![
-            text_document_edit,
-            rename_operation(&old_absolute_path, &new_absolute_path),
-        ]
-    };
-
-    // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
-    // before performing any of them, so a nested empty directory would block deleting its parent.
-    // Instead, one recursive deletion removes the outermost directory, which contains only empty
-    // directories once the renamed node has moved.
-    if file_operation_support.delete
-        && let Some(directory) =
-            outermost_directory_emptied_by_rename(wiki, wiki_directory, old_path, &new_path)
-    {
-        operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
-            DeleteFile {
-                uri: Uri::from_file_path(wiki_directory.join(directory))
-                    .expect("A path within a saved wiki's directory should be absolute."),
-                options: Some(DeleteFileOptions {
-                    recursive: Some(true),
-                    ignore_if_not_exists: Some(true),
-                }),
-                annotation_id: None,
-            },
-        )));
-    }
-    Ok(Some(WorkspaceEdit {
-        document_changes: Some(DocumentChanges::Operations(operations)),
-        ..WorkspaceEdit::default()
-    }))
-}
-
-// Produce a whole-document formatting edit for any wiki that parses, even if it's invalid.
-fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextEdit>> {
-    // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
-    let rendered_wiki = parser::parse(local_path(uri).as_deref(), source_contents)
-        .ok()?
-        .to_string();
-
-    // A successful request returns either one whole-document edit or an empty edit list.
-    if source_contents == rendered_wiki {
-        Some(Vec::new())
-    } else {
-        Some(vec![TextEdit::new(
-            Range::new(
-                Position::new(0, 0),
-                lsp_position(source_contents, source_contents.len()),
-            ),
-            rendered_wiki,
-        )])
-    }
-}
-
-// Describe every parsed text node for editor outlines and document-symbol navigation.
-#[allow(
-    deprecated,
-    reason = "The protocol's DocumentSymbol type retains a required legacy field."
-)]
-fn document_symbol_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    supports_hierarchy: bool,
-) -> Option<DocumentSymbolResponse> {
-    // Parse syntax without semantic validation so structurally valid nodes remain navigable.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| node.source_range.start);
-
-    // Use separate node and title ranges when the client supports hierarchical symbols, and locate
-    // each flat symbol at its title otherwise.
-    Some(if supports_hierarchy {
-        DocumentSymbolResponse::Nested(
-            nodes
-                .into_iter()
-                .map(|node| DocumentSymbol {
-                    name: node.title.clone(),
-                    detail: None,
-                    kind: SymbolKind::OBJECT,
-                    tags: None,
-                    deprecated: None,
-                    range: lsp_range(source_contents, node.source_range),
-                    selection_range: lsp_range(source_contents, node.title_source_range),
-                    children: None,
-                })
-                .collect(),
-        )
-    } else {
-        DocumentSymbolResponse::Flat(
-            nodes
-                .into_iter()
-                .map(|node| SymbolInformation {
-                    name: node.title.clone(),
-                    kind: SymbolKind::OBJECT,
-                    tags: None,
-                    deprecated: None,
-                    location: Location::new(
-                        uri.clone(),
-                        lsp_range(source_contents, node.title_source_range),
-                    ),
-                    container_name: None,
-                })
-                .collect(),
-        )
-    })
-}
-
-// Offer to create a missing home node or the missing destination of a text link at an editor range.
-fn code_action_for_document(
-    uri: &Uri,
-    source_contents: &str,
-    range: Range,
-    diagnostics: &[Diagnostic],
-) -> Option<CodeActionResponse> {
-    // Parse only the wiki syntax so fixes are available before the debounced check completes.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
-    let mut actions = Vec::new();
-
-    // Prepend a missing home node where its diagnostic is reported, since it has no source range.
-    let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
-    if range.start == document_start.start && !wiki.text_nodes.contains_key(HOME_TITLE) {
-        let separator = if source_contents.is_empty() { "" } else { "\n" };
-        actions.push(create_node_action(
-            uri,
-            HOME_TITLE,
-            TextEdit::new(
-                document_start,
-                format!("{TITLE_PREFIX}{HOME_TITLE}\n{separator}"),
-            ),
-            diagnostics,
-            document_start,
-        ));
-    }
-
-    // Append the missing destination of a text link after a blank line, leaving its placement to
-    // the formatter. Skip empty targets, which no title can declare.
-    if let Some(byte_offset) = byte_offset(source_contents, range.start)
-        && let Some(Link::Text {
-            title,
-            source_range,
-        }) = link_at(&wiki, byte_offset)
-        && !title.is_empty()
-        && !wiki.text_nodes.contains_key(title)
-    {
-        let separator = if source_contents.ends_with("\n\n") {
-            ""
-        } else if source_contents.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        let end = lsp_position(source_contents, source_contents.len());
-        actions.push(create_node_action(
-            uri,
-            title,
-            TextEdit::new(
-                Range::new(end, end),
-                format!("{separator}{TITLE_PREFIX}{title}\n"),
-            ),
-            diagnostics,
-            lsp_range(source_contents, *source_range),
-        ));
-    }
-
-    // Report the absence of fixes as no response.
-    (!actions.is_empty()).then_some(actions)
-}
-
-// Make each filesystem link whose target exists clickable: a file opens in the editor, and a
-// directory is revealed in the explorer.
-fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<DocumentLink>> {
-    // Resolve filesystem links from the directory containing a saved, parseable wiki.
-    let wiki_path = local_path(uri)?;
-    let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
-    let wiki_directory = wiki_directory(&wiki_path);
-
-    // Link each filesystem link to its target, skipping any that the checker would report.
-    let mut document_links = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| {
-            let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) = link
-            else {
-                return None;
-            };
-            let tooltip = if matches!(link, Link::Directory { .. }) {
-                "Reveal in Explorer"
-            } else {
-                "Open file"
-            };
-            Some(DocumentLink {
-                range: lsp_range(source_contents, *source_range),
-                target: Some(filesystem_link_target(wiki_directory, link)?),
-                tooltip: Some(tooltip.to_owned()),
-                data: None,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    // Report the links in source order.
-    document_links.sort_by_key(|document_link| {
-        (
-            document_link.range.start.line,
-            document_link.range.start.character,
-        )
-    });
-    Some(document_links)
 }
 
 // This describes the path of a filesystem link being authored at the cursor.
@@ -1491,6 +924,509 @@ fn text_link_completions(
         .collect()
 }
 
+// Locate the node declared or linked at an editor position.
+fn goto_definition_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<GotoDefinitionResponse> {
+    // Parse only the wiki syntax because navigation doesn't require filesystem validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, origin_source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
+
+    // Identify the complete source link or title and the destination node while selecting its title
+    // on arrival.
+    Some(GotoDefinitionResponse::Link(vec![LocationLink {
+        origin_selection_range: Some(lsp_range(source_contents, origin_source_range)),
+        target_uri: uri.clone(),
+        target_range: lsp_range(source_contents, node.source_range),
+        target_selection_range: lsp_range(source_contents, node.title_source_range),
+    }]))
+}
+
+// Preview the destination of a text link at an editor position.
+fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
+    // Parse only the wiki syntax because hovering doesn't require filesystem validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
+
+    // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
+    // in a saved wiki, its filesystem links to their targets.
+    let wiki_path = local_path(uri);
+    let wiki_directory = wiki_path.as_deref().map(wiki_directory);
+    let mut listings = DirectoryListings::new();
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: node.to_markdown(|link| match link {
+                Link::Text { title, .. } => reveal_range_command_url(
+                    uri,
+                    source_contents,
+                    wiki.text_nodes.get(title)?.title_source_range,
+                ),
+                Link::File { .. } | Link::Directory { .. } => Some(
+                    filesystem_link_target(wiki_directory?, link, &mut listings)?
+                        .as_str()
+                        .to_owned(),
+                ),
+            }),
+        }),
+        range: Some(lsp_range(source_contents, source_range)),
+    })
+}
+
+// Encode an editor navigation command as a Markdown-safe URI.
+fn reveal_range_command_url(
+    uri: &Uri,
+    source_contents: &str,
+    source_range: SourceRange,
+) -> Option<String> {
+    // Pass the document URI and UTF-16 destination range as positional command arguments.
+    let range = lsp_range(source_contents, source_range);
+    Some(format!(
+        "command:{REVEAL_RANGE_COMMAND}?{}",
+        utf8_percent_encode(
+            &serde_json::to_string(&(
+                uri.as_str(),
+                range.start.line,
+                range.start.character,
+                range.end.line,
+                range.end.character,
+            ))
+            .ok()?,
+            NON_ALPHANUMERIC,
+        ),
+    ))
+}
+
+// Locate every text link to the node at an editor position.
+fn references_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    include_declaration: bool,
+) -> Option<Vec<Location>> {
+    // Parse only the wiki syntax because finding references doesn't require validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let (node, _source_range) = node_at(
+        &wiki,
+        source_contents,
+        byte_offset(source_contents, cursor)?,
+        LinkExtent::Whole,
+    )?;
+
+    // Include the declaration only when requested, then restore source order.
+    let mut source_ranges = text_link_source_ranges(&wiki, &node.title);
+    if include_declaration {
+        source_ranges.push(node.title_source_range);
+    }
+    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
+
+    // Return every occurrence in source order within the current wiki.
+    Some(
+        source_ranges
+            .into_iter()
+            .map(|source_range| {
+                Location::new(uri.clone(), lsp_range(source_contents, source_range))
+            })
+            .collect(),
+    )
+}
+
+// Collect every complete text-link range that resolves to a title.
+fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
+    // Links live on nodes in an unordered map, so sort their ranges into source order.
+    let mut source_ranges = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match link {
+            Link::Text {
+                title: link_title,
+                source_range,
+            } if link_title == title => Some(*source_range),
+            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
+    source_ranges
+}
+
+// Highlight related node or filesystem-link occurrences at an editor position.
+fn document_highlight_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+) -> Option<Vec<DocumentHighlight>> {
+    // Parse only the wiki syntax because document highlights don't require validation.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let byte_offset = byte_offset(source_contents, cursor)?;
+
+    // Distinguish a text-node declaration from its references.
+    let mut highlights = if let Some((node, _source_range)) =
+        node_at(&wiki, source_contents, byte_offset, LinkExtent::Whole)
+    {
+        let mut highlights = text_link_source_ranges(&wiki, &node.title)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect::<Vec<_>>();
+        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
+        highlights
+    } else {
+        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
+        // A text link reaches this branch only when its target doesn't exist, so it has nothing
+        // to highlight.
+        let link = link_at(&wiki, byte_offset).filter(|link| !matches!(link, Link::Text { .. }))?;
+        filesystem_link_source_ranges(&wiki, link)
+            .into_iter()
+            .map(|source_range| (source_range, DocumentHighlightKind::READ))
+            .collect()
+    };
+
+    // Return every matching source occurrence in wiki order.
+    highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
+    Some(
+        highlights
+            .into_iter()
+            .map(|(source_range, kind)| DocumentHighlight {
+                range: lsp_range(source_contents, source_range),
+                kind: Some(kind),
+            })
+            .collect(),
+    )
+}
+
+// Collect every complete filesystem-link range with the same kind and path as a target.
+fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
+    // Match logical paths without resolving symlinks, just as filesystem validation does.
+    wiki.text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| match (link, target) {
+            (
+                Link::File { path, source_range },
+                Link::File {
+                    path: target_path, ..
+                },
+            )
+            | (
+                Link::Directory { path, source_range },
+                Link::Directory {
+                    path: target_path, ..
+                },
+            ) if path == target_path => Some(*source_range),
+            (
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
+            ) => None,
+        })
+        .collect()
+}
+
+// Identify the source occurrence that should be selected before renaming a node, file, or
+// directory, or explain why the filesystem node a link targets can't be renamed.
+fn prepare_rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    cursor: Position,
+    supports_file_renames: bool,
+) -> std::result::Result<Option<PrepareRenameResponse>, String> {
+    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
+    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+        return Ok(None);
+    };
+    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+
+    // Select only the path of a filesystem link between its leading `/` and any trailing `/`, and
+    // seed the rename prompt with its decoded text as written. The rename writes both slashes
+    // itself, so the new name needs neither.
+    if let Some(filesystem_node) = renamable_filesystem_node_at(
+        &wiki,
+        uri,
+        source_contents,
+        cursor_offset,
+        supports_file_renames,
+    )? {
+        let path_source_range = filesystem_node.path_source_range;
+        let path_source = &source_contents[path_source_range.start..path_source_range.end];
+        let start_trimmed = path_source.trim_start_matches('/');
+        let trimmed = start_trimmed.trim_end_matches('/');
+        let start = path_source_range.end - start_trimmed.len();
+        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: lsp_range(
+                source_contents,
+                SourceRange {
+                    start,
+                    end: start + trimmed.len(),
+                },
+            ),
+            placeholder: unescape_link_delimiters(trimmed),
+        }));
+    }
+
+    // Otherwise, resolve either a title declaration or text link.
+    let Some((node, source_range)) =
+        node_at(&wiki, source_contents, cursor_offset, LinkExtent::Target)
+    else {
+        return Ok(None);
+    };
+
+    // Select only the title text and seed the rename prompt with its decoded value.
+    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: lsp_range(source_contents, source_range),
+        placeholder: node.title.clone(),
+    }))
+}
+
+// This records which file operations the client can perform within a versioned workspace edit.
+#[derive(Clone, Copy)]
+struct FileOperationSupport {
+    rename: bool,
+    delete: bool,
+}
+
+// Rename the filesystem node or text node at an editor position, along with every link to it.
+fn rename_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    version: i32,
+    cursor: Position,
+    new_name: &str,
+    file_operation_support: FileOperationSupport,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
+    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
+        return Ok(None);
+    };
+    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+        return Ok(None);
+    };
+
+    // Try the filesystem node a link targets, and otherwise fall back to a text node.
+    match rename_filesystem_node_for_document(
+        &wiki,
+        uri,
+        source_contents,
+        version,
+        cursor_offset,
+        new_name,
+        file_operation_support,
+    ) {
+        Ok(None) => {
+            rename_text_node_for_document(&wiki, uri, source_contents, cursor_offset, new_name)
+        }
+        result => result,
+    }
+}
+
+// Rename one text node and every text link that targets it.
+fn rename_text_node_for_document(
+    wiki: &Wiki,
+    uri: &Uri,
+    source_contents: &str,
+    cursor_offset: usize,
+    new_name: &str,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Resolve the text node declared or linked at the cursor.
+    let Some((node, _source_range)) =
+        node_at(wiki, source_contents, cursor_offset, LinkExtent::Target)
+    else {
+        return Ok(None);
+    };
+
+    // Normalize surrounding whitespace, then reject titles that the parser wouldn't accept: those
+    // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
+    if new_name
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("A node title can't contain a line break.".to_owned());
+    }
+    let new_title = new_name.trim();
+    if new_title.is_empty() {
+        return Err("A node title can't be empty.".to_owned());
+    }
+    if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
+        return Err(format!(
+            "A node title can't start with `{FILESYSTEM_LINK_PREFIX}`.",
+        ));
+    }
+    if new_title != node.title && wiki.text_nodes.contains_key(new_title) {
+        return Err(format!("Node `{new_title}` already exists."));
+    }
+
+    // Replace the declaration literally and encode the title inside every matching text link.
+    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
+    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+        if let Link::Text {
+            title,
+            source_range,
+        } = link
+            && title == &node.title
+            && let Some(target_source_range) =
+                text_link_target_source_range(source_contents, *source_range)
+        {
+            edits.push((target_source_range, escape_link_delimiters(new_title)));
+        }
+    }
+    edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
+
+    // Return one non-overlapping edit for each occurrence in the current document.
+    Ok(Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(
+            uri.clone(),
+            edits
+                .into_iter()
+                .map(|(source_range, new_text)| {
+                    TextEdit::new(lsp_range(source_contents, source_range), new_text)
+                })
+                .collect(),
+        )])),
+        ..WorkspaceEdit::default()
+    }))
+}
+
+// Rename the file or directory of a filesystem link on disk and update every link to it or, for a
+// directory, to anything within it. The client creates any missing directories, and directories
+// that the rename leaves empty are deleted when the client supports it.
+fn rename_filesystem_node_for_document(
+    wiki: &Wiki,
+    uri: &Uri,
+    source_contents: &str,
+    version: i32,
+    cursor_offset: usize,
+    new_name: &str,
+    file_operation_support: FileOperationSupport,
+) -> std::result::Result<Option<WorkspaceEdit>, String> {
+    // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
+    let Some(RenamableFilesystemNode {
+        wiki_directory,
+        old_path,
+        is_directory,
+        ..
+    }) = renamable_filesystem_node_at(
+        wiki,
+        uri,
+        source_contents,
+        cursor_offset,
+        file_operation_support.rename,
+    )?
+    else {
+        return Ok(None);
+    };
+    let wiki_directory = wiki_directory.as_path();
+    let old_path = old_path.as_path();
+
+    // Accept only a new path which the parser would accept in a link.
+    let new_path = normalize_link_path(new_name.trim())?;
+    if new_path == old_path {
+        return Ok(Some(WorkspaceEdit::default()));
+    }
+    if new_path.as_os_str().is_empty() {
+        return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
+    }
+
+    // Require the existing directories along the new path to be spelled as they are on disk, as a
+    // link would have to be. A filesystem that ignores case would otherwise put the node in a
+    // directory whose path doesn't match the new path as written, and the comparisons below would
+    // go wrong. For example, a directory which will contain the node could look empty after the
+    // rename and be deleted along with it.
+    if let Some(ancestor) = new_path
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| wiki_directory.join(ancestor).exists())
+        && let (_, Some(message)) =
+            check_spelling(wiki_directory, ancestor, &mut DirectoryListings::new())
+    {
+        return Err(message);
+    }
+
+    // Require the destination to be free and creatable, unless a directory moves into itself. Then
+    // everything at its destination moves along with it, so nothing there can conflict.
+    let moves_into_itself = is_directory && new_path.starts_with(old_path);
+    if !moves_into_itself {
+        check_rename_destination(wiki_directory, old_path, &new_path)?;
+    }
+    let old_absolute_path = wiki_directory.join(old_path);
+    let new_absolute_path = wiki_directory.join(&new_path);
+
+    // Rewrite the path of every link to the renamed entry.
+    let edits = filesystem_rename_edits(wiki, source_contents, old_path, &new_path, is_directory);
+
+    // Edit the wiki at the version the edits were computed from.
+    let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
+        text_document: OptionalVersionedTextDocumentIdentifier {
+            uri: uri.clone(),
+            version: Some(version),
+        },
+        edits: edits
+            .into_iter()
+            .map(|(source_range, new_text)| {
+                OneOf::Left(TextEdit::new(
+                    lsp_range(source_contents, source_range),
+                    new_text,
+                ))
+            })
+            .collect(),
+    });
+
+    // Rename the node. No filesystem can move a directory into itself directly, so such a move
+    // goes through a temporary sibling, from which the directory moves to its new path, recreating
+    // its old path as a parent. VS Code validates a run of renames before performing any of them,
+    // so the text edit separates the two renames to let the first one happen before the second is
+    // validated.
+    let mut operations = if moves_into_itself {
+        let temporary_path = unused_sibling_path(&old_absolute_path);
+        vec![
+            rename_operation(&old_absolute_path, &temporary_path),
+            text_document_edit,
+            rename_operation(&temporary_path, &new_absolute_path),
+        ]
+    } else {
+        vec![
+            text_document_edit,
+            rename_operation(&old_absolute_path, &new_absolute_path),
+        ]
+    };
+
+    // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
+    // before performing any of them, so a nested empty directory would block deleting its parent.
+    // Instead, one recursive deletion removes the outermost directory, which contains only empty
+    // directories once the renamed node has moved.
+    if file_operation_support.delete
+        && let Some(directory) =
+            outermost_directory_emptied_by_rename(wiki_directory, old_path, &new_path)
+    {
+        operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
+            DeleteFile {
+                uri: Uri::from_file_path(wiki_directory.join(directory))
+                    .expect("A path within a saved wiki's directory should be absolute."),
+                options: Some(DeleteFileOptions {
+                    recursive: Some(true),
+                    ignore_if_not_exists: Some(true),
+                }),
+                annotation_id: None,
+            },
+        )));
+    }
+    Ok(Some(WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(operations)),
+        ..WorkspaceEdit::default()
+    }))
+}
+
 // This describes the filesystem node targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
 struct RenamableFilesystemNode {
@@ -1544,6 +1480,14 @@ fn renamable_filesystem_node_at(
         return Err("The wiki can't be renamed through one of its own links.".to_owned());
     }
 
+    // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
+    // would update only the links spelled like this one, breaking any spelled correctly.
+    if let (_, Some(message)) =
+        check_spelling(wiki_directory, &old_path, &mut DirectoryListings::new())
+    {
+        return Err(message);
+    }
+
     Ok(Some(RenamableFilesystemNode {
         wiki_directory: wiki_directory.to_owned(),
         path_source_range,
@@ -1552,26 +1496,51 @@ fn renamable_filesystem_node_at(
     }))
 }
 
-// Require a rename's destination to be free, other than by a change to the case of a name on a
-// case-insensitive filesystem, where both paths resolve to the same node. Missing directories will
-// be created, but not beneath an existing file.
+// Locate the path of a filesystem link that the parser produced from the given source, including
+// its leading `/` but excluding its delimiters and surrounding whitespace.
+fn filesystem_link_path_source_range(
+    source_contents: &str,
+    source_range: SourceRange,
+) -> SourceRange {
+    // Trim the link's inner text as the parser does. The leading `/` is part of the path.
+    let target_source_range = text_link_target_source_range(source_contents, source_range)
+        .expect("A parsed link should be delimited by square brackets.");
+    let target = &source_contents[target_source_range.start..target_source_range.end];
+    let start = target_source_range.start + (target.len() - target.trim_start().len());
+    SourceRange {
+        start,
+        end: start + target.trim().len(),
+    }
+}
+
+// Require a rename's destination to be free. Missing directories will be created, but not beneath
+// an existing file.
 fn check_rename_destination(
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
 ) -> std::result::Result<(), String> {
     // Refuse to replace another node. Something exists at the new path if its own metadata can be
-    // read, even if it's a broken symlink. The exception is a case-only rename on a
-    // case-insensitive filesystem, such as macOS's default one: there, `Photo.jpg` finds the node
-    // being renamed, `photo.jpg`, so the new path appears to exist. Canonicalizing a path yields
-    // the name's case as stored on disk, so both paths then canonicalize identically and the rename
-    // is allowed.
+    // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
+    // default one, the new path may instead name the node being renamed, spelled differently, as
+    // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
+    // spellings as the same file and silently skips the rename while still editing the links,
+    // which leaves them misspelled.
     let new_absolute_path = wiki_directory.join(new_path);
-    if fs::symlink_metadata(&new_absolute_path).is_ok()
-        && fs::canonicalize(&new_absolute_path).ok()
-            != fs::canonicalize(wiki_directory.join(old_path)).ok()
-    {
-        return Err(format!("Path {} already exists.", new_path.code_path()));
+    if fs::symlink_metadata(&new_absolute_path).is_ok() {
+        return Err(
+            if entry_identity(&new_absolute_path) == entry_identity(&wiki_directory.join(old_path))
+            {
+                format!(
+                    "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
+                        explorer instead, then fix its links.",
+                    old_path.code_path(),
+                    new_path.code_path(),
+                )
+            } else {
+                format!("Path {} already exists.", new_path.code_path())
+            },
+        );
     }
 
     // Refuse to create a directory beneath an existing file.
@@ -1624,18 +1593,6 @@ fn filesystem_rename_edits(
     edits
 }
 
-// Build an operation that renames a node from one absolute path to another.
-fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
-    DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
-        old_uri: Uri::from_file_path(old_path)
-            .expect("A path within a saved wiki's directory should be absolute."),
-        new_uri: Uri::from_file_path(new_path)
-            .expect("A path within a saved wiki's directory should be absolute."),
-        options: None,
-        annotation_id: None,
-    }))
-}
-
 // Choose an unused, hidden name beside a node for a temporary rename. Staying in the same directory
 // keeps the rename on the same filesystem.
 fn unused_sibling_path(path: &Path) -> PathBuf {
@@ -1655,26 +1612,27 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
         .expect("An unused temporary name should exist.")
 }
 
+// Build an operation that renames a node from one absolute path to another.
+fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
+    DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+        old_uri: Uri::from_file_path(old_path)
+            .expect("A path within a saved wiki's directory should be absolute."),
+        new_uri: Uri::from_file_path(new_path)
+            .expect("A path within a saved wiki's directory should be absolute."),
+        options: None,
+        annotation_id: None,
+    }))
+}
+
 // Find the outermost directory that moving a node out of it would leave containing nothing but
-// empty directories. A directory is kept if it will contain the new path or a directory link names
-// it, and the search never reaches the wiki directory itself.
+// empty directories. A directory is kept if it will contain the new path, but not merely because a
+// directory link names it, since such a link only stands for the files within the directory. The
+// search never reaches the wiki directory itself.
 fn outermost_directory_emptied_by_rename(
-    wiki: &Wiki,
     wiki_directory: &Path,
     old_path: &Path,
     new_path: &Path,
 ) -> Option<PathBuf> {
-    // Collect the directories that links name, which must survive the rename.
-    let linked_directories = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Directory { path, .. } => Some(path.as_path()),
-            Link::Text { .. } | Link::File { .. } => None,
-        })
-        .collect::<HashSet<_>>();
-
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let mut emptied_directory = None;
     let mut removed_entry = old_path;
@@ -1682,7 +1640,7 @@ fn outermost_directory_emptied_by_rename(
         .parent()
         .filter(|directory| !directory.as_os_str().is_empty())
     {
-        if new_path.starts_with(directory) || linked_directories.contains(directory) {
+        if new_path.starts_with(directory) {
             break;
         }
         let Ok(mut entries) = fs::read_dir(wiki_directory.join(directory)) else {
@@ -1700,6 +1658,141 @@ fn outermost_directory_emptied_by_rename(
         removed_entry = directory;
     }
     emptied_directory
+}
+
+// Produce a whole-document formatting edit for any wiki that parses, even if it's invalid.
+fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextEdit>> {
+    // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
+    let rendered_wiki = parser::parse(local_path(uri).as_deref(), source_contents)
+        .ok()?
+        .to_string();
+
+    // A successful request returns either one whole-document edit or an empty edit list.
+    if source_contents == rendered_wiki {
+        Some(Vec::new())
+    } else {
+        Some(vec![TextEdit::new(
+            Range::new(
+                Position::new(0, 0),
+                lsp_position(source_contents, source_contents.len()),
+            ),
+            rendered_wiki,
+        )])
+    }
+}
+
+// Describe every parsed text node for editor outlines and document-symbol navigation.
+#[allow(
+    deprecated,
+    reason = "The protocol's DocumentSymbol type retains a required legacy field."
+)]
+fn document_symbol_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    supports_hierarchy: bool,
+) -> Option<DocumentSymbolResponse> {
+    // Parse syntax without semantic validation so structurally valid nodes remain navigable.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
+    nodes.sort_by_key(|node| node.source_range.start);
+
+    // Use separate node and title ranges when the client supports hierarchical symbols, and locate
+    // each flat symbol at its title otherwise.
+    Some(if supports_hierarchy {
+        DocumentSymbolResponse::Nested(
+            nodes
+                .into_iter()
+                .map(|node| DocumentSymbol {
+                    name: node.title.clone(),
+                    detail: None,
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
+                    deprecated: None,
+                    range: lsp_range(source_contents, node.source_range),
+                    selection_range: lsp_range(source_contents, node.title_source_range),
+                    children: None,
+                })
+                .collect(),
+        )
+    } else {
+        DocumentSymbolResponse::Flat(
+            nodes
+                .into_iter()
+                .map(|node| SymbolInformation {
+                    name: node.title.clone(),
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location::new(
+                        uri.clone(),
+                        lsp_range(source_contents, node.title_source_range),
+                    ),
+                    container_name: None,
+                })
+                .collect(),
+        )
+    })
+}
+
+// Offer to create a missing home node or the missing destination of a text link at an editor range.
+fn code_action_for_document(
+    uri: &Uri,
+    source_contents: &str,
+    range: Range,
+    diagnostics: &[Diagnostic],
+) -> Option<CodeActionResponse> {
+    // Parse only the wiki syntax so fixes are available before the debounced check completes.
+    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let mut actions = Vec::new();
+
+    // Prepend a missing home node where its diagnostic is reported, since it has no source range.
+    let document_start = Range::new(Position::new(0, 0), Position::new(0, 0));
+    if range.start == document_start.start && !wiki.text_nodes.contains_key(HOME_TITLE) {
+        let separator = if source_contents.is_empty() { "" } else { "\n" };
+        actions.push(create_node_action(
+            uri,
+            HOME_TITLE,
+            TextEdit::new(
+                document_start,
+                format!("{TITLE_PREFIX}{HOME_TITLE}\n{separator}"),
+            ),
+            diagnostics,
+            document_start,
+        ));
+    }
+
+    // Append the missing destination of a text link after a blank line, leaving its placement to
+    // the formatter. Skip empty targets, which no title can declare.
+    if let Some(byte_offset) = byte_offset(source_contents, range.start)
+        && let Some(Link::Text {
+            title,
+            source_range,
+        }) = link_at(&wiki, byte_offset)
+        && !title.is_empty()
+        && !wiki.text_nodes.contains_key(title)
+    {
+        let separator = if source_contents.ends_with("\n\n") {
+            ""
+        } else if source_contents.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        let end = lsp_position(source_contents, source_contents.len());
+        actions.push(create_node_action(
+            uri,
+            title,
+            TextEdit::new(
+                Range::new(end, end),
+                format!("{separator}{TITLE_PREFIX}{title}\n"),
+            ),
+            diagnostics,
+            lsp_range(source_contents, *source_range),
+        ));
+    }
+
+    // Report the absence of fixes as no response.
+    (!actions.is_empty()).then_some(actions)
 }
 
 // Describe a preferred quick fix that declares a node and resolves the diagnostics at a range.
@@ -1727,6 +1820,94 @@ fn create_node_action(
         is_preferred: Some(true),
         ..CodeAction::default()
     })
+}
+
+// Make each filesystem link whose target exists clickable: a file opens in the editor, and a
+// directory is revealed in the explorer.
+fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<DocumentLink>> {
+    // Resolve filesystem links from the directory containing a saved, parseable wiki.
+    let wiki_path = local_path(uri)?;
+    let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
+    let wiki_directory = wiki_directory(&wiki_path);
+
+    // Link each filesystem link to its target, skipping any that the checker would report.
+    let mut listings = DirectoryListings::new();
+    let mut document_links = wiki
+        .text_nodes
+        .values()
+        .flat_map(|node| &node.links)
+        .filter_map(|link| {
+            let (Link::File { source_range, .. } | Link::Directory { source_range, .. }) = link
+            else {
+                return None;
+            };
+            let tooltip = if matches!(link, Link::Directory { .. }) {
+                "Reveal in Explorer"
+            } else {
+                "Open file"
+            };
+            Some(DocumentLink {
+                range: lsp_range(source_contents, *source_range),
+                target: Some(filesystem_link_target(wiki_directory, link, &mut listings)?),
+                tooltip: Some(tooltip.to_owned()),
+                data: None,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Report the links in source order.
+    document_links.sort_by_key(|document_link| {
+        (
+            document_link.range.start.line,
+            document_link.range.start.character,
+        )
+    });
+    Some(document_links)
+}
+
+// Find where following a filesystem link should lead: a file opens in the editor, and a directory
+// is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
+// differently than on disk leads nowhere, just as the checker reports it.
+fn filesystem_link_target(
+    wiki_directory: &Path,
+    link: &Link,
+    listings: &mut DirectoryListings,
+) -> Option<Uri> {
+    // Require the target to exist as the kind of entry the link names, spelled as it is on disk.
+    let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
+        return None;
+    };
+    let is_directory = matches!(link, Link::Directory { .. });
+    let target_path = wiki_directory.join(path);
+    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory)
+        || check_spelling(wiki_directory, path, listings).1.is_some()
+    {
+        return None;
+    }
+
+    // Open a file directly, and reveal a directory through the extension.
+    let target_uri = Uri::from_file_path(&target_path)
+        .expect("A path within a saved wiki's directory should be absolute.");
+    Some(if is_directory {
+        reveal_in_explorer_command_url(&target_uri)
+            .parse()
+            .expect("A command URL should be a valid URI.")
+    } else {
+        target_uri
+    })
+}
+
+// Build a command link that reveals a directory in the extension's explorer.
+fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
+    // Pass the directory URI as the command's only positional argument.
+    format!(
+        "command:{REVEAL_IN_EXPLORER_COMMAND}?{}",
+        utf8_percent_encode(
+            &serde_json::to_string(&[directory_uri.as_str()])
+                .expect("A list of strings should serialize to JSON."),
+            NON_ALPHANUMERIC,
+        ),
+    )
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -1801,67 +1982,39 @@ fn text_link_target_source_range(
     })
 }
 
-// Locate the path of a filesystem link that the parser produced from the given source, including
-// its leading `/` but excluding its delimiters and surrounding whitespace.
-fn filesystem_link_path_source_range(
+// Construct a Mull error diagnostic at a source range or at the start of the document.
+fn diagnostic(
     source_contents: &str,
-    source_range: SourceRange,
-) -> SourceRange {
-    // Trim the link's inner text as the parser does. The leading `/` is part of the path.
-    let target_source_range = text_link_target_source_range(source_contents, source_range)
-        .expect("A parsed link should be delimited by square brackets.");
-    let target = &source_contents[target_source_range.start..target_source_range.end];
-    let start = target_source_range.start + (target.len() - target.trim_start().len());
-    SourceRange {
-        start,
-        end: start + target.trim().len(),
+    source_range: Option<crate::error::SourceRange>,
+    message: String,
+) -> Diagnostic {
+    Diagnostic {
+        range: lsp_range(
+            source_contents,
+            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
+        ),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(env!("CARGO_PKG_NAME").to_owned()),
+        message,
+        ..Diagnostic::default()
     }
 }
 
-// Collect every complete text-link range that resolves to a title.
-fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
-    // Links live on nodes in an unordered map, so sort their ranges into source order.
-    let mut source_ranges = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match link {
-            Link::Text {
-                title: link_title,
-                source_range,
-            } if link_title == title => Some(*source_range),
-            Link::Text { .. } | Link::File { .. } | Link::Directory { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
-    source_ranges
+// Find the directory that a saved wiki's filesystem links are relative to.
+fn wiki_directory(wiki_path: &Path) -> &Path {
+    wiki_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
-// Collect every complete filesystem-link range with the same kind and path as a target.
-fn filesystem_link_source_ranges(wiki: &Wiki, target: &Link) -> Vec<SourceRange> {
-    // Match logical paths without resolving symlinks, just as filesystem validation does.
-    wiki.text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-        .filter_map(|link| match (link, target) {
-            (
-                Link::File { path, source_range },
-                Link::File {
-                    path: target_path, ..
-                },
-            )
-            | (
-                Link::Directory { path, source_range },
-                Link::Directory {
-                    path: target_path, ..
-                },
-            ) if path == target_path => Some(*source_range),
-            (
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-                Link::Text { .. } | Link::File { .. } | Link::Directory { .. },
-            ) => None,
-        })
-        .collect()
+// Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
+fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
+    uri.scheme()
+        .as_str()
+        .eq_ignore_ascii_case("file")
+        .then(|| uri.to_file_path())
+        .flatten()
 }
 
 // Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
@@ -1925,129 +2078,6 @@ fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
         lsp_position(source_contents, source_range.start),
         lsp_position(source_contents, source_range.end),
     )
-}
-
-// Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(
-    uri: &Uri,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Option<String> {
-    // Pass the document URI and UTF-16 destination range as positional command arguments.
-    let range = lsp_range(source_contents, source_range);
-    Some(format!(
-        "command:{REVEAL_RANGE_COMMAND}?{}",
-        utf8_percent_encode(
-            &serde_json::to_string(&(
-                uri.as_str(),
-                range.start.line,
-                range.start.character,
-                range.end.line,
-                range.end.character,
-            ))
-            .ok()?,
-            NON_ALPHANUMERIC,
-        ),
-    ))
-}
-
-// Find where following a filesystem link should lead: a file opens in the editor, and a directory
-// is revealed in the explorer. A link whose target is missing or of the wrong kind leads nowhere,
-// just as the checker reports it.
-fn filesystem_link_target(wiki_directory: &Path, link: &Link) -> Option<Uri> {
-    // Require the target to exist as the kind of entry the link names.
-    let (Link::File { path, .. } | Link::Directory { path, .. }) = link else {
-        return None;
-    };
-    let is_directory = matches!(link, Link::Directory { .. });
-    let target_path = wiki_directory.join(path);
-    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
-        return None;
-    }
-
-    // Open a file directly, and reveal a directory through the extension.
-    let target_uri = Uri::from_file_path(&target_path)
-        .expect("A path within a saved wiki's directory should be absolute.");
-    Some(if is_directory {
-        reveal_in_explorer_command_url(&target_uri)
-            .parse()
-            .expect("A command URL should be a valid URI.")
-    } else {
-        target_uri
-    })
-}
-
-// Find the directory that a saved wiki's filesystem links are relative to.
-fn wiki_directory(wiki_path: &Path) -> &Path {
-    wiki_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
-// Build a command link that reveals a directory in the extension's explorer.
-fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
-    // Pass the directory URI as the command's only positional argument.
-    format!(
-        "command:{REVEAL_IN_EXPLORER_COMMAND}?{}",
-        utf8_percent_encode(
-            &serde_json::to_string(&[directory_uri.as_str()])
-                .expect("A list of strings should serialize to JSON."),
-            NON_ALPHANUMERIC,
-        ),
-    )
-}
-
-// Convert a structured Mull error into the representation expected by language clients.
-fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
-    // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    diagnostic(
-        source_contents,
-        error.source_range(),
-        error.reason().map_or_else(
-            || error.message().to_owned(),
-            |reason| format!("{}\n\nReason: {reason}", error.message()),
-        ),
-    )
-}
-
-// Construct a Mull error diagnostic at a source range or at the start of the document.
-fn diagnostic(
-    source_contents: &str,
-    source_range: Option<crate::error::SourceRange>,
-    message: String,
-) -> Diagnostic {
-    Diagnostic {
-        range: lsp_range(
-            source_contents,
-            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
-        ),
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some(env!("CARGO_PKG_NAME").to_owned()),
-        message,
-        ..Diagnostic::default()
-    }
-}
-
-// Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
-fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
-    uri.scheme()
-        .as_str()
-        .eq_ignore_ascii_case("file")
-        .then(|| uri.to_file_path())
-        .flatten()
-}
-
-// Serve language-server requests over standard input and output until the client disconnects.
-pub async fn run() {
-    // Keep ANSI terminal escapes out of protocol diagnostics.
-    colored::control::set_override(false);
-
-    // Connect the backend to the standard streams reserved for LSP messages.
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(Backend::new);
-    Server::new(stdin, stdout, socket).serve(service).await;
 }
 
 #[cfg(test)]
@@ -3250,8 +3280,7 @@ mod tests {
     }
 
     // Leave missing directories to the client, and delete the outermost directory a rename leaves
-    // containing only empty directories, keeping any which will contain the new path or which a
-    // directory link names.
+    // containing only empty directories, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
@@ -3297,10 +3326,10 @@ mod tests {
             vec![directory_uri("a/b")],
         );
 
-        // Keep a directory which a link names.
+        // Delete a directory even if a link names it, since the link only stands for its files.
         assert_eq!(
             deleted_uris(46, "h.txt", ALL_FILE_OPERATIONS),
-            vec![directory_uri("f/g")],
+            vec![directory_uri("f")],
         );
 
         // Skip deletions when the client can't perform them.
@@ -3388,7 +3417,8 @@ mod tests {
     // Reject filesystem renames which the parser, the filesystem, or the editor can't support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
-        let source = "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull]";
+        let source =
+            "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.path().parent().unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -3451,13 +3481,43 @@ mod tests {
             rename(&uri, 44, "renamed.mull", ALL_FILE_OPERATIONS),
             "The wiki can't be renamed through one of its own links.",
         );
+
+        // Reject a link or a new path through an existing directory spelled differently than on
+        // disk, which only a filesystem that ignores case finds.
+        if fs::metadata(directory.join("IMAGES")).is_ok() {
+            assert_eq!(
+                rename(&uri, 58, "renamed.txt", ALL_FILE_OPERATIONS),
+                "`NOTES.txt` is spelled `notes.txt` on disk.",
+            );
+            assert_eq!(
+                rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
+                "`IMAGES` is spelled `images` on disk.",
+            );
+            assert_eq!(
+                rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
+                "`IMAGES` is spelled `images` on disk.",
+            );
+
+            // Reject a rename which only changes the case of a name, which VS Code would skip.
+            assert_eq!(
+                rename(&uri, 2, "NOTES.txt", ALL_FILE_OPERATIONS),
+                "`notes.txt` and `NOTES.txt` differ only in case, which VS Code can't rename. \
+                    Rename it in the explorer instead, then fix its links.",
+            );
+            assert_eq!(
+                rename(&uri, 15, "Images", ALL_FILE_OPERATIONS),
+                "`images` and `Images` differ only in case, which VS Code can't rename. Rename \
+                    it in the explorer instead, then fix its links.",
+            );
+        }
     }
 
     // Link files to themselves and directories to a command that reveals them, skipping links
-    // whose targets are missing or of the wrong kind.
+    // whose targets are missing, of the wrong kind, or spelled differently than on disk.
     #[test]
     fn document_links_open_existing_targets() {
-        let source = "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/]";
+        let source =
+            "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.path().parent().unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();

@@ -297,22 +297,24 @@ fn parse_content(
                     start: source_range.start + start,
                     end: source_range.start + index + character.len_utf8(),
                 };
-                let formatted_target = match parse_link(
+                let link = parse_link(
                     trimmed_target,
                     source_path,
                     source_contents,
                     link_source_range,
-                ) {
-                    Ok(link) => {
-                        let formatted_target = format_link_target(trimmed_target, &link);
-                        links.push(link);
-                        formatted_target
-                    }
-                    Err(error) => {
-                        errors.push(error);
-                        trimmed_target.to_owned()
-                    }
+                );
+
+                // Write a filesystem link's path in its normalized form, and keep any other target
+                // as written.
+                let formatted_target = match &link {
+                    Ok(Link::File { path, .. }) => render_link_path(path, false),
+                    Ok(Link::Directory { path, .. }) => render_link_path(path, true),
+                    Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
                 };
+                match link {
+                    Ok(link) => links.push(link),
+                    Err(error) => errors.push(error),
+                }
 
                 // Copy the prose before the link, then the link in its formatted form.
                 content.push_str(&original_content[copied_through..inner_start]);
@@ -344,16 +346,6 @@ fn parse_content(
     (normalize_lines(&content), links, errors)
 }
 
-// Format the trimmed target of a parsed link. A text link's target is kept as written, while a
-// filesystem link's path is written in its normalized form.
-fn format_link_target(trimmed_target: &str, link: &Link) -> String {
-    match link {
-        Link::Text { .. } => trimmed_target.to_owned(),
-        Link::File { path, .. } => render_link_path(path, false),
-        Link::Directory { path, .. } => render_link_path(path, true),
-    }
-}
-
 // Convert the contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
@@ -365,13 +357,18 @@ fn parse_link(
     // link starts with `/` and names a directory if it also ends with one.
     let target = unescape_link_delimiters(target);
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        let is_directory = target.ends_with(DIRECTORY_LINK_SUFFIX);
-        parse_filesystem_path(&target, source_path, source_contents, source_range).map(|path| {
-            if is_directory {
-                Link::Directory { path, source_range }
-            } else {
-                Link::File { path, source_range }
-            }
+        let path = normalize_link_path(&target).map_err(|message| {
+            Error::new(
+                &message,
+                source_path,
+                Some((source_contents, source_range)),
+                None,
+            )
+        })?;
+        Ok(if target.ends_with(DIRECTORY_LINK_SUFFIX) {
+            Link::Directory { path, source_range }
+        } else {
+            Link::File { path, source_range }
         })
     } else {
         Ok(Link::Text {
@@ -381,26 +378,35 @@ fn parse_link(
     }
 }
 
-// Parse a filesystem link path, attributing any problem to the link's source range.
-fn parse_filesystem_path(
-    path: &str,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Result<PathBuf, Error> {
-    normalize_filesystem_path(path).map_err(|message| {
-        Error::new(
-            &message,
-            source_path,
-            Some((source_contents, source_range)),
-            None,
-        )
-    })
+// Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
+// directory, with any link delimiters escaped. The wiki directory is written as `/`.
+pub fn render_link_path(path: &Path, is_directory: bool) -> String {
+    // Join the components with the separator that links use on every platform. Link paths come
+    // from UTF-8 text.
+    let components = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("Link paths should come from UTF-8 text.")
+        })
+        .collect::<Vec<_>>();
+    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
+
+    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
+    // directory.
+    if is_directory && !components.is_empty() {
+        rendered.push_str(DIRECTORY_LINK_SUFFIX);
+    }
+
+    // Escape the finished text once, just before it returns to the source.
+    escape_link_delimiters(&rendered)
 }
 
 // Normalize a filesystem link path, which is relative to the wiki directory even if it starts with
 // `/`, while keeping it inside the wiki's logical tree. Describe any problem with a message.
-pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
+pub fn normalize_link_path(path: &str) -> Result<PathBuf, String> {
     // Interpret the path relative to the wiki directory, even with the leading `/` of a filesystem
     // link. What remains may be empty, which denotes the wiki directory itself.
     let parsed_path = Path::new(path.trim_start_matches('/'));
@@ -441,32 +447,6 @@ pub fn normalize_filesystem_path(path: &str) -> Result<PathBuf, String> {
             }
         })
         .collect())
-}
-
-// Write a normalized filesystem link path: `/` and the path's components, followed by `/` for a
-// directory, with any link delimiters escaped. The wiki directory is written as `/`.
-pub fn render_link_path(path: &Path, is_directory: bool) -> String {
-    // Join the components with the separator that links use on every platform. Link paths come
-    // from UTF-8 text.
-    let components = path
-        .components()
-        .map(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .expect("Link paths should come from UTF-8 text.")
-        })
-        .collect::<Vec<_>>();
-    let mut rendered = format!("{FILESYSTEM_LINK_PREFIX}{}", components.join("/"));
-
-    // Mark a directory with a trailing separator, which the prefix already provides for the wiki
-    // directory.
-    if is_directory && !components.is_empty() {
-        rendered.push_str(DIRECTORY_LINK_SUFFIX);
-    }
-
-    // Escape the finished text once, just before it returns to the source.
-    escape_link_delimiters(&rendered)
 }
 
 // Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
