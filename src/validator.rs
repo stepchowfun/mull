@@ -70,25 +70,27 @@ fn validate_text_links(
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| &node.title);
     for node in &nodes {
-        // Report each missing target at the corresponding text-link occurrence.
+        // Report each missing target at the corresponding text-link occurrence. Filesystem links
+        // are checked separately.
         for link in &node.links {
-            if let Link::Text {
-                title,
-                source_range,
-            } = link
-                && !wiki.text_nodes.contains_key(title)
-            {
-                let message = if title.is_empty() {
-                    "This link is missing a target.".to_owned()
-                } else {
-                    format!("Node {} not found.", title.code_str())
-                };
-                errors.push(Error::new(
-                    &message,
-                    source_path,
-                    Some((source_contents, *source_range)),
-                    None,
-                ));
+            match link {
+                Link::Text {
+                    title,
+                    source_range,
+                } if !wiki.text_nodes.contains_key(title) => {
+                    let message = if title.is_empty() {
+                        "This link is missing a target.".to_owned()
+                    } else {
+                        format!("Node {} not found.", title.code_str())
+                    };
+                    errors.push(Error::new(
+                        &message,
+                        source_path,
+                        Some((source_contents, *source_range)),
+                        None,
+                    ));
+                }
+                Link::Text { .. } | Link::Filesystem { .. } => {}
             }
         }
     }
@@ -163,8 +165,9 @@ fn validate_filesystem_links(
             }
 
             // Skip text links, which have no filesystem targets.
-            let Link::Filesystem { target, .. } = link else {
-                continue;
+            let target = match link {
+                Link::Filesystem { target, .. } => target,
+                Link::Text { .. } => continue,
             };
             let (path, source_range) = (target.path(), link.source_range());
 
