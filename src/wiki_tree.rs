@@ -49,12 +49,12 @@ pub fn visibility(
     wiki_directory: &Path,
     path: &Path,
     cancellation: &CancellationFlag,
-) -> Outcome<Result<Visibility, WalkError>> {
+) -> Outcome<Result<Visibility, ignore::Error>> {
     // Keep only the ancestors of the target and the entries within it.
     let target = wiki_directory.join(path);
     let mut walker_builder = match wiki_tree_walker(wiki_directory) {
         Ok(walker_builder) => walker_builder,
-        Err(error) => return Outcome::Completed(Err(WalkError::Other(error))),
+        Err(error) => return Outcome::Completed(Err(error)),
     };
     walker_builder.filter_entry({
         let target = target.clone();
@@ -69,9 +69,8 @@ pub fn visibility(
             return Outcome::Cancelled;
         }
 
-        // Skip failures at entries which the filter would have excluded, since the walk can fail at
-        // an entry before filtering it, and at entries which no longer exist. Report any other
-        // failure.
+        // Skip failures at entries which the filter would have excluded, since the filter never
+        // sees walk errors, and report any other failure.
         let entry = match result {
             Ok(entry) => entry,
             Err(error)
@@ -81,10 +80,7 @@ pub fn visibility(
             {
                 continue;
             }
-            Err(error) => match classify_walk_error(error) {
-                WalkError::Vanished => continue,
-                error => return Outcome::Completed(Err(error)),
-            },
+            Err(error) => return Outcome::Completed(Err(error)),
         };
         if entry.path() == target {
             reached = true;
@@ -102,42 +98,6 @@ pub fn visibility(
     }))
 }
 
-// This describes why a walk of the wiki tree failed at an entry.
-#[derive(Debug)]
-pub enum WalkError {
-    // The entry no longer exists, because it was removed during the walk.
-    Vanished,
-
-    // The entry is a symlink which leads nowhere, so what it was meant to point to can't be
-    // determined. The path includes the wiki directory, and the destination is the symlink's
-    // contents.
-    BrokenSymlink { path: PathBuf, destination: PathBuf },
-
-    // Anything else went wrong.
-    Other(ignore::Error),
-}
-
-// Explain a failure of a walk of the wiki tree at an entry.
-pub fn classify_walk_error(error: ignore::Error) -> WalkError {
-    // Distinguish a broken symlink from an entry which simply no longer exists.
-    if let Some(path) = walk_error_path(&error)
-        && let Some(destination) = broken_symlink_destination(path)
-    {
-        return WalkError::BrokenSymlink {
-            path: path.to_owned(),
-            destination,
-        };
-    }
-    if error
-        .io_error()
-        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-    {
-        WalkError::Vanished
-    } else {
-        WalkError::Other(error)
-    }
-}
-
 // Find the path of the entry at which a walk of the wiki tree failed.
 fn walk_error_path(error: &ignore::Error) -> Option<&Path> {
     match error {
@@ -149,13 +109,15 @@ fn walk_error_path(error: &ignore::Error) -> Option<&Path> {
     }
 }
 
-// Read the contents of a symlink which leads nowhere. Following a chain of symlinks may reveal
-// that a later one is the broken link, but this one leads nowhere all the same.
-fn broken_symlink_destination(path: &Path) -> Option<PathBuf> {
+// Find a broken symlink at which a walk of the wiki tree failed, returning its path along with its
+// contents. Following a chain of symlinks may reveal that a later one is the broken link, but this
+// one leads nowhere all the same.
+pub fn broken_symlink(error: &ignore::Error) -> Option<(&Path, PathBuf)> {
+    let path = walk_error_path(error)?;
     let is_broken = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink())
         && fs::metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
     if is_broken {
-        fs::read_link(path).ok()
+        Some((path, fs::read_link(path).ok()?))
     } else {
         None
     }

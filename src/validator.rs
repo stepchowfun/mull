@@ -4,7 +4,7 @@ use crate::{
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{Visibility, WalkError, classify_walk_error, visibility, wiki_tree_walker},
+    wiki_tree::{Visibility, broken_symlink, visibility, wiki_tree_walker},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -399,13 +399,34 @@ fn inaccessible_target_error(
     }
 }
 
-// Describe a symlink which leads nowhere, given its path relative to the wiki directory.
-fn broken_symlink_message(path: &Path, destination: &Path) -> String {
-    format!(
-        "{} is a broken symlink to {}.",
-        path.code_path(),
-        destination.code_path(),
-    )
+// Explain a failure of a walk of the wiki tree, singling out a broken symlink since what it was
+// meant to point to can't be determined.
+fn walk_error(
+    error: ignore::Error,
+    wiki_directory: &Path,
+    wiki_path: &Path,
+    message: &str,
+    source_context: Option<(&str, SourceRange)>,
+) -> Error {
+    if let Some((symlink, destination)) = broken_symlink(&error) {
+        Error::new(
+            &format!(
+                "{} is a broken symlink to {}.",
+                relative_path(wiki_directory, symlink).code_path(),
+                destination.code_path(),
+            ),
+            Some(wiki_path),
+            source_context,
+            None,
+        )
+    } else {
+        Error::new(
+            message,
+            Some(wiki_path),
+            source_context,
+            Some(Rc::new(error)),
+        )
+    }
 }
 
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
@@ -419,36 +440,28 @@ fn visibility_error(
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
     visibility(wiki_directory, spelled_path, cancellation).map(|result| {
-        let (message, reason) = match result {
+        let message = match result {
             Ok(Visibility::Visible) => return None,
-            Ok(Visibility::Empty) => (
-                format!(
-                    "{} doesn't contain any files that aren't ignored.",
-                    path.code_path(),
-                ),
-                None,
+            Ok(Visibility::Empty) => format!(
+                "{} doesn't contain any files that aren't ignored.",
+                path.code_path(),
             ),
-            Ok(Visibility::Ignored) => (format!("{} is ignored.", path.code_path()), None),
-            Err(WalkError::BrokenSymlink {
-                path: symlink,
-                destination,
-            }) => (
-                broken_symlink_message(relative_path(wiki_directory, &symlink), &destination),
-                None,
-            ),
-            Err(WalkError::Other(error)) => (
-                format!("Unable to walk {}.", path.code_path()),
-                Some(Rc::new(error) as Rc<dyn std::error::Error>),
-            ),
-            Err(WalkError::Vanished) => {
-                unreachable!("The walk should skip entries which no longer exist.")
+            Ok(Visibility::Ignored) => format!("{} is ignored.", path.code_path()),
+            Err(error) => {
+                return Some(walk_error(
+                    error,
+                    wiki_directory,
+                    wiki_path,
+                    &format!("Unable to walk {}.", path.code_path()),
+                    Some(source_context),
+                ));
             }
         };
         Some(Error::new(
             &message,
             Some(wiki_path),
             Some(source_context),
-            reason,
+            None,
         ))
     })
 }
@@ -525,25 +538,17 @@ fn find_unreferenced_filesystem_links(
             return Outcome::Cancelled;
         }
 
-        // Skip an entry which no longer exists, and report any other failure.
+        // Report any failure.
         let entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                errors.push(match classify_walk_error(error) {
-                    WalkError::Vanished => continue,
-                    WalkError::BrokenSymlink { path, destination } => Error::new(
-                        &broken_symlink_message(relative_path(wiki_directory, &path), &destination),
-                        Some(wiki_path),
-                        None,
-                        None,
-                    ),
-                    WalkError::Other(error) => Error::new(
-                        "Unable to walk wiki directory.",
-                        Some(wiki_path),
-                        None,
-                        Some(Rc::new(error)),
-                    ),
-                });
+                errors.push(walk_error(
+                    error,
+                    wiki_directory,
+                    wiki_path,
+                    "Unable to walk wiki directory.",
+                    None,
+                ));
                 if errors.len() >= maximum_errors {
                     break;
                 }
