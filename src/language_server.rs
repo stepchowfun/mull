@@ -9,7 +9,7 @@ use crate::{
         FILESYSTEM_LINK_PREFIX, HOME_TITLE, Link, TITLE_MARKER, TITLE_PREFIX, TextNode, Wiki,
         escape_link_delimiters, unescape_link_delimiters,
     },
-    wiki_tree::{Visibility, visibility, wiki_tree_walker},
+    wiki_tree::{DirectoryListings, Visibility, check_spelling, visibility, wiki_tree_walker},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -996,6 +996,21 @@ fn rename_filesystem_node_for_document(
     }
     if new_path.as_os_str().is_empty() {
         return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
+    }
+
+    // Require the existing directories along the new path to be spelled as they are on disk, as a
+    // link would have to be. A filesystem that ignores case would otherwise put the node in a
+    // directory whose path doesn't match the new path as written, and the comparisons below would
+    // go wrong. For example, a directory which will contain the node could look empty after the
+    // rename and be deleted along with it.
+    if let Some(ancestor) = new_path
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| wiki_directory.join(ancestor).exists())
+        && let (_, Some(message)) =
+            check_spelling(wiki_directory, ancestor, &mut DirectoryListings::new())
+    {
+        return Err(message);
     }
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
@@ -3439,6 +3454,19 @@ mod tests {
             rename(&uri, 44, "renamed.mull", ALL_FILE_OPERATIONS),
             "The wiki can't be renamed through one of its own links.",
         );
+
+        // Reject a new path through an existing directory spelled differently than on disk, which
+        // only a filesystem that ignores case finds.
+        if fs::metadata(directory.join("IMAGES")).is_ok() {
+            assert_eq!(
+                rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
+                "`IMAGES` is spelled `images` on disk.",
+            );
+            assert_eq!(
+                rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
+                "`IMAGES` is spelled `images` on disk.",
+            );
+        }
     }
 
     // Link files to themselves and directories to a command that reveals them, skipping links

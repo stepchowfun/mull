@@ -4,11 +4,10 @@ use crate::{
     format::{CodePath, CodeStr},
     path_util::relative_path,
     wiki::{HOME_TITLE, Link, Wiki},
-    wiki_tree::{Visibility, visibility, wiki_tree_walker},
+    wiki_tree::{DirectoryListings, Visibility, check_spelling, visibility, wiki_tree_walker},
 };
 use std::{
-    collections::{HashMap, HashSet},
-    ffi::OsString,
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -277,101 +276,6 @@ fn validate_filesystem_links(
     errors.extend(unreferenced_errors);
 
     Outcome::Completed(errors)
-}
-
-// These are the names of the entries in each directory, listed at most once per validation. A
-// directory that can't be listed has no names.
-type DirectoryListings = HashMap<PathBuf, Option<HashSet<OsString>>>;
-
-// Compare each component of an existing target's path with the names of the entries on disk.
-// Filesystems that ignore case or Unicode normalization find a target even when its path is spelled
-// differently, but such a link would break on other filesystems and wouldn't match the names found
-// when walking the wiki's directory. Return the path as spelled on disk, where that can be
-// determined, with a message describing any misspelling.
-fn check_spelling(
-    wiki_directory: &Path,
-    path: &Path,
-    listings: &mut DirectoryListings,
-) -> (PathBuf, Option<String>) {
-    let mut written = PathBuf::new();
-    let mut spelled = PathBuf::new();
-    let mut misspelled = false;
-    let mut unmatched = None;
-    for component in path.components() {
-        // Accept a name that its directory lists, or any name in a directory that can't be listed.
-        let name = component.as_os_str();
-        written.push(name);
-        let directory = wiki_directory.join(&spelled);
-        let names = listings.entry(directory.clone()).or_insert_with(|| {
-            fs::read_dir(&directory).ok().map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| fs::DirEntry::file_name(&entry))
-                    .collect()
-            })
-        });
-        let Some(names) = names else {
-            spelled.push(name);
-            continue;
-        };
-        if names.contains(name) {
-            spelled.push(name);
-            continue;
-        }
-
-        // Find the entry that the name refers to, preferring the first in sorted order if several
-        // entries are indistinguishable.
-        let identity = entry_identity(&directory.join(name));
-        let mut candidates = names
-            .iter()
-            .filter(|candidate| {
-                identity.is_some() && entry_identity(&directory.join(candidate)) == identity
-            })
-            .collect::<Vec<_>>();
-        candidates.sort();
-        let actual = candidates.first().map(|candidate| (*candidate).clone());
-
-        // Continue with the name on disk, remembering the first name that has none.
-        misspelled = true;
-        if actual.is_none() && unmatched.is_none() {
-            unmatched = Some(written.clone());
-        }
-        spelled.push(actual.as_deref().unwrap_or(name));
-    }
-
-    // Describe the whole path's spelling on disk, or else the first name that has no match.
-    let message = match unmatched {
-        Some(unmatched) => Some(format!(
-            "{} doesn't match the spelling of any name on disk.",
-            unmatched.code_path(),
-        )),
-        None => misspelled.then(|| {
-            format!(
-                "{} is spelled {} on disk.",
-                path.code_path(),
-                spelled.code_path(),
-            )
-        }),
-    };
-    (spelled, message)
-}
-
-// Identify the directory entry that a path names without following a symlink in its last component,
-// so symlinks to the same target remain distinct.
-#[cfg(unix)]
-fn entry_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| (metadata.dev(), metadata.ino()))
-}
-
-// Identify the directory entry that a path names by its resolved target where entry identities
-// aren't available, which conflates symlinks to the same target.
-#[cfg(not(unix))]
-fn entry_identity(path: &Path) -> Option<PathBuf> {
-    fs::canonicalize(path).ok()
 }
 
 // Explain why a filesystem link's target can't be accessed. A missing target needs no further
