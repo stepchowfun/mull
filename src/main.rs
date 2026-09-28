@@ -96,18 +96,19 @@ async fn entry() -> Result<(), Vec<Error>> {
         };
 
     // Select the wiki and make its path relative when it's contained in the current directory.
+    let current_directory = env::current_dir().map_err(|error| {
+        vec![Error::new(
+            "Unable to determine the current directory.",
+            None,
+            None,
+            Some(Rc::new(error)),
+            None,
+        )]
+    })?;
     let wiki_path = relative_path(
-        &env::current_dir().map_err(|error| {
-            vec![Error::new(
-                "Unable to determine the current directory.",
-                None,
-                None,
-                Some(Rc::new(error)),
-                None,
-            )]
-        })?,
+        &current_directory,
         &path
-            .map_or_else(find_wiki, Ok)
+            .map_or_else(|| find_wiki(&current_directory), Ok)
             .map_err(|error| vec![error])?,
     )
     .to_owned();
@@ -179,18 +180,7 @@ async fn entry() -> Result<(), Vec<Error>> {
 }
 
 // Find the nearest wiki in the current directory or one of its ancestors.
-fn find_wiki() -> Result<PathBuf, Error> {
-    // Start the search in the current working directory.
-    let current_directory = env::current_dir().map_err(|error| {
-        Error::new(
-            "Unable to determine the current directory.",
-            None,
-            None,
-            Some(Rc::new(error)),
-            None,
-        )
-    })?;
-
+fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
     // Search each directory from nearest to farthest, choosing files deterministically.
     for directory in current_directory.ancestors() {
         let entries = fs::read_dir(directory).map_err(|error| {
@@ -241,8 +231,14 @@ fn find_wiki() -> Result<PathBuf, Error> {
         if wikis.len() > 1 {
             let file_names = wikis
                 .iter()
-                .filter_map(|path| path.file_name())
-                .map(|file_name| Path::new(file_name).code_path().to_string())
+                .map(|path| {
+                    Path::new(
+                        path.file_name()
+                            .expect("A directory entry's path should end with its name."),
+                    )
+                    .code_path()
+                    .to_string()
+                })
                 .collect::<Vec<String>>()
                 .join(", ");
             return Err(Error::new(

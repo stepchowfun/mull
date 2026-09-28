@@ -3,12 +3,12 @@ use crate::{
     error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{collections::HashSet, fs, path::Path, rc::Rc};
 
-// Limit filesystem diagnostics so pathological wikis and directories remain manageable.
+// Limit diagnostics for unreferenced files so pathological directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
 // Check text links, reachability, filesystem links, and filesystem coverage.
@@ -18,12 +18,16 @@ pub fn validate(
     source_contents: &str,
     cancellation: &CancellationFlag,
 ) -> Outcome<Result<(), Vec<Error>>> {
+    // Visit nodes in title order so diagnostics are deterministic.
+    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
+    nodes.sort_by_key(|node| &node.title);
+
     // Preserve graph errors if resolving the wiki later fails.
-    let mut errors = validate_text_links(wiki, source_path, source_contents);
+    let mut errors = validate_text_links(wiki, &nodes, source_path, source_contents);
 
     // Report each filesystem link precisely when an editor buffer has no filesystem context.
     let Some(wiki_path) = source_path else {
-        errors.extend(validate_untitled_filesystem_links(wiki, source_contents));
+        errors.extend(validate_untitled_filesystem_links(&nodes, source_contents));
         return Outcome::Completed(errors_to_result(errors));
     };
 
@@ -41,16 +45,14 @@ pub fn validate(
                 &error.message,
                 Some(wiki_path),
                 None,
-                error
-                    .reason
-                    .map(|reason| reason as Rc<dyn std::error::Error>),
+                error.reason,
                 None,
             ));
             return Outcome::Completed(errors_to_result(errors));
         }
     };
     validate_filesystem_links(
-        wiki,
+        &nodes,
         &wiki_directory,
         wiki_path,
         source_contents,
@@ -62,9 +64,11 @@ pub fn validate(
     })
 }
 
-// Validate text-link targets and reachability from the home node.
+// Validate text-link targets and reachability from the home node, given the wiki's nodes in title
+// order.
 fn validate_text_links(
     wiki: &Wiki,
+    nodes: &[&TextNode],
     source_path: Option<&Path>,
     source_contents: &str,
 ) -> Vec<Error> {
@@ -84,10 +88,8 @@ fn validate_text_links(
         ));
     }
 
-    // Validate text-link targets deterministically.
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
-    for node in &nodes {
+    // Validate text-link targets.
+    for node in nodes {
         // Report each missing target at the corresponding text-link occurrence, which declaring
         // the target would fix, unless it's empty, since no title can be. Filesystem links are
         // checked separately.
@@ -123,38 +125,34 @@ fn validate_text_links(
 
     // Reject every node outside the graph rooted at the home node.
     if has_home {
-        let mut unreachable_titles = wiki
-            .text_nodes
-            .values()
-            .filter(|node| node.depth.is_none())
-            .map(|node| (&node.title, node.title_source_range))
-            .collect::<Vec<_>>();
-        unreachable_titles.sort_by_key(|(title, _source_range)| *title);
-        errors.extend(unreachable_titles.into_iter().map(|(title, source_range)| {
-            Error::new(
-                &format!(
-                    "There's no way to get to {} starting from {}.",
-                    title.code_str(),
-                    HOME_TITLE.code_str(),
-                ),
-                source_path,
-                Some((source_contents, source_range)),
-                None,
-                None,
-            )
-        }));
+        errors.extend(
+            nodes
+                .iter()
+                .filter(|node| node.depth.is_none())
+                .map(|node| {
+                    Error::new(
+                        &format!(
+                            "There's no way to get to {} starting from {}.",
+                            node.title.code_str(),
+                            HOME_TITLE.code_str(),
+                        ),
+                        source_path,
+                        Some((source_contents, node.title_source_range)),
+                        None,
+                        None,
+                    )
+                }),
+        );
     }
 
     errors
 }
 
-// Require local filesystem context for every file and directory link in an untitled wiki.
-fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec<Error> {
-    // Visit links deterministically and respect the shared filesystem-error budget.
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
+// Require local filesystem context for every file and directory link in an untitled wiki, given
+// its nodes in title order.
+fn validate_untitled_filesystem_links(nodes: &[&TextNode], source_contents: &str) -> Vec<Error> {
     nodes
-        .into_iter()
+        .iter()
         .flat_map(|node| &node.links)
         .filter_map(|link| match link {
             Link::Filesystem { source_range, .. } => Some(Error::new(
@@ -166,26 +164,23 @@ fn validate_untitled_filesystem_links(wiki: &Wiki, source_contents: &str) -> Vec
             )),
             Link::Text { .. } => None,
         })
-        .take(MAX_FILESYSTEM_ERRORS)
         .collect()
 }
 
-// Validate filesystem links and coverage within a bounded error budget.
+// Validate filesystem links and coverage, given the wiki's nodes in title order.
 fn validate_filesystem_links(
-    wiki: &Wiki,
+    nodes: &[&TextNode],
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     source_contents: &str,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
-    // Track valid targets while visiting nodes and links in deterministic order.
+    // Track valid targets while visiting links.
     let mut referenced_files = HashSet::<SpelledPath>::new();
     let mut referenced_directories = HashSet::<SpelledPath>::new();
     let mut listings = DirectoryListings::new();
     let mut errors = Vec::<Error>::new();
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
-    'nodes: for node in nodes {
+    for node in nodes {
         for link in &node.links {
             // Stop between links so a superseded check spends no more time probing the filesystem.
             if cancellation.is_cancelled() {
@@ -209,9 +204,6 @@ fn validate_filesystem_links(
                         path,
                         (source_contents, source_range),
                     ));
-                    if errors.len() >= MAX_FILESYSTEM_ERRORS {
-                        break 'nodes;
-                    }
                     continue;
                 }
             };
@@ -225,9 +217,7 @@ fn validate_filesystem_links(
                         &error.message,
                         Some(wiki_path),
                         Some((source_contents, source_range)),
-                        error
-                            .reason
-                            .map(|reason| reason as Rc<dyn std::error::Error>),
+                        error.reason,
                         None,
                     ));
                     None
@@ -243,9 +233,6 @@ fn validate_filesystem_links(
                     None,
                     None,
                 ));
-                if errors.len() >= MAX_FILESYSTEM_ERRORS {
-                    break 'nodes;
-                }
                 continue;
             }
 
@@ -273,25 +260,15 @@ fn validate_filesystem_links(
                     referenced_files.insert(spelled);
                 }
             }
-            if errors.len() >= MAX_FILESYSTEM_ERRORS {
-                break 'nodes;
-            }
         }
     }
 
-    // Avoid a directory walk when link validation exhausted the error budget.
-    if errors.len() >= MAX_FILESYSTEM_ERRORS {
-        return Outcome::Completed(errors);
-    }
-
-    // Spend the remaining error budget on uncovered filesystem entries.
-    let remaining_error_capacity = MAX_FILESYSTEM_ERRORS - errors.len();
+    // Report uncovered filesystem entries.
     find_unreferenced_filesystem_links(
         wiki_directory,
         wiki_path,
         &referenced_files,
         &referenced_directories,
-        remaining_error_capacity,
         cancellation,
     )
     .map(|unreferenced_errors| {
@@ -366,23 +343,14 @@ fn visibility_error(
     source_context: (&str, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
-    visibility(wiki_directory, spelled, cancellation).map(|result| {
-        let message = match result {
-            Ok(Visibility::Visible) => return None,
-            Ok(Visibility::Empty) => format!(
+    visibility(wiki_directory, spelled, cancellation).map(|visibility| {
+        let message = match visibility {
+            Visibility::Visible => return None,
+            Visibility::Empty => format!(
                 "{} doesn't contain any files that aren't ignored.",
                 path.code_path(),
             ),
-            Ok(Visibility::Ignored) => format!("{} is ignored.", path.code_path()),
-            Err(error) => {
-                return Some(Error::new(
-                    &format!("Unable to walk {}.", path.code_path()),
-                    Some(wiki_path),
-                    Some(source_context),
-                    Some(Rc::new(error)),
-                    None,
-                ));
-            }
+            Visibility::Ignored => format!("{} is ignored.", path.code_path()),
         };
         Some(Error::new(
             &message,
@@ -394,13 +362,13 @@ fn visibility_error(
     })
 }
 
-// Find unreferenced files within a budget while pruning covered directories.
+// Find unreferenced files, up to a limit so pathological directories remain manageable, while
+// pruning covered directories.
 fn find_unreferenced_filesystem_links(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     referenced_files: &HashSet<SpelledPath>,
     referenced_directories: &HashSet<SpelledPath>,
-    maximum_errors: usize,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Handle a link to the wiki directory because the walk root bypasses the entry filter.
@@ -411,21 +379,9 @@ fn find_unreferenced_filesystem_links(
         return Outcome::Completed(Vec::new());
     }
 
-    // Walk the wiki tree with the same visibility rules as every other filesystem consumer.
-    let mut walker_builder = match wiki_tree_walker(wiki_directory.path()) {
-        Ok(walker_builder) => walker_builder,
-        Err(error) => {
-            return Outcome::Completed(vec![Error::new(
-                "Unable to build filesystem ignore rules.",
-                Some(wiki_path),
-                None,
-                Some(Rc::new(error)),
-                None,
-            )]);
-        }
-    };
-
-    // Prune subtrees covered by explicit directory links.
+    // Walk the wiki tree with the same visibility rules as every other filesystem consumer, pruning
+    // subtrees covered by explicit directory links.
+    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
     walker_builder.filter_entry({
         let wiki_directory = wiki_directory.clone();
         let referenced_directories = referenced_directories.clone();
@@ -436,7 +392,7 @@ fn find_unreferenced_filesystem_links(
         }
     });
 
-    // Stop traversing once the remaining error budget is exhausted.
+    // Stop traversing once the error limit is reached.
     let mut errors = Vec::<Error>::new();
     for result in walker_builder.build() {
         // Stop between entries so a superseded check doesn't walk the rest of the tree.
@@ -454,17 +410,19 @@ fn find_unreferenced_filesystem_links(
                     Some(Rc::new(error)),
                     None,
                 ));
-                if errors.len() >= maximum_errors {
+                if errors.len() >= MAX_FILESYSTEM_ERRORS {
                     break;
                 }
                 continue;
             }
         };
         let path = wiki_directory.entry_path(&entry);
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_file() && !referenced_files.contains(&path) {
+        if entry
+            .file_type()
+            .expect("Only standard input lacks a file type.")
+            .is_file()
+            && !referenced_files.contains(&path)
+        {
             errors.push(Error::new(
                 &format!("File {} isn't linked to.", path.code_path()),
                 Some(wiki_path),
@@ -472,7 +430,7 @@ fn find_unreferenced_filesystem_links(
                 None,
                 None,
             ));
-            if errors.len() >= maximum_errors {
+            if errors.len() >= MAX_FILESYSTEM_ERRORS {
                 break;
             }
         }
@@ -711,9 +669,9 @@ mod tests {
         );
     }
 
-    // Stop validating explicit filesystem links after reaching the diagnostic limit.
+    // Report every broken filesystem link, since the limit applies only to unreferenced files.
     #[test]
-    fn filesystem_link_error_limit() {
+    fn filesystem_link_errors_are_unlimited() {
         let directory = TestDirectory::new();
         let links = (0..=MAX_FILESYSTEM_ERRORS)
             .map(|index| format!("[/missing-{index}.txt]"))
@@ -722,14 +680,14 @@ mod tests {
         let wiki = parse(&format!("# Home\n{links}")).unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
+        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS + 1);
         assert!(errors.iter().all(|error| {
             let message = error.to_string();
             message.contains("`missing-") && message.contains(".txt` not found.")
         }));
     }
 
-    // Share the diagnostic limit between link validation and the filesystem walk.
+    // Limit diagnostics for unreferenced files regardless of any link errors.
     #[test]
     fn unreferenced_file_error_limit() {
         let directory = TestDirectory::new();
@@ -743,7 +701,7 @@ mod tests {
         let wiki = parse("# Home\n[/missing.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS);
+        assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS + 1);
         assert!(errors[0].to_string().contains("`missing.txt` not found."));
         assert!(errors[0].reason().is_none());
         assert!(

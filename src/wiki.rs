@@ -75,27 +75,28 @@ impl TextNode {
             match character {
                 '[' => link_start = Some(index),
                 ']' => {
-                    let Some(start) = link_start.take() else {
-                        continue;
-                    };
+                    // Copy the prose before the link, then render the link the parser recorded for
+                    // this delimiter pair.
+                    let start = link_start.take().expect(
+                        "The parser should reject a closing delimiter without an opening one.",
+                    );
                     content.push_str(
                         &render_markdown_before_link(&ContentText::from_source(
                             &source[copied_through..start],
                         ))
                         .0,
                     );
-                    let target = ContentText::from_source(&source[start + '['.len_utf8()..index]);
+                    let link = links
+                        .next()
+                        .expect("Every link in a node's content should be parsed.");
+                    let url = link_url(link);
                     content.push_str(
-                        &match links.next() {
-                            Some(link @ Link::Text { .. }) => {
-                                render_markdown_text_link(&target, link_url(link).as_deref())
+                        &match link {
+                            Link::Text { title, .. } => {
+                                render_markdown_text_link(title, url.as_deref())
                             }
-                            Some(link @ Link::Filesystem { .. }) => {
-                                render_markdown_filesystem_link(&target, link_url(link).as_deref())
-                            }
-                            None => {
-                                // The parser recorded a link for every delimiter pair.
-                                unreachable!("Every link in a node's content should be parsed.")
+                            Link::Filesystem { target, .. } => {
+                                render_markdown_filesystem_link(target, url.as_deref())
                             }
                         }
                         .0,
@@ -386,15 +387,12 @@ fn render_markdown_before_link(prose: &ContentText) -> Markdown {
     Markdown(markdown)
 }
 
-// Render a text link, given the text between its delimiters, as ordinary bracketed text with an
-// optional Markdown destination.
-fn render_markdown_text_link(target: &ContentText, url: Option<&str>) -> Markdown {
+// Render a text link to the node with the given title as ordinary bracketed text with an optional
+// Markdown destination.
+fn render_markdown_text_link(title: &str, url: Option<&str>) -> Markdown {
     // Keep Markdown punctuation in node titles from changing the rendered label, and retain the
     // visible Mull delimiters inside the clickable region.
-    let label = format!(
-        "&#91;{}&#93;",
-        render_markdown_literal(&target.unescape()).0,
-    );
+    let label = format!("&#91;{}&#93;", render_markdown_literal(title).0);
     Markdown(match url {
         Some(url) => format!("[{label}]({url})"),
         None => label,
@@ -403,14 +401,14 @@ fn render_markdown_text_link(target: &ContentText, url: Option<&str>) -> Markdow
 
 // Render a filesystem link as inline code without exposing Mull's escapes, linking it to an
 // optional destination.
-fn render_markdown_filesystem_link(target: &ContentText, url: Option<&str>) -> Markdown {
+fn render_markdown_filesystem_link(target: &FilesystemTarget, url: Option<&str>) -> Markdown {
     // Use a fence longer than every backtick run occurring in the link text.
-    let source = format!("[{}]", target.unescape());
+    let source = format!("[{}]", target.text().unescape());
     let longest_run = source
         .split(|character| character != '`')
         .map(str::len)
         .max()
-        .unwrap_or(0);
+        .expect("Splitting text should yield at least one piece.");
     let fence = "`".repeat(longest_run + 1);
 
     // The surrounding brackets keep the content distinct from either side of the fence, and angle
