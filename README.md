@@ -4,11 +4,11 @@
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
-*Mull* is a tool for managing a local wiki as a plain text file. The wiki contains *nodes* with *links* between them. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
+*Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
 
 ## An example wiki
 
-A *wiki* is a text file with a `.mull` extension containing nodes.
+A *wiki* is a text file with a `.mull` extension. It contains *nodes* with *links* between them.
 
 Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
 

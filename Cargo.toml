@@ -1,9 +1,9 @@
 [package]
 name = "mull"
-version = "0.33.0"
+version = "0.33.1"
 authors = ["Stephan Boyer <stephan@stephanboyer.com>"]
 edition = "2024"
-description = "A tool for managing a local wiki as a plain text file."
+description = "A tool for managing a wiki stored in a plain text file."
 license = "MIT"
 documentation = "https://github.com/stepchowfun/mull"
 homepage = "https://github.com/stepchowfun/mull"
