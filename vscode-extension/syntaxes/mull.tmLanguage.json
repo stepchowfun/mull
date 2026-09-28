@@ -139,8 +139,7 @@
     "link-contents": {
       "patterns": [
         {
-          "name": "constant.character.escape.mull",
-          "match": "\\\\[\\\\\\[\\]#]"
+          "include": "#escapes"
         },
         {
           "name": "invalid.illegal.unexpected-opening-delimiter.mull",
