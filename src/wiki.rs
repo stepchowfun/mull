@@ -298,8 +298,8 @@ impl FilesystemTarget {
         Some(Self::new(to.path.join(suffix), self.is_directory))
     }
 
-    // Write the link text: `/` and the path's components, followed by `/` for a directory, with any
-    // link delimiters escaped. This is the only place that decides how a link is written.
+    // Write the link text: `/` and the path's components, followed by `/` for a directory, escaped
+    // as content. This is the only place that decides how a link is written.
     pub fn text(&self) -> ContentText {
         // Join the components with the separator that links use on every platform. Link paths come
         // from UTF-8 text.
@@ -401,7 +401,7 @@ fn render_markdown_text_link(target: &ContentText, url: Option<&str>) -> Markdow
     })
 }
 
-// Render a filesystem link as inline code without exposing Mull delimiter escapes, linking it to an
+// Render a filesystem link as inline code without exposing Mull's escapes, linking it to an
 // optional destination.
 fn render_markdown_filesystem_link(target: &ContentText, url: Option<&str>) -> Markdown {
     // Use a fence longer than every backtick run occurring in the link text.
