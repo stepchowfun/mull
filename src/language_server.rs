@@ -683,10 +683,11 @@ fn completion_for_document(
     cursor: Position,
 ) -> Option<Vec<CompletionItem>> {
     // Complete a filesystem link from the directory containing the wiki.
+    let wiki_path = local_path(uri);
     let cursor_offset = byte_offset(source_contents, cursor)?;
     if let Some(context) = filesystem_link_context(source_contents, cursor_offset) {
         return Some(filesystem_link_completions(
-            &local_path(uri)?,
+            wiki_path.as_deref()?,
             source_contents,
             &context,
         ));
@@ -694,7 +695,7 @@ fn completion_for_document(
 
     // Complete a text link with the titles of the nodes in the wiki.
     let (wiki, replacement_source_range) =
-        text_link_context(local_path(uri).as_deref(), source_contents, cursor_offset)?;
+        text_link_context(wiki_path.as_deref(), source_contents, cursor_offset)?;
     Some(text_link_completions(
         &wiki,
         source_contents,
@@ -788,9 +789,7 @@ fn filesystem_link_completions(
 
     // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
-    let Ok(mut walker_builder) = wiki_tree_walker(wiki_directory.path()) else {
-        return Vec::new();
-    };
+    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
     walker_builder
         .max_depth(Some(context.directory.components().count() + 1))
         .filter_entry({
@@ -808,7 +807,10 @@ fn filesystem_link_completions(
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
         let path = wiki_directory.entry_path(&entry);
-        let (Some(file_type), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
+        let file_type = entry
+            .file_type()
+            .expect("Only standard input lacks a file type.");
+        let Some(name) = entry.file_name().to_str() else {
             continue;
         };
         if path.as_path().parent() != Some(context.directory.as_path()) {
@@ -819,7 +821,7 @@ fn filesystem_link_completions(
         if file_type.is_dir()
             && !matches!(
                 visibility(&wiki_directory, &path, &CancellationFlag::default()).assume_completed(),
-                Ok(Visibility::Visible),
+                Visibility::Visible,
             )
         {
             continue;
@@ -964,7 +966,8 @@ fn goto_definition_for_document(
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering doesn't require filesystem validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    let wiki_path = local_path(uri);
+    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
     let (node, source_range) = node_at(
         &wiki,
         source_contents,
@@ -974,7 +977,6 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
 
     // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
     // in a saved wiki, its filesystem links to their targets.
-    let wiki_path = local_path(uri);
     let wiki_directory = wiki_path
         .as_deref()
         .and_then(|wiki_path| WikiDirectory::new(wiki_path).ok());
@@ -984,11 +986,11 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
             kind: MarkupKind::Markdown,
             value: node
                 .to_markdown(|link| match link {
-                    Link::Text { title, .. } => reveal_range_command_url(
+                    Link::Text { title, .. } => Some(reveal_range_command_url(
                         uri,
                         source_contents,
                         wiki.text_nodes.get(title)?.title_source_range,
-                    ),
+                    )),
                     Link::Filesystem { target, .. } => Some(
                         filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
                             .as_str()
@@ -1002,14 +1004,10 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
 }
 
 // Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(
-    uri: &Uri,
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Option<String> {
+fn reveal_range_command_url(uri: &Uri, source_contents: &str, source_range: SourceRange) -> String {
     // Pass the document URI and UTF-16 destination range as positional command arguments.
     let range = lsp_range(source_contents, source_range);
-    Some(format!(
+    format!(
         "command:{REVEAL_RANGE_COMMAND}?{}",
         utf8_percent_encode(
             &serde_json::to_string(&(
@@ -1019,10 +1017,10 @@ fn reveal_range_command_url(
                 range.end.line,
                 range.end.character,
             ))
-            .ok()?,
+            .expect("A string and numbers should serialize to JSON."),
             NON_ALPHANUMERIC,
         ),
-    ))
+    )
 }
 
 // Locate every text link to the node at an editor position.
@@ -1278,18 +1276,17 @@ fn rename_text_node_for_document(
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
     let mut edits = vec![(node.title_source_range, new_title.to_owned())];
+    let escaped_title = ContentText::escape(new_title).into_string();
     for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
         if let Link::Text {
             title,
             source_range,
         } = link
             && title == &node.title
-            && let Some(target_source_range) =
-                text_link_target_source_range(source_contents, *source_range)
         {
             edits.push((
-                target_source_range,
-                ContentText::escape(new_title).into_string(),
+                text_link_target_source_range(source_contents, *source_range),
+                escaped_title.clone(),
             ));
         }
     }
@@ -1529,8 +1526,7 @@ fn filesystem_link_path_source_range(
     source_range: SourceRange,
 ) -> SourceRange {
     // Trim the link's inner text as the parser does. The leading `/` is part of the path.
-    let target_source_range = text_link_target_source_range(source_contents, source_range)
-        .expect("A parsed link should be delimited by square brackets.");
+    let target_source_range = text_link_target_source_range(source_contents, source_range);
     let target = &source_contents[target_source_range.start..target_source_range.end];
     let start = target_source_range.start + (target.len() - target.trim_start().len());
     SourceRange {
@@ -1671,15 +1667,11 @@ fn outermost_directory_emptied_by_rename(
         .parent()
         .filter(|directory| !directory.is_wiki_directory())
     {
-        if resolves_within(
-            &new_ancestor_absolute_path,
-            &wiki_directory.resolve(&directory),
-        )
-        .unwrap_or(true)
-        {
+        let absolute_directory = wiki_directory.resolve(&directory);
+        if resolves_within(&new_ancestor_absolute_path, &absolute_directory).unwrap_or(true) {
             break;
         }
-        let Ok(mut entries) = fs::read_dir(wiki_directory.resolve(&directory)) else {
+        let Ok(mut entries) = fs::read_dir(absolute_directory) else {
             break;
         };
         let contains_only_removed_entry = entries
@@ -1993,7 +1985,7 @@ fn node_at<'a>(
         wiki.text_nodes.get(title)?,
         match link_extent {
             LinkExtent::Whole => source_range,
-            LinkExtent::Target => text_link_target_source_range(source_contents, source_range)?,
+            LinkExtent::Target => text_link_target_source_range(source_contents, source_range),
         },
     ))
 }
@@ -2010,20 +2002,18 @@ fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
 }
 
 // Exclude the delimiters from a source range known to represent a complete link.
-fn text_link_target_source_range(
-    source_contents: &str,
-    source_range: SourceRange,
-) -> Option<SourceRange> {
+fn text_link_target_source_range(source_contents: &str, source_range: SourceRange) -> SourceRange {
     // Confirm the parser-provided range still addresses square-bracket delimiters.
     let target_source = source_contents
-        .get(source_range.start..source_range.end)?
-        .strip_prefix('[')?
-        .strip_suffix(']')?;
+        .get(source_range.start..source_range.end)
+        .and_then(|link_source| link_source.strip_prefix('['))
+        .and_then(|link_source| link_source.strip_suffix(']'))
+        .expect("A parsed link should be delimited by square brackets.");
     let start = source_range.start + '['.len_utf8();
-    Some(SourceRange {
+    SourceRange {
         start,
         end: start + target_source.len(),
-    })
+    }
 }
 
 // Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
@@ -2203,8 +2193,7 @@ mod tests {
     fn reveal_range_commands_encode_destinations() {
         let source = "# Home";
         let url =
-            reveal_range_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 })
-                .unwrap();
+            reveal_range_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 });
 
         assert_eq!(
             url,
@@ -2660,8 +2649,7 @@ mod tests {
             panic!("A node preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        let home_url =
-            reveal_range_command_url(&uri, source, SourceRange { start: 2, end: 6 }).unwrap();
+        let home_url = reveal_range_command_url(&uri, source, SourceRange { start: 2, end: 6 });
         assert_eq!(
             contents.value,
             format!(

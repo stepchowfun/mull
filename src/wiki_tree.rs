@@ -7,7 +7,7 @@ use std::path::Path;
 
 // Configure a walk of the wiki tree which follows directory symlinks, includes hidden entries, and
 // honors ignore files within the tree while excluding VCS metadata.
-pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Error> {
+pub fn wiki_tree_walker(wiki_directory: &Path) -> WalkBuilder {
     // Exclude VCS metadata, which never needs links.
     let mut overrides = OverrideBuilder::new(wiki_directory);
     overrides
@@ -15,7 +15,9 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Er
         .expect("The static .git override should be valid.")
         .add("!.hg/")
         .expect("The static .hg override should be valid.");
-    let overrides = overrides.build()?;
+    let overrides = overrides
+        .build()
+        .expect("The static overrides should compile.");
 
     // Consult ignore files only within the wiki tree, whether or not it's a Git repository.
     let mut walker_builder = WalkBuilder::new(wiki_directory);
@@ -26,7 +28,7 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> Result<WalkBuilder, ignore::Er
         .parents(false)
         .require_git(false)
         .overrides(overrides);
-    Ok(walker_builder)
+    walker_builder
 }
 
 // This describes whether a walk of the wiki tree reaches a path.
@@ -49,12 +51,9 @@ pub fn visibility(
     wiki_directory: &WikiDirectory,
     target: &SpelledPath,
     cancellation: &CancellationFlag,
-) -> Outcome<Result<Visibility, ignore::Error>> {
+) -> Outcome<Visibility> {
     // Keep only the ancestors of the target and the entries within it.
-    let mut walker_builder = match wiki_tree_walker(wiki_directory.path()) {
-        Ok(walker_builder) => walker_builder,
-        Err(error) => return Outcome::Completed(Err(error)),
-    };
+    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
     walker_builder.filter_entry({
         let wiki_directory = wiki_directory.clone();
         let target = target.clone();
@@ -78,15 +77,20 @@ pub fn visibility(
         if path == *target {
             reached = true;
         }
-        if path.starts_with(target) && entry.file_type().is_some_and(|t| t.is_file()) {
-            return Outcome::Completed(Ok(Visibility::Visible));
+        if path.starts_with(target)
+            && entry
+                .file_type()
+                .expect("Only standard input lacks a file type.")
+                .is_file()
+        {
+            return Outcome::Completed(Visibility::Visible);
         }
     }
 
     // Distinguish a directory without files from a path that the walk never reached.
-    Outcome::Completed(Ok(if reached {
+    Outcome::Completed(if reached {
         Visibility::Empty
     } else {
         Visibility::Ignored
-    }))
+    })
 }

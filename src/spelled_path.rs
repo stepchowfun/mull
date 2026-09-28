@@ -110,7 +110,7 @@ impl CodePath for SpelledPath {
 #[derive(Debug)]
 pub struct SpellingError {
     pub message: String,
-    pub reason: Option<Rc<io::Error>>,
+    pub reason: Option<Rc<dyn std::error::Error>>,
 }
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
