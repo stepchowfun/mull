@@ -50,7 +50,7 @@ If bees are few.
 Mull verifies these structural properties:
 
 - The wiki has valid syntax (links are closed, etc.).
-- Node titles are unique.
+- Nodes have unique titles.
 - Links have valid targets. A link can point to a `[node]`, `[/file]`, or `[/directory/]`.
 
 It also verifies these connectivity properties:
