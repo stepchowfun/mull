@@ -7,11 +7,11 @@ import { LanguageClient } from 'vscode-languageclient/node';
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
 
-// This private command reveals a source range for text links embedded in hover previews.
+// This private command lets the language server reveal a source range in a document.
 // [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = 'mull.revealRange';
 
-// This private command reveals the directory of a clicked directory link in the explorer.
+// This private command lets the language server reveal a directory in the explorer.
 // [group:reveal_in_explorer_command]
 const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
 
@@ -55,7 +55,7 @@ async function reportMissingMull(
   }
 }
 
-// Reveal the source range supplied by a trusted language-server hover.
+// Reveal a source range supplied by the language server.
 async function revealRange(
   uriString: string,
   startLine: number,
@@ -63,7 +63,7 @@ async function revealRange(
   endLine: number,
   endCharacter: number,
 ): Promise<void> {
-  // Open either a file-backed or untitled document and select the complete title.
+  // Open either a file-backed or untitled document and select the range, which may be empty.
   const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriString));
   const editor = await vscode.window.showTextDocument(document);
   const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
@@ -71,15 +71,15 @@ async function revealRange(
   editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 
-// Reveal a directory supplied by a language-server document link in the explorer.
+// Reveal a directory supplied by the language server in the explorer.
 async function revealInExplorer(uriString: string): Promise<void> {
-  // VS Code's command expects a URI object, which a command link can only pass as a string.
+  // VS Code's command expects a URI object, which the language server can only pass as a string.
   await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
 }
 
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Expose the navigation commands embedded in Mull's hover Markdown and document links.
+  // Expose the navigation commands that the language server's responses refer to.
   context.subscriptions.push(vscode.commands.registerCommand(REVEAL_RANGE_COMMAND, revealRange));
   context.subscriptions.push(
     vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),

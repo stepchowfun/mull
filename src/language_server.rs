@@ -50,12 +50,12 @@ use tower_lsp_server::{
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
-// This extension command reveals a source range for clickable text links in hover previews.
-// Keep this in sync with [group:reveal_range_command].
+// This extension command reveals a source range in a document. Keep this in sync with
+// [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
-// This extension command reveals the directory of a clicked directory link in the explorer.
-// Keep this in sync with [group:reveal_in_explorer_command].
+// This extension command reveals a directory in the explorer. Keep this in sync with
+// [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
@@ -1803,7 +1803,7 @@ fn code_action_for_document(
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
-            let (title, edit) = match fix {
+            let (title, edit, command) = match fix {
                 Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
                 Fix::CreateNode(title) => {
                     // Prepend the home node, and insert any other node after the last node that
@@ -1819,30 +1819,55 @@ fn code_action_for_document(
                                 .filter(|node| node.source_range.start < offset)
                                 .max_by_key(|node| node.source_range.start)
                         });
-                    let edit = if title == HOME_TITLE {
-                        let separator = if source_contents.is_empty() { "" } else { "\n" };
-                        TextEdit::new(
-                            Range::new(Position::new(0, 0), Position::new(0, 0)),
-                            format!("{TITLE_PREFIX}{title}\n{separator}"),
-                        )
+                    let (offset, before_title, after_title) = if title == HOME_TITLE {
+                        let after_title = if source_contents.is_empty() {
+                            "\n"
+                        } else {
+                            "\n\n"
+                        };
+                        (0, "", after_title)
                     } else if let Some(node) = linking_node {
-                        let end = lsp_position(source_contents, node.source_range.end);
-                        TextEdit::new(Range::new(end, end), format!("\n\n{TITLE_PREFIX}{title}"))
+                        (node.source_range.end, "\n\n", "")
                     } else {
-                        let separator = if source_contents.ends_with("\n\n") {
+                        let before_title = if source_contents.ends_with("\n\n") {
                             ""
                         } else if source_contents.ends_with('\n') {
                             "\n"
                         } else {
                             "\n\n"
                         };
-                        let end = lsp_position(source_contents, source_contents.len());
-                        TextEdit::new(
-                            Range::new(end, end),
-                            format!("{separator}{TITLE_PREFIX}{title}\n"),
-                        )
+                        (source_contents.len(), before_title, "\n")
                     };
-                    (format!("Create node {}", title.code_str()), edit)
+                    let insertion = lsp_position(source_contents, offset);
+                    let edit = TextEdit::new(
+                        Range::new(insertion, insertion),
+                        format!("{before_title}{TITLE_PREFIX}{title}{after_title}"),
+                    );
+
+                    // Place the cursor at the end of the new title once the edit is applied. The
+                    // source before the insertion is unchanged, and the inserted text leads up to
+                    // the title's end.
+                    let text_before_cursor = format!(
+                        "{}{before_title}{TITLE_PREFIX}{title}",
+                        &source_contents[..offset],
+                    );
+                    let cursor = lsp_position(&text_before_cursor, text_before_cursor.len());
+                    let command = Command::new(
+                        format!("Reveal node {}", title.code_str()),
+                        REVEAL_RANGE_COMMAND.to_owned(),
+                        Some(vec![
+                            uri.as_str().into(),
+                            cursor.line.into(),
+                            cursor.character.into(),
+                            cursor.line.into(),
+                            cursor.character.into(),
+                        ]),
+                    );
+                    (
+                        format!("Create node {}", title.code_str()),
+                        edit,
+                        Some(command),
+                    )
                 }
             };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
@@ -1853,6 +1878,7 @@ fn code_action_for_document(
                     changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
                     ..WorkspaceEdit::default()
                 }),
+                command,
                 is_preferred: Some(true),
                 ..CodeAction::default()
             }))
@@ -3722,8 +3748,10 @@ mod tests {
         assert!(document_link_for_document(&untitled_uri(), source).is_none());
     }
 
-    // Apply the single text edit of a code action's workspace edit to a source.
+    // Apply the single text edit of a code action's workspace edit to a source, then mark the
+    // cursor position that its command reveals with `|`.
     fn apply_code_action(uri: &Uri, source: &str, action: &CodeActionOrCommand) -> String {
+        // Apply the edit.
         let CodeActionOrCommand::CodeAction(action) = action else {
             panic!("A code action shouldn't be a bare command.");
         };
@@ -3735,6 +3763,18 @@ mod tests {
         let end = byte_offset(source, edit.range.end).unwrap();
         let mut applied = source.to_owned();
         applied.replace_range(start..end, &edit.new_text);
+
+        // Mark the empty range that the command reveals in the edited document.
+        let command = action.command.as_ref().unwrap();
+        assert_eq!(command.command, "mull.revealRange");
+        let arguments = command.arguments.as_ref().unwrap();
+        assert_eq!(arguments[0], uri.as_str());
+        assert_eq!(arguments[1..3], arguments[3..5]);
+        let cursor = Position::new(
+            u32::try_from(arguments[1].as_u64().unwrap()).unwrap(),
+            u32::try_from(arguments[2].as_u64().unwrap()).unwrap(),
+        );
+        applied.insert(byte_offset(&applied, cursor).unwrap(), '|');
         applied
     }
 
@@ -3768,8 +3808,8 @@ mod tests {
 
         // Confirm that the created node makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
-        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting");
-        assert!(diagnostics(&uri, &applied).is_empty());
+        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting|");
+        assert!(diagnostics(&uri, &applied.replace('|', "")).is_empty());
     }
 
     // Offer to create a missing node despite a syntax error elsewhere in the wiki.
@@ -3784,7 +3824,21 @@ mod tests {
 
         assert_eq!(
             apply_code_action(&uri, source, action),
-            "# Home\n\n[Greeting] Unexpected]\n\n# Greeting",
+            "# Home\n\n[Greeting] Unexpected]\n\n# Greeting|",
+        );
+    }
+
+    // Place the cursor after a created title containing characters outside the Basic Multilingual
+    // Plane, whose editor columns are counted in UTF-16 code units.
+    #[test]
+    fn code_actions_reveal_unicode_titles() {
+        let source = "# Home\n\n[Grüße 😀]";
+        let uri = untitled_uri();
+        let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
+
+        assert_eq!(
+            apply_code_action(&uri, source, &actions[0]),
+            "# Home\n\n[Grüße 😀]\n\n# Grüße 😀|",
         );
     }
 
@@ -3797,7 +3851,7 @@ mod tests {
 
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Greeting\n\n# Last\n\n[Greeting]\n",
+            "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Greeting|\n\n# Last\n\n[Greeting]\n",
         );
     }
 
@@ -3820,13 +3874,13 @@ mod tests {
         // Insert after the second node when the diagnostic spans into it.
         assert_eq!(
             apply(fix_diagnostic(Position::new(4, 0), Position::new(8, 3))),
-            "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n\n# New\n",
+            "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n\n# New|\n",
         );
 
         // Insert after the first node when the diagnostic ends in the blank line after it.
         assert_eq!(
             apply(fix_diagnostic(Position::new(4, 0), Position::new(7, 0))),
-            "# Home\n\n[First]\n\n# First\n\nText.\n\n# New\n\n# Second\n\nText.\n",
+            "# Home\n\n[First]\n\n# First\n\nText.\n\n# New|\n\n# Second\n\nText.\n",
         );
     }
 
@@ -3840,7 +3894,7 @@ mod tests {
         let actions = code_action_for_document(&uri, source, &stale_diagnostics).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n# Greeting\n",
+            "# Home\n\n# Greeting|\n",
         );
     }
 
@@ -3868,15 +3922,15 @@ mod tests {
         assert_eq!(code_action.title, "Create node `Home`");
         assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
         let applied = apply_code_action(&uri, "", action);
-        assert_eq!(applied, "# Home\n");
-        assert!(diagnostics(&uri, &applied).is_empty());
+        assert_eq!(applied, "# Home|\n");
+        assert!(diagnostics(&uri, &applied.replace('|', "")).is_empty());
 
         // Separate the home node from the nodes that follow it.
         let source = "# Greeting\n";
         let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n# Greeting\n",
+            "# Home|\n\n# Greeting\n",
         );
     }
 
