@@ -30,7 +30,9 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
 
 // Parse source contents into a scored wiki along with any syntax errors. The wiki retains as much
 // of the source as possible so it can still be validated, but it omits the content of duplicate
-// nodes, invalid titles, and anything before the first title, so it mustn't be rendered.
+// nodes, invalid titles, and anything before the first title, so it mustn't be rendered. If there
+// are syntax errors, a node's content may also have delimiters which don't correspond to its links,
+// so its Markdown mustn't be rendered either.
 pub fn parse_with_recovery(
     source_path: Option<&Path>,
     source_contents: &str,
