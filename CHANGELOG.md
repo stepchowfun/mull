@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-09-28
+
+### Changed
+- Reported validation errors, like broken links and unreachable nodes, even when the wiki has syntax errors. A node with a syntax error keeps the links in it which are well-formed, so the nodes and files it links to aren't reported as unlinked. The links in a duplicate node, under an invalid title, or before the first title are still ignored until the syntax error is fixed. A wiki with syntax errors is still never formatted.
+- Reported syntax errors in the content under an invalid title or before the first title.
+
 ## [0.33.2] - 2026-09-27
 
 ### Changed

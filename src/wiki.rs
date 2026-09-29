@@ -60,6 +60,8 @@ pub struct TextNode {
 impl TextNode {
     // Render the node for a Markdown preview, linking each link to the destination the callback
     // provides, if any. The prose around links becomes Markdown once Mull's escapes are removed.
+    // The node must come from a wiki without syntax errors, since a recovered node's content may
+    // have delimiters which don't correspond to its links.
     pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
     where
         F: FnMut(&Link) -> Option<String>,
@@ -71,24 +73,25 @@ impl TextNode {
         let mut link_start = None;
         let mut links = self.links.iter();
         for (index, character) in unescaped_characters(source) {
-            // Track complete unescaped delimiter pairs, which the parser guarantees are valid.
+            // Track complete unescaped delimiter pairs, which are valid in a node without syntax
+            // errors.
             match character {
                 '[' => link_start = Some(index),
                 ']' => {
                     // Copy the prose before the link, then render the link the parser recorded for
                     // this delimiter pair.
-                    let start = link_start.take().expect(
-                        "The parser should reject a closing delimiter without an opening one.",
-                    );
+                    let start = link_start
+                        .take()
+                        .expect("A node without syntax errors should have balanced delimiters.");
                     content.push_str(
                         &render_markdown_before_link(&ContentText::from_source(
                             &source[copied_through..start],
                         ))
                         .0,
                     );
-                    let link = links
-                        .next()
-                        .expect("Every link in a node's content should be parsed.");
+                    let link = links.next().expect(
+                        "A node without syntax errors should have a link per delimiter pair.",
+                    );
                     let url = link_url(link);
                     content.push_str(
                         &match link {
