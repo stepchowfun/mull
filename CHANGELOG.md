@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0] - 2026-09-29
+
+### Changed
+- Kept navigation, hover previews, references, link highlighting, the document outline, clickable filesystem links, completion, and quick fixes working in a wiki with syntax errors. A hover preview of a node with a syntax error shows only its title.
+- Explained that renaming requires fixing the wiki's syntax errors first, rather than silently doing nothing.
+
 ## [0.34.0] - 2026-09-28
 
 ### Changed
