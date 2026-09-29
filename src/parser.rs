@@ -29,10 +29,8 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
 }
 
 // Parse source contents into a scored wiki along with any syntax errors. The wiki retains as much
-// of the source as possible so it can still be validated, but it omits the content of duplicate
-// nodes, invalid titles, and anything before the first title, so it mustn't be rendered. If there
-// are syntax errors, a node's content may also have delimiters which don't correspond to its links,
-// so its Markdown mustn't be rendered either.
+// of the source as possible so it can still be validated and navigated, but it omits the content of
+// duplicate nodes, invalid titles, and anything before the first title, so it mustn't be rendered.
 pub fn parse_with_recovery(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -240,6 +238,7 @@ fn finish_node(
             depth: None,
             source_range,
             title_source_range,
+            has_syntax_errors: !content_errors.is_empty(),
         },
     );
     content_errors
@@ -870,6 +869,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         );
 
         assert_eq!(errors.len(), 5);
+        assert!(wiki.text_nodes["Home"].has_syntax_errors);
         assert_eq!(
             link_targets(&wiki.text_nodes["Home"].links),
             vec![
@@ -889,6 +889,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
 
         assert_eq!(errors.len(), 1);
         assert_eq!(wiki.text_nodes["Greeting"].depth, Some(1));
+        assert!(!wiki.text_nodes["Greeting"].has_syntax_errors);
     }
 
     // Omit duplicate nodes and regions without valid titles, but report the errors in their

@@ -61,6 +61,9 @@ const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
+// Explain why renaming is refused in a wiki with syntax errors [ref:rename_syntax_errors].
+const RENAME_SYNTAX_ERRORS_MESSAGE: &str = "Fix the syntax errors before renaming.";
+
 // Serve language-server requests over standard input and output until the client disconnects.
 pub async fn run() {
     // Keep ANSI terminal escapes out of protocol diagnostics.
@@ -540,12 +543,12 @@ impl LanguageServer for Backend {
         let Some(contents) = self.document_contents(&params.text_document.uri) else {
             return Ok(None);
         };
-        Ok(document_symbol_for_document(
+        Ok(Some(document_symbol_for_document(
             &params.text_document.uri,
             &contents,
             self.supports_hierarchical_document_symbols
                 .load(Ordering::Relaxed),
-        ))
+        )))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -885,10 +888,10 @@ fn text_link_context(
     source_contents: &str,
     byte_offset: usize,
 ) -> Option<(Wiki, SourceRange)> {
-    // Prefer the unchanged source when the active link is already closed.
-    if let Ok(wiki) = parser::parse(source_path, source_contents)
-        && let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset)
-    {
+    // Prefer the unchanged source when the active link is already closed. Recover from syntax
+    // errors so errors elsewhere in the wiki don't prevent completion.
+    let (wiki, _) = parser::parse_with_recovery(source_path, source_contents);
+    if let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset) {
         let source_range = *source_range;
         return Some((wiki, source_range));
     }
@@ -896,7 +899,7 @@ fn text_link_context(
     // Close a link at the cursor temporarily so completion works while it's being authored.
     let mut completed_source = source_contents.to_owned();
     completed_source.insert(byte_offset, ']');
-    let wiki = parser::parse(source_path, &completed_source).ok()?;
+    let (wiki, _) = parser::parse_with_recovery(source_path, &completed_source);
     let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset) else {
         return None;
     };
@@ -944,8 +947,9 @@ fn goto_definition_for_document(
     source_contents: &str,
     cursor: Position,
 ) -> Option<GotoDefinitionResponse> {
-    // Parse only the wiki syntax because navigation doesn't require filesystem validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    // Parse only the wiki syntax because navigation doesn't require filesystem validation, and
+    // recover from syntax errors so navigation keeps working while they're fixed.
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let (node, origin_source_range) = node_at(
         &wiki,
         source_contents,
@@ -965,9 +969,10 @@ fn goto_definition_for_document(
 
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering doesn't require filesystem validation.
+    // Parse only the wiki syntax because hovering doesn't require filesystem validation, and
+    // recover from syntax errors so previews keep working while they're fixed.
     let wiki_path = local_path(uri);
-    let wiki = parser::parse(wiki_path.as_deref(), source_contents).ok()?;
+    let (wiki, _) = parser::parse_with_recovery(wiki_path.as_deref(), source_contents);
     let (node, source_range) = node_at(
         &wiki,
         source_contents,
@@ -1030,8 +1035,9 @@ fn references_for_document(
     cursor: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
-    // Parse only the wiki syntax because finding references doesn't require validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    // Parse only the wiki syntax because finding references doesn't require validation, and recover
+    // from syntax errors so references can be found while they're fixed.
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let (node, _source_range) = node_at(
         &wiki,
         source_contents,
@@ -1082,8 +1088,9 @@ fn document_highlight_for_document(
     source_contents: &str,
     cursor: Position,
 ) -> Option<Vec<DocumentHighlight>> {
-    // Parse only the wiki syntax because document highlights don't require validation.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    // Parse only the wiki syntax because document highlights don't require validation, and recover
+    // from syntax errors so highlights keep working while they're fixed.
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let byte_offset = byte_offset(source_contents, cursor)?;
 
     // Distinguish a text-node declaration from its references.
@@ -1146,9 +1153,11 @@ fn prepare_rename_for_document(
     cursor: Position,
     supports_file_renames: bool,
 ) -> std::result::Result<Option<PrepareRenameResponse>, String> {
-    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
+    // Resolve the cursor in an editor snapshot without syntax errors, which need not pass semantic
+    // validation. A malformed link to the renamed node wouldn't be updated
+    // [tag:rename_syntax_errors].
     let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Ok(None);
+        return Err(RENAME_SYNTAX_ERRORS_MESSAGE.to_owned());
     };
     let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
         return Ok(None);
@@ -1211,9 +1220,10 @@ fn rename_for_document(
     new_name: &str,
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the cursor in a parseable editor snapshot, which need not pass semantic validation.
+    // Resolve the cursor in an editor snapshot without syntax errors, which need not pass semantic
+    // validation [ref:rename_syntax_errors].
     let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Ok(None);
+        return Err(RENAME_SYNTAX_ERRORS_MESSAGE.to_owned());
     };
     let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
         return Ok(None);
@@ -1728,15 +1738,16 @@ fn document_symbol_for_document(
     uri: &Uri,
     source_contents: &str,
     supports_hierarchy: bool,
-) -> Option<DocumentSymbolResponse> {
-    // Parse syntax without semantic validation so structurally valid nodes remain navigable.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+) -> DocumentSymbolResponse {
+    // Parse syntax without semantic validation, recovering from syntax errors so the nodes remain
+    // navigable while they're fixed.
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
     // Use separate node and title ranges when the client supports hierarchical symbols, and locate
     // each flat symbol at its title otherwise.
-    Some(if supports_hierarchy {
+    if supports_hierarchy {
         DocumentSymbolResponse::Nested(
             nodes
                 .into_iter()
@@ -1769,7 +1780,7 @@ fn document_symbol_for_document(
                 })
                 .collect(),
         )
-    })
+    }
 }
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
@@ -1792,8 +1803,9 @@ fn code_action_for_document(
         fixes.entry(fix).or_default().push(diagnostic.clone());
     }
 
-    // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made.
-    let wiki = parser::parse(local_path(uri).as_deref(), source_contents).ok()?;
+    // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made,
+    // recovering from syntax errors since validation reports missing nodes despite them.
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
@@ -1860,9 +1872,10 @@ fn code_action_for_document(
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
 // directory is revealed in the explorer.
 fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<DocumentLink>> {
-    // Resolve filesystem links from the directory containing a saved, parseable wiki.
+    // Resolve filesystem links from the directory containing a saved wiki, recovering from syntax
+    // errors so the links remain clickable while they're fixed.
     let wiki_path = local_path(uri)?;
-    let wiki = parser::parse(Some(&wiki_path), source_contents).ok()?;
+    let (wiki, _) = parser::parse_with_recovery(Some(&wiki_path), source_contents);
     let wiki_directory = WikiDirectory::new(&wiki_path).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
@@ -2204,6 +2217,25 @@ mod tests {
         );
     }
 
+    // Keep the outline of a wiki with syntax errors.
+    #[test]
+    fn document_symbols_recover_from_syntax_errors() {
+        let source = "# Zebra\n\nUnexpected]\n\n# Alpha";
+        let DocumentSymbolResponse::Nested(symbols) =
+            document_symbol_for_document(&untitled_uri(), source, true)
+        else {
+            panic!("Text nodes should be represented as nested document symbols.");
+        };
+
+        assert_eq!(
+            symbols
+                .iter()
+                .map(|symbol| symbol.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Zebra", "Alpha"],
+        );
+    }
+
     // Expose text nodes in source order for saved and untitled editor outlines.
     #[test]
     fn document_symbols_describe_text_nodes() {
@@ -2212,7 +2244,7 @@ mod tests {
         let uris = [untitled_uri(), Uri::from_file_path(wiki.path()).unwrap()];
 
         for uri in uris {
-            let response = document_symbol_for_document(&uri, source, true).unwrap();
+            let response = document_symbol_for_document(&uri, source, true);
             let DocumentSymbolResponse::Nested(symbols) = response else {
                 panic!("Text nodes should be represented as nested document symbols.");
             };
@@ -2247,7 +2279,7 @@ mod tests {
             );
 
             // Fall back to universally supported flat symbols at each title range.
-            let response = document_symbol_for_document(&uri, source, false).unwrap();
+            let response = document_symbol_for_document(&uri, source, false);
             let DocumentSymbolResponse::Flat(symbols) = response else {
                 panic!("Clients without hierarchy support should receive flat symbols.");
             };
@@ -2379,6 +2411,20 @@ mod tests {
             panic!("A completion should replace the link.");
         };
         assert_eq!(edit.range, link_range);
+    }
+
+    // Complete an unfinished link despite a syntax error elsewhere in the wiki.
+    #[test]
+    fn completions_recover_from_syntax_errors() {
+        let source = "# Home\n\n[Gre\n\n# Greeting\n\nUnexpected]";
+        let completions =
+            completion_for_document(&untitled_uri(), source, Position::new(2, 4)).unwrap();
+
+        assert!(
+            completions
+                .iter()
+                .any(|completion| completion.label == "Greeting"),
+        );
     }
 
     // Close an unfinished link temporarily while calculating its completions.
@@ -2939,6 +2985,28 @@ mod tests {
                 range: Range::new(Position::new(2, 1), Position::new(2, 9)),
                 placeholder: "Greeting".to_owned(),
             },
+        );
+    }
+
+    // Refuse to rename in a wiki with syntax errors, which might hide links to the renamed node.
+    #[test]
+    fn rename_rejects_syntax_errors() {
+        let source = "# Home\n\n[Greeting] [Gree[ting]\n\n# Greeting";
+
+        assert_eq!(
+            prepare_rename_for_document(&untitled_uri(), source, Position::new(4, 3), false),
+            Err("Fix the syntax errors before renaming.".to_owned()),
+        );
+        assert_eq!(
+            rename_for_document(
+                &untitled_uri(),
+                source,
+                7,
+                Position::new(4, 3),
+                "Salutation",
+                ALL_FILE_OPERATIONS,
+            ),
+            Err("Fix the syntax errors before renaming.".to_owned()),
         );
     }
 
@@ -3590,6 +3658,17 @@ mod tests {
         }
     }
 
+    // Keep filesystem links clickable in a wiki with syntax errors.
+    #[test]
+    fn document_links_recover_from_syntax_errors() {
+        let source = "# Home\n\n[/notes.txt] Unexpected]";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(document_link_for_document(&uri, source).unwrap().len(), 1);
+    }
+
     // Link files to themselves and directories to a command that reveals them, skipping links
     // whose targets are missing, of the wrong kind, or spelled differently than on disk.
     #[test]
@@ -3686,6 +3765,22 @@ mod tests {
         let applied = apply_code_action(&uri, source, action);
         assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting");
         assert!(diagnostics(&uri, &applied).is_empty());
+    }
+
+    // Offer to create a missing node despite a syntax error elsewhere in the wiki.
+    #[test]
+    fn code_actions_recover_from_syntax_errors() {
+        let source = "# Home\n\n[Greeting] Unexpected]";
+        let uri = untitled_uri();
+        let actions = code_action_for_document(&uri, source, &diagnostics(&uri, source)).unwrap();
+        let [action] = actions.as_slice() else {
+            panic!("A missing destination should have exactly one code action.");
+        };
+
+        assert_eq!(
+            apply_code_action(&uri, source, action),
+            "# Home\n\n[Greeting] Unexpected]\n\n# Greeting",
+        );
     }
 
     // Insert the created node right after the first node linking to it, between blank lines.
@@ -3812,16 +3907,35 @@ mod tests {
         assert!(references_for_document(&uri, source, Position::new(2, 4), false).is_none());
     }
 
-    // Omit navigation results when the deliberately simple parser can't produce a wiki.
+    // Keep navigating a wiki with syntax errors, previewing only the title of a node with them.
     #[test]
-    fn navigation_requires_parseable_source() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected]";
+    fn navigation_recovers_from_syntax_errors() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected] [Home]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(goto_definition_for_document(&uri, source, Position::new(2, 4)).is_none());
-        assert!(hover_for_document(&uri, source, Position::new(2, 4)).is_none());
-        assert!(references_for_document(&uri, source, Position::new(2, 4), false).is_none());
+        let Some(GotoDefinitionResponse::Link(links)) =
+            goto_definition_for_document(&uri, source, Position::new(2, 4))
+        else {
+            panic!("Navigation should produce a location link.");
+        };
+        assert_eq!(
+            links[0].target_selection_range,
+            Range::new(Position::new(4, 2), Position::new(4, 10)),
+        );
+        assert_eq!(
+            references_for_document(&uri, source, Position::new(0, 3), false)
+                .unwrap()
+                .len(),
+            1,
+        );
+        let HoverContents::Markup(contents) = hover_for_document(&uri, source, Position::new(2, 4))
+            .unwrap()
+            .contents
+        else {
+            panic!("A node preview should use markup content.");
+        };
+        assert_eq!(contents.value, "# Greeting");
     }
 
     #[test]

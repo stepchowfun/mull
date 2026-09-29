@@ -55,17 +55,23 @@ pub struct TextNode {
     pub depth: Option<usize>, // Minimum text-link distance from the root
     pub source_range: SourceRange, // The complete node without leading or trailing whitespace
     pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
+    pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
 }
 
 impl TextNode {
     // Render the node for a Markdown preview, linking each link to the destination the callback
     // provides, if any. The prose around links becomes Markdown once Mull's escapes are removed.
-    // The node must come from a wiki without syntax errors, since a recovered node's content may
-    // have delimiters which don't correspond to its links.
     pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
     where
         F: FnMut(&Link) -> Option<String>,
     {
+        // Render only the title of a node with syntax errors, since its content may have delimiters
+        // which don't correspond to its links.
+        let title = render_markdown_literal(&self.title).0;
+        if self.has_syntax_errors {
+            return Markdown(format!("{TITLE_PREFIX}{title}"));
+        }
+
         // Render each parsed link with its semantic destination while retaining surrounding prose.
         let source = self.content.as_str();
         let mut content = String::new();
@@ -112,7 +118,6 @@ impl TextNode {
         content.push_str(&ContentText::from_source(&source[copied_through..]).unescape());
 
         // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
-        let title = render_markdown_literal(&self.title).0;
         Markdown(if content.is_empty() {
             format!("{TITLE_PREFIX}{title}")
         } else {
@@ -468,6 +473,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
@@ -483,6 +489,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(node.to_string(), "# Greeting\n");
@@ -502,6 +509,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(
@@ -534,6 +542,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(
@@ -543,6 +552,22 @@ mod tests {
                 r"\![&#91;Home&#93;](url) \\[&#91;Home&#93;](url)",
             ),
         );
+    }
+
+    // Render only the title of a node with syntax errors, whose delimiters may not match its links.
+    #[test]
+    fn node_markdown_syntax_errors() {
+        let node = TextNode {
+            title: "Greeting".to_owned(),
+            content: ContentText::from_source("Unexpected] [Gree[ting]"),
+            links: Vec::new(),
+            depth: None,
+            source_range: SOURCE_RANGE,
+            title_source_range: SOURCE_RANGE,
+            has_syntax_errors: true,
+        };
+
+        assert_eq!(node.to_markdown(|_link| None).into_string(), "# Greeting");
     }
 
     // Render titles literally rather than as Markdown syntax.
@@ -555,6 +580,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(
@@ -576,6 +602,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(
@@ -606,6 +633,7 @@ mod tests {
             depth: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
+            has_syntax_errors: false,
         };
 
         assert_eq!(
@@ -706,6 +734,7 @@ mod tests {
                     depth: None,
                     source_range: SOURCE_RANGE,
                     title_source_range: SOURCE_RANGE,
+                    has_syntax_errors: false,
                 },
             )]),
         };
@@ -727,6 +756,7 @@ mod tests {
                         depth: Some(1),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
+                        has_syntax_errors: false,
                     },
                 ),
                 (
@@ -738,6 +768,7 @@ mod tests {
                         depth: Some(0),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
+                        has_syntax_errors: false,
                     },
                 ),
                 (
@@ -749,6 +780,7 @@ mod tests {
                         depth: None,
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
+                        has_syntax_errors: false,
                     },
                 ),
             ]),
