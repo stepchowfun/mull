@@ -61,9 +61,6 @@ const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
-// Explain why renaming is refused in a wiki with syntax errors [ref:rename_syntax_errors].
-const RENAME_SYNTAX_ERRORS_MESSAGE: &str = "Fix the syntax errors before renaming.";
-
 // Serve language-server requests over standard input and output until the client disconnects.
 pub async fn run() {
     // Keep ANSI terminal escapes out of protocol diagnostics.
@@ -1153,12 +1150,9 @@ fn prepare_rename_for_document(
     cursor: Position,
     supports_file_renames: bool,
 ) -> std::result::Result<Option<PrepareRenameResponse>, String> {
-    // Resolve the cursor in an editor snapshot without syntax errors, which need not pass semantic
-    // validation. A malformed link to the renamed node wouldn't be updated
-    // [tag:rename_syntax_errors].
-    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Err(RENAME_SYNTAX_ERRORS_MESSAGE.to_owned());
-    };
+    // Resolve the cursor in an editor snapshot, which need not pass semantic validation, recovering
+    // from syntax errors [ref:rename_despite_syntax_errors].
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
         return Ok(None);
     };
@@ -1220,11 +1214,11 @@ fn rename_for_document(
     new_name: &str,
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the cursor in an editor snapshot without syntax errors, which need not pass semantic
-    // validation [ref:rename_syntax_errors].
-    let Ok(wiki) = parser::parse(local_path(uri).as_deref(), source_contents) else {
-        return Err(RENAME_SYNTAX_ERRORS_MESSAGE.to_owned());
-    };
+    // Resolve the cursor in an editor snapshot, which need not pass semantic validation, recovering
+    // from syntax errors. A malformed link to the renamed node isn't updated, but it's reported as
+    // a broken link once the syntax errors are fixed, since the old name no longer exists
+    // [tag:rename_despite_syntax_errors].
+    let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
     let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
         return Ok(None);
     };
@@ -2988,25 +2982,36 @@ mod tests {
         );
     }
 
-    // Refuse to rename in a wiki with syntax errors, which might hide links to the renamed node.
+    // Rename in a wiki with syntax errors, leaving malformed links unchanged.
     #[test]
-    fn rename_rejects_syntax_errors() {
+    fn rename_recovers_from_syntax_errors() {
         let source = "# Home\n\n[Greeting] [Gree[ting]\n\n# Greeting";
 
         assert_eq!(
             prepare_rename_for_document(&untitled_uri(), source, Position::new(4, 3), false),
-            Err("Fix the syntax errors before renaming.".to_owned()),
+            Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                range: Range::new(Position::new(4, 2), Position::new(4, 10)),
+                placeholder: "Greeting".to_owned(),
+            })),
         );
+        let workspace_edit = rename_for_document(
+            &untitled_uri(),
+            source,
+            7,
+            Position::new(4, 3),
+            "Salutation",
+            ALL_FILE_OPERATIONS,
+        )
+        .unwrap()
+        .unwrap();
+        let edits = &workspace_edit.changes.unwrap()[&untitled_uri()];
+
         assert_eq!(
-            rename_for_document(
-                &untitled_uri(),
-                source,
-                7,
-                Position::new(4, 3),
-                "Salutation",
-                ALL_FILE_OPERATIONS,
-            ),
-            Err("Fix the syntax errors before renaming.".to_owned()),
+            edits
+                .iter()
+                .map(|edit| edit.range.start)
+                .collect::<Vec<_>>(),
+            vec![Position::new(2, 1), Position::new(4, 2)],
         );
     }
 
