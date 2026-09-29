@@ -7,7 +7,8 @@ import { LanguageClient } from 'vscode-languageclient/node';
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
 
-// This private command reveals a source range for text links embedded in hover previews.
+// This private command reveals a source range for text links embedded in hover previews and for
+// nodes created by quick fixes.
 // [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = 'mull.revealRange';
 
@@ -55,7 +56,7 @@ async function reportMissingMull(
   }
 }
 
-// Reveal the source range supplied by a trusted language-server hover.
+// Reveal the source range supplied by a trusted language-server hover or quick fix.
 async function revealRange(
   uriString: string,
   startLine: number,
@@ -63,7 +64,7 @@ async function revealRange(
   endLine: number,
   endCharacter: number,
 ): Promise<void> {
-  // Open either a file-backed or untitled document and select the complete title.
+  // Open either a file-backed or untitled document and select the range, which may be empty.
   const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriString));
   const editor = await vscode.window.showTextDocument(document);
   const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
@@ -79,7 +80,8 @@ async function revealInExplorer(uriString: string): Promise<void> {
 
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Expose the navigation commands embedded in Mull's hover Markdown and document links.
+  // Expose the navigation commands embedded in Mull's hover Markdown, document links, and quick
+  // fixes.
   context.subscriptions.push(vscode.commands.registerCommand(REVEAL_RANGE_COMMAND, revealRange));
   context.subscriptions.push(
     vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),
