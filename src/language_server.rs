@@ -50,12 +50,12 @@ use tower_lsp_server::{
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
-// This extension command reveals a source range for clickable text links in hover previews and
-// for nodes created by quick fixes. Keep this in sync with [group:reveal_range_command].
+// This extension command reveals a source range in a document. Keep this in sync with
+// [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
-// This extension command reveals the directory of a clicked directory link in the explorer.
-// Keep this in sync with [group:reveal_in_explorer_command].
+// This extension command reveals a directory in the explorer. Keep this in sync with
+// [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
