@@ -7,22 +7,43 @@ use crate::{
         TextNode, Wiki, unescaped_characters,
     },
 };
-use std::path::Path;
+use std::{iter, path::Path};
 
-// This struct retains the source information needed to finish a node at its next boundary.
+// This struct retains the source information needed to finish a region at its next boundary. A
+// region belongs to a node only if its title is valid.
 struct PendingNode {
-    title: String,
+    title: Option<(String, SourceRange)>,
     source_start: usize,
     content_start: usize,
-    title_source_range: SourceRange,
 }
 
-// Parse source contents into a scored wiki with source ranges for every node and link.
+// Parse source contents into a scored wiki with source ranges for every node and link, rejecting
+// source contents with any syntax errors.
 pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
-    // Accumulate parsed nodes, errors, and the node currently being read.
+    let (wiki, errors) = parse_with_recovery(source_path, source_contents);
+    if errors.is_empty() {
+        Ok(wiki)
+    } else {
+        Err(errors)
+    }
+}
+
+// Parse source contents into a scored wiki along with any syntax errors. The wiki retains as much
+// of the source as possible so it can still be validated, but it omits the content of duplicate
+// nodes, invalid titles, and anything before the first title, so it mustn't be rendered.
+pub fn parse_with_recovery(
+    source_path: Option<&Path>,
+    source_contents: &str,
+) -> (Wiki, Vec<Error>) {
+    // Accumulate parsed nodes, errors, and the region currently being read, which starts as the
+    // untitled region before the first title.
     let mut wiki = Wiki::default();
     let mut errors = Vec::<Error>::new();
-    let mut pending_node = None::<PendingNode>;
+    let mut pending_node = PendingNode {
+        title: None,
+        source_start: 0,
+        content_start: 0,
+    };
     let mut has_seen_title_marker = false;
     let mut reported_content_before_title = false;
     let mut line_start = 0;
@@ -49,32 +70,33 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
             // Treat invalid titles as structural boundaries for subsequent content.
             has_seen_title_marker = true;
 
-            // Finish the preceding node before starting the next one.
-            if let Some(previous_node) = pending_node.take()
-                && let Err(node_errors) = insert_node(
-                    &mut wiki,
-                    previous_node,
-                    line_start,
-                    source_path,
-                    source_contents,
-                )
-            {
-                errors.extend(node_errors);
-            }
+            // Finish the preceding region before starting the next one.
+            errors.extend(finish_node(
+                &mut wiki,
+                pending_node,
+                line_start,
+                source_path,
+                source_contents,
+            ));
 
-            // Start a node for the title if it's valid.
-            match parse_title(raw_title, source_path, source_contents, line_source_range) {
-                Ok(title_source_range) => {
-                    pending_node = Some(PendingNode {
-                        title: source_contents[title_source_range.start..title_source_range.end]
+            // Start a region which belongs to a node if the title is valid.
+            let title =
+                match parse_title(raw_title, source_path, source_contents, line_source_range) {
+                    Ok(title_source_range) => Some((
+                        source_contents[title_source_range.start..title_source_range.end]
                             .to_owned(),
-                        source_start: line_start,
-                        content_start: next_line_start,
                         title_source_range,
-                    });
-                }
-                Err(error) => errors.push(error),
-            }
+                    )),
+                    Err(error) => {
+                        errors.push(error);
+                        None
+                    }
+                };
+            pending_node = PendingNode {
+                title,
+                source_start: line_start,
+                content_start: next_line_start,
+            };
         } else if !has_seen_title_marker
             && !reported_content_before_title
             && !line.trim().is_empty()
@@ -96,26 +118,18 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, 
         line_start = next_line_start;
     }
 
-    // Finish the final node at the end of the wiki.
-    if let Some(final_node) = pending_node
-        && let Err(node_errors) = insert_node(
-            &mut wiki,
-            final_node,
-            source_contents.len(),
-            source_path,
-            source_contents,
-        )
-    {
-        errors.extend(node_errors);
-    }
+    // Finish the final region at the end of the wiki.
+    errors.extend(finish_node(
+        &mut wiki,
+        pending_node,
+        source_contents.len(),
+        source_path,
+        source_contents,
+    ));
 
-    // Return all node errors together, or score and return the parsed wiki.
-    if errors.is_empty() {
-        populate_depths(&mut wiki);
-        Ok(wiki)
-    } else {
-        Err(errors)
-    }
+    // Score the wiki and return it with every error in source order.
+    populate_depths(&mut wiki);
+    (wiki, errors)
 }
 
 // Locate the title that follows a title marker, rejecting titles that are empty after surrounding
@@ -162,20 +176,21 @@ fn parse_title(
     }
 }
 
-// Add a completed node after collecting all of its parsing errors.
-fn insert_node(
+// Parse a completed region's content, reporting its errors, and add it as a node if it has a valid
+// title that hasn't already been used. A node with errors in its content retains the links which
+// parsed successfully.
+fn finish_node(
     wiki: &mut Wiki,
     pending_node: PendingNode,
     source_end: usize,
     source_path: Option<&Path>,
     source_contents: &str,
-) -> Result<(), Vec<Error>> {
-    // Locate the trimmed node and its trimmed content in the original source.
+) -> Vec<Error> {
+    // Locate the trimmed region and its trimmed content in the original source.
     let PendingNode {
         title,
         source_start,
         content_start,
-        title_source_range,
     } = pending_node;
     let source_range = trim_source_range(
         source_contents,
@@ -191,37 +206,41 @@ fn insert_node(
             end: source_end,
         },
     );
-    let (content, links, mut errors) =
+    let (content, links, content_errors) =
         parse_content(source_path, source_contents, content_source_range);
 
-    // Reject a title that has already been used.
+    // Discard the content of a region without a valid title, whose title error was already
+    // reported.
+    let Some((title, title_source_range)) = title else {
+        return content_errors;
+    };
+
+    // Reject a title that has already been used, reporting it before the errors in its content.
     if wiki.text_nodes.contains_key(&title) {
-        errors.push(Error::new(
+        return iter::once(Error::new(
             &format!("Node {} already exists.", title.code_str()),
             source_path,
             Some((source_contents, title_source_range)),
             None,
             None,
-        ));
+        ))
+        .chain(content_errors)
+        .collect();
     }
 
-    // Insert only nodes that parsed without errors.
-    if errors.is_empty() {
-        wiki.text_nodes.insert(
-            title.clone(),
-            TextNode {
-                title,
-                content: ContentText::from_source(&content),
-                links,
-                depth: None,
-                source_range,
-                title_source_range,
-            },
-        );
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    // Insert the node, retaining the links in its content which parsed successfully.
+    wiki.text_nodes.insert(
+        title.clone(),
+        TextNode {
+            title,
+            content: ContentText::from_source(&content),
+            links,
+            depth: None,
+            source_range,
+            title_source_range,
+        },
+    );
+    content_errors
 }
 
 // Parse link occurrences and produce the normalized content stored on a text node.
@@ -238,6 +257,7 @@ fn parse_content(
     let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
     let mut link_has_line_break = false;
+    let mut link_has_nested_start = false;
 
     // Report a syntax error at a range of the source.
     let syntax_error = |message: &str, error_source_range| {
@@ -275,13 +295,17 @@ fn parse_content(
 
         // Interpret unescaped square brackets as link delimiters.
         match character {
-            '[' if link_start.is_some() => errors.push(syntax_error(
-                "Unexpected opening link delimiter.",
-                character_source_range,
-            )),
+            '[' if link_start.is_some() => {
+                errors.push(syntax_error(
+                    "Unexpected opening link delimiter.",
+                    character_source_range,
+                ));
+                link_has_nested_start = true;
+            }
             '[' => {
                 link_start = Some(index);
                 link_has_line_break = false;
+                link_has_nested_start = false;
             }
             ']' if link_start.is_none() => {
                 // Reject a closing delimiter without an opening delimiter [tag:missing_link_start].
@@ -299,22 +323,29 @@ fn parse_content(
                     start: source_range.start + start,
                     end: source_range.start + index + character.len_utf8(),
                 };
-                let link = parse_link(
-                    trimmed_target,
-                    source_path,
-                    source_contents,
-                    link_source_range,
-                );
+
+                // Parse the target unless the link has a syntax error, whose target is unreliable.
+                let link = if link_has_line_break || link_has_nested_start {
+                    None
+                } else {
+                    Some(parse_link(
+                        trimmed_target,
+                        source_path,
+                        source_contents,
+                        link_source_range,
+                    ))
+                };
 
                 // Write a filesystem link's target in its canonical form, and keep any other target
                 // as written.
                 let formatted_target = match &link {
-                    Ok(Link::Filesystem { target, .. }) => target.text().into_string(),
-                    Ok(Link::Text { .. }) | Err(_) => trimmed_target.to_owned(),
+                    Some(Ok(Link::Filesystem { target, .. })) => target.text().into_string(),
+                    Some(Ok(Link::Text { .. }) | Err(_)) | None => trimmed_target.to_owned(),
                 };
                 match link {
-                    Ok(link) => links.push(link),
-                    Err(error) => errors.push(error),
+                    Some(Ok(link)) => links.push(link),
+                    Some(Err(error)) => errors.push(error),
+                    None => {}
                 }
 
                 // Copy the prose before the link, then the link in its formatted form.
@@ -400,7 +431,7 @@ fn trim_source_range(source_contents: &str, source_range: SourceRange) -> Source
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{parse, parse_with_recovery};
     use crate::{
         assert_fails,
         error::Error,
@@ -826,5 +857,71 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
                 .contains("Unexpected closing link delimiter"),
         );
         assert!(errors[3].to_string().contains("Unclosed link"));
+    }
+
+    // Keep a node with a syntax error, along with the links in it which parsed successfully.
+    #[test]
+    fn recovered_node_keeps_valid_links() {
+        let (wiki, errors) = parse_with_recovery(
+            Some(Path::new("test.mull")),
+            "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
+        );
+
+        assert_eq!(errors.len(), 5);
+        assert_eq!(
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec![
+                "text:Greeting".to_owned(),
+                format!("file:{}", PathBuf::from("notes.txt").display()),
+            ],
+        );
+    }
+
+    // Score a wiki with syntax errors so its reachability can be validated.
+    #[test]
+    fn recovered_wiki_has_depths() {
+        let (wiki, errors) = parse_with_recovery(
+            Some(Path::new("test.mull")),
+            "# Home\nStray] [Greeting]\n# Greeting",
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(wiki.text_nodes["Greeting"].depth, Some(1));
+    }
+
+    // Omit duplicate nodes and regions without valid titles, but report the errors in their
+    // content.
+    #[test]
+    fn recovered_wiki_omits_untitled_regions() {
+        let (wiki, errors) = parse_with_recovery(
+            Some(Path::new("test.mull")),
+            "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n#\n[Greeting] b]\n# Greeting",
+        );
+
+        assert_eq!(errors.len(), 6);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("This content isn't in any node."),
+        );
+        assert!(errors[1].to_string().contains("1 \u{2502} Before]"));
+        assert!(
+            errors[2]
+                .to_string()
+                .contains("Node `Home` already exists."),
+        );
+        assert!(errors[3].to_string().contains("5 \u{2502} [Greeting] a]"));
+        assert!(
+            errors[4]
+                .to_string()
+                .contains("A node title can't be empty."),
+        );
+        assert!(errors[5].to_string().contains("7 \u{2502} [Greeting] b]"));
+        assert_eq!(wiki.text_nodes.len(), 2);
+        assert_eq!(
+            link_targets(&wiki.text_nodes["Home"].links),
+            vec!["text:Home"],
+        );
+        assert_eq!(wiki.text_nodes["Greeting"].depth, None);
     }
 }

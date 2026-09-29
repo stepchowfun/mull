@@ -2297,6 +2297,24 @@ mod tests {
         );
     }
 
+    // Report validation errors in a new editor buffer despite its syntax errors.
+    #[test]
+    fn untitled_syntax_errors_accompany_validation_errors() {
+        let source = "# Home\nUnexpected] [Missing]";
+        let diagnostics = diagnostics(&untitled_uri(), source);
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Unexpected closing link delimiter.",
+                "Node `Missing` not found.",
+            ],
+        );
+    }
+
     // Require a first save before resolving filesystem links from a new editor buffer.
     #[test]
     fn untitled_filesystem_links_receive_diagnostics() {
@@ -3834,6 +3852,17 @@ mod tests {
     #[test]
     fn formatting_rejects_unparsable_source() {
         let source = "# Home\n😀 ]";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert!(formatting_for_document(&uri, source).is_none());
+    }
+
+    // Refuse to format a wiki whose recovered form would omit some of its source, like a duplicate
+    // node.
+    #[test]
+    fn formatting_rejects_source_it_would_lose() {
+        let source = "# Home\n\n# Home\n\nThis would be lost.\n";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
