@@ -4,7 +4,7 @@
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
-*Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, formatting, validation, and language server features like navigation, refactoring, hover previews, etc.
+*Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, completions, diagnostics, formatting, refactoring, hover previews, etc.
 
 ## An example wiki
 
@@ -66,18 +66,18 @@ Just as every node must be linked to from the wiki, the same is true of files ne
 
 ![Renaming a link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/refactoring.png)
 
-The extension turns Visual Studio Code or Cursor into a powerful wiki editor! You get all the familiar trappings of a programming language plugin:
+The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
 
-- Autocomplete for links
 - Clickable links with hover previews
-- Document outline
+- Completions for node titles and file paths
+- Diagnostics and quick fixes
 - Formatting (manual and on save)
-- Good editor defaults like prose-friendly word wrapping
 - Link occurrence highlighting
 - Node and file renaming
+- Outline view
+- Prose-friendly word wrapping
 - Reference search (backlinks)
 - Syntax highlighting
-- Validation diagnostics and quick fixes
 
 ## Usage
 
