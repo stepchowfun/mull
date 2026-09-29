@@ -1863,7 +1863,11 @@ fn code_action_for_document(
                             cursor.character.into(),
                         ]),
                     );
-                    (format!("Create node {}", title.code_str()), edit, command)
+                    (
+                        format!("Create node {}", title.code_str()),
+                        edit,
+                        Some(command),
+                    )
                 }
             };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
@@ -1874,7 +1878,7 @@ fn code_action_for_document(
                     changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
                     ..WorkspaceEdit::default()
                 }),
-                command: Some(command),
+                command,
                 is_preferred: Some(true),
                 ..CodeAction::default()
             }))
