@@ -104,16 +104,27 @@
     curl "$RELEASE_URL/mull.vsix" -o "$EXTENSION_SOURCE" -LSf ||
       fail 'There was an error downloading the editor extension.'
 
+    # Install the extension using the given editor command, hiding Node.js deprecation warnings
+    # which are emitted by the editor rather than the extension.
+    install_extension() {
+      if ! "$1" --install-extension "$EXTENSION_SOURCE" --force 2> "$TEMPDIR/stderr"; then
+        cat "$TEMPDIR/stderr" >&2
+        fail "There was an error installing the extension in $2."
+      fi
+      grep -v \
+        -e '^(node:[0-9]*) \[DEP[0-9]*\] ' \
+        -e '^(Use .* --trace-deprecation .* to show where the warning was created)$' \
+        "$TEMPDIR/stderr" >&2 || true
+    }
+
     # Install the extension in Visual Studio Code if it was found.
     if [ -n "$VSCODE_COMMAND" ]; then
-      "$VSCODE_COMMAND" --install-extension "$EXTENSION_SOURCE" --force ||
-        fail 'There was an error installing the extension in Visual Studio Code.'
+      install_extension "$VSCODE_COMMAND" 'Visual Studio Code'
     fi
 
     # Install the extension in Cursor if it was found.
     if [ -n "$CURSOR_COMMAND" ]; then
-      "$CURSOR_COMMAND" --install-extension "$EXTENSION_SOURCE" --force ||
-        fail 'There was an error installing the extension in Cursor.'
+      install_extension "$CURSOR_COMMAND" 'Cursor'
     fi
   fi
 
