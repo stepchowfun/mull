@@ -14,16 +14,16 @@
     "format": "vp fmt"
   },
   "dependencies": {
-    "vscode-languageclient": "^10.1.1"
+    "vscode-languageclient": "^10.1.2"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "@types/vscode": "1.125.0",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.3.3"
+    "vite-plus": "^1.0.0"
   },
   "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@^0.3.3"
+    "vite": "npm:@voidzero-dev/vite-plus-core@^1.0.0"
   },
   "contributes": {
     "languages": [
