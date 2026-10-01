@@ -684,11 +684,11 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Accept empty node content.
     #[test]
     fn empty_content() {
-        assert!(
+        assert_eq!(
             parse_test("# Empty").unwrap().text_nodes["Empty"]
                 .content
-                .as_str()
-                .is_empty(),
+                .as_str(),
+            "",
         );
     }
 

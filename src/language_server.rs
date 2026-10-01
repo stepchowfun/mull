@@ -3809,7 +3809,10 @@ mod tests {
         // Confirm that the created node makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
         assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting|");
-        assert!(diagnostics(&uri, &applied.replace('|', "")).is_empty());
+        assert_eq!(
+            diagnostics(&uri, &applied.replace('|', "")),
+            Vec::<Diagnostic>::new(),
+        );
     }
 
     // Offer to create a missing node despite a syntax error elsewhere in the wiki.
@@ -3923,7 +3926,10 @@ mod tests {
         assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
         let applied = apply_code_action(&uri, "", action);
         assert_eq!(applied, "# Home|\n");
-        assert!(diagnostics(&uri, &applied.replace('|', "")).is_empty());
+        assert_eq!(
+            diagnostics(&uri, &applied.replace('|', "")),
+            Vec::<Diagnostic>::new(),
+        );
 
         // Separate the home node from the nodes that follow it.
         let source = "# Greeting\n";
@@ -3949,7 +3955,7 @@ mod tests {
         let source = "# Home\n\n[Home] [] [/notes.txt] prose";
         let uri = untitled_uri();
         let source_diagnostics = diagnostics(&uri, source);
-        assert!(!source_diagnostics.is_empty());
+        assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
 
         assert!(code_action_for_document(&uri, source, &source_diagnostics).is_none());
     }
@@ -4019,7 +4025,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(formatting_for_document(&uri, source).unwrap().is_empty());
+        assert_eq!(formatting_for_document(&uri, source), Some(Vec::new()));
     }
 
     #[test]
@@ -4070,7 +4076,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(diagnostics(&uri, source).is_empty());
+        assert_eq!(diagnostics(&uri, source), Vec::<Diagnostic>::new());
     }
 
     #[test]
