@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-09-30
+
+### Changed
+- Ordered formatted nodes by a depth-first traversal from Home instead of by their minimum text-link distance from Home, so each node appears right after its parent. Nodes are placed under the first of their closest-to-Home parents, and the targets of each node's links are visited in title order.
+
 ## [0.35.3] - 2026-09-30
 
 ### Changed
