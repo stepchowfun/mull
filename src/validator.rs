@@ -128,7 +128,7 @@ fn validate_text_links(
         errors.extend(
             nodes
                 .iter()
-                .filter(|node| node.depth.is_none())
+                .filter(|node| node.traversal_index.is_none())
                 .map(|node| {
                     Error::new(
                         &format!(

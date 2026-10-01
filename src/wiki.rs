@@ -26,12 +26,14 @@ pub struct Wiki {
     pub text_nodes: HashMap<String, TextNode>,
 }
 
-// Render nodes deterministically in depth order with titles breaking ties.
+// Render nodes deterministically in traversal order, with unreachable nodes last in title order.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort reachable nodes by depth and title, followed by unreachable nodes in title order.
+        // Sort reachable nodes by traversal order, followed by unreachable nodes in title order.
         let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, node)| (node.depth.is_none(), node.depth, *title));
+        nodes.sort_by_key(|(title, node)| {
+            (node.traversal_index.is_none(), node.traversal_index, *title)
+        });
 
         // Add one line break between nodes because each node already ends with one.
         for (index, (_title, node)) in nodes.into_iter().enumerate() {
@@ -52,8 +54,8 @@ pub struct TextNode {
     pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
     pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
     pub links: Vec<Link>,
-    pub depth: Option<usize>, // Minimum text-link distance from the root
-    pub source_range: SourceRange, // The complete node without leading or trailing whitespace
+    pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
+    pub source_range: SourceRange,      // The complete node without leading or trailing whitespace
     pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
     pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
 }
@@ -470,7 +472,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: ContentText::from_source("Hello, world!"),
             links: Vec::new(),
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -486,7 +488,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: ContentText::default(),
             links: Vec::new(),
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -506,7 +508,7 @@ mod tests {
                 title: "Home".to_owned(),
                 source_range: SOURCE_RANGE,
             }],
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -539,7 +541,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: ContentText::from_source(r"\\[Home] ![Home] \![Home] \\\\[Home]"),
             links: vec![home.clone(), home.clone(), home.clone(), home],
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -561,7 +563,7 @@ mod tests {
             title: "Greeting".to_owned(),
             content: ContentText::from_source("Unexpected] [Gree[ting]"),
             links: Vec::new(),
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: true,
@@ -577,7 +579,7 @@ mod tests {
             title: "A*B* [C](d) <e> #".to_owned(),
             content: ContentText::default(),
             links: Vec::new(),
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -599,7 +601,7 @@ mod tests {
                 title: "Missing".to_owned(),
                 source_range: SOURCE_RANGE,
             }],
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -630,7 +632,7 @@ mod tests {
                     source_range: SOURCE_RANGE,
                 },
             ],
-            depth: None,
+            traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
             has_syntax_errors: false,
@@ -731,7 +733,7 @@ mod tests {
                     title: "Greeting".to_owned(),
                     content: ContentText::default(),
                     links: Vec::new(),
-                    depth: None,
+                    traversal_index: None,
                     source_range: SOURCE_RANGE,
                     title_source_range: SOURCE_RANGE,
                     has_syntax_errors: false,
@@ -742,7 +744,7 @@ mod tests {
         assert_eq!(wiki.to_string(), "# Greeting\n");
     }
 
-    // Render nodes by depth and title, placing nodes without a depth last.
+    // Render nodes in traversal order, placing nodes without a traversal index last.
     #[test]
     fn wiki_display() {
         let wiki = Wiki {
@@ -753,7 +755,7 @@ mod tests {
                         title: "Greeting".to_owned(),
                         content: ContentText::from_source("Hello, world!"),
                         links: Vec::new(),
-                        depth: Some(1),
+                        traversal_index: Some(1),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
                         has_syntax_errors: false,
@@ -765,7 +767,7 @@ mod tests {
                         title: "Home".to_owned(),
                         content: ContentText::from_source("Check out the [Greeting]."),
                         links: Vec::new(),
-                        depth: Some(0),
+                        traversal_index: Some(0),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
                         has_syntax_errors: false,
@@ -777,7 +779,7 @@ mod tests {
                         title: "Orphan".to_owned(),
                         content: ContentText::default(),
                         links: Vec::new(),
-                        depth: None,
+                        traversal_index: None,
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
                         has_syntax_errors: false,
