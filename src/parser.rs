@@ -1,7 +1,7 @@
 use crate::{
     error::{Error, SourceRange},
     format::CodeStr,
-    scoring::populate_depths,
+    scoring::populate_traversal_order,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
         TextNode, Wiki, unescaped_characters,
@@ -127,8 +127,8 @@ pub fn parse_with_recovery(
         source_contents,
     ));
 
-    // Score the wiki and return it with every error in source order.
-    populate_depths(&mut wiki);
+    // Order the nodes and return the wiki with every error in source order.
+    populate_traversal_order(&mut wiki);
     (wiki, errors)
 }
 
@@ -235,7 +235,7 @@ fn finish_node(
             title,
             content: ContentText::from_source(&content),
             links,
-            depth: None,
+            traversal_index: None,
             source_range,
             title_source_range,
             has_syntax_errors: !content_errors.is_empty(),
@@ -881,14 +881,14 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
 
     // Score a wiki with syntax errors so its reachability can be validated.
     #[test]
-    fn recovered_wiki_has_depths() {
+    fn recovered_wiki_has_traversal_order() {
         let (wiki, errors) = parse_with_recovery(
             Some(Path::new("test.mull")),
             "# Home\nStray] [Greeting]\n# Greeting",
         );
 
         assert_eq!(errors.len(), 1);
-        assert_eq!(wiki.text_nodes["Greeting"].depth, Some(1));
+        assert_eq!(wiki.text_nodes["Greeting"].traversal_index, Some(1));
         assert!(!wiki.text_nodes["Greeting"].has_syntax_errors);
     }
 
@@ -925,6 +925,6 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
             link_targets(&wiki.text_nodes["Home"].links),
             vec!["text:Home"],
         );
-        assert_eq!(wiki.text_nodes["Greeting"].depth, None);
+        assert_eq!(wiki.text_nodes["Greeting"].traversal_index, None);
     }
 }
