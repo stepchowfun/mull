@@ -12,19 +12,39 @@ pub fn analyze(
     source_contents: &str,
     cancellation: &CancellationFlag,
 ) -> Outcome<Result<Wiki, Vec<Error>>> {
-    // Parse and score as much of the wiki as possible, then validate it even if it has syntax
-    // errors, so they don't hide validation errors. The wiki is returned only if it has neither,
-    // since a wiki with syntax errors doesn't represent all of its source.
-    let (wiki, mut errors) = parser::parse_with_recovery(source_path, source_contents);
-    validator::validate(&wiki, source_path, source_contents, cancellation).map(|result| {
-        if let Err(validation_errors) = result {
-            errors.extend(validation_errors);
-        }
+    // Parse and score as much of the wiki as possible, then validate it. The wiki is returned only
+    // if it has no errors, since a wiki with syntax errors doesn't represent all of its source.
+    let (wiki, syntax_errors) = parser::parse_with_recovery(source_path, source_contents);
+    validate_parsed(
+        &wiki,
+        syntax_errors,
+        source_path,
+        source_contents,
+        cancellation,
+    )
+    .map(|errors| {
         if errors.is_empty() {
             Ok(wiki)
         } else {
             Err(errors)
         }
+    })
+}
+
+// Validate a wiki parsed with recovery even if it has syntax errors, so they don't hide validation
+// errors, and report the validation errors after the syntax errors.
+pub fn validate_parsed(
+    wiki: &Wiki,
+    mut syntax_errors: Vec<Error>,
+    source_path: Option<&Path>,
+    source_contents: &str,
+    cancellation: &CancellationFlag,
+) -> Outcome<Vec<Error>> {
+    validator::validate(wiki, source_path, source_contents, cancellation).map(|result| {
+        if let Err(validation_errors) = result {
+            syntax_errors.extend(validation_errors);
+        }
+        syntax_errors
     })
 }
 

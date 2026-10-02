@@ -19,6 +19,7 @@ struct PendingNode {
 
 // Parse source contents into a scored wiki with source ranges for every node and link, rejecting
 // source contents with any syntax errors.
+#[cfg(test)]
 pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
     let (wiki, errors) = parse_with_recovery(source_path, source_contents);
     if errors.is_empty() {

@@ -6,7 +6,7 @@ use crate::{
     wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
-use std::{collections::HashSet, fs, path::Path, rc::Rc};
+use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 // Limit diagnostics for unreferenced files so pathological directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
@@ -298,7 +298,7 @@ fn inaccessible_target_error(
             &format!("Unable to access {}.", path.code_path()),
             Some(wiki_path),
             Some(source_context),
-            Some(Rc::new(error)),
+            Some(Arc::new(error)),
             None,
         )
     }
@@ -407,7 +407,7 @@ fn find_unreferenced_filesystem_links(
                     "Unable to walk the wiki directory.",
                     Some(wiki_path),
                     None,
-                    Some(Rc::new(error)),
+                    Some(Arc::new(error)),
                     None,
                 ));
                 if errors.len() >= MAX_FILESYSTEM_ERRORS {
