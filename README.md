@@ -81,7 +81,7 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 
 ### Keyboard shortcuts
 
-These common keyboard shortcuts work with Mull:
+These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
