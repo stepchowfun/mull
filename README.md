@@ -79,6 +79,17 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 - Reference search (backlinks)
 - Syntax highlighting
 
+### Keyboard shortcuts
+
+These common keyboard shortcuts work with Mull:
+
+- Find a node: `Command + Shift + O` (macOS) or `Control + Shift + O` (Windows)
+- Rename a node: `F2`
+- Jump to a node from a link: `F12`
+- Jump to links to a node: `Shift + F12`
+- Code actions (e.g., create a missing node): `Command + .` (macOS) or `Control + .` (Windows)
+- Format the wiki: `Shift + Option + F` (macOS) or `Shift + Alt + F` (Windows)
+
 ## Usage
 
 Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor.
