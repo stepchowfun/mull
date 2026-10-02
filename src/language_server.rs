@@ -606,7 +606,7 @@ impl Snapshot {
     // navigated.
     fn parsed(&self) -> &(Wiki, Vec<Error>) {
         self.parsed
-            .get_or_init(|| parser::parse_with_recovery(self.path.as_deref(), &self.contents))
+            .get_or_init(|| parser::parse(self.path.as_deref(), &self.contents))
     }
 
     // Retrieve the wiki parsed with recovery from syntax errors.
@@ -907,7 +907,7 @@ fn text_link_context(snapshot: &Snapshot, byte_offset: usize) -> Option<SourceRa
     // Close a link at the cursor temporarily so completion works while it's being authored.
     let mut completed_source = snapshot.contents.clone();
     completed_source.insert(byte_offset, ']');
-    let (wiki, _) = parser::parse_with_recovery(snapshot.path.as_deref(), &completed_source);
+    let (wiki, _) = parser::parse(snapshot.path.as_deref(), &completed_source);
     let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset) else {
         return None;
     };
@@ -4078,7 +4078,7 @@ mod tests {
     fn source_errors_become_precise_diagnostics() {
         let source = "# Home\n😀 ]";
         let error = parser::parse(Some(Path::new("wiki.mull")), source)
-            .unwrap_err()
+            .1
             .into_iter()
             .next()
             .unwrap();

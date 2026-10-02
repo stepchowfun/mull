@@ -478,12 +478,18 @@ mod tests {
         source_contents: String,
     }
 
-    // Parse a test wiki while retaining its source for validation listings.
+    // Parse a test wiki while retaining its source for validation listings, rejecting sources with
+    // syntax errors.
     fn parse(source_contents: &str) -> Result<TestWiki, Vec<Error>> {
-        parse_wiki(Some(Path::new("test.mull")), source_contents).map(|wiki| TestWiki {
-            wiki,
-            source_contents: source_contents.to_owned(),
-        })
+        let (wiki, errors) = parse_wiki(Some(Path::new("test.mull")), source_contents);
+        if errors.is_empty() {
+            Ok(TestWiki {
+                wiki,
+                source_contents: source_contents.to_owned(),
+            })
+        } else {
+            Err(errors)
+        }
     }
 
     // Validate a fixture using a stable display path for deterministic diagnostics.
