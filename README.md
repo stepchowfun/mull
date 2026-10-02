@@ -88,7 +88,9 @@ These common keyboard shortcuts work with Mull:
 | Find a node | `Command + Shift + O` | `Control + Shift + O` |
 | Rename a node | `F2` | `F2` |
 | Jump to a node from a link | `F12` | `F12` |
+| Jump back | `Control + -` | `Alt + Left` |
 | Jump to links to a node | `Shift + F12` | `Shift + F12` |
+| Show completions | `Control + Space` | `Control + Space` |
 | Code actions (e.g., create a missing node) | `Command + .` | `Control + .` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
