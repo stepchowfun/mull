@@ -4,6 +4,7 @@ mod cancellation;
 mod error;
 mod format;
 mod language_server;
+mod line_index;
 mod parser;
 mod path_util;
 mod scoring;

@@ -3,6 +3,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
+    line_index::LineIndex,
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     wiki::{
@@ -137,7 +138,6 @@ impl Backend {
                     tokio::time::sleep(delay).await;
                 }
                 let check_uri = diagnostic_uri.clone();
-                let fallback_contents = diagnostic_contents.clone();
 
                 // Publish nothing when a newer snapshot cancelled this check partway through.
                 let Some(diagnostics) = tokio::task::spawn_blocking(move || {
@@ -146,8 +146,7 @@ impl Backend {
                 .await
                 .unwrap_or_else(|error| {
                     Some(vec![diagnostic(
-                        &fallback_contents,
-                        None,
+                        Range::default(),
                         format!("Mull was unable to check the wiki: {error}."),
                         None,
                     )])
@@ -629,11 +628,12 @@ fn diagnostics_for_document(
     };
 
     // Preserve independent Mull errors as independent editor diagnostics.
+    let line_index = LineIndex::new(source_contents);
     Some(result.map_or_else(
         |errors| {
             errors
                 .iter()
-                .map(|error| diagnostic_from_error(source_contents, error))
+                .map(|error| diagnostic_from_error(source_contents, &line_index, error))
                 .collect()
         },
         |_wiki| Vec::new(),
@@ -641,11 +641,19 @@ fn diagnostics_for_document(
 }
 
 // Convert a structured Mull error into the representation expected by language clients.
-fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
+fn diagnostic_from_error(
+    source_contents: &str,
+    line_index: &LineIndex,
+    error: &Error,
+) -> Diagnostic {
     // Include an underlying reason without including terminal prefixes, paths, or source listings.
+    // An error without a source range is reported at the start of the document.
     diagnostic(
-        source_contents,
-        error.source_range(),
+        error
+            .source_range()
+            .map_or_else(Range::default, |source_range| {
+                line_index.range(source_contents, source_range)
+            }),
         error.reason().map_or_else(
             || error.message().to_owned(),
             |reason| format!("{}\n\nReason: {reason}", error.message()),
@@ -654,19 +662,10 @@ fn diagnostic_from_error(source_contents: &str, error: &Error) -> Diagnostic {
     )
 }
 
-// Construct a Mull error diagnostic at a source range or at the start of the document, with any
-// fix that resolves it.
-fn diagnostic(
-    source_contents: &str,
-    source_range: Option<crate::error::SourceRange>,
-    message: String,
-    fix: Option<&Fix>,
-) -> Diagnostic {
+// Construct a Mull error diagnostic at an editor range, with any fix that resolves it.
+fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     Diagnostic {
-        range: lsp_range(
-            source_contents,
-            source_range.unwrap_or(crate::error::SourceRange { start: 0, end: 0 }),
-        ),
+        range,
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(env!("CARGO_PKG_NAME").to_owned()),
         message,
@@ -684,11 +683,13 @@ fn completion_for_document(
 ) -> Option<Vec<CompletionItem>> {
     // Complete a filesystem link from the directory containing the wiki.
     let wiki_path = local_path(uri);
-    let cursor_offset = byte_offset(source_contents, cursor)?;
+    let line_index = LineIndex::new(source_contents);
+    let cursor_offset = line_index.byte_offset(source_contents, cursor)?;
     if let Some(context) = filesystem_link_context(source_contents, cursor_offset) {
         return Some(filesystem_link_completions(
             wiki_path.as_deref()?,
             source_contents,
+            &line_index,
             &context,
         ));
     }
@@ -699,6 +700,7 @@ fn completion_for_document(
     Some(text_link_completions(
         &wiki,
         source_contents,
+        &line_index,
         replacement_source_range,
     ))
 }
@@ -780,6 +782,7 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
 fn filesystem_link_completions(
     wiki_path: &Path,
     source_contents: &str,
+    line_index: &LineIndex,
     context: &FilesystemLinkContext,
 ) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
@@ -854,7 +857,7 @@ fn filesystem_link_completions(
         };
 
         // Replace the typed component so the editor filters candidates against it.
-        let replacement_range = lsp_range(
+        let replacement_range = line_index.range(
             source_contents,
             SourceRange {
                 start: context.segment_start,
@@ -913,11 +916,12 @@ fn text_link_context(
 fn text_link_completions(
     wiki: &Wiki,
     source_contents: &str,
+    line_index: &LineIndex,
     replacement_source_range: SourceRange,
 ) -> Vec<CompletionItem> {
     // Present node titles deterministically and replace the whole link, including its delimiters,
     // so the cursor ends up after the closing `]`.
-    let replacement_range = lsp_range(source_contents, replacement_source_range);
+    let replacement_range = line_index.range(source_contents, replacement_source_range);
     let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
     titles.sort();
     titles
@@ -947,20 +951,21 @@ fn goto_definition_for_document(
     // Parse only the wiki syntax because navigation doesn't require filesystem validation, and
     // recover from syntax errors so navigation keeps working while they're fixed.
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let (node, origin_source_range) = node_at(
         &wiki,
         source_contents,
-        byte_offset(source_contents, cursor)?,
+        line_index.byte_offset(source_contents, cursor)?,
         LinkExtent::Whole,
     )?;
 
     // Identify the complete source link or title and the destination node while selecting its title
     // on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
-        origin_selection_range: Some(lsp_range(source_contents, origin_source_range)),
+        origin_selection_range: Some(line_index.range(source_contents, origin_source_range)),
         target_uri: uri.clone(),
-        target_range: lsp_range(source_contents, node.source_range),
-        target_selection_range: lsp_range(source_contents, node.title_source_range),
+        target_range: line_index.range(source_contents, node.source_range),
+        target_selection_range: line_index.range(source_contents, node.title_source_range),
     }]))
 }
 
@@ -970,10 +975,11 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
     // recover from syntax errors so previews keep working while they're fixed.
     let wiki_path = local_path(uri);
     let (wiki, _) = parser::parse_with_recovery(wiki_path.as_deref(), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let (node, source_range) = node_at(
         &wiki,
         source_contents,
-        byte_offset(source_contents, cursor)?,
+        line_index.byte_offset(source_contents, cursor)?,
         LinkExtent::Whole,
     )?;
 
@@ -990,8 +996,10 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
                 .to_markdown(|link| match link {
                     Link::Text { title, .. } => Some(reveal_range_command_url(
                         uri,
-                        source_contents,
-                        wiki.text_nodes.get(title)?.title_source_range,
+                        line_index.range(
+                            source_contents,
+                            wiki.text_nodes.get(title)?.title_source_range,
+                        ),
                     )),
                     Link::Filesystem { target, .. } => Some(
                         filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
@@ -1001,14 +1009,13 @@ fn hover_for_document(uri: &Uri, source_contents: &str, cursor: Position) -> Opt
                 })
                 .into_string(),
         }),
-        range: Some(lsp_range(source_contents, source_range)),
+        range: Some(line_index.range(source_contents, source_range)),
     })
 }
 
 // Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(uri: &Uri, source_contents: &str, source_range: SourceRange) -> String {
+fn reveal_range_command_url(uri: &Uri, range: Range) -> String {
     // Pass the document URI and UTF-16 destination range as positional command arguments.
-    let range = lsp_range(source_contents, source_range);
     format!(
         "command:{REVEAL_RANGE_COMMAND}?{}",
         utf8_percent_encode(
@@ -1035,10 +1042,11 @@ fn references_for_document(
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
     // from syntax errors so references can be found while they're fixed.
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let (node, _source_range) = node_at(
         &wiki,
         source_contents,
-        byte_offset(source_contents, cursor)?,
+        line_index.byte_offset(source_contents, cursor)?,
         LinkExtent::Whole,
     )?;
 
@@ -1054,7 +1062,7 @@ fn references_for_document(
         source_ranges
             .into_iter()
             .map(|source_range| {
-                Location::new(uri.clone(), lsp_range(source_contents, source_range))
+                Location::new(uri.clone(), line_index.range(source_contents, source_range))
             })
             .collect(),
     )
@@ -1088,7 +1096,8 @@ fn document_highlight_for_document(
     // Parse only the wiki syntax because document highlights don't require validation, and recover
     // from syntax errors so highlights keep working while they're fixed.
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
-    let byte_offset = byte_offset(source_contents, cursor)?;
+    let line_index = LineIndex::new(source_contents);
+    let byte_offset = line_index.byte_offset(source_contents, cursor)?;
 
     // Distinguish a text-node declaration from its references.
     let mut highlights = if let Some((node, _source_range)) =
@@ -1119,7 +1128,7 @@ fn document_highlight_for_document(
         highlights
             .into_iter()
             .map(|(source_range, kind)| DocumentHighlight {
-                range: lsp_range(source_contents, source_range),
+                range: line_index.range(source_contents, source_range),
                 kind: Some(kind),
             })
             .collect(),
@@ -1153,7 +1162,8 @@ fn prepare_rename_for_document(
     // Resolve the cursor in an editor snapshot, which need not pass semantic validation, recovering
     // from syntax errors [ref:rename_despite_syntax_errors].
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
-    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+    let line_index = LineIndex::new(source_contents);
+    let Some(cursor_offset) = line_index.byte_offset(source_contents, cursor) else {
         return Ok(None);
     };
 
@@ -1173,7 +1183,7 @@ fn prepare_rename_for_document(
         let trimmed = start_trimmed.trim_end_matches('/');
         let start = path_source_range.end - start_trimmed.len();
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: lsp_range(
+            range: line_index.range(
                 source_contents,
                 SourceRange {
                     start,
@@ -1193,7 +1203,7 @@ fn prepare_rename_for_document(
 
     // Select only the title text and seed the rename prompt with its decoded value.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: lsp_range(source_contents, source_range),
+        range: line_index.range(source_contents, source_range),
         placeholder: node.title.clone(),
     }))
 }
@@ -1219,7 +1229,8 @@ fn rename_for_document(
     // a broken link once the syntax errors are fixed, since the old name no longer exists
     // [tag:rename_despite_syntax_errors].
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
-    let Some(cursor_offset) = byte_offset(source_contents, cursor) else {
+    let line_index = LineIndex::new(source_contents);
+    let Some(cursor_offset) = line_index.byte_offset(source_contents, cursor) else {
         return Ok(None);
     };
 
@@ -1233,9 +1244,14 @@ fn rename_for_document(
         new_name,
         file_operation_support,
     ) {
-        Ok(None) => {
-            rename_text_node_for_document(&wiki, uri, source_contents, cursor_offset, new_name)
-        }
+        Ok(None) => rename_text_node_for_document(
+            &wiki,
+            uri,
+            source_contents,
+            &line_index,
+            cursor_offset,
+            new_name,
+        ),
         result => result,
     }
 }
@@ -1245,6 +1261,7 @@ fn rename_text_node_for_document(
     wiki: &Wiki,
     uri: &Uri,
     source_contents: &str,
+    line_index: &LineIndex,
     cursor_offset: usize,
     new_name: &str,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
@@ -1303,7 +1320,7 @@ fn rename_text_node_for_document(
             edits
                 .into_iter()
                 .map(|(source_range, new_text)| {
-                    TextEdit::new(lsp_range(source_contents, source_range), new_text)
+                    TextEdit::new(line_index.range(source_contents, source_range), new_text)
                 })
                 .collect(),
         )])),
@@ -1394,6 +1411,7 @@ fn rename_filesystem_node_for_document(
     let edits = filesystem_rename_edits(wiki, source_contents, &old_target, &new_target);
 
     // Edit the wiki at the version the edits were computed from.
+    let line_index = LineIndex::new(source_contents);
     let text_document_edit = DocumentChangeOperation::Edit(TextDocumentEdit {
         text_document: OptionalVersionedTextDocumentIdentifier {
             uri: uri.clone(),
@@ -1403,7 +1421,7 @@ fn rename_filesystem_node_for_document(
             .into_iter()
             .map(|(source_range, new_text)| {
                 OneOf::Left(TextEdit::new(
-                    lsp_range(source_contents, source_range),
+                    line_index.range(source_contents, source_range),
                     new_text,
                 ))
             })
@@ -1716,7 +1734,7 @@ fn formatting_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<TextE
         Some(vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
-                lsp_position(source_contents, source_contents.len()),
+                LineIndex::new(source_contents).position(source_contents, source_contents.len()),
             ),
             rendered_wiki,
         )])
@@ -1736,6 +1754,7 @@ fn document_symbol_for_document(
     // Parse syntax without semantic validation, recovering from syntax errors so the nodes remain
     // navigable while they're fixed.
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
@@ -1751,8 +1770,8 @@ fn document_symbol_for_document(
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
-                    range: lsp_range(source_contents, node.source_range),
-                    selection_range: lsp_range(source_contents, node.title_source_range),
+                    range: line_index.range(source_contents, node.source_range),
+                    selection_range: line_index.range(source_contents, node.title_source_range),
                     children: None,
                 })
                 .collect(),
@@ -1768,7 +1787,7 @@ fn document_symbol_for_document(
                     deprecated: None,
                     location: Location::new(
                         uri.clone(),
-                        lsp_range(source_contents, node.title_source_range),
+                        line_index.range(source_contents, node.title_source_range),
                     ),
                     container_name: None,
                 })
@@ -1800,6 +1819,7 @@ fn code_action_for_document(
     // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made,
     // recovering from syntax errors since validation reports missing nodes despite them.
     let (wiki, _) = parser::parse_with_recovery(local_path(uri).as_deref(), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
@@ -1811,7 +1831,9 @@ fn code_action_for_document(
                     // it, or else at the end of the wiki. The formatter decides where it ends up.
                     let linking_node = diagnostics
                         .iter()
-                        .filter_map(|diagnostic| byte_offset(source_contents, diagnostic.range.end))
+                        .filter_map(|diagnostic| {
+                            line_index.byte_offset(source_contents, diagnostic.range.end)
+                        })
                         .min()
                         .and_then(|offset| {
                             wiki.text_nodes
@@ -1838,7 +1860,7 @@ fn code_action_for_document(
                         };
                         (source_contents.len(), before_title, "\n")
                     };
-                    let insertion = lsp_position(source_contents, offset);
+                    let insertion = line_index.position(source_contents, offset);
                     let edit = TextEdit::new(
                         Range::new(insertion, insertion),
                         format!("{before_title}{TITLE_PREFIX}{title}{after_title}"),
@@ -1851,7 +1873,8 @@ fn code_action_for_document(
                         "{}{before_title}{TITLE_PREFIX}{title}",
                         &source_contents[..offset],
                     );
-                    let cursor = lsp_position(&text_before_cursor, text_before_cursor.len());
+                    let cursor = LineIndex::new(&text_before_cursor)
+                        .position(&text_before_cursor, text_before_cursor.len());
                     let command = Command::new(
                         format!("Reveal node {}", title.code_str()),
                         REVEAL_RANGE_COMMAND.to_owned(),
@@ -1896,6 +1919,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
     // errors so the links remain clickable while they're fixed.
     let wiki_path = local_path(uri)?;
     let (wiki, _) = parser::parse_with_recovery(Some(&wiki_path), source_contents);
+    let line_index = LineIndex::new(source_contents);
     let wiki_directory = WikiDirectory::new(&wiki_path).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
@@ -1918,7 +1942,7 @@ fn document_link_for_document(uri: &Uri, source_contents: &str) -> Option<Vec<Do
                 "Open file"
             };
             Some(DocumentLink {
-                range: lsp_range(source_contents, *source_range),
+                range: line_index.range(source_contents, *source_range),
                 target: Some(filesystem_link_target(
                     &wiki_directory,
                     target,
@@ -2058,83 +2082,19 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
         .flatten()
 }
 
-// Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
-fn byte_offset(source_contents: &str, position: Position) -> Option<usize> {
-    // Locate the requested line without counting its line terminator as editor content.
-    let mut line_start = 0;
-    for _ in 0..position.line {
-        line_start += source_contents[line_start..].find('\n')? + '\n'.len_utf8();
-    }
-    let line_end = source_contents[line_start..]
-        .find('\n')
-        .map_or(source_contents.len(), |index| line_start + index);
-    let content_end = if line_end > line_start
-        && source_contents.as_bytes()[line_end - 1] == b'\r'
-        && source_contents.as_bytes().get(line_end) == Some(&b'\n')
-    {
-        line_end - '\r'.len_utf8()
-    } else {
-        line_end
-    };
-
-    // Reject positions that split a surrogate pair, and clamp positions past the line's contents to
-    // its end, as the protocol specifies.
-    let requested_character = usize::try_from(position.character).ok()?;
-    let mut utf16_character = 0;
-    for (index, character) in source_contents[line_start..content_end].char_indices() {
-        if utf16_character == requested_character {
-            return Some(line_start + index);
-        }
-        utf16_character += character.len_utf16();
-        if utf16_character > requested_character {
-            return None;
-        }
-    }
-    Some(content_end)
-}
-
-// Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
-fn lsp_position(source_contents: &str, byte_offset: usize) -> Position {
-    // Source ranges originate at character boundaries and can't extend beyond the source.
-    let byte_offset = byte_offset.min(source_contents.len());
-    let prefix = source_contents
-        .get(..byte_offset)
-        .expect("Source ranges should end on UTF-8 character boundaries.");
-    Position::new(
-        u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(u32::MAX),
-        u32::try_from(
-            source_contents[prefix
-                .rfind('\n')
-                .map_or(0, |index| index + '\n'.len_utf8())
-                ..byte_offset]
-                .encode_utf16()
-                .count(),
-        )
-        .unwrap_or(u32::MAX),
-    )
-}
-
-// Convert a source range into the representation expected by the language server protocol.
-fn lsp_range(source_contents: &str, source_range: SourceRange) -> Range {
-    Range::new(
-        lsp_position(source_contents, source_range.start),
-        lsp_position(source_contents, source_range.end),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, byte_offset, code_action_for_document, completion_for_document,
+        FileOperationSupport, code_action_for_document, completion_for_document,
         diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
         document_link_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, lsp_position,
-        prepare_rename_for_document, references_for_document, rename_for_document,
-        reveal_range_command_url,
+        goto_definition_for_document, hover_for_document, prepare_rename_for_document,
+        references_for_document, rename_for_document, reveal_range_command_url,
     };
     use crate::{
         cancellation::CancellationFlag,
         error::{Fix, SourceRange},
+        line_index::LineIndex,
         parser,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -2194,39 +2154,18 @@ mod tests {
         "untitled:Untitled-1".parse().unwrap()
     }
 
-    #[test]
-    fn positions_use_utf16_code_units() {
-        let source = "zero\n😀 café";
-
-        assert_eq!(lsp_position(source, 0), Position::new(0, 0));
-        assert_eq!(lsp_position(source, 5), Position::new(1, 0));
-        assert_eq!(lsp_position(source, 9), Position::new(1, 2));
-        assert_eq!(lsp_position(source, source.len()), Position::new(1, 7));
-    }
-
-    // Convert editor positions back to byte offsets without splitting Unicode characters, clamping
-    // positions past the end of a line to its end.
-    #[test]
-    fn byte_offsets_use_utf16_code_units() {
-        let source = "zero\n😀 café";
-
-        assert_eq!(byte_offset(source, Position::new(0, 0)), Some(0));
-        assert_eq!(byte_offset(source, Position::new(0, 9)), Some(4));
-        assert_eq!(byte_offset(source, Position::new(1, 0)), Some(5));
-        assert_eq!(byte_offset(source, Position::new(1, 1)), None);
-        assert_eq!(byte_offset(source, Position::new(1, 2)), Some(9));
-        assert_eq!(byte_offset(source, Position::new(1, 7)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(1, 8)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(2, 0)), None);
-        assert_eq!(byte_offset("ab\r\ncd", Position::new(0, 9)), Some(2));
+    // Convert an editor position in a test fixture into a byte offset.
+    fn byte_offset(source: &str, position: Position) -> Option<usize> {
+        LineIndex::new(source).byte_offset(source, position)
     }
 
     // Encode a document URI and UTF-16 title range for the trusted editor command.
     #[test]
     fn reveal_range_commands_encode_destinations() {
-        let source = "# Home";
-        let url =
-            reveal_range_command_url(&untitled_uri(), source, SourceRange { start: 2, end: 6 });
+        let url = reveal_range_command_url(
+            &untitled_uri(),
+            Range::new(Position::new(0, 2), Position::new(0, 6)),
+        );
 
         assert_eq!(
             url,
@@ -2733,7 +2672,8 @@ mod tests {
             panic!("A node preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        let home_url = reveal_range_command_url(&uri, source, SourceRange { start: 2, end: 6 });
+        let home_url =
+            reveal_range_command_url(&uri, Range::new(Position::new(0, 2), Position::new(0, 6)));
         assert_eq!(
             contents.value,
             format!(
@@ -4087,7 +4027,7 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        let diagnostic = diagnostic_from_error(source, &error);
+        let diagnostic = diagnostic_from_error(source, &LineIndex::new(source), &error);
 
         assert_eq!(
             diagnostic.range,
@@ -4101,7 +4041,7 @@ mod tests {
     #[test]
     fn errors_without_ranges_point_to_document_start() {
         let error = crate::error::Error::new("Something went wrong.", None, None, None, None);
-        let diagnostic = diagnostic_from_error("# Home\n", &error);
+        let diagnostic = diagnostic_from_error("# Home\n", &LineIndex::new("# Home\n"), &error);
 
         assert_eq!(
             diagnostic.range,
@@ -4119,7 +4059,7 @@ mod tests {
             None,
             None,
         );
-        let diagnostic = diagnostic_from_error(source, &error);
+        let diagnostic = diagnostic_from_error(source, &LineIndex::new(source), &error);
 
         assert_eq!(
             diagnostic.range,
