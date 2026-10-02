@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.1] - 2026-10-02
+
+### Fixed
+- Made language server features much faster for large wikis. Converting between source offsets and editor positions no longer scans the wiki from the start each time, so features like the outline, which convert many positions, no longer take time proportional to the square of the wiki's size. For a 10 MB wiki, the outline went from about a minute to under 200 milliseconds.
+
 ## [0.36.0] - 2026-09-30
 
 ### Changed
