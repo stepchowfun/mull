@@ -121,30 +121,21 @@ impl error::Error for Error {
 
 // Format a list while avoiding an extra visual gap after a source-range underline.
 pub fn format_errors(errors: &[Error]) -> String {
-    errors
-        .iter()
-        .fold(String::new(), |acc, error| {
-            format!(
-                "{}\n{}{}",
-                acc,
-                // Only render an empty line between errors here if the previous line doesn't
-                // already visually look like an empty line. See [ref:overline_u203e].
-                if acc
-                    .split('\n')
-                    .next_back()
-                    .expect("Splitting text should yield at least one piece.")
-                    .chars()
-                    .all(|c| c == ' ' || c == '\u{203e}')
-                {
-                    ""
-                } else {
-                    "\n"
-                },
-                error,
-            )
-        })
-        .trim()
-        .to_owned()
+    // Append each error to the output, examining only the output's last line so the cost doesn't
+    // grow with the output that precedes it.
+    let mut formatted = String::new();
+    for error in errors {
+        // Only render an empty line between errors here if the previous line doesn't already
+        // visually look like an empty line. See [ref:overline_u203e].
+        let last_line = &formatted[formatted.rfind('\n').map_or(0, |index| index + 1)..];
+        formatted.push_str(if last_line.chars().all(|c| c == ' ' || c == '\u{203e}') {
+            "\n"
+        } else {
+            "\n\n"
+        });
+        formatted.push_str(&error.to_string());
+    }
+    formatted.trim().to_owned()
 }
 
 // This function renders the relevant lines of a source file given the source file contents, an
