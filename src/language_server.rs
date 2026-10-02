@@ -1,11 +1,11 @@
 use crate::{
-    analyzer::validate_parsed,
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
     line_index::LineIndex,
     parser,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
+    validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
         TITLE_PREFIX, TextNode, Wiki, unescaped_characters,
@@ -636,24 +636,25 @@ fn diagnostics_for_document(
     snapshot: &Snapshot,
     cancellation: &CancellationFlag,
 ) -> Option<Vec<Diagnostic>> {
-    // Report nothing for a cancelled check, whose errors may cover only part of the wiki.
+    // Validate the wiki even if it has syntax errors, so they don't hide validation errors. Report
+    // nothing for a cancelled check, whose errors may cover only part of the wiki.
     let (wiki, syntax_errors) = snapshot.parsed();
-    let errors = match validate_parsed(
+    let validation_errors = match validator::validate(
         wiki,
-        syntax_errors.clone(),
         snapshot.path.as_deref(),
         &snapshot.contents,
         cancellation,
     ) {
-        Outcome::Completed(errors) => errors,
+        Outcome::Completed(result) => result.err().unwrap_or_default(),
         Outcome::Cancelled => return None,
     };
 
-    // Preserve independent Mull errors as independent editor diagnostics.
+    // Preserve independent Mull errors as independent editor diagnostics, with syntax errors first.
     let line_index = snapshot.line_index();
     Some(
-        errors
+        syntax_errors
             .iter()
+            .chain(&validation_errors)
             .map(|error| diagnostic_from_error(&snapshot.contents, line_index, error))
             .collect(),
     )
