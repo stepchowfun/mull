@@ -85,6 +85,78 @@ struct Backend {
     supports_watched_file_registration: AtomicBool,
 }
 
+// This state associates the latest editor snapshot with a pending diagnostic update. The server
+// assigns the generation, which increases every time a snapshot is stored, including rechecks of
+// unchanged contents after a save, so it identifies which snapshot stale work was computed from.
+#[derive(Debug)]
+struct OpenDocument {
+    snapshot: Arc<Snapshot>,
+    generation: u64,
+    pending_check: Option<PendingCheck>,
+}
+
+// This is an immutable version of a document's contents, shared by the requests and checks made
+// against it so each derived structure is computed at most once, when it's first needed. The
+// client assigns the version, which changes only when the contents do and is reported back with
+// diagnostics.
+#[derive(Debug)]
+struct Snapshot {
+    uri: Uri,
+    path: Option<PathBuf>,
+    contents: String,
+    version: i32,
+    line_index: OnceLock<LineIndex>,
+    parsed: OnceLock<(Wiki, Vec<Error>)>,
+}
+
+impl Snapshot {
+    // Capture a version of a document without analyzing it yet.
+    fn new(uri: Uri, contents: String, version: i32) -> Self {
+        Self {
+            path: local_path(&uri).map(Cow::into_owned),
+            uri,
+            contents,
+            version,
+            line_index: OnceLock::new(),
+            parsed: OnceLock::new(),
+        }
+    }
+
+    // Index the lines of the contents for position conversions.
+    fn line_index(&self) -> &LineIndex {
+        self.line_index
+            .get_or_init(|| LineIndex::new(&self.contents))
+    }
+
+    // Parse the contents, recovering from syntax errors so the wiki can still be validated and
+    // navigated.
+    fn parsed(&self) -> &(Wiki, Vec<Error>) {
+        self.parsed
+            .get_or_init(|| parser::parse(self.path.as_deref(), &self.contents))
+    }
+
+    // Retrieve the wiki parsed with recovery from syntax errors.
+    fn wiki(&self) -> &Wiki {
+        &self.parsed().0
+    }
+}
+
+// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
+#[derive(Debug)]
+struct PendingCheck {
+    handle: JoinHandle<()>,
+    cancellation: CancellationFlag,
+}
+
+impl PendingCheck {
+    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
+    // started checking, and setting its flag stops it if it has already started.
+    fn cancel(self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
 impl Backend {
     // Construct a backend connected to the editor-side language client.
     fn new(client: Client) -> Self {
@@ -387,6 +459,21 @@ impl LanguageServer for Backend {
         self.recheck_saved_document(&params.text_document.uri, params.text);
     }
 
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        // Cancel outstanding work before asking the client to clear this document's diagnostics.
+        let document = self
+            .documents
+            .lock()
+            .expect("The open-document mutex shouldn't be poisoned.")
+            .remove(&params.text_document.uri);
+        if let Some(pending_check) = document.and_then(|document| document.pending_check) {
+            pending_check.cancel();
+        }
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
+    }
+
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         // Recheck open documents against the changed filesystem.
         self.recheck_open_documents(
@@ -541,93 +628,6 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         Ok(document_link_for_document(&snapshot))
-    }
-
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        // Cancel outstanding work before asking the client to clear this document's diagnostics.
-        let document = self
-            .documents
-            .lock()
-            .expect("The open-document mutex shouldn't be poisoned.")
-            .remove(&params.text_document.uri);
-        if let Some(pending_check) = document.and_then(|document| document.pending_check) {
-            pending_check.cancel();
-        }
-        self.client
-            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
-            .await;
-    }
-}
-
-// This state associates the latest editor snapshot with a pending diagnostic update. The server
-// assigns the generation, which increases every time a snapshot is stored, including rechecks of
-// unchanged contents after a save, so it identifies which snapshot stale work was computed from.
-#[derive(Debug)]
-struct OpenDocument {
-    snapshot: Arc<Snapshot>,
-    generation: u64,
-    pending_check: Option<PendingCheck>,
-}
-
-// This is an immutable version of a document's contents, shared by the requests and checks made
-// against it so each derived structure is computed at most once, when it's first needed. The
-// client assigns the version, which changes only when the contents do and is reported back with
-// diagnostics.
-#[derive(Debug)]
-struct Snapshot {
-    uri: Uri,
-    path: Option<PathBuf>,
-    contents: String,
-    version: i32,
-    line_index: OnceLock<LineIndex>,
-    parsed: OnceLock<(Wiki, Vec<Error>)>,
-}
-
-impl Snapshot {
-    // Capture a version of a document without analyzing it yet.
-    fn new(uri: Uri, contents: String, version: i32) -> Self {
-        Self {
-            path: local_path(&uri).map(Cow::into_owned),
-            uri,
-            contents,
-            version,
-            line_index: OnceLock::new(),
-            parsed: OnceLock::new(),
-        }
-    }
-
-    // Index the lines of the contents for position conversions.
-    fn line_index(&self) -> &LineIndex {
-        self.line_index
-            .get_or_init(|| LineIndex::new(&self.contents))
-    }
-
-    // Parse the contents, recovering from syntax errors so the wiki can still be validated and
-    // navigated.
-    fn parsed(&self) -> &(Wiki, Vec<Error>) {
-        self.parsed
-            .get_or_init(|| parser::parse(self.path.as_deref(), &self.contents))
-    }
-
-    // Retrieve the wiki parsed with recovery from syntax errors.
-    fn wiki(&self) -> &Wiki {
-        &self.parsed().0
-    }
-}
-
-// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
-#[derive(Debug)]
-struct PendingCheck {
-    handle: JoinHandle<()>,
-    cancellation: CancellationFlag,
-}
-
-impl PendingCheck {
-    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
-    // started checking, and setting its flag stops it if it has already started.
-    fn cancel(self) {
-        self.cancellation.cancel();
-        self.handle.abort();
     }
 }
 
