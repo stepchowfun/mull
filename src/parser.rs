@@ -17,24 +17,11 @@ struct PendingNode {
     content_start: usize,
 }
 
-// Parse source contents into a scored wiki with source ranges for every node and link, rejecting
-// source contents with any syntax errors.
-pub fn parse(source_path: Option<&Path>, source_contents: &str) -> Result<Wiki, Vec<Error>> {
-    let (wiki, errors) = parse_with_recovery(source_path, source_contents);
-    if errors.is_empty() {
-        Ok(wiki)
-    } else {
-        Err(errors)
-    }
-}
-
-// Parse source contents into a scored wiki along with any syntax errors. The wiki retains as much
-// of the source as possible so it can still be validated and navigated, but it omits the content of
-// duplicate nodes, invalid titles, and anything before the first title, so it mustn't be rendered.
-pub fn parse_with_recovery(
-    source_path: Option<&Path>,
-    source_contents: &str,
-) -> (Wiki, Vec<Error>) {
+// Parse source contents into a scored wiki, with source ranges for every node and link, along with
+// any syntax errors. The wiki retains as much of the source as possible so it can still be
+// validated and navigated, but it omits the content of duplicate nodes, invalid titles, and
+// anything before the first title, so it mustn't be rendered if there are any syntax errors.
+pub fn parse(source_path: Option<&Path>, source_contents: &str) -> (Wiki, Vec<Error>) {
     // Accumulate parsed nodes, errors, and the region currently being read, which starts as the
     // untitled region before the first title.
     let mut wiki = Wiki::default();
@@ -432,7 +419,7 @@ fn trim_source_range(source_contents: &str, source_range: SourceRange) -> Source
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_with_recovery};
+    use super::parse;
     use crate::{
         assert_fails,
         error::Error,
@@ -443,9 +430,15 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    // Parse test sources using a stable path for diagnostic assertions.
+    // Parse test sources using a stable path for diagnostic assertions, rejecting sources with
+    // syntax errors.
     fn parse_test(source_contents: &str) -> Result<Wiki, Vec<Error>> {
-        parse(Some(Path::new("test.mull")), source_contents)
+        let (wiki, errors) = parse(Some(Path::new("test.mull")), source_contents);
+        if errors.is_empty() {
+            Ok(wiki)
+        } else {
+            Err(errors)
+        }
     }
 
     // Describe link targets without coupling semantic assertions to their source ranges.
@@ -863,7 +856,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Keep a node with a syntax error, along with the links in it which parsed successfully.
     #[test]
     fn recovered_node_keeps_valid_links() {
-        let (wiki, errors) = parse_with_recovery(
+        let (wiki, errors) = parse(
             Some(Path::new("test.mull")),
             "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
         );
@@ -882,7 +875,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Score a wiki with syntax errors so its reachability can be validated.
     #[test]
     fn recovered_wiki_has_traversal_order() {
-        let (wiki, errors) = parse_with_recovery(
+        let (wiki, errors) = parse(
             Some(Path::new("test.mull")),
             "# Home\nStray] [Greeting]\n# Greeting",
         );
@@ -896,7 +889,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // content.
     #[test]
     fn recovered_wiki_omits_untitled_regions() {
-        let (wiki, errors) = parse_with_recovery(
+        let (wiki, errors) = parse(
             Some(Path::new("test.mull")),
             "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n#\n[Greeting] b]\n# Greeting",
         );

@@ -76,7 +76,8 @@ mod tests {
 
     // Parse a wiki and return its reachable titles in traversal order.
     fn traversal_order(source: &str) -> (Wiki, Vec<String>) {
-        let mut wiki = parse(Some(Path::new("test.mull")), source).unwrap();
+        let (mut wiki, errors) = parse(Some(Path::new("test.mull")), source);
+        assert!(errors.is_empty());
         populate_traversal_order(&mut wiki);
         let mut nodes = wiki
             .text_nodes

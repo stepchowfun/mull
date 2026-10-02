@@ -27,7 +27,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::exit,
-    rc::Rc,
+    sync::Arc,
 };
 
 // This struct represents the command-line arguments.
@@ -102,7 +102,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             "Unable to determine the current directory.",
             None,
             None,
-            Some(Rc::new(error)),
+            Some(Arc::new(error)),
             None,
         )]
     })?;
@@ -120,7 +120,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             "Unable to read the wiki.",
             Some(&wiki_path),
             None,
-            Some(Rc::new(error)),
+            Some(Arc::new(error)),
             None,
         )]
     })?;
@@ -129,7 +129,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             "The wiki isn't valid UTF-8.",
             Some(&wiki_path),
             None,
-            Some(Rc::new(error)),
+            Some(Arc::new(error)),
             None,
         )]
     })?;
@@ -153,7 +153,7 @@ async fn entry() -> Result<(), Vec<Error>> {
                 "Unable to write the wiki.",
                 Some(&wiki_path),
                 None,
-                Some(Rc::new(error)),
+                Some(Arc::new(error)),
                 None,
             )]
         })?;
@@ -189,7 +189,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
                 &format!("Unable to read {}.", directory.code_path()),
                 None,
                 None,
-                Some(Rc::new(error)),
+                Some(Arc::new(error)),
                 None,
             )
         })?;
@@ -202,7 +202,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
                     &format!("Unable to read an entry in {}.", directory.code_path()),
                     None,
                     None,
-                    Some(Rc::new(error)),
+                    Some(Arc::new(error)),
                     None,
                 )
             })?;
@@ -217,7 +217,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
                         &format!("Unable to inspect {}.", path.code_path()),
                         None,
                         None,
-                        Some(Rc::new(error)),
+                        Some(Arc::new(error)),
                         None,
                     )
                 })?;

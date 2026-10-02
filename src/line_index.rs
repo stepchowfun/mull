@@ -34,9 +34,8 @@ impl LineIndex {
             .map_or(source_contents.len(), |next_line_start| {
                 next_line_start - '\n'.len_utf8()
             });
-        let content_end = if line_end > line_start
-            && source_contents.as_bytes()[line_end - 1] == b'\r'
-            && source_contents.as_bytes().get(line_end) == Some(&b'\n')
+        let content_end = if source_contents.as_bytes().get(line_end) == Some(&b'\n')
+            && source_contents[line_start..line_end].ends_with('\r')
         {
             line_end - '\r'.len_utf8()
         } else {

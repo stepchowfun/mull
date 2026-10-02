@@ -5,7 +5,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
-    rc::Rc,
+    sync::Arc,
 };
 
 // A path relative to the wiki directory whose components are spelled exactly as the names in their
@@ -65,7 +65,7 @@ impl SpelledPath {
                             .map(|entry| fs::DirEntry::file_name(&entry))
                             .collect()
                     })
-                    .map_err(Rc::new)
+                    .map_err(Arc::new)
             }) {
                 Ok(names) => names,
                 Err(error) => {
@@ -110,7 +110,7 @@ impl CodePath for SpelledPath {
 #[derive(Debug)]
 pub struct SpellingError {
     pub message: String,
-    pub reason: Option<Rc<dyn std::error::Error>>,
+    pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
 // This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
@@ -211,7 +211,7 @@ impl WikiDirectory {
                                 candidate.code_path().to_string()
                             },
                         ),
-                        reason: Some(Rc::new(error)),
+                        reason: Some(Arc::new(error)),
                     });
                 }
             }
@@ -227,7 +227,7 @@ impl WikiDirectory {
 
 // These are the names of the entries in each directory, listed at most once per validation or
 // rename, or else why a directory can't be listed.
-pub type DirectoryListings = HashMap<PathBuf, Result<HashSet<OsString>, Rc<io::Error>>>;
+pub type DirectoryListings = HashMap<PathBuf, Result<HashSet<OsString>, Arc<io::Error>>>;
 
 // Identify the directory entry that a path names without following a symlink in its last component,
 // so symlinks to the same target remain distinct.

@@ -15,7 +15,7 @@ pub fn analyze(
     // Parse and score as much of the wiki as possible, then validate it even if it has syntax
     // errors, so they don't hide validation errors. The wiki is returned only if it has neither,
     // since a wiki with syntax errors doesn't represent all of its source.
-    let (wiki, mut errors) = parser::parse_with_recovery(source_path, source_contents);
+    let (wiki, mut errors) = parser::parse(source_path, source_contents);
     validator::validate(&wiki, source_path, source_contents, cancellation).map(|result| {
         if let Err(validation_errors) = result {
             errors.extend(validation_errors);
