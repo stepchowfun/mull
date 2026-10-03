@@ -1,6 +1,7 @@
 use crate::{
     error::{Error, SourceRange},
     format::CodeStr,
+    line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
@@ -20,8 +21,13 @@ struct PendingNode {
 // Parse source contents into a scored wiki, with source ranges for every node and link, along with
 // any syntax errors. The wiki retains as much of the source as possible so it can still be
 // validated and navigated, but it omits the content of duplicate nodes, invalid titles, and
-// anything before the first title, so it mustn't be rendered if there are any syntax errors.
-pub fn parse(source_path: Option<&Path>, source_contents: &str) -> (Wiki, Vec<Error>) {
+// anything before the first title, so it mustn't be rendered if there are any syntax errors. The
+// line index locates syntax errors in their source listings.
+pub fn parse(
+    source_path: Option<&Path>,
+    source_contents: &str,
+    line_index: &LineIndex,
+) -> (Wiki, Vec<Error>) {
     // Accumulate parsed nodes, errors, and the region currently being read, which starts as the
     // untitled region before the first title.
     let mut wiki = Wiki::default();
@@ -64,21 +70,26 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> (Wiki, Vec<Er
                 line_start,
                 source_path,
                 source_contents,
+                line_index,
             ));
 
             // Start a region which belongs to a node if the title is valid.
-            let title =
-                match parse_title(raw_title, source_path, source_contents, line_source_range) {
-                    Ok(title_source_range) => Some((
-                        source_contents[title_source_range.start..title_source_range.end]
-                            .to_owned(),
-                        title_source_range,
-                    )),
-                    Err(error) => {
-                        errors.push(error);
-                        None
-                    }
-                };
+            let title = match parse_title(
+                raw_title,
+                source_path,
+                source_contents,
+                line_index,
+                line_source_range,
+            ) {
+                Ok(title_source_range) => Some((
+                    source_contents[title_source_range.start..title_source_range.end].to_owned(),
+                    title_source_range,
+                )),
+                Err(error) => {
+                    errors.push(error);
+                    None
+                }
+            };
             pending_node = PendingNode {
                 title,
                 source_start: line_start,
@@ -94,6 +105,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> (Wiki, Vec<Er
                 source_path,
                 Some((
                     source_contents,
+                    line_index,
                     trim_source_range(source_contents, line_source_range),
                 )),
                 None,
@@ -112,6 +124,7 @@ pub fn parse(source_path: Option<&Path>, source_contents: &str) -> (Wiki, Vec<Er
         source_contents.len(),
         source_path,
         source_contents,
+        line_index,
     ));
 
     // Order the nodes and return the wiki with every error in source order.
@@ -126,6 +139,7 @@ fn parse_title(
     raw_title: &str,
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
     line_source_range: SourceRange,
 ) -> Result<SourceRange, Error> {
     // Strip surrounding whitespace from the text after the marker, which ends the line.
@@ -143,7 +157,7 @@ fn parse_title(
         Err(Error::new(
             "A node title can't be empty.",
             source_path,
-            Some((source_contents, line_source_range)),
+            Some((source_contents, line_index, line_source_range)),
             None,
             None,
         ))
@@ -156,7 +170,7 @@ fn parse_title(
                 FILESYSTEM_LINK_PREFIX.code_str(),
             ),
             source_path,
-            Some((source_contents, title_source_range)),
+            Some((source_contents, line_index, title_source_range)),
             None,
             None,
         ))
@@ -172,6 +186,7 @@ fn finish_node(
     source_end: usize,
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
 ) -> Vec<Error> {
     // Locate the trimmed region and its trimmed content in the original source.
     let PendingNode {
@@ -193,8 +208,12 @@ fn finish_node(
             end: source_end,
         },
     );
-    let (content, links, content_errors) =
-        parse_content(source_path, source_contents, content_source_range);
+    let (content, links, content_errors) = parse_content(
+        source_path,
+        source_contents,
+        line_index,
+        content_source_range,
+    );
 
     // Discard the content of a region without a valid title, whose title error was already
     // reported.
@@ -207,7 +226,7 @@ fn finish_node(
         return iter::once(Error::new(
             &format!("Node {} already exists.", title.code_str()),
             source_path,
-            Some((source_contents, title_source_range)),
+            Some((source_contents, line_index, title_source_range)),
             None,
             None,
         ))
@@ -235,6 +254,7 @@ fn finish_node(
 fn parse_content(
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
     source_range: SourceRange,
 ) -> (String, Vec<Link>, Vec<Error>) {
     // Traverse the original content while retaining indices for copying and diagnostics.
@@ -252,7 +272,7 @@ fn parse_content(
         Error::new(
             message,
             source_path,
-            Some((source_contents, error_source_range)),
+            Some((source_contents, line_index, error_source_range)),
             None,
             None,
         )
@@ -320,6 +340,7 @@ fn parse_content(
                         trimmed_target,
                         source_path,
                         source_contents,
+                        line_index,
                         link_source_range,
                     ))
                 };
@@ -366,6 +387,7 @@ fn parse_link(
     target: &str,
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
     // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
@@ -376,7 +398,7 @@ fn parse_link(
             Error::new(
                 &message,
                 source_path,
-                Some((source_contents, source_range)),
+                Some((source_contents, line_index, source_range)),
                 None,
                 None,
             )
@@ -423,6 +445,7 @@ mod tests {
     use crate::{
         assert_fails,
         error::Error,
+        line_index::LineIndex,
         wiki::{Link, Wiki},
     };
     use std::{
@@ -430,10 +453,19 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    // Parse test sources using a stable path for diagnostic assertions, rejecting sources with
-    // syntax errors.
+    // Parse test sources using a stable path for diagnostic assertions, recovering from syntax
+    // errors.
+    fn parse_fixture(source_contents: &str) -> (Wiki, Vec<Error>) {
+        parse(
+            Some(Path::new("test.mull")),
+            source_contents,
+            &LineIndex::new(source_contents),
+        )
+    }
+
+    // Parse test sources, rejecting sources with syntax errors.
     fn parse_test(source_contents: &str) -> Result<Wiki, Vec<Error>> {
-        let (wiki, errors) = parse(Some(Path::new("test.mull")), source_contents);
+        let (wiki, errors) = parse_fixture(source_contents);
         if errors.is_empty() {
             Ok(wiki)
         } else {
@@ -856,8 +888,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Keep a node with a syntax error, along with the links in it which parsed successfully.
     #[test]
     fn recovered_node_keeps_valid_links() {
-        let (wiki, errors) = parse(
-            Some(Path::new("test.mull")),
+        let (wiki, errors) = parse_fixture(
             "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
         );
 
@@ -875,10 +906,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Score a wiki with syntax errors so its reachability can be validated.
     #[test]
     fn recovered_wiki_has_traversal_order() {
-        let (wiki, errors) = parse(
-            Some(Path::new("test.mull")),
-            "# Home\nStray] [Greeting]\n# Greeting",
-        );
+        let (wiki, errors) = parse_fixture("# Home\nStray] [Greeting]\n# Greeting");
 
         assert_eq!(errors.len(), 1);
         assert_eq!(wiki.text_nodes["Greeting"].traversal_index, Some(1));
@@ -889,8 +917,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // content.
     #[test]
     fn recovered_wiki_omits_untitled_regions() {
-        let (wiki, errors) = parse(
-            Some(Path::new("test.mull")),
+        let (wiki, errors) = parse_fixture(
             "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n#\n[Greeting] b]\n# Greeting",
         );
 

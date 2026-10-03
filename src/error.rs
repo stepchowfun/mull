@@ -1,4 +1,4 @@
-use crate::format::CodePath;
+use crate::{format::CodePath, line_index::LineIndex};
 use colored::{Colorize, control::SHOULD_COLORIZE};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -41,17 +41,19 @@ impl Error {
     pub fn new(
         message: &str,
         source_path: Option<&Path>,
-        source_context: Option<(&str, SourceRange)>,
+        source_context: Option<(&str, &LineIndex, SourceRange)>,
         reason: Option<Arc<dyn error::Error + Send + Sync>>,
         fix: Option<Fix>,
     ) -> Self {
-        let (source_range, source_listing) =
-            source_context.map_or((None, None), |(source_contents, source_range)| {
+        let (source_range, source_listing) = source_context.map_or(
+            (None, None),
+            |(source_contents, line_index, source_range)| {
                 (
                     Some(source_range),
-                    Some(listing(source_contents, source_range)),
+                    Some(listing(source_contents, line_index, source_range)),
                 )
-            });
+            },
+        );
 
         Self {
             message: message.to_owned(),
@@ -119,56 +121,40 @@ impl error::Error for Error {
 
 // Format a list while avoiding an extra visual gap after a source-range underline.
 pub fn format_errors(errors: &[Error]) -> String {
-    errors
-        .iter()
-        .fold(String::new(), |acc, error| {
-            format!(
-                "{}\n{}{}",
-                acc,
-                // Only render an empty line between errors here if the previous line doesn't
-                // already visually look like an empty line. See [ref:overline_u203e].
-                if acc
-                    .split('\n')
-                    .next_back()
-                    .expect("Splitting text should yield at least one piece.")
-                    .chars()
-                    .all(|c| c == ' ' || c == '\u{203e}')
-                {
-                    ""
-                } else {
-                    "\n"
-                },
-                error,
-            )
-        })
-        .trim()
-        .to_owned()
+    // Append each error to the output, examining only the output's last line so the cost doesn't
+    // grow with the output that precedes it.
+    let mut formatted = String::new();
+    for error in errors {
+        // Only render an empty line between errors here if the previous line doesn't already
+        // visually look like an empty line. See [ref:overline_u203e].
+        let last_line = &formatted[formatted.rfind('\n').map_or(0, |index| index + 1)..];
+        formatted.push_str(if last_line.chars().all(|c| c == ' ' || c == '\u{203e}') {
+            "\n"
+        } else {
+            "\n\n"
+        });
+        formatted.push_str(&error.to_string());
+    }
+    formatted.trim().to_owned()
 }
 
-// This function renders the relevant lines of a source file given the source file contents and a
-// range. The range is inclusive on the left and exclusive on the right.
-fn listing(source_contents: &str, source_range: SourceRange) -> String {
-    // Remember the relevant lines and the position of the start of the next line.
+// This function renders the relevant lines of a source file given the source file contents, an
+// index of its lines, and a range. The range is inclusive on the left and exclusive on the right.
+fn listing(source_contents: &str, line_index: &LineIndex, source_range: SourceRange) -> String {
+    // Remember the relevant lines.
     let mut lines = vec![];
-    let mut pos = 0_usize;
 
-    // Find the relevant lines.
-    for (i, line) in source_contents.split('\n').enumerate() {
-        // Record the start of the line before we advance the cursor.
-        let line_start = pos;
-
-        // Move the cursor to the start of the next line.
-        pos += line.len() + 1;
-
-        // If we're past the lines of interest, we're done.
-        if line_start >= source_range.end {
-            break;
-        }
-
-        // If we haven't reached the lines of interest yet, skip to the next line.
-        if pos <= source_range.start {
-            continue;
-        }
+    // Visit the lines which start before the end of the range, beginning with the one containing
+    // the start of the range, so the lines before it are never examined.
+    let mut i = line_index.line(source_range.start);
+    while let Some(line_start) = line_index.line_start(i)
+        && line_start < source_range.end
+    {
+        // Extract the line without its line feed.
+        let line_end = line_index
+            .line_end(source_contents, i)
+            .expect("A line that starts should also end.");
+        let line = &source_contents[line_start..line_end];
 
         // We trim the end of the line to remove any carriage return (or any other whitespace) that
         // might have been present before the line feed.
@@ -181,10 +167,11 @@ fn listing(source_contents: &str, source_range: SourceRange) -> String {
                 min(source_range.end - line_start, trimmed_line.len()),
             )
         } else {
+            // Skip the line's indentation, but highlight nothing if the range ends within it.
             let end = min(source_range.end - line_start, trimmed_line.len());
             let start = trimmed_line
                 .find(|c: char| !c.is_whitespace())
-                .unwrap_or(end);
+                .map_or(end, |start| min(start, end));
 
             (start, end)
         };
@@ -196,6 +183,7 @@ fn listing(source_contents: &str, source_range: SourceRange) -> String {
             section_start,
             section_end,
         ));
+        i += 1;
     }
 
     // Compute the width of the string representation of the hugest relevant line number.
@@ -251,7 +239,10 @@ fn listing(source_contents: &str, source_range: SourceRange) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::{Error, SourceRange, format_errors, listing};
+    use crate::{
+        error::{Error, SourceRange, format_errors, listing},
+        line_index::LineIndex,
+    };
     use std::{path::Path, sync::Arc};
 
     // Reuse one source context across the constructor tests.
@@ -294,7 +285,11 @@ mod tests {
         let error = Error::new(
             "An error occurred.",
             None,
-            Some((SOURCE_CONTENTS, SOURCE_RANGE)),
+            Some((
+                SOURCE_CONTENTS,
+                &LineIndex::new(SOURCE_CONTENTS),
+                SOURCE_RANGE,
+            )),
             None,
             None,
         );
@@ -340,7 +335,11 @@ mod tests {
         let error = Error::new(
             "An error occurred.",
             Some(Path::new("foo")),
-            Some((SOURCE_CONTENTS, SOURCE_RANGE)),
+            Some((
+                SOURCE_CONTENTS,
+                &LineIndex::new(SOURCE_CONTENTS),
+                SOURCE_RANGE,
+            )),
             None,
             None,
         );
@@ -362,7 +361,11 @@ mod tests {
         let error = Error::new(
             "An error occurred.",
             None,
-            Some((SOURCE_CONTENTS, SOURCE_RANGE)),
+            Some((
+                SOURCE_CONTENTS,
+                &LineIndex::new(SOURCE_CONTENTS),
+                SOURCE_RANGE,
+            )),
             Some(Arc::new(reason)),
             None,
         );
@@ -415,7 +418,11 @@ mod tests {
         let error = Error::new(
             "An error occurred.",
             Some(Path::new("foo")),
-            Some((SOURCE_CONTENTS, SOURCE_RANGE)),
+            Some((
+                SOURCE_CONTENTS,
+                &LineIndex::new(SOURCE_CONTENTS),
+                SOURCE_RANGE,
+            )),
             Some(Arc::new(reason)),
             None,
         );
@@ -439,13 +446,20 @@ mod tests {
 
     #[test]
     fn listing_empty() {
-        assert_eq!(listing("", SourceRange { start: 0, end: 0 }), "");
+        assert_eq!(
+            listing("", &LineIndex::new(""), SourceRange { start: 0, end: 0 }),
+            "",
+        );
     }
 
     #[test]
     fn listing_single_line_full_range() {
         assert_eq!(
-            listing("foo bar", SourceRange { start: 0, end: 7 }),
+            listing(
+                "foo bar",
+                &LineIndex::new("foo bar"),
+                SourceRange { start: 0, end: 7 },
+            ),
             "1 \u{2502} foo bar\n    \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\u{203e}",
         );
     }
@@ -453,7 +467,11 @@ mod tests {
     #[test]
     fn listing_single_line_partial_range() {
         assert_eq!(
-            listing("foo bar", SourceRange { start: 1, end: 6 }),
+            listing(
+                "foo bar",
+                &LineIndex::new("foo bar"),
+                SourceRange { start: 1, end: 6 },
+            ),
             "1 \u{2502} foo bar\n     \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}",
         );
     }
@@ -461,7 +479,11 @@ mod tests {
     #[test]
     fn listing_multiple_lines_full_range() {
         assert_eq!(
-            listing("foo\nbar\nbaz\nqux", SourceRange { start: 0, end: 15 }),
+            listing(
+                "foo\nbar\nbaz\nqux",
+                &LineIndex::new("foo\nbar\nbaz\nqux"),
+                SourceRange { start: 0, end: 15 },
+            ),
             "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502} bar\n  \u{250a} \
                 \u{203e}\u{203e}\u{203e}\n3 \u{2502} baz\n  \u{250a} \u{203e}\u{203e}\u{203e}\n4 \
                 \u{2502} qux\n    \u{203e}\u{203e}\u{203e}",
@@ -471,7 +493,11 @@ mod tests {
     #[test]
     fn listing_multiple_lines_partial_range() {
         assert_eq!(
-            listing("foo\nbar\nbaz\nqux", SourceRange { start: 5, end: 9 }),
+            listing(
+                "foo\nbar\nbaz\nqux",
+                &LineIndex::new("foo\nbar\nbaz\nqux"),
+                SourceRange { start: 5, end: 9 },
+            ),
             "2 \u{2502} bar\n  \u{250a}  \u{203e}\u{203e}\n3 \u{2502} baz\n    \u{203e}",
         );
     }
@@ -481,10 +507,24 @@ mod tests {
         assert_eq!(
             listing(
                 "foo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux",
+                &LineIndex::new("foo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux"),
                 SourceRange { start: 33, end: 42 },
             ),
             " 9 \u{2502} foo\n   \u{250a}  \u{203e}\u{203e}\n10 \u{2502} bar\n   \u{250a} \
                 \u{203e}\u{203e}\u{203e}\n11 \u{2502} baz\n     \u{203e}\u{203e}",
+        );
+    }
+
+    // Highlight nothing on a line where the range covers only indentation.
+    #[test]
+    fn listing_range_ending_in_indentation() {
+        assert_eq!(
+            listing(
+                "foo\n    bar",
+                &LineIndex::new("foo\n    bar"),
+                SourceRange { start: 0, end: 6 },
+            ),
+            "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502}     bar\n   ",
         );
     }
 

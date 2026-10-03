@@ -1,9 +1,7 @@
-use crate::error::SourceRange;
-use tower_lsp_server::ls_types::{Position, Range};
-
-// This index records where each line of some source contents starts, so conversions between byte
-// offsets and LSP positions only need to examine a single line. The source contents aren't stored,
-// so each conversion must be given the same contents the index was built from.
+// This index records where each line of some source contents starts, so finding the line that
+// contains a byte offset doesn't require scanning the source from its start. The source contents
+// aren't stored, so each lookup that needs them must be given the contents the index was built
+// from.
 #[derive(Clone, Debug)]
 pub struct LineIndex {
     line_starts: Vec<usize>, // The first line starts at 0, and every other line follows a `\n`
@@ -23,70 +21,27 @@ impl LineIndex {
         }
     }
 
-    // Convert a zero-based LSP position measured in UTF-16 code units into a UTF-8 byte offset.
-    pub fn byte_offset(&self, source_contents: &str, position: Position) -> Option<usize> {
-        // Locate the requested line without counting its line terminator as editor content.
-        let line = usize::try_from(position.line).ok()?;
-        let line_start = *self.line_starts.get(line)?;
-        let line_end = self
-            .line_starts
-            .get(line + 1)
-            .map_or(source_contents.len(), |next_line_start| {
-                next_line_start - '\n'.len_utf8()
-            });
-        let content_end = if source_contents.as_bytes().get(line_end) == Some(&b'\n')
-            && source_contents[line_start..line_end].ends_with('\r')
-        {
-            line_end - '\r'.len_utf8()
-        } else {
-            line_end
-        };
-
-        // Reject positions that split a surrogate pair, and clamp positions past the line's
-        // contents to its end, as the protocol specifies.
-        let requested_character = usize::try_from(position.character).ok()?;
-        let mut utf16_character = 0;
-        for (index, character) in source_contents[line_start..content_end].char_indices() {
-            if utf16_character == requested_character {
-                return Some(line_start + index);
-            }
-            utf16_character += character.len_utf16();
-            if utf16_character > requested_character {
-                return None;
-            }
-        }
-        Some(content_end)
-    }
-
-    // Convert a UTF-8 byte offset into a zero-based LSP position measured in UTF-16 code units.
-    pub fn position(&self, source_contents: &str, byte_offset: usize) -> Position {
-        // Find the line containing the offset, which can't extend beyond the source.
-        let byte_offset = byte_offset.min(source_contents.len());
-        let line = self
-            .line_starts
+    // Find the zero-based line containing a byte offset, treating offsets beyond the source as
+    // being on its last line.
+    pub fn line(&self, byte_offset: usize) -> usize {
+        self.line_starts
             .partition_point(|line_start| *line_start <= byte_offset)
-            - 1;
-
-        // Measure the offset's column within its line. Source ranges originate at character
-        // boundaries.
-        Position::new(
-            u32::try_from(line).unwrap_or(u32::MAX),
-            u32::try_from(
-                source_contents
-                    .get(self.line_starts[line]..byte_offset)
-                    .expect("Source ranges should end on UTF-8 character boundaries.")
-                    .encode_utf16()
-                    .count(),
-            )
-            .unwrap_or(u32::MAX),
-        )
+            - 1
     }
 
-    // Convert a source range into the representation expected by the language server protocol.
-    pub fn range(&self, source_contents: &str, source_range: SourceRange) -> Range {
-        Range::new(
-            self.position(source_contents, source_range.start),
-            self.position(source_contents, source_range.end),
+    // Find where a line starts, if the source has that line.
+    pub fn line_start(&self, line: usize) -> Option<usize> {
+        self.line_starts.get(line).copied()
+    }
+
+    // Find where a line ends, not including its `\n`, if the source has that line.
+    pub fn line_end(&self, source_contents: &str, line: usize) -> Option<usize> {
+        self.line_start(line)?;
+        Some(
+            self.line_start(line + 1)
+                .map_or(source_contents.len(), |next_line_start| {
+                    next_line_start - '\n'.len_utf8()
+                }),
         )
     }
 }
@@ -94,54 +49,35 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::LineIndex;
-    use tower_lsp_server::ls_types::Position;
 
-    // Convert a byte offset with a freshly built index.
-    fn position(source: &str, byte_offset: usize) -> Position {
-        LineIndex::new(source).position(source, byte_offset)
-    }
-
-    // Convert an editor position with a freshly built index.
-    fn byte_offset(source: &str, position: Position) -> Option<usize> {
-        LineIndex::new(source).byte_offset(source, position)
-    }
-
+    // Locate offsets on the lines that contain them, including the empty line after a final line
+    // break.
     #[test]
-    fn positions_use_utf16_code_units() {
-        let source = "zero\n😀 café";
+    fn lines_contain_offsets() {
+        let source = "zero\none\n";
+        let line_index = LineIndex::new(source);
 
-        assert_eq!(position(source, 0), Position::new(0, 0));
-        assert_eq!(position(source, 4), Position::new(0, 4));
-        assert_eq!(position(source, 5), Position::new(1, 0));
-        assert_eq!(position(source, 9), Position::new(1, 2));
-        assert_eq!(position(source, source.len()), Position::new(1, 7));
+        assert_eq!(line_index.line(0), 0);
+        assert_eq!(line_index.line(4), 0);
+        assert_eq!(line_index.line(5), 1);
+        assert_eq!(line_index.line(8), 1);
+        assert_eq!(line_index.line(9), 2);
+        assert_eq!(line_index.line(100), 2);
     }
 
-    // Place the offset after a final line break at the start of an empty last line.
+    // Report each line's extent without its line break.
     #[test]
-    fn positions_after_final_line_break() {
-        let source = "zero\n";
+    fn line_extents() {
+        let source = "zero\r\none\n";
+        let line_index = LineIndex::new(source);
 
-        assert_eq!(position(source, source.len()), Position::new(1, 0));
-        assert_eq!(byte_offset(source, Position::new(1, 0)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(2, 0)), None);
-    }
-
-    // Convert editor positions back to byte offsets without splitting Unicode characters, clamping
-    // positions past the end of a line to its end.
-    #[test]
-    fn byte_offsets_use_utf16_code_units() {
-        let source = "zero\n😀 café";
-
-        assert_eq!(byte_offset(source, Position::new(0, 0)), Some(0));
-        assert_eq!(byte_offset(source, Position::new(0, 9)), Some(4));
-        assert_eq!(byte_offset(source, Position::new(1, 0)), Some(5));
-        assert_eq!(byte_offset(source, Position::new(1, 1)), None);
-        assert_eq!(byte_offset(source, Position::new(1, 2)), Some(9));
-        assert_eq!(byte_offset(source, Position::new(1, 7)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(1, 8)), Some(source.len()));
-        assert_eq!(byte_offset(source, Position::new(2, 0)), None);
-        assert_eq!(byte_offset("ab\r\ncd", Position::new(0, 9)), Some(2));
-        assert_eq!(byte_offset("ab\r\ncd", Position::new(1, 1)), Some(5));
+        assert_eq!(line_index.line_start(0), Some(0));
+        assert_eq!(line_index.line_end(source, 0), Some(5));
+        assert_eq!(line_index.line_start(1), Some(6));
+        assert_eq!(line_index.line_end(source, 1), Some(9));
+        assert_eq!(line_index.line_start(2), Some(10));
+        assert_eq!(line_index.line_end(source, 2), Some(10));
+        assert_eq!(line_index.line_start(3), None);
+        assert_eq!(line_index.line_end(source, 3), None);
     }
 }

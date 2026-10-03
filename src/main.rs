@@ -5,6 +5,7 @@ mod error;
 mod format;
 mod language_server;
 mod line_index;
+mod lsp_position;
 mod parser;
 mod path_util;
 mod scoring;
