@@ -167,10 +167,11 @@ fn listing(source_contents: &str, line_index: &LineIndex, source_range: SourceRa
                 min(source_range.end - line_start, trimmed_line.len()),
             )
         } else {
+            // Skip the line's indentation, but highlight nothing if the range ends within it.
             let end = min(source_range.end - line_start, trimmed_line.len());
             let start = trimmed_line
                 .find(|c: char| !c.is_whitespace())
-                .unwrap_or(end);
+                .map_or(end, |start| min(start, end));
 
             (start, end)
         };
@@ -511,6 +512,19 @@ mod tests {
             ),
             " 9 \u{2502} foo\n   \u{250a}  \u{203e}\u{203e}\n10 \u{2502} bar\n   \u{250a} \
                 \u{203e}\u{203e}\u{203e}\n11 \u{2502} baz\n     \u{203e}\u{203e}",
+        );
+    }
+
+    // Highlight nothing on a line where the range covers only indentation.
+    #[test]
+    fn listing_range_ending_in_indentation() {
+        assert_eq!(
+            listing(
+                "foo\n    bar",
+                &LineIndex::new("foo\n    bar"),
+                SourceRange { start: 0, end: 6 },
+            ),
+            "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502}     bar\n   ",
         );
     }
 
