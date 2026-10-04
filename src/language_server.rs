@@ -5,11 +5,12 @@ use crate::{
     line_index::LineIndex,
     lsp_position::LspPosition,
     parser,
+    scoring::traversal_order,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     validator,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, HOME_TITLE, Link, TITLE_MARKER,
-        TITLE_PREFIX, TextNode, Wiki, unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
+        TextNode, Wiki, rendering_order_key, unescaped_characters,
     },
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -1859,37 +1860,45 @@ fn code_action_for_document(
             let (title, edit, command) = match fix {
                 Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
                 Fix::CreateNode(title) => {
-                    // Prepend the home node, and insert any other node after the last node that
-                    // starts before the end of its first diagnostic, which is the node linking to
-                    // it, or else at the end of the wiki. The formatter decides where it ends up.
-                    let linking_node = diagnostics
-                        .iter()
-                        .filter_map(|diagnostic| snapshot.byte_offset(diagnostic.range.end))
-                        .min()
-                        .and_then(|offset| {
-                            wiki.text_nodes
-                                .values()
-                                .filter(|node| node.source_range.start < offset)
-                                .max_by_key(|node| node.source_range.start)
-                        });
-                    let (offset, before_title, after_title) = if title == HOME_TITLE {
-                        let after_title = if snapshot.contents.is_empty() {
-                            "\n"
-                        } else {
-                            "\n\n"
-                        };
-                        (0, "", after_title)
-                    } else if let Some(node) = linking_node {
-                        (node.source_range.end, "\n\n", "")
-                    } else {
-                        let before_title = if snapshot.contents.ends_with("\n\n") {
-                            ""
-                        } else if snapshot.contents.ends_with('\n') {
-                            "\n"
-                        } else {
-                            "\n\n"
-                        };
-                        (snapshot.contents.len(), before_title, "\n")
+                    // Insert the node where the formatter would render it, which doesn't move any
+                    // other node since the new one has no links. That's after the node it would
+                    // follow or, if it would come first, as the home node does, before the first
+                    // node. A wiki without nodes gets it at the end.
+                    let traversal_indices = traversal_order(wiki, Some(&title))
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, title)| (title, index))
+                        .collect::<HashMap<_, _>>();
+                    let new_key =
+                        rendering_order_key(traversal_indices.get(title.as_str()).copied(), &title);
+                    let preceding_node = wiki
+                        .text_nodes
+                        .values()
+                        .map(|node| {
+                            let index = traversal_indices.get(node.title.as_str()).copied();
+                            (rendering_order_key(index, &node.title), node)
+                        })
+                        .filter(|(key, _node)| *key < new_key)
+                        .max_by_key(|(key, _node)| *key);
+                    let first_node = wiki
+                        .text_nodes
+                        .values()
+                        .min_by_key(|node| node.source_range.start);
+                    let (offset, before_title, after_title) = match (preceding_node, first_node) {
+                        (Some((_key, node)), _) => (node.source_range.end, "\n\n", ""),
+                        (None, Some(node)) => (node.source_range.start, "", "\n\n"),
+                        (None, None) => {
+                            let before_title = if snapshot.contents.is_empty()
+                                || snapshot.contents.ends_with("\n\n")
+                            {
+                                ""
+                            } else if snapshot.contents.ends_with('\n') {
+                                "\n"
+                            } else {
+                                "\n\n"
+                            };
+                            (snapshot.contents.len(), before_title, "\n")
+                        }
                     };
                     let insertion = snapshot.position(offset);
                     let edit = TextEdit::new(
@@ -2102,11 +2111,8 @@ mod tests {
         reveal_range_command_url,
     };
     use crate::{
-        cancellation::CancellationFlag,
-        error::{Fix, SourceRange},
-        line_index::LineIndex,
-        lsp_position::LspPosition,
-        parser,
+        cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
+        lsp_position::LspPosition, parser,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
@@ -3998,50 +4004,58 @@ mod tests {
         );
     }
 
-    // Insert the created node right after the first node linking to it, between blank lines.
+    // Insert the created node where the formatter renders it, after the subtrees of its siblings
+    // with earlier titles rather than right after the node linking to it.
     #[test]
-    fn code_actions_insert_after_linking_nodes() {
-        let source = "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Last\n\n[Greeting]\n";
+    fn code_actions_insert_in_rendering_order() {
+        let source = concat!(
+            "# Home\n\n[Apple] [Cherry] [Banana]\n\n",
+            "# Apple\n\n[Apricot]\n\n",
+            "# Apricot\n\n",
+            "# Cherry\n",
+        );
         let uri = untitled_uri();
         let actions =
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
 
+        let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
-            apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n[Other]\n\n# Other\n\n[Greeting]\n\n# Greeting|\n\n# Last\n\n[Greeting]\n",
+            applied,
+            concat!(
+                "# Home\n\n[Apple] [Cherry] [Banana]\n\n",
+                "# Apple\n\n[Apricot]\n\n",
+                "# Apricot\n\n",
+                "# Banana|\n\n",
+                "# Cherry\n",
+            ),
+        );
+        assert_eq!(
+            formatting_for_document(&snapshot(&uri, &applied.replace('|', ""))),
+            Some(Vec::new()),
         );
     }
 
-    // Insert the created node after the last node that a diagnostic touches, even if the diagnostic
-    // spans several nodes or ends between them.
+    // Insert a node that only unreachable nodes link to among them in title order.
     #[test]
-    fn code_actions_insert_after_last_touched_nodes() {
-        let source = "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n";
+    fn code_actions_insert_unreachable_nodes_in_title_order() {
+        let source = "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Zebra\n";
         let uri = untitled_uri();
-        let fix_diagnostic = |start, end| Diagnostic {
-            range: Range::new(start, end),
-            data: Some(serde_json::to_value(Fix::CreateNode("New".to_owned())).unwrap()),
-            ..Diagnostic::default()
-        };
-        let apply = |diagnostic| {
-            let actions = code_action_for_document(&snapshot(&uri, source), &[diagnostic]).unwrap();
-            apply_code_action(&uri, source, &actions[0])
-        };
+        let actions =
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
 
-        // Insert after the second node when the diagnostic spans into it.
+        let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
-            apply(fix_diagnostic(Position::new(4, 0), Position::new(8, 3))),
-            "# Home\n\n[First]\n\n# First\n\nText.\n\n# Second\n\nText.\n\n# New|\n",
+            applied,
+            "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Missing|\n\n# Zebra\n",
         );
-
-        // Insert after the first node when the diagnostic ends in the blank line after it.
         assert_eq!(
-            apply(fix_diagnostic(Position::new(4, 0), Position::new(7, 0))),
-            "# Home\n\n[First]\n\n# First\n\nText.\n\n# New|\n\n# Second\n\nText.\n",
+            formatting_for_document(&snapshot(&uri, &applied.replace('|', ""))),
+            Some(Vec::new()),
         );
     }
 
-    // Append the created node when a stale diagnostic's position is no longer within any node.
+    // Place the node from a stale diagnostic according to the current wiki, regardless of where the
+    // diagnostic was.
     #[test]
     fn code_actions_append_without_linking_nodes() {
         let uri = untitled_uri();
