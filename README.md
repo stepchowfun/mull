@@ -71,6 +71,7 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 - Clickable links with hover previews
 - Completions for node titles and file paths
 - Diagnostics and quick fixes
+- Focusing on a single node and folding the rest
 - Formatting (manual and on save)
 - Link occurrence highlighting
 - Navigation to the start or end of a node

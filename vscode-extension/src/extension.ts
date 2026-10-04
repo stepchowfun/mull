@@ -84,26 +84,40 @@ async function revealInExplorer(uriString: string): Promise<void> {
   await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
 }
 
-// Move each cursor to the start or end of the node containing it, which is the last node starting
-// at or before it, so a cursor between nodes belongs to the one above. A cursor before the first
-// node stays put, and repeating the command changes nothing.
+// List the ranges of a wiki's nodes in source order, using the language server's document symbols,
+// whose ranges span entire nodes.
+async function nodeRanges(document: vscode.TextDocument): Promise<vscode.Range[]> {
+  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
+    'vscode.executeDocumentSymbolProvider',
+    document.uri,
+  );
+  return (symbols ?? [])
+    .map((symbol) => symbol.range)
+    .toSorted((a, b) => a.start.compareTo(b.start));
+}
+
+// Find the node containing a position, which is the last node starting at or before it, so a
+// position between nodes belongs to the one above. A position before the first node has none.
+function nodeAt(
+  ranges: readonly vscode.Range[],
+  position: vscode.Position,
+): vscode.Range | undefined {
+  return ranges.findLast((range) => range.start.isBeforeOrEqual(position));
+}
+
+// Move each cursor to the start or end of the node containing it. A cursor before the first node
+// stays put, and repeating the command changes nothing.
 async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): Promise<void> {
-  // Find the nodes from the language server's document symbols, whose ranges span entire nodes.
+  // Find the nodes of the active wiki.
   const editor = vscode.window.activeTextEditor;
   if (editor === undefined) {
     return;
   }
-  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
-    'vscode.executeDocumentSymbolProvider',
-    editor.document.uri,
-  );
-  const ranges = (symbols ?? [])
-    .map((symbol) => symbol.range)
-    .toSorted((a, b) => a.start.compareTo(b.start));
+  const ranges = await nodeRanges(editor.document);
 
   // Move the active end of each selection, keeping its anchor when extending it.
   editor.selections = editor.selections.map((selection) => {
-    const range = ranges.findLast((candidate) => candidate.start.isBeforeOrEqual(selection.active));
+    const range = nodeAt(ranges, selection.active);
     if (range === undefined) {
       return selection;
     }
@@ -111,6 +125,156 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
     return new vscode.Selection(select ? selection.anchor : position, position);
   });
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
+}
+
+// This describes how to focus on a node: the lines it spans through the line before the next node,
+// and the folds before and after it.
+interface Focus {
+  startLine: number;
+  endLine: number;
+  before: vscode.FoldingRange | undefined;
+  after: vscode.FoldingRange | undefined;
+}
+
+// Make a fold of some lines, if they span more than one line.
+function foldingRange(start: number, end: number): vscode.FoldingRange | undefined {
+  return start < end ? new vscode.FoldingRange(start, end) : undefined;
+}
+
+// Find how to focus on the node containing a position. The folds cover the lines before the node
+// and those from the blank line before the next node. A fold's first line stays visible, so the
+// wiki's first line and that blank line remain on screen, as do blank lines at the end of the node.
+function focusAt(
+  nodes: readonly vscode.Range[],
+  position: vscode.Position,
+  lineCount: number,
+): Focus | undefined {
+  const node = nodeAt(nodes, position);
+  if (node === undefined) {
+    return undefined;
+  }
+  const nextNode = nodes.find((range) => range.start.isAfter(position));
+  return {
+    startLine: node.start.line,
+    endLine: nextNode === undefined ? lineCount - 1 : nextNode.start.line - 1,
+    before: foldingRange(0, node.start.line - 1),
+    after:
+      nextNode === undefined
+        ? undefined
+        : foldingRange(Math.max(node.end.line + 1, nextNode.start.line - 1), lineCount - 1),
+  };
+}
+
+// Fold or unfold exactly the folds starting on some lines of the active editor.
+async function setFolded(folded: boolean, startLines: number[]): Promise<void> {
+  if (startLines.length > 0) {
+    await vscode.commands.executeCommand(folded ? 'editor.fold' : 'editor.unfold', {
+      levels: 1,
+      direction: 'down',
+      selectionLines: startLines,
+    });
+  }
+}
+
+// This folds everything outside the node containing the cursor, so the node being edited appears to
+// be the whole document.
+class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
+  // Notify the editor that the folds may have moved, so it requests them again.
+  private readonly changeEmitter = new vscode.EventEmitter<void>();
+  public readonly onDidChangeFoldingRanges = this.changeEmitter.event;
+
+  // Remember each wiki's nodes and focus as of the last time the editor requested folds, and the
+  // first lines of the folds last collapsed in its active editor.
+  private readonly states = new Map<string, { nodes: vscode.Range[]; focus: Focus | undefined }>();
+  private readonly collapsedStartLines = new Map<string, string>();
+
+  // Fold around the node containing the cursor of an editor showing the wiki, preferring the active
+  // editor. The editor requests folds again after every edit, which keeps them current.
+  public async provideFoldingRanges(document: vscode.TextDocument): Promise<vscode.FoldingRange[]> {
+    // Find the focus, if the cursor is in a node.
+    const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
+      (candidate) => candidate !== undefined && candidate.document === document,
+    );
+    if (editor === undefined) {
+      return [];
+    }
+    const key = document.uri.toString();
+    const nodes = await nodeRanges(document);
+    const focus = focusAt(nodes, editor.selection.active, document.lineCount);
+    this.states.set(key, { nodes, focus });
+
+    // Collapse new folds in the active editor once it has them, then discard any folds it kept
+    // because they were collapsed when they stopped being provided. Fold commands reveal the cursor,
+    // so they're skipped when the folds haven't moved, as when the editor requests them again
+    // without an edit, which would otherwise interrupt scrolling. Commands issued after the folds
+    // are returned wait for the editor to apply them.
+    const folds =
+      focus === undefined ? [] : [focus.before, focus.after].filter((fold) => fold !== undefined);
+    const startLines = folds.map((fold) => fold.start);
+    if (
+      editor === vscode.window.activeTextEditor &&
+      this.collapsedStartLines.get(key) !== startLines.join()
+    ) {
+      this.collapsedStartLines.set(key, startLines.join());
+      setTimeout(async () => {
+        await setFolded(true, startLines);
+        await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
+      }, 0);
+    }
+    return folds;
+  }
+
+  // Fold around another node when the cursor leaves the focused one, as when navigation or Find
+  // moves it into folded text, which the editor unfolds to reveal it.
+  public async refocus(editor: vscode.TextEditor | undefined): Promise<void> {
+    // Do nothing while the cursor stays in the focused node.
+    if (editor === undefined || editor.document.languageId !== 'mull') {
+      return;
+    }
+    const state = this.states.get(editor.document.uri.toString());
+    if (state === undefined) {
+      return;
+    }
+    const { focus } = state;
+    const line = editor.selection.active.line;
+    if (focus !== undefined && line >= focus.startLine && line <= focus.endLine) {
+      return;
+    }
+
+    // Unfold the old folds that the new ones won't replace before requesting them, since the editor
+    // keeps a collapsed fold that's no longer provided unless the cursor is in its hidden lines, and
+    // a kept fold can displace the new ones. An old fold within the new one after the node can stay.
+    if (editor === vscode.window.activeTextEditor && focus !== undefined) {
+      const newFocus = focusAt(state.nodes, editor.selection.active, editor.document.lineCount);
+      const staleStartLines = [];
+      if (focus.before !== undefined && (newFocus === undefined || newFocus.before === undefined)) {
+        staleStartLines.push(focus.before.start);
+      }
+      if (
+        focus.after !== undefined &&
+        (newFocus === undefined ||
+          newFocus.after === undefined ||
+          newFocus.after.start > focus.after.start)
+      ) {
+        staleStartLines.push(focus.after.start);
+      }
+      await setFolded(false, staleStartLines);
+    }
+    this.changeEmitter.fire();
+  }
+
+  // Collapse the folds again when a wiki's editor becomes active, since it may not have them.
+  public activate(editor: vscode.TextEditor | undefined): void {
+    if (editor !== undefined && editor.document.languageId === 'mull') {
+      this.collapsedStartLines.delete(editor.document.uri.toString());
+      this.changeEmitter.fire();
+    }
+  }
+
+  // Release the event emitter.
+  public dispose(): void {
+    this.changeEmitter.dispose();
+  }
 }
 
 // Start a Mull language server for local and untitled Mull documents.
@@ -133,6 +297,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(command, async () => moveToNodeBoundary(boundary, select)),
     );
   }
+
+  // Show only the node containing the cursor, as if it were the whole document.
+  const nodeFocus = new NodeFocus();
+  context.subscriptions.push(
+    nodeFocus,
+    vscode.languages.registerFoldingRangeProvider({ language: 'mull' }, nodeFocus),
+    vscode.window.onDidChangeTextEditorSelection(async (event) => {
+      await nodeFocus.refocus(event.textEditor);
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      nodeFocus.activate(editor);
+    }),
+  );
 
   // Resolve the configured executable before constructing the server process.
   const executablePath = vscode.workspace.getConfiguration('mull').get('executablePath', 'mull');

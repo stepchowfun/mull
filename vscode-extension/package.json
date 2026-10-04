@@ -129,9 +129,12 @@
       "[mull]": {
         "editor.defaultFormatter": "stepchowfun.mull",
         "editor.formatOnSave": true,
+        "editor.glyphMargin": false,
+        "editor.lineNumbers": "off",
         "editor.rulers": [
           80
         ],
+        "editor.showFoldingControls": "never",
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
       }
