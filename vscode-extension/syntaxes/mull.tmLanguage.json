@@ -96,7 +96,7 @@
     },
     "filesystem-links": {
       "name": "meta.link.filesystem.mull",
-      "contentName": "markup.underline.link.path.mull",
+      "contentName": "string.other.link.title.path.mull",
       "begin": "\\[(?=[ \\t]*/)",
       "beginCaptures": {
         "0": {
