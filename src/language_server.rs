@@ -1062,13 +1062,16 @@ fn goto_definition_for_document(
     let (node, origin_source_range) =
         node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
-    // Identify the complete source link or title and the destination node while selecting its title
-    // on arrival.
+    // Identify the complete source link or title, and target the start of the destination node with
+    // an empty range. Editors preview the source of a nonempty target range alongside the hover
+    // preview, and the selection range has to be within the target range.
+    let node_start = snapshot.position(node.source_range.start);
+    let target_range = Range::new(node_start, node_start);
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
         origin_selection_range: Some(snapshot.range(origin_source_range)),
         target_uri: snapshot.uri.clone(),
-        target_range: snapshot.range(node.source_range),
-        target_selection_range: snapshot.range(node.title_source_range),
+        target_range,
+        target_selection_range: target_range,
     }]))
 }
 
@@ -2846,12 +2849,17 @@ mod tests {
         let [link] = links.as_slice() else {
             panic!("A title should have exactly one definition.");
         };
-        let title_range = Range::new(Position::new(0, 2), Position::new(0, 6));
-        assert_eq!(link.origin_selection_range, Some(title_range));
-        assert_eq!(link.target_selection_range, title_range);
+        assert_eq!(
+            link.origin_selection_range,
+            Some(Range::new(Position::new(0, 2), Position::new(0, 6))),
+        );
+        assert_eq!(
+            link.target_selection_range,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+        );
     }
 
-    // Jump from a text link to the title of its destination node.
+    // Jump from a text link to the start of its destination node.
     #[test]
     fn definitions_target_node_titles() {
         let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nHello!";
@@ -2873,11 +2881,11 @@ mod tests {
         );
         assert_eq!(
             link.target_range,
-            Range::new(Position::new(4, 0), Position::new(6, 6)),
+            Range::new(Position::new(4, 0), Position::new(4, 0)),
         );
         assert_eq!(
             link.target_selection_range,
-            Range::new(Position::new(4, 2), Position::new(4, 10)),
+            Range::new(Position::new(4, 0), Position::new(4, 0)),
         );
     }
 
@@ -4164,7 +4172,7 @@ mod tests {
         };
         assert_eq!(
             links[0].target_selection_range,
-            Range::new(Position::new(4, 2), Position::new(4, 10)),
+            Range::new(Position::new(4, 0), Position::new(4, 0)),
         );
         assert_eq!(
             references_for_document(&snapshot(&uri, source), Position::new(0, 3), false)
