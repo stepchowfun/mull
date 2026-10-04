@@ -30,6 +30,28 @@ const CONFIGURATION_ACTION = 'Configure executable path';
 // Retain the active client so it can be stopped when the extension is deactivated.
 let client: LanguageClient | undefined;
 
+// Show a notification offering the two ways to get a suitable executable, installing Mull or
+// selecting an existing executable, and perform the one the user selects.
+async function offerRecovery(isError: boolean, message: string): Promise<void> {
+  // Offer direct access to the two ways to resolve the problem [tag:recovery_actions].
+  const action = await (isError
+    ? vscode.window.showErrorMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION)
+    : vscode.window.showWarningMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION));
+
+  // Perform the selected recovery action.
+  if (action === INSTALLATION_ACTION) {
+    await vscode.env.openExternal(vscode.Uri.parse(INSTALLATION_URL));
+  } else if (action === CONFIGURATION_ACTION) {
+    await vscode.commands.executeCommand('workbench.action.openSettings', 'mull.executablePath');
+  } else if (action === undefined) {
+    // Do nothing when the user dismisses the notification.
+    return;
+  } else {
+    // VS Code returns an offered action or undefined [ref:recovery_actions].
+    throw new Error('Unexpected recovery action.');
+  }
+}
+
 // Help the user install Mull or select an existing executable.
 async function reportMissingMull(
   outputChannel: vscode.LogOutputChannel,
@@ -41,25 +63,34 @@ async function reportMissingMull(
   );
   outputChannel.debug(String(error));
 
-  // Offer direct access to the two ways to resolve the problem [tag:missing_mull_actions].
-  const action = await vscode.window.showErrorMessage(
-    "Mull couldn't be found.",
-    INSTALLATION_ACTION,
-    CONFIGURATION_ACTION,
-  );
+  // Leave Mull inactive unless the user resolves the problem.
+  await offerRecovery(true, "Mull couldn't be found.");
+}
 
-  // Perform the selected recovery action.
-  if (action === INSTALLATION_ACTION) {
-    await vscode.env.openExternal(vscode.Uri.parse(INSTALLATION_URL));
-  } else if (action === CONFIGURATION_ACTION) {
-    await vscode.commands.executeCommand('workbench.action.openSettings', 'mull.executablePath');
-  } else if (action === undefined) {
-    // Leave Mull inactive when the user dismisses the notification.
-    return;
-  } else {
-    // VS Code returns a configured action or undefined [ref:missing_mull_actions].
-    throw new Error('Unexpected missing-Mull action.');
+// Read the version of this extension, which is the version of Mull it's released with.
+function extensionVersion(context: vscode.ExtensionContext): string {
+  const manifest: unknown = context.extension.packageJSON;
+  if (
+    typeof manifest === 'object' &&
+    manifest !== null &&
+    'version' in manifest &&
+    typeof manifest.version === 'string'
+  ) {
+    return manifest.version;
   }
+  throw new Error('The extension manifest should specify a version.');
+}
+
+// Warn that the executable isn't the version of Mull this extension was released with, as when
+// only one of them was upgraded. Reinstalling Mull upgrades both.
+async function reportVersionMismatch(
+  outputChannel: vscode.LogOutputChannel,
+  expectedVersion: string,
+  versionOutput: string,
+): Promise<void> {
+  const message = `This extension expects Mull ${expectedVersion}, but the executable reports \`${versionOutput}\`.`;
+  outputChannel.warn(`${message} Reinstall Mull to update both. ${INSTALLATION_URL}`);
+  await offerRecovery(false, message);
 }
 
 // Reveal a source range supplied by the language server.
@@ -342,8 +373,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Detect a missing executable before the language client emits its own error.
   const outputChannel = vscode.window.createOutputChannel('Mull', { log: true });
   context.subscriptions.push(outputChannel);
+  let versionOutput: string;
   try {
-    await execFileAsync(executablePath, ['--version']);
+    versionOutput = (await execFileAsync(executablePath, ['--version'])).stdout.trim();
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       reportMissingMull(outputChannel, error).catch((reportingError: unknown) => {
@@ -353,6 +385,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     throw error;
+  }
+
+  // Warn when the executable isn't the version of Mull this extension was released with. The
+  // language server starts anyway, since it mostly works with nearby versions.
+  const expectedVersion = extensionVersion(context);
+  if (versionOutput !== `mull ${expectedVersion}`) {
+    reportVersionMismatch(outputChannel, expectedVersion, versionOutput).catch(
+      (reportingError: unknown) => {
+        outputChannel.error('Unable to show the Mull version warning.', reportingError);
+      },
+    );
   }
 
   // Connect Mull documents to the server and complete the LSP handshake.

@@ -28,4 +28,4 @@ When setting up the repository on GitHub, configure the following settings:
 
 ### Release instructions
 
-To release a new version, bump the version in `[file:Cargo.toml]`, run `cargo build` to update `[file:Cargo.lock]`, and update `[file:CHANGELOG.md]` with information about the new version. Ship those changes as a single commit. Once the GitHub workflow publishes the release, the installation script will begin installing it by default.
+To release a new version, bump the version in `[file:Cargo.toml]`, run `cargo build` to update `[file:Cargo.lock]`, run `npm version <version> --no-git-tag-version` in `[dir:vscode-extension]` to give the VS Code extension the same version, and update `[file:CHANGELOG.md]` with information about the new version. Ship those changes as a single commit. Once the GitHub workflow publishes the release, the installation script will begin installing it by default.

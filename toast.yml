@@ -184,6 +184,17 @@ tasks:
         npm run lint
       )
 
+      # Check that the VS Code extension has the same version as Mull, since it expects the version
+      # it's released with.
+      CRATE_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+      for MANIFEST in vscode-extension/package.json vscode-extension/package-lock.json; do
+        MANIFEST_VERSION="$(node -p "require('./$MANIFEST').version")"
+        if [ "$MANIFEST_VERSION" != "$CRATE_VERSION" ]; then
+          echo "ERROR: $MANIFEST has version $MANIFEST_VERSION, but Mull is $CRATE_VERSION." 1>&2
+          exit 1
+        fi
+      done
+
       # Lint the code with Clippy.
       cargo-offline clippy --all-features --all-targets --workspace
 
