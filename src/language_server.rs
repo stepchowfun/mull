@@ -1909,15 +1909,20 @@ fn code_action_for_document(
                         format!("{before_title}{TITLE_PREFIX}{title}{after_title}"),
                     );
 
-                    // Place the cursor at the end of the new title once the edit is applied. The
-                    // source before the insertion is unchanged, and the inserted text leads up to
-                    // the title's end.
-                    let text_before_cursor = format!(
-                        "{}{before_title}{TITLE_PREFIX}{title}",
-                        &snapshot.contents[..offset],
-                    );
-                    let cursor = LineIndex::new(&text_before_cursor)
-                        .position(&text_before_cursor, text_before_cursor.len());
+                    // Place the cursor right before the new title's `#` once the edit is applied.
+                    // The title starts the line after any line breaks inserted before it, or else
+                    // starts where the insertion is.
+                    let line_breaks = before_title.matches('\n').count();
+                    let cursor = if line_breaks == 0 {
+                        insertion
+                    } else {
+                        Position::new(
+                            insertion.line
+                                + u32::try_from(line_breaks)
+                                    .expect("The line breaks before a title should be few."),
+                            0,
+                        )
+                    };
                     let command = Command::new(
                         format!("Reveal node {}", title.code_str()),
                         REVEAL_RANGE_COMMAND.to_owned(),
@@ -3973,7 +3978,7 @@ mod tests {
 
         // Confirm that the created node makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
-        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n# Greeting|");
+        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n|# Greeting");
         assert_eq!(
             diagnostics(&uri, &applied.replace('|', "")),
             Vec::<Diagnostic>::new(),
@@ -3993,22 +3998,7 @@ mod tests {
 
         assert_eq!(
             apply_code_action(&uri, source, action),
-            "# Home\n\n[Greeting] Unexpected]\n\n# Greeting|",
-        );
-    }
-
-    // Place the cursor after a created title containing characters outside the Basic Multilingual
-    // Plane, whose editor columns are counted in UTF-16 code units.
-    #[test]
-    fn code_actions_reveal_unicode_titles() {
-        let source = "# Home\n\n[Grüße 😀]";
-        let uri = untitled_uri();
-        let actions =
-            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
-
-        assert_eq!(
-            apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n[Grüße 😀]\n\n# Grüße 😀|",
+            "# Home\n\n[Greeting] Unexpected]\n\n|# Greeting",
         );
     }
 
@@ -4033,7 +4023,7 @@ mod tests {
                 "# Home\n\n[Apple] [Cherry] [Banana]\n\n",
                 "# Apple\n\n[Apricot]\n\n",
                 "# Apricot\n\n",
-                "# Banana|\n\n",
+                "|# Banana\n\n",
                 "# Cherry\n",
             ),
         );
@@ -4054,7 +4044,7 @@ mod tests {
         let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
             applied,
-            "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Missing|\n\n# Zebra\n",
+            "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n|# Missing\n\n# Zebra\n",
         );
         assert_eq!(
             formatting_for_document(&snapshot(&uri, &applied.replace('|', ""))),
@@ -4074,7 +4064,7 @@ mod tests {
             code_action_for_document(&snapshot(&uri, source), &stale_diagnostics).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home\n\n# Greeting|\n",
+            "# Home\n\n|# Greeting\n",
         );
     }
 
@@ -4104,7 +4094,7 @@ mod tests {
         assert_eq!(code_action.title, "Create node `Home`");
         assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
         let applied = apply_code_action(&uri, "", action);
-        assert_eq!(applied, "# Home|\n");
+        assert_eq!(applied, "|# Home\n");
         assert_eq!(
             diagnostics(&uri, &applied.replace('|', "")),
             Vec::<Diagnostic>::new(),
@@ -4116,7 +4106,7 @@ mod tests {
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
-            "# Home|\n\n# Greeting\n",
+            "|# Home\n\n# Greeting\n",
         );
     }
 
