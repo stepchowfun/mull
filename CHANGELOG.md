@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.4] - 2026-10-03
+
+### Fixed
+- Kept the editor responsive while it parses a large wiki. The language server now parses on a separate thread, so a parse no longer holds up other messages from the editor. When five edits to a 10 MB wiki were each followed by a hover preview, all of the previews were ready after 0.2 seconds instead of 0.36 seconds.
+
 ## [0.36.3] - 2026-10-02
 
 ### Fixed
