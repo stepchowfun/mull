@@ -4106,8 +4106,9 @@ mod tests {
 
     #[test]
     fn errors_without_ranges_point_to_document_start() {
+        let source = "# Home\n";
         let error = crate::error::Error::new("Something went wrong.", None, None, None, None);
-        let diagnostic = diagnostic_from_error("# Home\n", &LineIndex::new("# Home\n"), &error);
+        let diagnostic = diagnostic_from_error(source, &LineIndex::new(source), &error);
 
         assert_eq!(
             diagnostic.range,

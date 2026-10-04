@@ -448,18 +448,26 @@ mod tests {
 
     #[test]
     fn listing_empty() {
+        let source = "";
+
         assert_eq!(
-            listing("", &LineIndex::new(""), SourceRange { start: 0, end: 0 }),
+            listing(
+                source,
+                &LineIndex::new(source),
+                SourceRange { start: 0, end: 0 },
+            ),
             "",
         );
     }
 
     #[test]
     fn listing_single_line_full_range() {
+        let source = "foo bar";
+
         assert_eq!(
             listing(
-                "foo bar",
-                &LineIndex::new("foo bar"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 0, end: 7 },
             ),
             "1 \u{2502} foo bar\n    \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\u{203e}",
@@ -468,10 +476,12 @@ mod tests {
 
     #[test]
     fn listing_single_line_partial_range() {
+        let source = "foo bar";
+
         assert_eq!(
             listing(
-                "foo bar",
-                &LineIndex::new("foo bar"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 1, end: 6 },
             ),
             "1 \u{2502} foo bar\n     \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}",
@@ -480,10 +490,12 @@ mod tests {
 
     #[test]
     fn listing_multiple_lines_full_range() {
+        let source = "foo\nbar\nbaz\nqux";
+
         assert_eq!(
             listing(
-                "foo\nbar\nbaz\nqux",
-                &LineIndex::new("foo\nbar\nbaz\nqux"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 0, end: 15 },
             ),
             "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502} bar\n  \u{250a} \
@@ -494,10 +506,12 @@ mod tests {
 
     #[test]
     fn listing_multiple_lines_partial_range() {
+        let source = "foo\nbar\nbaz\nqux";
+
         assert_eq!(
             listing(
-                "foo\nbar\nbaz\nqux",
-                &LineIndex::new("foo\nbar\nbaz\nqux"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 5, end: 9 },
             ),
             "2 \u{2502} bar\n  \u{250a}  \u{203e}\u{203e}\n3 \u{2502} baz\n    \u{203e}",
@@ -506,10 +520,12 @@ mod tests {
 
     #[test]
     fn listing_many_lines_partial_range() {
+        let source = "foo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux";
+
         assert_eq!(
             listing(
-                "foo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux",
-                &LineIndex::new("foo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux\nfoo\nbar\nbaz\nqux"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 33, end: 42 },
             ),
             " 9 \u{2502} foo\n   \u{250a}  \u{203e}\u{203e}\n10 \u{2502} bar\n   \u{250a} \
@@ -520,10 +536,12 @@ mod tests {
     // Highlight nothing on a line where the range covers only indentation.
     #[test]
     fn listing_range_ending_in_indentation() {
+        let source = "foo\n    bar";
+
         assert_eq!(
             listing(
-                "foo\n    bar",
-                &LineIndex::new("foo\n    bar"),
+                source,
+                &LineIndex::new(source),
                 SourceRange { start: 0, end: 6 },
             ),
             "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502}     bar",
