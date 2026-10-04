@@ -160,21 +160,17 @@ fn listing(source_contents: &str, line_index: &LineIndex, source_range: SourceRa
         // might have been present before the line feed.
         let trimmed_line = line.trim_end();
 
-        // Highlight the relevant part of the line.
-        let (section_start, section_end) = if source_range.start > line_start {
-            (
-                min(source_range.start - line_start, trimmed_line.len()),
-                min(source_range.end - line_start, trimmed_line.len()),
-            )
-        } else {
-            // Skip the line's indentation, but highlight nothing if the range ends within it.
-            let end = min(source_range.end - line_start, trimmed_line.len());
-            let start = trimmed_line
-                .find(|c: char| !c.is_whitespace())
-                .map_or(end, |start| min(start, end));
-
-            (start, end)
-        };
+        // Highlight the part of the range within the line's content, excluding its indentation
+        // as well as its trailing whitespace, and highlight nothing if the range covers only
+        // whitespace on this line.
+        let content_start = trimmed_line
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(trimmed_line.len());
+        let section_end = min(source_range.end - line_start, trimmed_line.len());
+        let section_start = min(
+            max(source_range.start.saturating_sub(line_start), content_start),
+            section_end,
+        );
 
         // Record the line number and the line contents.
         lines.push((
@@ -543,8 +539,8 @@ mod tests {
                 &LineIndex::new(source),
                 SourceRange { start: 2, end: 11 },
             ),
-            "1 \u{2502}     foo\n  \u{250a}   \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\n2 \u{2502} \
-                bar\n    \u{203e}\u{203e}\u{203e}",
+            "1 \u{2502}     foo\n  \u{250a}     \u{203e}\u{203e}\u{203e}\n2 \u{2502} bar\n    \
+                \u{203e}\u{203e}\u{203e}",
         );
     }
 
