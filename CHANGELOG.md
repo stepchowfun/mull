@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.11] - 2026-10-04
+
+### Added
+- The VS Code extension now has a `mull.foldOtherNodes` setting, which turns off folding everything outside the node containing the cursor.
+- The VS Code extension now warns when the Mull executable's version differs from its own, as when only one of them was upgraded. The extension's version now matches Mull's.
+
 ## [0.36.10] - 2026-10-04
 
 ### Added
