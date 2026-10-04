@@ -390,7 +390,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Warn when the executable isn't the version of Mull this extension was released with. The
   // language server starts anyway, since it mostly works with nearby versions.
   const expectedVersion = extensionVersion(context);
-  if (versionOutput !== `mull ${expectedVersion}`) {
+  if (versionOutput !== `Mull ${expectedVersion}`) {
     reportVersionMismatch(outputChannel, expectedVersion, versionOutput).catch(
       (reportingError: unknown) => {
         outputChannel.error('Unable to show the Mull version warning.', reportingError);
