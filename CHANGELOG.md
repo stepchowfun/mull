@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.10] - 2026-10-04
+
+### Added
+- The VS Code extension now folds away everything outside the node containing the cursor, so the node being edited appears to be the whole document. The folds follow the cursor to whichever node it moves to, as when following a link.
+- The VS Code extension now has commands to jump to the start or end of the node containing the cursor, bound to `Command + Up` and `Command + Down` on macOS and `Control + Home` and `Control + End` elsewhere, the usual shortcuts for the top and bottom of a document. Holding `Shift` selects text along the way.
+
+### Changed
+- The VS Code extension now hides line numbers in wikis by default, since they count from the top of the wiki's file rather than the node being edited. It also hides fold controls, since folding follows the node being edited, and the unused glyph margin.
+
 ## [0.36.9] - 2026-10-04
 
 ### Changed
