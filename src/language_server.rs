@@ -315,16 +315,10 @@ impl Backend {
         });
     }
 
-    // Recheck the most recent snapshot immediately after it's saved, adopting any different
-    // contents the client included.
-    fn recheck_saved_document(&self, uri: &Uri, contents: Option<String>) {
+    // Recheck the most recent snapshot immediately after it's saved. Edits are synchronized before
+    // the save, so the snapshot already contains the saved contents.
+    fn recheck_saved_document(&self, uri: &Uri) {
         if let Some(snapshot) = self.snapshot(uri) {
-            let snapshot = match contents {
-                Some(contents) if contents != snapshot.contents => {
-                    Arc::new(snapshot.next(contents, snapshot.version))
-                }
-                Some(_) | None => snapshot,
-            };
             self.store_and_check_document(snapshot, Duration::ZERO);
         }
     }
@@ -552,8 +546,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        // Recheck the saved document immediately, adopting any contents the client included.
-        self.recheck_saved_document(&params.text_document.uri, params.text);
+        // Recheck the saved document immediately.
+        self.recheck_saved_document(&params.text_document.uri);
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
