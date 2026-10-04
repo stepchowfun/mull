@@ -46,6 +46,74 @@
         "path": "./syntaxes/mull.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "mull.goToNodeStart",
+        "title": "Go to Start of Node",
+        "category": "Mull"
+      },
+      {
+        "command": "mull.goToNodeEnd",
+        "title": "Go to End of Node",
+        "category": "Mull"
+      },
+      {
+        "command": "mull.selectToNodeStart",
+        "title": "Select to Start of Node",
+        "category": "Mull"
+      },
+      {
+        "command": "mull.selectToNodeEnd",
+        "title": "Select to End of Node",
+        "category": "Mull"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "mull.goToNodeStart",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.goToNodeEnd",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.selectToNodeStart",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.selectToNodeEnd",
+          "when": "editorLangId == mull"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "mull.goToNodeStart",
+        "key": "ctrl+home",
+        "mac": "cmd+up",
+        "when": "editorTextFocus && editorLangId == mull"
+      },
+      {
+        "command": "mull.goToNodeEnd",
+        "key": "ctrl+end",
+        "mac": "cmd+down",
+        "when": "editorTextFocus && editorLangId == mull"
+      },
+      {
+        "command": "mull.selectToNodeStart",
+        "key": "shift+ctrl+home",
+        "mac": "shift+cmd+up",
+        "when": "editorTextFocus && editorLangId == mull"
+      },
+      {
+        "command": "mull.selectToNodeEnd",
+        "key": "shift+ctrl+end",
+        "mac": "shift+cmd+down",
+        "when": "editorTextFocus && editorLangId == mull"
+      }
+    ],
     "configuration": {
       "title": "Mull",
       "properties": {

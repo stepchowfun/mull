@@ -15,6 +15,13 @@ const REVEAL_RANGE_COMMAND = 'mull.revealRange';
 // [group:reveal_in_explorer_command]
 const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
 
+// These commands move the cursor to the start or end of the node containing it, optionally
+// extending the selection.
+const GO_TO_NODE_START_COMMAND = 'mull.goToNodeStart';
+const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
+const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
+const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
+
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
@@ -77,6 +84,35 @@ async function revealInExplorer(uriString: string): Promise<void> {
   await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
 }
 
+// Move each cursor to the start or end of the node containing it, which is the last node starting
+// at or before it, so a cursor between nodes belongs to the one above. A cursor before the first
+// node stays put, and repeating the command changes nothing.
+async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): Promise<void> {
+  // Find the nodes from the language server's document symbols, whose ranges span entire nodes.
+  const editor = vscode.window.activeTextEditor;
+  if (editor === undefined) {
+    return;
+  }
+  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
+    'vscode.executeDocumentSymbolProvider',
+    editor.document.uri,
+  );
+  const ranges = (symbols ?? [])
+    .map((symbol) => symbol.range)
+    .toSorted((a, b) => a.start.compareTo(b.start));
+
+  // Move the active end of each selection, keeping its anchor when extending it.
+  editor.selections = editor.selections.map((selection) => {
+    const range = ranges.findLast((candidate) => candidate.start.isBeforeOrEqual(selection.active));
+    if (range === undefined) {
+      return selection;
+    }
+    const position = boundary === 'start' ? range.start : range.end;
+    return new vscode.Selection(select ? selection.anchor : position, position);
+  });
+  editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
+}
+
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Expose the navigation commands that the language server's responses refer to.
@@ -84,6 +120,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),
   );
+
+  // Expose the commands that move the cursor within the node containing it.
+  const nodeBoundaryCommands = [
+    [GO_TO_NODE_START_COMMAND, 'start', false],
+    [GO_TO_NODE_END_COMMAND, 'end', false],
+    [SELECT_TO_NODE_START_COMMAND, 'start', true],
+    [SELECT_TO_NODE_END_COMMAND, 'end', true],
+  ] as const;
+  for (const [command, boundary, select] of nodeBoundaryCommands) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(command, async () => moveToNodeBoundary(boundary, select)),
+    );
+  }
 
   // Resolve the configured executable before constructing the server process.
   const executablePath = vscode.workspace.getConfiguration('mull').get('executablePath', 'mull');
