@@ -533,7 +533,21 @@ mod tests {
         );
     }
 
-    // Highlight nothing on a line where the range covers only indentation.
+    #[test]
+    fn listing_range_starting_in_indentation() {
+        let source = "    foo\nbar";
+
+        assert_eq!(
+            listing(
+                source,
+                &LineIndex::new(source),
+                SourceRange { start: 2, end: 11 },
+            ),
+            "1 \u{2502}     foo\n  \u{250a}   \u{203e}\u{203e}\u{203e}\u{203e}\u{203e}\n2 \u{2502} \
+                bar\n    \u{203e}\u{203e}\u{203e}",
+        );
+    }
+
     #[test]
     fn listing_range_ending_in_indentation() {
         let source = "foo\n    bar";
