@@ -122,6 +122,11 @@
           "default": "mull",
           "scope": "machine-overridable",
           "description": "Path to the Mull executable used to start the language server."
+        },
+        "mull.foldOtherNodes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fold everything outside the node containing the cursor, so the node being edited appears to be the whole document."
         }
       }
     },
