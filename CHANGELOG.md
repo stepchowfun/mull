@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.13] - 2026-10-04
+
+### Changed
+- The VS Code extension now colors filesystem links like links to nodes.
+- Following a link to a node now puts the cursor at the start of the node instead of selecting its title.
+
+### Fixed
+- Hovering over a link with the go-to-definition modifier held, such as `Command` on macOS, no longer shows the raw source of the destination node below its preview.
+
 ## [0.36.12] - 2026-10-04
 
 ### Changed
