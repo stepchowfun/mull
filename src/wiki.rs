@@ -38,9 +38,7 @@ impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable nodes by traversal order, followed by unreachable nodes in title order.
         let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, node)| {
-            (node.traversal_index.is_none(), node.traversal_index, *title)
-        });
+        nodes.sort_by_key(|(title, node)| rendering_order_key(node.traversal_index, title));
 
         // Add one line break between nodes because each node already ends with one.
         for (index, (_title, node)) in nodes.into_iter().enumerate() {
@@ -53,6 +51,15 @@ impl fmt::Display for Wiki {
         // Rendering succeeded.
         Ok(())
     }
+}
+
+// Order nodes as the wiki is rendered: reachable nodes by their traversal index, followed by
+// unreachable nodes in title order.
+pub fn rendering_order_key(
+    traversal_index: Option<usize>,
+    title: &str,
+) -> (bool, Option<usize>, &str) {
+    (traversal_index.is_none(), traversal_index, title)
 }
 
 // This struct represents a text node in a wiki.

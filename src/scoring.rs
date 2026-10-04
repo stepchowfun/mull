@@ -1,68 +1,89 @@
 use crate::wiki::{HOME_TITLE, Link, TextNode, Wiki};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-// Populate the position of each text node in a depth-first traversal from the home node which only
-// follows links along shortest paths, visiting the targets of each node's links in title order.
-// Each node thus appears after the first of its closest-to-home parents, keeping its minimum
-// distance from the home node.
+// Populate the position of each text node in the traversal order, leaving unreachable nodes
+// without one.
 pub fn populate_traversal_order(wiki: &mut Wiki) {
-    // Reset positions before recalculating them.
+    // Compute the order before updating the nodes it borrows from.
+    let order = traversal_order(wiki, None)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    // Reset positions, then number the reachable nodes.
     for node in wiki.text_nodes.values_mut() {
         node.traversal_index = None;
     }
+    for (index, title) in order.into_iter().enumerate() {
+        wiki.text_nodes
+            .get_mut(&title)
+            .expect("Traversed titles should refer to existing nodes.")
+            .traversal_index = Some(index);
+    }
+}
+
+// List the titles of the nodes reachable from the home node in the order of a depth-first
+// traversal which only follows links along shortest paths, visiting the targets of each node's
+// links in title order. Each node thus appears after the first of its closest-to-home parents,
+// keeping its minimum distance from the home node. The traversal can include an extra node without
+// links, as if it existed, which doesn't change the order of the others.
+pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<&'a str> {
+    // Treat the extra node as an existing node with no links.
+    let exists = |title: &str| wiki.text_nodes.contains_key(title) || extra_title == Some(title);
+    let link_titles = |title: &str| {
+        wiki.text_nodes
+            .get(title)
+            .map(text_link_titles)
+            .unwrap_or_default()
+    };
 
     // Leave every node unreachable if there's no home node.
-    if !wiki.text_nodes.contains_key(HOME_TITLE) {
-        return;
+    if !exists(HOME_TITLE) {
+        return Vec::new();
     }
 
     // Compute minimum text-link distances from the home node using breadth-first traversal.
-    let mut depths = HashMap::<String, usize>::from([(HOME_TITLE.to_owned(), 0)]);
-    let mut queued_titles = VecDeque::from([HOME_TITLE.to_owned()]);
+    let mut depths = HashMap::<&str, usize>::from([(HOME_TITLE, 0)]);
+    let mut queued_titles = VecDeque::from([HOME_TITLE]);
     while let Some(title) = queued_titles.pop_front() {
-        let depth = depths[&title];
-        for target in text_link_titles(&wiki.text_nodes[&title]) {
-            if wiki.text_nodes.contains_key(&target) && !depths.contains_key(&target) {
-                depths.insert(target.clone(), depth + 1);
+        let depth = depths[title];
+        for target in link_titles(title) {
+            if exists(target) && !depths.contains_key(target) {
+                depths.insert(target, depth + 1);
                 queued_titles.push_back(target);
             }
         }
     }
 
-    // Number each node when it's first popped, so the numbering follows a depth-first preorder.
-    let mut pending_titles = vec![HOME_TITLE.to_owned()];
-    let mut next_index = 0;
+    // List each node when it's first popped, so the order follows a depth-first preorder.
+    let mut order = Vec::new();
+    let mut visited_titles = HashSet::new();
+    let mut pending_titles = vec![HOME_TITLE];
     while let Some(title) = pending_titles.pop() {
         // Skip nodes which were already reached through another parent.
-        let node = wiki
-            .text_nodes
-            .get_mut(&title)
-            .expect("Pending titles should refer to existing nodes.");
-        if node.traversal_index.is_some() {
+        if !visited_titles.insert(title) {
             continue;
         }
-        node.traversal_index = Some(next_index);
-        next_index += 1;
+        order.push(title);
 
         // Push unvisited targets one link farther from home in reverse title order so they're
         // popped in title order.
-        let child_depth = depths[&title] + 1;
-        for target in text_link_titles(node).into_iter().rev() {
-            if depths.get(&target) == Some(&child_depth)
-                && wiki.text_nodes[&target].traversal_index.is_none()
-            {
+        let child_depth = depths[title] + 1;
+        for target in link_titles(title).into_iter().rev() {
+            if depths.get(target) == Some(&child_depth) && !visited_titles.contains(target) {
                 pending_titles.push(target);
             }
         }
     }
+    order
 }
 
 // Collect the distinct titles of a node's text links in title order.
-fn text_link_titles(node: &TextNode) -> BTreeSet<String> {
+fn text_link_titles(node: &TextNode) -> BTreeSet<&str> {
     node.links
         .iter()
         .filter_map(|link| match link {
-            Link::Text { title, .. } => Some(title.clone()),
+            Link::Text { title, .. } => Some(title.as_str()),
             Link::Filesystem { .. } => None,
         })
         .collect()
