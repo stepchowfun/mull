@@ -129,6 +129,7 @@
       "[mull]": {
         "editor.defaultFormatter": "stepchowfun.mull",
         "editor.formatOnSave": true,
+        "editor.lineNumbers": "off",
         "editor.rulers": [
           80
         ],
