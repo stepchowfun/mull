@@ -744,8 +744,15 @@ struct FilesystemLinkContext {
     closing_delimiter: Option<usize>,
 }
 
-// Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
-fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<FilesystemLinkContext> {
+// This locates the delimiters of a link containing the cursor, which may be unfinished.
+struct LinkDelimiters {
+    opening: usize,         // The `[` before the cursor
+    closing: Option<usize>, // The `]` after the cursor, if the link is closed
+}
+
+// Find the delimiters of a link containing the cursor, even if the link is unfinished, by scanning
+// only the cursor's line.
+fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimiters> {
     // Confine the search to the cursor's line, since links can't contain line breaks.
     let line_start = source_contents[..cursor]
         .rfind('\n')
@@ -779,9 +786,18 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
         }
     }
 
+    Some(LinkDelimiters {
+        opening: opening_delimiter?,
+        closing: closing_delimiter,
+    })
+}
+
+// Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
+fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<FilesystemLinkContext> {
     // Require the filesystem-link prefix after any leading whitespace, since the parser trims
     // targets. The prefix is the start of the typed path.
-    let typed_path = source_contents[opening_delimiter? + '['.len_utf8()..cursor].trim_start();
+    let delimiters = link_delimiters_at(source_contents, cursor)?;
+    let typed_path = source_contents[delimiters.opening + '['.len_utf8()..cursor].trim_start();
     if !typed_path.starts_with(FILESYSTEM_LINK_PREFIX) {
         return None;
     }
@@ -805,7 +821,7 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
         directory,
         segment_start: cursor - (typed_path.len() - typed_directory.len()),
         cursor,
-        closing_delimiter,
+        closing_delimiter: delimiters.closing,
     })
 }
 
@@ -913,30 +929,22 @@ fn filesystem_link_completions(
     completions
 }
 
-// Parse enough of an active text link to identify the source range a completion should replace.
+// Identify the source range a completion of the text link at the cursor should replace.
 fn text_link_context(snapshot: &Snapshot, byte_offset: usize) -> Option<SourceRange> {
-    // Prefer the unchanged source when the active link is already closed. Recover from syntax
-    // errors so errors elsewhere in the wiki don't prevent completion.
+    // Replace a closed link in its entirety. The wiki is parsed with recovery from syntax errors,
+    // so errors elsewhere in the wiki don't prevent completion.
     if let Some(Link::Text { source_range, .. }) = link_at(snapshot.wiki(), byte_offset) {
         return Some(*source_range);
     }
 
-    // Close a link at the cursor temporarily so completion works while it's being authored.
-    let mut completed_source = snapshot.contents.clone();
-    completed_source.insert(byte_offset, ']');
-    let (wiki, _) = parser::parse(
-        snapshot.path.as_deref(),
-        &completed_source,
-        &LineIndex::new(&completed_source),
-    );
-    let Some(Link::Text { source_range, .. }) = link_at(&wiki, byte_offset) else {
-        return None;
-    };
-
-    // Map the link's end back into the original source, which lacks the temporary delimiter.
-    Some(SourceRange {
-        start: source_range.start,
-        end: source_range.end - ']'.len_utf8(),
+    // Replace an unfinished link from its opening delimiter through the cursor, unless it's a
+    // filesystem link. The parse has no such link, but the cursor's line shows where it starts.
+    let delimiters = link_delimiters_at(&snapshot.contents, byte_offset)?;
+    let typed_target =
+        snapshot.contents[delimiters.opening + '['.len_utf8()..byte_offset].trim_start();
+    (!typed_target.starts_with(FILESYSTEM_LINK_PREFIX)).then_some(SourceRange {
+        start: delimiters.opening,
+        end: byte_offset,
     })
 }
 
@@ -2428,7 +2436,7 @@ mod tests {
         );
     }
 
-    // Close an unfinished link temporarily while calculating its completions.
+    // Replace an unfinished link from its opening delimiter through the cursor.
     #[test]
     fn completions_support_unfinished_links() {
         let source = "# Home\n\n[Gre\n\n# Greeting";
@@ -2448,6 +2456,27 @@ mod tests {
             Range::new(Position::new(2, 0), Position::new(2, 4)),
         );
         assert_eq!(edit.new_text, "[Greeting]");
+    }
+
+    // Find an unfinished link's opening delimiter after a closed link on the same line.
+    #[test]
+    fn completions_follow_closed_links_on_the_same_line() {
+        let source = "# Home\n\nSee [Home] and [Gre\n\n# Greeting";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 19))
+                .unwrap();
+        let greeting = completions
+            .iter()
+            .find(|completion| completion.label == "Greeting")
+            .unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &greeting.text_edit else {
+            panic!("A completion should replace the unfinished link.");
+        };
+
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(2, 15), Position::new(2, 19)),
+        );
     }
 
     // Leave the cursor after a single closing delimiter once a completion has been applied.
