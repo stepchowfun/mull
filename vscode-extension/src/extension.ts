@@ -127,19 +127,44 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
-// Find the folds around a node: the lines before it and those from the blank line after it, where
-// each spans more than one line. The first line of a fold stays visible, so the wiki's first line
-// remains above the node, and the blank line after the node remains below it. Folding from the
-// node's last line instead would hide the separator, but then a new line typed at the end of the
-// node would land in the fold.
-function foldsAround(node: vscode.Range | undefined, lineCount: number): vscode.FoldingRange[] {
-  if (node === undefined) {
-    return [];
+// Find how to focus on the node containing a position: the lines it spans through the line before
+// the next node, and the folds around it. The folds cover the lines before the node and those from
+// the blank line before the next node, where each spans more than one line, so blank lines at the
+// end of the node stay visible for extending it. The first line of a fold stays visible, so the
+// wiki's first line remains above the node, and the blank line before the next node remains below
+// it. Folding from the node's last line instead would hide that line, but then a new line typed at
+// the end of the node would land in the fold. A position before every node has no focus.
+function focusAt(
+  nodes: readonly vscode.Range[],
+  position: vscode.Position,
+  lineCount: number,
+): { lines: { start: number; end: number }; folds: vscode.FoldingRange[] } | undefined {
+  // Find the node and the one after it, if any.
+  const index = nodes.findLastIndex((range) => range.start.isBeforeOrEqual(position));
+  const node = nodes.at(index);
+  if (index === -1 || node === undefined) {
+    return undefined;
   }
-  return [
-    new vscode.FoldingRange(0, node.start.line - 1),
-    new vscode.FoldingRange(node.end.line + 1, lineCount - 1),
-  ].filter((range) => range.start < range.end);
+  const nextNode = nodes.at(index + 1);
+
+  // Fold before the node and, if another node follows, from the line before it, unless that line
+  // is part of the node because no blank line separates them.
+  if (nextNode === undefined) {
+    return {
+      lines: { start: node.start.line, end: lineCount - 1 },
+      folds: [new vscode.FoldingRange(0, node.start.line - 1)].filter(
+        (range) => range.start < range.end,
+      ),
+    };
+  }
+  const afterStartLine = Math.max(node.end.line + 1, nextNode.start.line - 1);
+  return {
+    lines: { start: node.start.line, end: nextNode.start.line - 1 },
+    folds: [
+      new vscode.FoldingRange(0, node.start.line - 1),
+      new vscode.FoldingRange(afterStartLine, lineCount - 1),
+    ].filter((range) => range.start < range.end),
+  };
 }
 
 // This folds everything outside the node containing the cursor, so the node being edited appears to
@@ -149,8 +174,8 @@ class NodeFocus implements vscode.FoldingRangeProvider {
   public readonly changeEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeFoldingRanges = this.changeEmitter.event;
 
-  // Remember each wiki's nodes, the lines its focused node spans through the blank line after it,
-  // and the first lines of its folds, as of the last time the editor requested folds.
+  // Remember each wiki's nodes, the lines its focused node spans, and the first lines of its folds,
+  // as of the last time the editor requested folds.
   private readonly nodes = new Map<string, vscode.Range[]>();
   private readonly focusedLines = new Map<string, { start: number; end: number }>();
   private readonly foldStartLines = new Map<string, number[]>();
@@ -167,26 +192,32 @@ class NodeFocus implements vscode.FoldingRangeProvider {
       return [];
     }
     const nodes = await nodeRanges(document);
-    const node = nodeAt(nodes, editor.selection.active);
+    const focus = focusAt(nodes, editor.selection.active, document.lineCount);
     this.nodes.set(key, nodes);
-    if (node === undefined) {
+    if (focus === undefined) {
       this.focusedLines.delete(key);
     } else {
-      this.focusedLines.set(key, { start: node.start.line, end: node.end.line + 1 });
+      this.focusedLines.set(key, focus.lines);
     }
 
-    // Collapse exactly these folds in the active editor once it has them. A fold command issued
-    // after the folds are returned waits for the editor to apply them.
-    const ranges = foldsAround(node, document.lineCount);
+    // Collapse exactly these folds in the active editor once it has them, then discard any folds
+    // the editor kept because they were collapsed when they stopped being provided, as when an edit
+    // removes one or a kept fold is within the new fold after the node. Discarding them afterward
+    // keeps those within a new fold from showing in between. Fold commands issued after the folds
+    // are returned wait for the editor to apply them.
+    const ranges = focus === undefined ? [] : focus.folds;
     const startLines = ranges.map((range) => range.start);
     this.foldStartLines.set(key, startLines);
-    if (editor === vscode.window.activeTextEditor && startLines.length > 0) {
-      setTimeout(() => {
-        vscode.commands.executeCommand('editor.fold', {
-          levels: 1,
-          direction: 'down',
-          selectionLines: startLines,
-        });
+    if (editor === vscode.window.activeTextEditor) {
+      setTimeout(async () => {
+        if (startLines.length > 0) {
+          await vscode.commands.executeCommand('editor.fold', {
+            levels: 1,
+            direction: 'down',
+            selectionLines: startLines,
+          });
+        }
+        await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
       }, 0);
     }
     return ranges;
@@ -213,10 +244,12 @@ class NodeFocus implements vscode.FoldingRangeProvider {
     // that won't be replaced before requesting new ones, except those within the new fold after
     // the node, which stay hidden. Also discard any folds the editor kept earlier.
     if (editor === vscode.window.activeTextEditor) {
-      const newRanges = foldsAround(
-        nodeAt(this.nodes.get(key) ?? [], editor.selection.active),
+      const newFocus = focusAt(
+        this.nodes.get(key) ?? [],
+        editor.selection.active,
         editor.document.lineCount,
       );
+      const newRanges = newFocus === undefined ? [] : newFocus.folds;
       const newAfterRange = newRanges.find((range) => range.start > 0);
       const staleStartLines = (this.foldStartLines.get(key) ?? []).filter(
         (startLine) =>
