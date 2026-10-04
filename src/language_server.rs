@@ -1065,14 +1065,19 @@ fn goto_definition_for_document(
     // Identify the complete source link or title, and target the start of the destination node with
     // an empty range. Editors preview the source of a nonempty target range alongside the hover
     // preview, and the selection range has to be within the target range.
-    let node_start = snapshot.position(node.source_range.start);
-    let target_range = Range::new(node_start, node_start);
+    let target_range = node_start_range(snapshot, node);
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
         origin_selection_range: Some(snapshot.range(origin_source_range)),
         target_uri: snapshot.uri.clone(),
         target_range,
         target_selection_range: target_range,
     }]))
+}
+
+// Find where navigating to a node leads: an empty range at its start, right before its `#`.
+fn node_start_range(snapshot: &Snapshot, node: &TextNode) -> Range {
+    let start = snapshot.position(node.source_range.start);
+    Range::new(start, start)
 }
 
 // Preview the destination of a text link at an editor position.
@@ -1095,7 +1100,7 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                 .to_markdown(|link| match link {
                     Link::Text { title, .. } => Some(reveal_range_command_url(
                         &snapshot.uri,
-                        snapshot.range(snapshot.wiki().text_nodes.get(title)?.title_source_range),
+                        node_start_range(snapshot, snapshot.wiki().text_nodes.get(title)?),
                     )),
                     Link::Filesystem { target, .. } => Some(
                         filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
@@ -1797,8 +1802,9 @@ fn document_symbol_for_document(
     let mut nodes = snapshot.wiki().text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
-    // Use separate node and title ranges when the client supports hierarchical symbols, and locate
-    // each flat symbol at its title otherwise.
+    // Use separate node and selection ranges when the client supports hierarchical symbols, and
+    // locate each flat symbol by its selection range otherwise. Selecting a symbol leads to the
+    // start of its node.
     if supports_hierarchy {
         DocumentSymbolResponse::Nested(
             nodes
@@ -1810,7 +1816,7 @@ fn document_symbol_for_document(
                     tags: None,
                     deprecated: None,
                     range: snapshot.range(node.source_range),
-                    selection_range: snapshot.range(node.title_source_range),
+                    selection_range: node_start_range(snapshot, node),
                     children: None,
                 })
                 .collect(),
@@ -1824,10 +1830,7 @@ fn document_symbol_for_document(
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
-                    location: Location::new(
-                        snapshot.uri.clone(),
-                        snapshot.range(node.title_source_range),
-                    ),
+                    location: Location::new(snapshot.uri.clone(), node_start_range(snapshot, node)),
                     container_name: None,
                 })
                 .collect(),
@@ -2263,7 +2266,7 @@ mod tests {
             );
             assert_eq!(
                 symbols[0].selection_range,
-                Range::new(Position::new(0, 2), Position::new(0, 7)),
+                Range::new(Position::new(0, 0), Position::new(0, 0)),
             );
             assert_eq!(
                 symbols[1].range,
@@ -2271,10 +2274,10 @@ mod tests {
             );
             assert_eq!(
                 symbols[1].selection_range,
-                Range::new(Position::new(4, 2), Position::new(4, 7)),
+                Range::new(Position::new(4, 0), Position::new(4, 0)),
             );
 
-            // Fall back to universally supported flat symbols at each title range.
+            // Fall back to universally supported flat symbols at the start of each node.
             let response = document_symbol_for_document(&snapshot(&uri, source), false);
             let DocumentSymbolResponse::Flat(symbols) = response else {
                 panic!("Clients without hierarchy support should receive flat symbols.");
@@ -2288,11 +2291,11 @@ mod tests {
             );
             assert_eq!(
                 symbols[0].location.range,
-                Range::new(Position::new(0, 2), Position::new(0, 7)),
+                Range::new(Position::new(0, 0), Position::new(0, 0)),
             );
             assert_eq!(
                 symbols[1].location.range,
-                Range::new(Position::new(4, 2), Position::new(4, 7)),
+                Range::new(Position::new(4, 0), Position::new(4, 0)),
             );
         }
     }
@@ -2907,7 +2910,7 @@ mod tests {
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         let home_url =
-            reveal_range_command_url(&uri, Range::new(Position::new(0, 2), Position::new(0, 6)));
+            reveal_range_command_url(&uri, Range::new(Position::new(0, 0), Position::new(0, 0)));
         assert_eq!(
             contents.value,
             format!(
