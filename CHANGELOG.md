@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.12] - 2026-10-04
+
+### Changed
+- `mull --version` now prints the program's name capitalized, as in `Mull 0.36.12`.
+
+### Fixed
+- In the VS Code extension, following a link to a later node in the wiki once again folds away everything before that node. This broke in 0.36.11.
+
 ## [0.36.11] - 2026-10-04
 
 ### Added

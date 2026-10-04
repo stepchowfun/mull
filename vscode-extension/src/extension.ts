@@ -243,27 +243,25 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
       : undefined;
     this.states.set(key, { nodes, focus });
 
-    // Collapse the new folds in the active editor once it has them, then unfold the old ones and
-    // discard any it kept because they were collapsed when they stopped being provided. Collapsing
-    // first keeps old folds within the new ones from showing in between. Fold commands reveal the
-    // cursor, so they're skipped when the folds haven't moved, as when the editor requests them
-    // again without an edit, which would otherwise interrupt scrolling. Commands issued after the
-    // folds are returned wait for the editor to apply them.
+    // Collapse the new folds in the active editor once it has them, then discard any folds it kept
+    // because they were collapsed when they stopped being provided. Collapsing first keeps kept
+    // folds within the new ones from showing in between. Old folds that may still be collapsed are
+    // unfolded before new folds are requested, since by now one may be gone, and unfolding its
+    // first line would unfold a new fold containing it instead. Fold commands reveal the cursor, so
+    // they're skipped when the folds haven't moved, as when the editor requests them again without
+    // an edit, which would otherwise interrupt scrolling. Commands issued after the folds are
+    // returned wait for the editor to apply them.
     const folds =
       focus === undefined ? [] : [focus.before, focus.after].filter((fold) => fold !== undefined);
     const startLines = folds.map((fold) => fold.start);
-    const oldStartLines = this.collapsedStartLines.get(key) ?? [];
     if (
       editor === vscode.window.activeTextEditor &&
-      (this.uncollapsed.delete(key) || oldStartLines.join() !== startLines.join())
+      (this.uncollapsed.delete(key) ||
+        (this.collapsedStartLines.get(key) ?? []).join() !== startLines.join())
     ) {
       this.collapsedStartLines.set(key, startLines);
       setTimeout(async () => {
         await setFolded(true, startLines);
-        await setFolded(
-          false,
-          oldStartLines.filter((line) => !startLines.includes(line)),
-        );
         await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
       }, 0);
     }
@@ -317,11 +315,18 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
     }
   }
 
-  // Add or remove the folds when the user turns folding on or off.
-  public configure(event: vscode.ConfigurationChangeEvent): void {
-    if (event.affectsConfiguration('mull.foldOtherNodes')) {
-      this.changeEmitter.fire();
+  // Add or remove the folds when the user turns folding on or off. Turning it off unfolds the
+  // active editor's folds before requesting new ones, since the editor keeps a fold that's collapsed
+  // when it stops being provided.
+  public async configure(event: vscode.ConfigurationChangeEvent): Promise<void> {
+    if (!event.affectsConfiguration('mull.foldOtherNodes')) {
+      return;
     }
+    const editor = vscode.window.activeTextEditor;
+    if (!NodeFocus.isEnabled() && editor !== undefined && editor.document.languageId === 'mull') {
+      await setFolded(false, this.collapsedStartLines.get(editor.document.uri.toString()) ?? []);
+    }
+    this.changeEmitter.fire();
   }
 
   // Release the event emitter.
@@ -362,8 +367,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       nodeFocus.activate(editor);
     }),
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      nodeFocus.configure(event);
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      await nodeFocus.configure(event);
     }),
   );
 
