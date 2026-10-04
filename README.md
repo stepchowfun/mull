@@ -99,8 +99,6 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Jump to the start of the current node | `Command + Up` | `Control + Home` |
 | Jump to the end of the current node | `Command + Down` | `Control + End` |
 
-The node being edited is treated as the whole document, so the usual shortcuts for jumping to the top and bottom of a document jump to the start and end of the node instead. Hold `Shift` to select text as the cursor moves.
-
 ## Usage
 
 Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor.
