@@ -41,6 +41,7 @@ use std::{
         env!("CARGO_PKG_HOMEPAGE"),
     ),
     version,
+    display_name = "Mull",
     disable_version_flag = true
 )]
 struct Cli {
