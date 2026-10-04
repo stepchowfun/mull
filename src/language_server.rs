@@ -19,7 +19,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool, atomic::Ordering},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
 use tokio::task::JoinHandle;
@@ -150,6 +150,21 @@ impl Snapshot {
             .get_or_init(|| LineIndex::new(&self.contents))
     }
 
+    // Convert an editor position into a byte offset in the contents.
+    fn byte_offset(&self, position: Position) -> Option<usize> {
+        self.line_index().byte_offset(&self.contents, position)
+    }
+
+    // Convert a byte offset in the contents into an editor position.
+    fn position(&self, byte_offset: usize) -> Position {
+        self.line_index().position(&self.contents, byte_offset)
+    }
+
+    // Convert a source range in the contents into an editor range.
+    fn range(&self, source_range: SourceRange) -> Range {
+        self.line_index().range(&self.contents, source_range)
+    }
+
     // Parse the contents, recovering from syntax errors so the wiki can still be validated and
     // navigated.
     fn parsed(&self) -> &(Wiki, Vec<Error>) {
@@ -237,10 +252,7 @@ impl Backend {
         let check_cancellation = cancellation.clone();
 
         // Cancel the preceding task and assign a distinct generation to this snapshot.
-        let mut open_documents = self
-            .documents
-            .lock()
-            .expect("The open-document mutex shouldn't be poisoned.");
+        let mut open_documents = lock(&self.documents);
         let document = open_documents
             .entry(snapshot.uri.clone())
             .or_insert_with(|| OpenDocument {
@@ -286,9 +298,7 @@ impl Backend {
                 }) else {
                     return;
                 };
-                if documents
-                    .lock()
-                    .expect("The open-document mutex shouldn't be poisoned.")
+                if lock(&documents)
                     .get(&diagnostic_snapshot.uri)
                     .is_some_and(|document| document.generation == generation)
                 {
@@ -324,10 +334,7 @@ impl Backend {
     fn recheck_open_documents(&self, changed_uris: &[&Uri]) {
         // Collect the snapshots before scheduling, without retaining the lock across that
         // operation.
-        let snapshots = self
-            .documents
-            .lock()
-            .expect("The open-document mutex shouldn't be poisoned.")
+        let snapshots = lock(&self.documents)
             .iter()
             .filter(|(uri, _document)| !changed_uris.contains(uri))
             .map(|(_uri, document)| Arc::clone(&document.snapshot))
@@ -341,9 +348,7 @@ impl Backend {
 
     // Share the latest synchronized snapshot of an open document with a language feature request.
     fn snapshot(&self, uri: &Uri) -> Option<Arc<Snapshot>> {
-        self.documents
-            .lock()
-            .expect("The open-document mutex shouldn't be poisoned.")
+        lock(&self.documents)
             .get(uri)
             .map(|document| Arc::clone(&document.snapshot))
     }
@@ -366,6 +371,15 @@ impl Backend {
             .await
             .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
     }
+}
+
+// Lock the open documents, which no thread holds while panicking.
+fn lock(
+    documents: &Mutex<HashMap<Uri, OpenDocument>>,
+) -> MutexGuard<'_, HashMap<Uri, OpenDocument>> {
+    documents
+        .lock()
+        .expect("The open-document mutex shouldn't be poisoned.")
 }
 
 // Respond to protocol requests and notifications for document synchronization, diagnostics, and
@@ -544,11 +558,7 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Cancel outstanding work before asking the client to clear this document's diagnostics.
-        let document = self
-            .documents
-            .lock()
-            .expect("The open-document mutex shouldn't be poisoned.")
-            .remove(&params.text_document.uri);
+        let document = lock(&self.documents).remove(&params.text_document.uri);
         if let Some(pending_check) = document.and_then(|document| document.pending_check) {
             pending_check.cancel();
         }
@@ -777,41 +787,48 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 
 // Complete the link target at an editor position with node titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
+    // Find the link containing the cursor using only the cursor's line, so completion doesn't wait
+    // for the wiki to be parsed. Targets are trimmed by the parser, so the text typed so far starts
+    // after any leading whitespace.
+    let cursor_offset = snapshot.byte_offset(cursor)?;
+    let delimiters = link_delimiters_at(&snapshot.contents, cursor_offset)?;
+    let target_start = delimiters.opening + '['.len_utf8();
+    let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
+
     // Complete a filesystem link from the directory containing the wiki.
-    let line_index = snapshot.line_index();
-    let cursor_offset = line_index.byte_offset(&snapshot.contents, cursor)?;
-    if let Some(context) = filesystem_link_context(&snapshot.contents, cursor_offset) {
+    if typed_target.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Some(CompletionList {
             is_incomplete: false,
             items: filesystem_link_completions(
+                snapshot,
                 snapshot.path.as_deref()?,
-                &snapshot.contents,
-                line_index,
-                &context,
-            ),
+                typed_target,
+                cursor_offset,
+                delimiters.closing,
+            )?,
         });
     }
 
-    // Complete a text link with the titles of the nodes in the wiki which match the text typed
-    // between its opening delimiter and the cursor.
-    let replacement_source_range = text_link_context(&snapshot.contents, cursor_offset)?;
-    let typed_target = snapshot
-        .contents
-        .get(replacement_source_range.start + '['.len_utf8()..cursor_offset)
-        .unwrap_or_default();
+    // Decline a filesystem link whose prefix follows the cursor.
+    if snapshot.contents[target_start..delimiters.closing.unwrap_or(cursor_offset)]
+        .trim_start()
+        .starts_with(FILESYSTEM_LINK_PREFIX)
+    {
+        return None;
+    }
+
+    // Complete a text link with the titles of the nodes in the wiki which match the typed text,
+    // replacing a closed link in its entirety and an unfinished link through the cursor.
     Some(text_link_completions(
         snapshot,
-        &ContentText::from_source(typed_target.trim_start()).unescape(),
-        replacement_source_range,
+        &ContentText::from_source(typed_target).unescape(),
+        SourceRange {
+            start: delimiters.opening,
+            end: delimiters
+                .closing
+                .map_or(cursor_offset, |closing| closing + ']'.len_utf8()),
+        },
     ))
-}
-
-// This describes the path of a filesystem link being authored at the cursor.
-struct FilesystemLinkContext {
-    directory: PathBuf, // The normalized directory named by the typed path through its last `/`
-    segment_start: usize, // The start of the path component after that `/`
-    cursor: usize,
-    closing_delimiter: Option<usize>,
 }
 
 // This locates the delimiters of a link containing the cursor, which may be unfinished.
@@ -862,19 +879,19 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     })
 }
 
-// Identify a filesystem link whose path contains the cursor, even if the link is unfinished.
-fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<FilesystemLinkContext> {
-    // Require the filesystem-link prefix after any leading whitespace, since the parser trims
-    // targets. The prefix is the start of the typed path.
-    let delimiters = link_delimiters_at(source_contents, cursor)?;
-    let typed_path = source_contents[delimiters.opening + '['.len_utf8()..cursor].trim_start();
-    if !typed_path.starts_with(FILESYSTEM_LINK_PREFIX) {
-        return None;
-    }
-
+// Complete the next component of a filesystem link's typed path, which ends at the cursor, from
+// the directory named by the path through its last `/`.
+fn filesystem_link_completions(
+    snapshot: &Snapshot,
+    wiki_path: &Path,
+    typed_path: &str,
+    cursor: usize,
+    closing_delimiter: Option<usize>,
+) -> Option<Vec<CompletionItem>> {
     // Resolve the typed directory, declining paths which escape the wiki tree
     // [ref:filesystem_path_components].
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
+    let segment_start = cursor - (typed_path.len() - typed_directory.len());
     let mut directory = PathBuf::new();
     for component in
         Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape())
@@ -887,34 +904,19 @@ fn filesystem_link_context(source_contents: &str, cursor: usize) -> Option<Files
         }
     }
 
-    Some(FilesystemLinkContext {
-        directory,
-        segment_start: cursor - (typed_path.len() - typed_directory.len()),
-        cursor,
-        closing_delimiter: delimiters.closing,
-    })
-}
-
-// Complete the next component of a filesystem link's path from the directory its prefix names.
-fn filesystem_link_completions(
-    wiki_path: &Path,
-    source_contents: &str,
-    line_index: &LineIndex,
-    context: &FilesystemLinkContext,
-) -> Vec<CompletionItem> {
     // Derive every filesystem path from the wiki's containing directory, as validation does.
     let Ok(wiki_directory) = WikiDirectory::new(wiki_path) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
     // Descend only along the typed directory so large subtrees are read only once they're named,
     // and exclude the wiki itself.
     let mut walker_builder = wiki_tree_walker(wiki_directory.path());
     walker_builder
-        .max_depth(Some(context.directory.components().count() + 1))
+        .max_depth(Some(directory.components().count() + 1))
         .filter_entry({
             let wiki_directory = wiki_directory.clone();
-            let directory = context.directory.clone();
+            let directory = directory.clone();
             move |entry| {
                 let path = wiki_directory.entry_path(entry);
                 wiki_directory.wiki_path() != Some(&path)
@@ -933,7 +935,7 @@ fn filesystem_link_completions(
         let Some(name) = entry.file_name().to_str() else {
             continue;
         };
-        if path.as_path().parent() != Some(context.directory.as_path()) {
+        if path.as_path().parent() != Some(directory.as_path()) {
             continue;
         }
 
@@ -954,7 +956,7 @@ fn filesystem_link_completions(
                 format!("{name}/"),
                 CompletionItemKind::FOLDER,
                 format!("{escaped_name}/"),
-                context.closing_delimiter.unwrap_or(context.cursor),
+                closing_delimiter.unwrap_or(cursor),
                 Some(Command {
                     title: "Suggest".to_owned(),
                     command: TRIGGER_SUGGEST_COMMAND.to_owned(),
@@ -966,27 +968,21 @@ fn filesystem_link_completions(
                 name.to_owned(),
                 CompletionItemKind::FILE,
                 format!("{escaped_name}]"),
-                context
-                    .closing_delimiter
-                    .map_or(context.cursor, |offset| offset + ']'.len_utf8()),
+                closing_delimiter.map_or(cursor, |offset| offset + ']'.len_utf8()),
                 None,
             )
         };
 
         // Replace the typed component so the editor filters candidates against it.
-        let replacement_range = line_index.range(
-            source_contents,
-            SourceRange {
-                start: context.segment_start,
-                end: replacement_end,
-            },
-        );
         completions.push(CompletionItem {
             label,
             kind: Some(kind),
             filter_text: Some(escaped_name),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                replacement_range,
+                snapshot.range(SourceRange {
+                    start: segment_start,
+                    end: replacement_end,
+                }),
                 new_text,
             ))),
             command,
@@ -996,31 +992,7 @@ fn filesystem_link_completions(
 
     // Present entries deterministically.
     completions.sort_by(|a, b| a.label.cmp(&b.label));
-    completions
-}
-
-// Identify the source range a completion of the text link at the cursor should replace, using only
-// the cursor's line so completion doesn't wait for the wiki to be parsed.
-fn text_link_context(source_contents: &str, byte_offset: usize) -> Option<SourceRange> {
-    // Find the link containing the cursor.
-    let delimiters = link_delimiters_at(source_contents, byte_offset)?;
-
-    // Decline filesystem links, whose targets start with a prefix after any leading whitespace.
-    let target_end = delimiters.closing.unwrap_or(byte_offset);
-    if source_contents[delimiters.opening + '['.len_utf8()..target_end]
-        .trim_start()
-        .starts_with(FILESYSTEM_LINK_PREFIX)
-    {
-        return None;
-    }
-
-    // Replace a closed link in its entirety, and an unfinished link through the cursor.
-    Some(SourceRange {
-        start: delimiters.opening,
-        end: delimiters
-            .closing
-            .map_or(byte_offset, |closing| closing + ']'.len_utf8()),
-    })
+    Some(completions)
 }
 
 // Complete a text link with the node titles which contain the typed text's characters in order,
@@ -1054,9 +1026,7 @@ fn text_link_completions(
 
     // Replace the whole link, including its delimiters, so the cursor ends up after the closing
     // `]`.
-    let replacement_range = snapshot
-        .line_index()
-        .range(&snapshot.contents, replacement_source_range);
+    let replacement_range = snapshot.range(replacement_source_range);
     CompletionList {
         is_incomplete: match_count > MAX_TITLE_COMPLETIONS,
         items: prefix_matches
@@ -1099,22 +1069,16 @@ fn goto_definition_for_document(
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation doesn't require filesystem validation, and
     // recover from syntax errors so navigation keeps working while they're fixed.
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let (node, origin_source_range) = node_at(
-        wiki,
-        &snapshot.contents,
-        line_index.byte_offset(&snapshot.contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
+    let (node, origin_source_range) =
+        node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
     // Identify the complete source link or title and the destination node while selecting its title
     // on arrival.
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
-        origin_selection_range: Some(line_index.range(&snapshot.contents, origin_source_range)),
+        origin_selection_range: Some(snapshot.range(origin_source_range)),
         target_uri: snapshot.uri.clone(),
-        target_range: line_index.range(&snapshot.contents, node.source_range),
-        target_selection_range: line_index.range(&snapshot.contents, node.title_source_range),
+        target_range: snapshot.range(node.source_range),
+        target_selection_range: snapshot.range(node.title_source_range),
     }]))
 }
 
@@ -1122,14 +1086,7 @@ fn goto_definition_for_document(
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering doesn't require filesystem validation, and
     // recover from syntax errors so previews keep working while they're fixed.
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let (node, source_range) = node_at(
-        wiki,
-        &snapshot.contents,
-        line_index.byte_offset(&snapshot.contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
+    let (node, source_range) = node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
     // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
     // in a saved wiki, its filesystem links to their targets.
@@ -1145,10 +1102,7 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                 .to_markdown(|link| match link {
                     Link::Text { title, .. } => Some(reveal_range_command_url(
                         &snapshot.uri,
-                        line_index.range(
-                            &snapshot.contents,
-                            wiki.text_nodes.get(title)?.title_source_range,
-                        ),
+                        snapshot.range(snapshot.wiki().text_nodes.get(title)?.title_source_range),
                     )),
                     Link::Filesystem { target, .. } => Some(
                         filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
@@ -1158,24 +1112,32 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                 })
                 .into_string(),
         }),
-        range: Some(line_index.range(&snapshot.contents, source_range)),
+        range: Some(snapshot.range(source_range)),
     })
 }
 
 // Encode an editor navigation command as a Markdown-safe URI.
 fn reveal_range_command_url(uri: &Uri, range: Range) -> String {
-    // Pass the document URI and UTF-16 destination range as positional command arguments.
+    command_url(REVEAL_RANGE_COMMAND, &reveal_range_arguments(uri, range))
+}
+
+// Pass the document URI and UTF-16 destination range as positional command arguments.
+fn reveal_range_arguments(uri: &Uri, range: Range) -> Vec<serde_json::Value> {
+    vec![
+        uri.as_str().into(),
+        range.start.line.into(),
+        range.start.character.into(),
+        range.end.line.into(),
+        range.end.character.into(),
+    ]
+}
+
+// Encode a command and its positional arguments as a Markdown-safe URI.
+fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
     format!(
-        "command:{REVEAL_RANGE_COMMAND}?{}",
+        "command:{command}?{}",
         utf8_percent_encode(
-            &serde_json::to_string(&(
-                uri.as_str(),
-                range.start.line,
-                range.start.character,
-                range.end.line,
-                range.end.character,
-            ))
-            .expect("A string and numbers should serialize to JSON."),
+            &serde_json::to_string(arguments).expect("JSON values should serialize."),
             NON_ALPHANUMERIC,
         ),
     )
@@ -1189,17 +1151,11 @@ fn references_for_document(
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
     // from syntax errors so references can be found while they're fixed.
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let (node, _source_range) = node_at(
-        wiki,
-        &snapshot.contents,
-        line_index.byte_offset(&snapshot.contents, cursor)?,
-        LinkExtent::Whole,
-    )?;
+    let (node, _source_range) =
+        node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
     // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(wiki, &node.title);
+    let mut source_ranges = text_link_source_ranges(snapshot.wiki(), &node.title);
     if include_declaration {
         source_ranges.push(node.title_source_range);
     }
@@ -1209,12 +1165,7 @@ fn references_for_document(
     Some(
         source_ranges
             .into_iter()
-            .map(|source_range| {
-                Location::new(
-                    snapshot.uri.clone(),
-                    line_index.range(&snapshot.contents, source_range),
-                )
-            })
+            .map(|source_range| Location::new(snapshot.uri.clone(), snapshot.range(source_range)))
             .collect(),
     )
 }
@@ -1223,9 +1174,7 @@ fn references_for_document(
 fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
     // Links live on nodes in an unordered map, so sort their ranges into source order.
     let mut source_ranges = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
+        .links()
         .filter_map(|link| match link {
             Link::Text {
                 title: link_title,
@@ -1246,31 +1195,29 @@ fn document_highlight_for_document(
     // Parse only the wiki syntax because document highlights don't require validation, and recover
     // from syntax errors so highlights keep working while they're fixed.
     let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let byte_offset = line_index.byte_offset(&snapshot.contents, cursor)?;
+    let byte_offset = snapshot.byte_offset(cursor)?;
 
     // Distinguish a text-node declaration from its references.
-    let mut highlights = if let Some((node, _source_range)) =
-        node_at(wiki, &snapshot.contents, byte_offset, LinkExtent::Whole)
-    {
-        let mut highlights = text_link_source_ranges(wiki, &node.title)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect::<Vec<_>>();
-        highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
-        highlights
-    } else {
-        // Filesystem links have no declaration in the wiki, so every matching link is a reference.
-        // A text link reaches this branch only when its target doesn't exist, so it has nothing
-        // to highlight.
-        let Some(Link::Filesystem { target, .. }) = link_at(wiki, byte_offset) else {
-            return None;
+    let mut highlights =
+        if let Some((node, _source_range)) = node_at(snapshot, byte_offset, LinkExtent::Whole) {
+            let mut highlights = text_link_source_ranges(wiki, &node.title)
+                .into_iter()
+                .map(|source_range| (source_range, DocumentHighlightKind::READ))
+                .collect::<Vec<_>>();
+            highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
+            highlights
+        } else {
+            // Filesystem links have no declaration in the wiki, so every matching link is a
+            // reference. A text link reaches this branch only when its target doesn't exist, so it
+            // has nothing to highlight.
+            let Some(Link::Filesystem { target, .. }) = link_at(wiki, byte_offset) else {
+                return None;
+            };
+            filesystem_link_source_ranges(wiki, target)
+                .into_iter()
+                .map(|source_range| (source_range, DocumentHighlightKind::READ))
+                .collect()
         };
-        filesystem_link_source_ranges(wiki, target)
-            .into_iter()
-            .map(|source_range| (source_range, DocumentHighlightKind::READ))
-            .collect()
-    };
 
     // Return every matching source occurrence in wiki order.
     highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
@@ -1278,7 +1225,7 @@ fn document_highlight_for_document(
         highlights
             .into_iter()
             .map(|(source_range, kind)| DocumentHighlight {
-                range: line_index.range(&snapshot.contents, source_range),
+                range: snapshot.range(source_range),
                 kind: Some(kind),
             })
             .collect(),
@@ -1288,9 +1235,7 @@ fn document_highlight_for_document(
 // Collect every complete filesystem-link range with the same target.
 fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<SourceRange> {
     // Match logical paths without resolving symlinks, just as filesystem validation does.
-    wiki.text_nodes
-        .values()
-        .flat_map(|node| &node.links)
+    wiki.links()
         .filter_map(|link| match link {
             Link::Filesystem {
                 target: link_target,
@@ -1310,9 +1255,7 @@ fn prepare_rename_for_document(
 ) -> std::result::Result<Option<PrepareRenameResponse>, String> {
     // Resolve the cursor in an editor snapshot, which need not pass semantic validation, recovering
     // from syntax errors [ref:rename_despite_syntax_errors].
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let Some(cursor_offset) = line_index.byte_offset(&snapshot.contents, cursor) else {
+    let Some(cursor_offset) = snapshot.byte_offset(cursor) else {
         return Ok(None);
     };
 
@@ -1328,27 +1271,22 @@ fn prepare_rename_for_document(
         let trimmed = start_trimmed.trim_end_matches('/');
         let start = path_source_range.end - start_trimmed.len();
         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-            range: line_index.range(
-                &snapshot.contents,
-                SourceRange {
-                    start,
-                    end: start + trimmed.len(),
-                },
-            ),
+            range: snapshot.range(SourceRange {
+                start,
+                end: start + trimmed.len(),
+            }),
             placeholder: ContentText::from_source(trimmed).unescape(),
         }));
     }
 
     // Otherwise, resolve either a title declaration or text link.
-    let Some((node, source_range)) =
-        node_at(wiki, &snapshot.contents, cursor_offset, LinkExtent::Target)
-    else {
+    let Some((node, source_range)) = node_at(snapshot, cursor_offset, LinkExtent::Target) else {
         return Ok(None);
     };
 
     // Select only the title text and seed the rename prompt with its decoded value.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range: line_index.range(&snapshot.contents, source_range),
+        range: snapshot.range(source_range),
         placeholder: node.title.clone(),
     }))
 }
@@ -1371,10 +1309,7 @@ fn rename_for_document(
     // from syntax errors. A malformed link to the renamed node isn't updated, but it's reported as
     // a broken link once the syntax errors are fixed, since the old name no longer exists
     // [tag:rename_despite_syntax_errors].
-    let Some(cursor_offset) = snapshot
-        .line_index()
-        .byte_offset(&snapshot.contents, cursor)
-    else {
+    let Some(cursor_offset) = snapshot.byte_offset(cursor) else {
         return Ok(None);
     };
 
@@ -1397,12 +1332,7 @@ fn rename_text_node_for_document(
     new_name: &str,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Resolve the text node declared or linked at the cursor.
-    let Some((node, _source_range)) = node_at(
-        snapshot.wiki(),
-        &snapshot.contents,
-        cursor_offset,
-        LinkExtent::Target,
-    ) else {
+    let Some((node, _source_range)) = node_at(snapshot, cursor_offset, LinkExtent::Target) else {
         return Ok(None);
     };
 
@@ -1430,26 +1360,17 @@ fn rename_text_node_for_document(
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
-    let mut edits = vec![(node.title_source_range, new_title.to_owned())];
     let escaped_title = ContentText::escape(new_title).into_string();
-    for link in snapshot
-        .wiki()
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
-    {
-        if let Link::Text {
-            title,
-            source_range,
-        } = link
-            && title == &node.title
-        {
-            edits.push((
-                text_link_target_source_range(&snapshot.contents, *source_range),
-                escaped_title.clone(),
-            ));
-        }
-    }
+    let mut edits = text_link_source_ranges(snapshot.wiki(), &node.title)
+        .into_iter()
+        .map(|source_range| {
+            (
+                text_link_target_source_range(&snapshot.contents, source_range),
+                escaped_title.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    edits.push((node.title_source_range, new_title));
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
@@ -1459,12 +1380,7 @@ fn rename_text_node_for_document(
             edits
                 .into_iter()
                 .map(|(source_range, new_text)| {
-                    TextEdit::new(
-                        snapshot
-                            .line_index()
-                            .range(&snapshot.contents, source_range),
-                        new_text,
-                    )
+                    TextEdit::new(snapshot.range(source_range), new_text.to_owned())
                 })
                 .collect(),
         )])),
@@ -1559,12 +1475,7 @@ fn rename_filesystem_node_for_document(
         edits: edits
             .into_iter()
             .map(|(source_range, new_text)| {
-                OneOf::Left(TextEdit::new(
-                    snapshot
-                        .line_index()
-                        .range(&snapshot.contents, source_range),
-                    new_text,
-                ))
+                OneOf::Left(TextEdit::new(snapshot.range(source_range), new_text))
             })
             .collect(),
     });
@@ -1598,8 +1509,7 @@ fn rename_filesystem_node_for_document(
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
-                uri: Uri::from_file_path(wiki_directory.resolve(&directory))
-                    .expect("A path within a saved wiki's directory should be absolute."),
+                uri: file_uri(&wiki_directory.resolve(&directory)),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
                     ignore_if_not_exists: Some(true),
@@ -1749,7 +1659,7 @@ fn filesystem_rename_edits(
 ) -> Vec<(SourceRange, String)> {
     // Move each link to the renamed entry or, for a directory, to anything within it.
     let mut edits = Vec::new();
-    for link in wiki.text_nodes.values().flat_map(|node| &node.links) {
+    for link in wiki.links() {
         let Link::Filesystem {
             target,
             source_range,
@@ -1799,10 +1709,8 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
 // Build an operation that renames a node from one absolute path to another.
 fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
     DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
-        old_uri: Uri::from_file_path(old_path)
-            .expect("A path within a saved wiki's directory should be absolute."),
-        new_uri: Uri::from_file_path(new_path)
-            .expect("A path within a saved wiki's directory should be absolute."),
+        old_uri: file_uri(old_path),
+        new_uri: file_uri(new_path),
         options: None,
         annotation_id: None,
     }))
@@ -1875,9 +1783,7 @@ fn formatting_for_document(snapshot: &Snapshot) -> Option<Vec<TextEdit>> {
         Some(vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
-                snapshot
-                    .line_index()
-                    .position(&snapshot.contents, snapshot.contents.len()),
+                snapshot.position(snapshot.contents.len()),
             ),
             rendered_wiki,
         )])
@@ -1895,9 +1801,7 @@ fn document_symbol_for_document(
 ) -> DocumentSymbolResponse {
     // Parse syntax without semantic validation, recovering from syntax errors so the nodes remain
     // navigable while they're fixed.
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
+    let mut nodes = snapshot.wiki().text_nodes.values().collect::<Vec<_>>();
     nodes.sort_by_key(|node| node.source_range.start);
 
     // Use separate node and title ranges when the client supports hierarchical symbols, and locate
@@ -1912,8 +1816,8 @@ fn document_symbol_for_document(
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
-                    range: line_index.range(&snapshot.contents, node.source_range),
-                    selection_range: line_index.range(&snapshot.contents, node.title_source_range),
+                    range: snapshot.range(node.source_range),
+                    selection_range: snapshot.range(node.title_source_range),
                     children: None,
                 })
                 .collect(),
@@ -1929,7 +1833,7 @@ fn document_symbol_for_document(
                     deprecated: None,
                     location: Location::new(
                         snapshot.uri.clone(),
-                        line_index.range(&snapshot.contents, node.title_source_range),
+                        snapshot.range(node.title_source_range),
                     ),
                     container_name: None,
                 })
@@ -1960,7 +1864,6 @@ fn code_action_for_document(
     // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made,
     // recovering from syntax errors since validation reports missing nodes despite them.
     let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
@@ -1972,9 +1875,7 @@ fn code_action_for_document(
                     // it, or else at the end of the wiki. The formatter decides where it ends up.
                     let linking_node = diagnostics
                         .iter()
-                        .filter_map(|diagnostic| {
-                            line_index.byte_offset(&snapshot.contents, diagnostic.range.end)
-                        })
+                        .filter_map(|diagnostic| snapshot.byte_offset(diagnostic.range.end))
                         .min()
                         .and_then(|offset| {
                             wiki.text_nodes
@@ -2001,7 +1902,7 @@ fn code_action_for_document(
                         };
                         (snapshot.contents.len(), before_title, "\n")
                     };
-                    let insertion = line_index.position(&snapshot.contents, offset);
+                    let insertion = snapshot.position(offset);
                     let edit = TextEdit::new(
                         Range::new(insertion, insertion),
                         format!("{before_title}{TITLE_PREFIX}{title}{after_title}"),
@@ -2019,13 +1920,10 @@ fn code_action_for_document(
                     let command = Command::new(
                         format!("Reveal node {}", title.code_str()),
                         REVEAL_RANGE_COMMAND.to_owned(),
-                        Some(vec![
-                            snapshot.uri.as_str().into(),
-                            cursor.line.into(),
-                            cursor.character.into(),
-                            cursor.line.into(),
-                            cursor.character.into(),
-                        ]),
+                        Some(reveal_range_arguments(
+                            &snapshot.uri,
+                            Range::new(cursor, cursor),
+                        )),
                     );
                     (
                         format!("Create node {}", title.code_str()),
@@ -2058,17 +1956,13 @@ fn code_action_for_document(
 fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> {
     // Resolve filesystem links from the directory containing a saved wiki, recovering from syntax
     // errors so the links remain clickable while they're fixed.
-    let wiki_path = snapshot.path.as_deref()?;
-    let wiki = snapshot.wiki();
-    let line_index = snapshot.line_index();
-    let wiki_directory = WikiDirectory::new(wiki_path).ok()?;
+    let wiki_directory = WikiDirectory::new(snapshot.path.as_deref()?).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut listings = DirectoryListings::new();
-    let mut document_links = wiki
-        .text_nodes
-        .values()
-        .flat_map(|node| &node.links)
+    let mut document_links = snapshot
+        .wiki()
+        .links()
         .filter_map(|link| {
             let Link::Filesystem {
                 target,
@@ -2083,7 +1977,7 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
                 "Open file"
             };
             Some(DocumentLink {
-                range: line_index.range(&snapshot.contents, *source_range),
+                range: snapshot.range(*source_range),
                 target: Some(filesystem_link_target(
                     &wiki_directory,
                     target,
@@ -2096,12 +1990,7 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
         .collect::<Vec<_>>();
 
     // Report the links in source order.
-    document_links.sort_by_key(|document_link| {
-        (
-            document_link.range.start.line,
-            document_link.range.start.character,
-        )
-    });
+    document_links.sort_by_key(|document_link| document_link.range.start);
     Some(document_links)
 }
 
@@ -2121,11 +2010,11 @@ fn filesystem_link_target(
         return None;
     }
 
-    // Open a file directly, and reveal a directory through the extension.
-    let target_uri = Uri::from_file_path(&target_path)
-        .expect("A path within a saved wiki's directory should be absolute.");
+    // Open a file directly, and reveal a directory through the extension by passing its URI as
+    // the command's only positional argument.
+    let target_uri = file_uri(&target_path);
     Some(if is_directory {
-        reveal_in_explorer_command_url(&target_uri)
+        command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
             .parse()
             .expect("A command URL should be a valid URI.")
     } else {
@@ -2133,17 +2022,9 @@ fn filesystem_link_target(
     })
 }
 
-// Build a command link that reveals a directory in the extension's explorer.
-fn reveal_in_explorer_command_url(directory_uri: &Uri) -> String {
-    // Pass the directory URI as the command's only positional argument.
-    format!(
-        "command:{REVEAL_IN_EXPLORER_COMMAND}?{}",
-        utf8_percent_encode(
-            &serde_json::to_string(&[directory_uri.as_str()])
-                .expect("A list of strings should serialize to JSON."),
-            NON_ALPHANUMERIC,
-        ),
-    )
+// Convert a path within a saved wiki's directory, which is absolute, into a file URI.
+fn file_uri(path: &Path) -> Uri {
+    Uri::from_file_path(path).expect("A path within a saved wiki's directory should be absolute.")
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -2157,13 +2038,13 @@ enum LinkExtent {
 }
 
 // Resolve the node denoted by a declaration or text link at a source offset.
-fn node_at<'a>(
-    wiki: &'a Wiki,
-    source_contents: &str,
+fn node_at(
+    snapshot: &Snapshot,
     byte_offset: usize,
     link_extent: LinkExtent,
-) -> Option<(&'a TextNode, SourceRange)> {
+) -> Option<(&TextNode, SourceRange)> {
     // Prefer a declaration, whose title is the only range it can contribute.
+    let wiki = snapshot.wiki();
     if let Some(node) = wiki.text_nodes.values().find(|node| {
         node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
     }) {
@@ -2183,7 +2064,7 @@ fn node_at<'a>(
         wiki.text_nodes.get(title)?,
         match link_extent {
             LinkExtent::Whole => source_range,
-            LinkExtent::Target => text_link_target_source_range(source_contents, source_range),
+            LinkExtent::Target => text_link_target_source_range(&snapshot.contents, source_range),
         },
     ))
 }
@@ -2191,11 +2072,9 @@ fn node_at<'a>(
 // Find the link of any kind at a source offset without resolving its destination. Links never
 // overlap, so at most one link can contain the offset.
 fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
-    wiki.text_nodes.values().find_map(|node| {
-        node.links.iter().find(|link| {
-            let source_range = link.source_range();
-            source_range.start <= byte_offset && byte_offset < source_range.end
-        })
+    wiki.links().find(|link| {
+        let source_range = link.source_range();
+        source_range.start <= byte_offset && byte_offset < source_range.end
     })
 }
 
