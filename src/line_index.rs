@@ -4,7 +4,7 @@
 // from.
 #[derive(Clone, Debug)]
 pub struct LineIndex {
-    line_starts: Vec<usize>, // The first line starts at 0, and every other line follows a `\n`
+    line_starts: Vec<usize>, // The first line starts at 0, and every other line follows a `\n`.
 }
 
 impl LineIndex {
