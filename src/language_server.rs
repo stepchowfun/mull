@@ -29,9 +29,9 @@ use tower_lsp_server::{
     ls_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
         CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem,
-        CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-        CompletionTextEdit, DeleteFile, DeleteFileOptions, Diagnostic, DiagnosticSeverity,
-        DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+        CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
+        CompletionResponse, CompletionTextEdit, DeleteFile, DeleteFileOptions, Diagnostic,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
         DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
         DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
@@ -51,6 +51,9 @@ use tower_lsp_server::{
 
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
+
+// Limit the node titles offered as completions so responses remain small in large wikis.
+const MAX_TITLE_COMPLETIONS: usize = 100;
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -108,6 +111,7 @@ struct Snapshot {
     version: i32,
     line_index: OnceLock<LineIndex>,
     parsed: OnceLock<(Wiki, Vec<Error>)>,
+    titles: OnceLock<Vec<Title>>,
 }
 
 impl Snapshot {
@@ -120,6 +124,7 @@ impl Snapshot {
             version,
             line_index: OnceLock::new(),
             parsed: OnceLock::new(),
+            titles: OnceLock::new(),
         }
     }
 
@@ -140,6 +145,31 @@ impl Snapshot {
     fn wiki(&self) -> &Wiki {
         &self.parsed().0
     }
+
+    // List the titles of the nodes in the wiki in title order, for completion.
+    fn titles(&self) -> &[Title] {
+        self.titles.get_or_init(|| {
+            let mut titles = self
+                .wiki()
+                .text_nodes
+                .keys()
+                .map(|title| Title {
+                    title: title.clone(),
+                    lowercase: title.to_lowercase(),
+                })
+                .collect::<Vec<_>>();
+            titles.sort_by(|a, b| a.title.cmp(&b.title));
+            titles
+        })
+    }
+}
+
+// This is a node title along with its lowercase form, which typed text is matched against
+// regardless of case.
+#[derive(Debug)]
+struct Title {
+    title: String,
+    lowercase: String,
 }
 
 // This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
@@ -511,7 +541,7 @@ impl LanguageServer for Backend {
         self.respond(
             &params.text_document_position.text_document.uri,
             move |snapshot| {
-                Ok(completion_for_document(snapshot, position).map(CompletionResponse::Array))
+                Ok(completion_for_document(snapshot, position).map(CompletionResponse::List))
             },
         )
         .await
@@ -713,25 +743,32 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 }
 
 // Complete the link target at an editor position with node titles or filesystem paths.
-fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Vec<CompletionItem>> {
+fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
     // Complete a filesystem link from the directory containing the wiki.
     let line_index = snapshot.line_index();
     let cursor_offset = line_index.byte_offset(&snapshot.contents, cursor)?;
     if let Some(context) = filesystem_link_context(&snapshot.contents, cursor_offset) {
-        return Some(filesystem_link_completions(
-            snapshot.path.as_deref()?,
-            &snapshot.contents,
-            line_index,
-            &context,
-        ));
+        return Some(CompletionList {
+            is_incomplete: false,
+            items: filesystem_link_completions(
+                snapshot.path.as_deref()?,
+                &snapshot.contents,
+                line_index,
+                &context,
+            ),
+        });
     }
 
-    // Complete a text link with the titles of the nodes in the wiki.
+    // Complete a text link with the titles of the nodes in the wiki which match the text typed
+    // between its opening delimiter and the cursor.
     let replacement_source_range = text_link_context(snapshot, cursor_offset)?;
+    let typed_target = snapshot
+        .contents
+        .get(replacement_source_range.start + '['.len_utf8()..cursor_offset)
+        .unwrap_or_default();
     Some(text_link_completions(
-        snapshot.wiki(),
-        &snapshot.contents,
-        line_index,
+        snapshot,
+        &ContentText::from_source(typed_target.trim_start()).unescape(),
         replacement_source_range,
     ))
 }
@@ -948,34 +985,73 @@ fn text_link_context(snapshot: &Snapshot, byte_offset: usize) -> Option<SourceRa
     })
 }
 
-// Complete a text link with every node title, replacing the link at a source range.
+// Complete a text link with the node titles which contain the typed text's characters in order,
+// ignoring case, replacing the link at a source range. If there are too many, offer those which
+// start with the typed text first, and mark the list as incomplete so the client asks again as more
+// is typed.
 fn text_link_completions(
-    wiki: &Wiki,
-    source_contents: &str,
-    line_index: &LineIndex,
+    snapshot: &Snapshot,
+    typed_text: &str,
     replacement_source_range: SourceRange,
-) -> Vec<CompletionItem> {
-    // Present node titles deterministically and replace the whole link, including its delimiters,
-    // so the cursor ends up after the closing `]`.
-    let replacement_range = line_index.range(source_contents, replacement_source_range);
-    let mut titles = wiki.text_nodes.keys().collect::<Vec<_>>();
-    titles.sort();
-    titles
-        .into_iter()
-        .map(|title| {
-            let escaped_title = ContentText::escape(title).into_string();
-            CompletionItem {
-                label: title.clone(),
-                kind: Some(CompletionItemKind::REFERENCE),
-                filter_text: Some(format!("[{escaped_title}")),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                    replacement_range,
-                    format!("[{escaped_title}]"),
-                ))),
-                ..CompletionItem::default()
-            }
-        })
-        .collect()
+) -> CompletionList {
+    // Collect enough matches of each kind, in title order, while counting all of them.
+    let typed_text = typed_text.to_lowercase();
+    let mut prefix_matches = Vec::new();
+    let mut other_matches = Vec::new();
+    let mut match_count = 0_usize;
+    for title in snapshot.titles() {
+        if !is_subsequence(&typed_text, &title.lowercase) {
+            continue;
+        }
+        match_count += 1;
+        let matches = if title.lowercase.starts_with(&typed_text) {
+            &mut prefix_matches
+        } else {
+            &mut other_matches
+        };
+        if matches.len() < MAX_TITLE_COMPLETIONS {
+            matches.push(&title.title);
+        }
+    }
+
+    // Replace the whole link, including its delimiters, so the cursor ends up after the closing
+    // `]`.
+    let replacement_range = snapshot
+        .line_index()
+        .range(&snapshot.contents, replacement_source_range);
+    CompletionList {
+        is_incomplete: match_count > MAX_TITLE_COMPLETIONS,
+        items: prefix_matches
+            .into_iter()
+            .chain(other_matches)
+            .take(MAX_TITLE_COMPLETIONS)
+            .map(|title| {
+                let escaped_title = ContentText::escape(title).into_string();
+                CompletionItem {
+                    label: title.clone(),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    filter_text: Some(format!("[{escaped_title}")),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        replacement_range,
+                        format!("[{escaped_title}]"),
+                    ))),
+                    ..CompletionItem::default()
+                }
+            })
+            .collect(),
+    }
+}
+
+// Determine whether the characters of a query appear in a text in order. Matching each character
+// of the query as early as possible finds a match whenever one exists.
+fn is_subsequence(query: &str, text: &str) -> bool {
+    let mut query_characters = query.chars().peekable();
+    for character in text.chars() {
+        if query_characters.peek() == Some(&character) {
+            query_characters.next();
+        }
+    }
+    query_characters.peek().is_none()
 }
 
 // Locate the node declared or linked at an editor position.
@@ -2112,11 +2188,12 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, Snapshot, code_action_for_document, completion_for_document,
-        diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
-        document_link_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, prepare_rename_for_document,
-        references_for_document, rename_for_document, reveal_range_command_url,
+        FileOperationSupport, MAX_TITLE_COMPLETIONS, Snapshot, code_action_for_document,
+        completion_for_document, diagnostic_from_error, diagnostics_for_document,
+        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
+        formatting_for_document, goto_definition_for_document, hover_for_document, is_subsequence,
+        prepare_rename_for_document, references_for_document, rename_for_document,
+        reveal_range_command_url,
     };
     use crate::{
         cancellation::CancellationFlag,
@@ -2127,6 +2204,7 @@ mod tests {
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
+        fmt::Write,
         fs,
         path::{Path, PathBuf},
         process,
@@ -2395,14 +2473,15 @@ mod tests {
         let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
-                .unwrap();
+                .unwrap()
+                .items;
 
         assert_eq!(
             completions
                 .iter()
                 .map(|completion| completion.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Greeting", "Home", "Other"],
+            vec!["Greeting"],
         );
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
             panic!("A completion should replace the link.");
@@ -2414,7 +2493,8 @@ mod tests {
         // Replace the same link from a cursor before its opening delimiter.
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .unwrap();
+                .unwrap()
+                .items;
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
             panic!("A completion should replace the link.");
         };
@@ -2427,7 +2507,8 @@ mod tests {
         let source = "# Home\n\n[Gre\n\n# Greeting\n\nUnexpected]";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap();
+                .unwrap()
+                .items;
 
         assert!(
             completions
@@ -2442,7 +2523,8 @@ mod tests {
         let source = "# Home\n\n[Gre\n\n# Greeting";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap();
+                .unwrap()
+                .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -2464,7 +2546,8 @@ mod tests {
         let source = "# Home\n\nSee [Home] and [Gre\n\n# Greeting";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 19))
-                .unwrap();
+                .unwrap()
+                .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -2479,6 +2562,76 @@ mod tests {
         );
     }
 
+    // Offer the titles containing the typed characters in order, ignoring case, with those starting
+    // with the typed text first.
+    #[test]
+    fn completions_filter_titles() {
+        let source = "# Home\n\n[gre\n\n# Greeting\n\n# Agree\n\n# Greek\n\n# Other";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
+                .unwrap();
+
+        assert!(!completions.is_incomplete);
+        assert_eq!(
+            completions
+                .items
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Greek", "Greeting", "Agree"],
+        );
+    }
+
+    // Match escaped link delimiters in the typed text against the titles that contain them.
+    #[test]
+    fn completions_filter_titles_with_escapes() {
+        let source = "# Home\n\n[A\\[\n\n# A[B]\n\n# AB";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
+                .unwrap();
+
+        assert_eq!(
+            completions
+                .items
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A[B]"],
+        );
+    }
+
+    // Offer a limited number of titles, keeping those which start with the typed text, and mark
+    // the list as incomplete.
+    #[test]
+    fn completions_limit_titles() {
+        let mut source = "# Home\n\n[x\n\n# X\n".to_owned();
+        for i in 0_usize..200 {
+            writeln!(source, "\n# Ax {i:03}").unwrap();
+        }
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), &source), Position::new(2, 2))
+                .unwrap();
+
+        assert!(completions.is_incomplete);
+        assert_eq!(completions.items.len(), MAX_TITLE_COMPLETIONS);
+        assert_eq!(completions.items[0].label, "X");
+        assert_eq!(completions.items[1].label, "Ax 000");
+        assert_eq!(
+            completions.items[MAX_TITLE_COMPLETIONS - 1].label,
+            format!("Ax {:03}", MAX_TITLE_COMPLETIONS - 2),
+        );
+    }
+
+    // Match a query's characters in order, wherever they appear.
+    #[test]
+    fn subsequences_match_in_order() {
+        assert!(is_subsequence("grt", "greeting"));
+        assert!(is_subsequence("", "greeting"));
+        assert!(is_subsequence("greeting", "greeting"));
+        assert!(!is_subsequence("gtr", "greeting"));
+        assert!(!is_subsequence("x", ""));
+    }
+
     // Leave the cursor after a single closing delimiter once a completion has been applied.
     #[test]
     fn completions_do_not_duplicate_closing_delimiters() {
@@ -2486,7 +2639,8 @@ mod tests {
         let source = "# Home\n\n[Gr]\n\n# Greeting";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
-                .unwrap();
+                .unwrap()
+                .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -2509,7 +2663,8 @@ mod tests {
         let source = "# Home\n\n[]\n\n# A[B]";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 1))
-                .unwrap();
+                .unwrap()
+                .items;
         let bracketed = completions
             .iter()
             .find(|completion| completion.label == "A[B]")
@@ -2570,8 +2725,9 @@ mod tests {
         fs::create_dir(directory.join("images")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2)).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+            .unwrap()
+            .items;
 
         // Close a file's link but leave a directory's link open for its children.
         let empty_path = Range::new(Position::new(2, 2), Position::new(2, 2));
@@ -2603,8 +2759,9 @@ mod tests {
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 4)).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 4))
+            .unwrap()
+            .items;
 
         assert_eq!(
             completion_edits(&completions),
@@ -2628,8 +2785,9 @@ mod tests {
         fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 10)).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 10))
+            .unwrap()
+            .items;
 
         let typed_component = Range::new(Position::new(2, 9), Position::new(2, 10));
         assert_eq!(
@@ -2653,8 +2811,9 @@ mod tests {
         fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2)).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+            .unwrap()
+            .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
@@ -2664,8 +2823,9 @@ mod tests {
             )],
         );
 
-        let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 9)).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 9))
+            .unwrap()
+            .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
@@ -2692,7 +2852,7 @@ mod tests {
         ] {
             assert!(
                 completion_for_document(&snapshot(&uri, source), cursor)
-                    .is_none_or(|completions| completions.is_empty()),
+                    .is_none_or(|completions| completions.items.is_empty()),
             );
         }
 
