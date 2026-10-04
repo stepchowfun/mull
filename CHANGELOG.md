@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.8] - 2026-10-04
+
+### Changed
+- The language server now ignores any text an editor includes when it reports a save, which the server doesn't ask for. The edits the editor reports before the save already contain the saved text.
+
 ## [0.36.7] - 2026-10-03
 
 ### Fixed
