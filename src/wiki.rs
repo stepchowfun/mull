@@ -26,6 +26,13 @@ pub struct Wiki {
     pub text_nodes: HashMap<String, TextNode>,
 }
 
+impl Wiki {
+    // Iterate over the links of every node, in no particular order.
+    pub fn links(&self) -> impl Iterator<Item = &Link> {
+        self.text_nodes.values().flat_map(|node| &node.links)
+    }
+}
+
 // Render nodes deterministically in traversal order, with unreachable nodes last in title order.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
