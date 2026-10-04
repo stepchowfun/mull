@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.5] - 2026-10-03
+
+### Fixed
+- Made completing a link which hasn't been closed yet faster in large wikis. The language server now finds the link on the cursor's line rather than parsing a copy of the wiki with the link closed. In a 10 MB wiki, completion went from about 150 milliseconds to 70.
+
 ## [0.36.4] - 2026-10-03
 
 ### Fixed
