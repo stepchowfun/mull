@@ -24,7 +24,8 @@ pub enum Fix {
     CreateNode(String),
 }
 
-// This is the primary error type we'll be using everywhere.
+// This is the primary error type we'll be using everywhere. Its parts are exposed through accessors
+// rather than public fields so they can't become inconsistent.
 #[derive(Clone, Debug)]
 pub struct Error {
     message: String,
@@ -65,24 +66,36 @@ impl Error {
         }
     }
 
-    // Expose the structured parts of the error without allowing them to become inconsistent.
+    // Describe what went wrong.
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    // Locate the error in its source, if it has a location.
     pub fn source_range(&self) -> Option<SourceRange> {
         self.source_range
     }
+
+    // Identify the file the error is about, if any.
     pub fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
     }
+
+    // Show the source lines the error refers to, as rendered for the terminal, if it has a
+    // location.
     pub fn listing(&self) -> Option<&str> {
         self.listing.as_deref()
     }
+
+    // Expose the underlying cause of the error, if any, without the thread-safety bounds that only
+    // matter for sharing it.
     pub fn reason(&self) -> Option<&(dyn error::Error + 'static)> {
         self.reason
             .as_deref()
             .map(|reason| reason as &(dyn error::Error + 'static))
     }
+
+    // Describe an edit that would resolve the error, if one is known.
     pub fn fix(&self) -> Option<&Fix> {
         self.fix.as_deref()
     }
