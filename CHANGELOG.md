@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.6] - 2026-10-03
+
+### Fixed
+- Made completing links much faster in large wikis. The language server now offers only the titles which contain the typed characters in order, at most 100 of them, rather than sending every title to the editor to filter. When more titles match, those which start with the typed text are offered first, and the editor asks again as more is typed. In a 10 MB wiki, completion went from about 70 milliseconds to a few milliseconds.
+
 ## [0.36.5] - 2026-10-03
 
 ### Fixed
