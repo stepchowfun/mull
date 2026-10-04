@@ -158,14 +158,17 @@ fn listing(source_contents: &str, line_index: &LineIndex, source_range: SourceRa
     let mut lines = vec![];
 
     // Visit the lines which start before the end of the range, beginning with the one containing
-    // the start of the range, so the lines before it are never examined.
-    let mut i = line_index.line(source_range.start);
+    // the start of the range, so the lines before it are never examined. A range starting beyond
+    // the source has no lines to show.
+    let Some(mut i) = line_index.line(source_range.start) else {
+        return String::new();
+    };
     while let Some(line_start) = line_index.line_start(i)
         && line_start < source_range.end
     {
         // Extract the line without its line feed.
         let line_end = line_index
-            .line_end(source_contents, i)
+            .line_end(i)
             .expect("A line that starts should also end.");
         let line = &source_contents[line_start..line_end];
 

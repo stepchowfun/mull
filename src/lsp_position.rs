@@ -16,7 +16,7 @@ impl LspPosition for LineIndex {
         // Locate the requested line without counting its line terminator as editor content.
         let line = usize::try_from(position.line).ok()?;
         let line_start = self.line_start(line)?;
-        let line_end = self.line_end(source_contents, line)?;
+        let line_end = self.line_end(line)?;
         let content_end = if source_contents.as_bytes().get(line_end) == Some(&b'\n')
             && source_contents[line_start..line_end].ends_with('\r')
         {
@@ -45,7 +45,9 @@ impl LspPosition for LineIndex {
     fn position(&self, source_contents: &str, byte_offset: usize) -> Position {
         // Find the line containing the offset, which can't extend beyond the source.
         let byte_offset = byte_offset.min(source_contents.len());
-        let line = self.line(byte_offset);
+        let line = self
+            .line(byte_offset)
+            .expect("An offset within the source should be on a line.");
         let line_start = self
             .line_start(line)
             .expect("The line containing an offset should exist.");
