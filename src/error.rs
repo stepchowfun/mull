@@ -220,15 +220,17 @@ fn listing(source_contents: &str, line_index: &LineIndex, source_range: SourceRa
                             "\u{250a}"
                         },
                     );
-                    if section_start == section_end {
-                        format!("\n{gutter}")
-                    } else {
+                    if section_start != section_end {
                         format!(
                             "\n{gutter} {}{}",
                             " ".repeat(*section_start),
                             // [tag:overline_u203e]
                             "\u{203e}".repeat(section_end - section_start),
                         )
+                    } else if i < lines.len() - 1 {
+                        format!("\n{gutter}")
+                    } else {
+                        String::new()
                     }
                 },
             )
@@ -524,7 +526,7 @@ mod tests {
                 &LineIndex::new("foo\n    bar"),
                 SourceRange { start: 0, end: 6 },
             ),
-            "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502}     bar\n   ",
+            "1 \u{2502} foo\n  \u{250a} \u{203e}\u{203e}\u{203e}\n2 \u{2502}     bar",
         );
     }
 
