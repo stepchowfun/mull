@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.7] - 2026-10-03
+
+### Fixed
+- Made completing links faster while typing in large wikis. Completion no longer waits for each new version of the wiki to be parsed. It finds the link on the cursor's line, and until the new version is parsed, it offers the titles of the most recently parsed version. In a 10 MB wiki, the wait for completions after each keystroke went from about 80 milliseconds to about 30. Completion is no longer offered with the cursor right before a link's opening delimiter.
+
 ## [0.36.6] - 2026-10-03
 
 ### Fixed

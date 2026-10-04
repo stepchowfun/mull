@@ -111,7 +111,8 @@ struct Snapshot {
     version: i32,
     line_index: OnceLock<LineIndex>,
     parsed: OnceLock<(Wiki, Vec<Error>)>,
-    titles: OnceLock<Vec<Title>>,
+    titles: OnceLock<Arc<[Title]>>,
+    inherited_titles: Option<Arc<[Title]>>, // The titles of an earlier version, if any were listed
 }
 
 impl Snapshot {
@@ -125,6 +126,21 @@ impl Snapshot {
             line_index: OnceLock::new(),
             parsed: OnceLock::new(),
             titles: OnceLock::new(),
+            inherited_titles: None,
+        }
+    }
+
+    // Capture the next version of a document, which inherits the most recent titles listed for
+    // this version or an earlier one, so completion can offer them before the new version is
+    // parsed.
+    fn next(&self, contents: String, version: i32) -> Self {
+        Self {
+            inherited_titles: self
+                .titles
+                .get()
+                .cloned()
+                .or_else(|| self.inherited_titles.clone()),
+            ..Self::new(self.uri.clone(), contents, version)
         }
     }
 
@@ -147,7 +163,7 @@ impl Snapshot {
     }
 
     // List the titles of the nodes in the wiki in title order, for completion.
-    fn titles(&self) -> &[Title] {
+    fn titles(&self) -> &Arc<[Title]> {
         self.titles.get_or_init(|| {
             let mut titles = self
                 .wiki()
@@ -159,8 +175,18 @@ impl Snapshot {
                 })
                 .collect::<Vec<_>>();
             titles.sort_by(|a, b| a.title.cmp(&b.title));
-            titles
+            titles.into()
         })
+    }
+
+    // List titles for completion without waiting for a parse which hasn't finished yet, by
+    // falling back to the titles of an earlier version. Titles rarely change between versions, and
+    // the latest ones are offered once this version has been parsed.
+    fn recent_titles(&self) -> &Arc<[Title]> {
+        match &self.inherited_titles {
+            Some(inherited_titles) if self.parsed.get().is_none() => inherited_titles,
+            Some(_) | None => self.titles(),
+        }
     }
 }
 
@@ -243,7 +269,12 @@ impl Backend {
 
                 // Publish nothing when a newer snapshot cancelled this check partway through.
                 let Some(diagnostics) = tokio::task::spawn_blocking(move || {
-                    diagnostics_for_document(&check_snapshot, &check_cancellation)
+                    // Also list the titles, which later versions offer as completions until
+                    // they're parsed themselves.
+                    let diagnostics =
+                        diagnostics_for_document(&check_snapshot, &check_cancellation);
+                    check_snapshot.titles();
+                    diagnostics
                 })
                 .await
                 .unwrap_or_else(|error| {
@@ -280,7 +311,7 @@ impl Backend {
         if let Some(snapshot) = self.snapshot(uri) {
             let snapshot = match contents {
                 Some(contents) if contents != snapshot.contents => {
-                    Arc::new(Snapshot::new(uri.clone(), contents, snapshot.version))
+                    Arc::new(snapshot.next(contents, snapshot.version))
                 }
                 Some(_) | None => snapshot,
             };
@@ -491,16 +522,18 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        // Full synchronization places the complete latest snapshot in the final change.
+        // Full synchronization places the complete latest snapshot in the final change, which
+        // succeeds the document's current snapshot.
         if let Some(change) = params.content_changes.into_iter().next_back() {
-            self.store_and_check_document(
-                Arc::new(Snapshot::new(
+            let snapshot = match self.snapshot(&params.text_document.uri) {
+                Some(previous) => previous.next(change.text, params.text_document.version),
+                None => Snapshot::new(
                     params.text_document.uri,
                     change.text,
                     params.text_document.version,
-                )),
-                CHECK_DELAY,
-            );
+                ),
+            };
+            self.store_and_check_document(Arc::new(snapshot), CHECK_DELAY);
         }
     }
 
@@ -761,7 +794,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
 
     // Complete a text link with the titles of the nodes in the wiki which match the text typed
     // between its opening delimiter and the cursor.
-    let replacement_source_range = text_link_context(snapshot, cursor_offset)?;
+    let replacement_source_range = text_link_context(&snapshot.contents, cursor_offset)?;
     let typed_target = snapshot
         .contents
         .get(replacement_source_range.start + '['.len_utf8()..cursor_offset)
@@ -966,22 +999,27 @@ fn filesystem_link_completions(
     completions
 }
 
-// Identify the source range a completion of the text link at the cursor should replace.
-fn text_link_context(snapshot: &Snapshot, byte_offset: usize) -> Option<SourceRange> {
-    // Replace a closed link in its entirety. The wiki is parsed with recovery from syntax errors,
-    // so errors elsewhere in the wiki don't prevent completion.
-    if let Some(Link::Text { source_range, .. }) = link_at(snapshot.wiki(), byte_offset) {
-        return Some(*source_range);
+// Identify the source range a completion of the text link at the cursor should replace, using only
+// the cursor's line so completion doesn't wait for the wiki to be parsed.
+fn text_link_context(source_contents: &str, byte_offset: usize) -> Option<SourceRange> {
+    // Find the link containing the cursor.
+    let delimiters = link_delimiters_at(source_contents, byte_offset)?;
+
+    // Decline filesystem links, whose targets start with a prefix after any leading whitespace.
+    let target_end = delimiters.closing.unwrap_or(byte_offset);
+    if source_contents[delimiters.opening + '['.len_utf8()..target_end]
+        .trim_start()
+        .starts_with(FILESYSTEM_LINK_PREFIX)
+    {
+        return None;
     }
 
-    // Replace an unfinished link from its opening delimiter through the cursor, unless it's a
-    // filesystem link. The parse has no such link, but the cursor's line shows where it starts.
-    let delimiters = link_delimiters_at(&snapshot.contents, byte_offset)?;
-    let typed_target =
-        snapshot.contents[delimiters.opening + '['.len_utf8()..byte_offset].trim_start();
-    (!typed_target.starts_with(FILESYSTEM_LINK_PREFIX)).then_some(SourceRange {
+    // Replace a closed link in its entirety, and an unfinished link through the cursor.
+    Some(SourceRange {
         start: delimiters.opening,
-        end: byte_offset,
+        end: delimiters
+            .closing
+            .map_or(byte_offset, |closing| closing + ']'.len_utf8()),
     })
 }
 
@@ -999,7 +1037,7 @@ fn text_link_completions(
     let mut prefix_matches = Vec::new();
     let mut other_matches = Vec::new();
     let mut match_count = 0_usize;
-    for title in snapshot.titles() {
+    for title in snapshot.recent_titles().iter() {
         if !is_subsequence(&typed_text, &title.lowercase) {
             continue;
         }
@@ -2188,7 +2226,7 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, MAX_TITLE_COMPLETIONS, Snapshot, code_action_for_document,
+        FileOperationSupport, MAX_TITLE_COMPLETIONS, Snapshot, Title, code_action_for_document,
         completion_for_document, diagnostic_from_error, diagnostics_for_document,
         document_highlight_for_document, document_link_for_document, document_symbol_for_document,
         formatting_for_document, goto_definition_for_document, hover_for_document, is_subsequence,
@@ -2490,15 +2528,11 @@ mod tests {
         assert_eq!(edit.range, link_range);
         assert_eq!(edit.new_text, "[Greeting]");
 
-        // Replace the same link from a cursor before its opening delimiter.
-        let completions =
+        // Offer nothing from a cursor before the link's opening delimiter.
+        assert!(
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .unwrap()
-                .items;
-        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("A completion should replace the link.");
-        };
-        assert_eq!(edit.range, link_range);
+                .is_none(),
+        );
     }
 
     // Complete an unfinished link despite a syntax error elsewhere in the wiki.
@@ -2630,6 +2664,66 @@ mod tests {
         assert!(is_subsequence("greeting", "greeting"));
         assert!(!is_subsequence("gtr", "greeting"));
         assert!(!is_subsequence("x", ""));
+    }
+
+    // Describe a list of titles by the titles alone.
+    fn title_names(titles: &[Title]) -> Vec<&str> {
+        titles.iter().map(|title| title.title.as_str()).collect()
+    }
+
+    // Offer the titles of an earlier version until a version has been parsed itself.
+    #[test]
+    fn recent_titles_until_parsed() {
+        let first = snapshot(&untitled_uri(), "# Home\n\n# Old");
+        first.titles();
+        let second = first.next("# Home\n\n# New".to_owned(), TEST_VERSION + 1);
+
+        assert_eq!(title_names(second.recent_titles()), vec!["Home", "Old"]);
+        second.wiki();
+        assert_eq!(title_names(second.recent_titles()), vec!["Home", "New"]);
+    }
+
+    // Carry the most recent titles forward through versions whose titles were never listed.
+    #[test]
+    fn recent_titles_skip_unlisted_versions() {
+        let first = snapshot(&untitled_uri(), "# Home\n\n# Old");
+        first.titles();
+        let second = first.next("# Home\n\n# Newer".to_owned(), TEST_VERSION + 1);
+        let third = second.next("# Home\n\n# Newest".to_owned(), TEST_VERSION + 2);
+
+        assert_eq!(title_names(third.recent_titles()), vec!["Home", "Old"]);
+    }
+
+    // List a version's own titles when no earlier version listed any.
+    #[test]
+    fn recent_titles_without_earlier_titles() {
+        let first = snapshot(&untitled_uri(), "# Home\n\n# Old");
+        let second = first.next("# Home\n\n# New".to_owned(), TEST_VERSION + 1);
+
+        assert_eq!(title_names(second.recent_titles()), vec!["Home", "New"]);
+    }
+
+    // Complete a link at the end of the document, but not from before its opening delimiter or
+    // outside of any link.
+    #[test]
+    fn completions_at_the_end_of_the_document() {
+        let source = "# Home\n\n[";
+
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 1))
+                .is_some(),
+        );
+        assert!(
+            completion_for_document(
+                &snapshot(&untitled_uri(), "# Home\n\nx"),
+                Position::new(2, 1),
+            )
+            .is_none(),
+        );
     }
 
     // Leave the cursor after a single closing delimiter once a completion has been applied.

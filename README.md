@@ -88,9 +88,11 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Find a node | `Command + Shift + O` | `Control + Shift + O` |
 | Rename a node | `F2` | `F2` |
 | Jump to a node from a link | `F12` | `F12` |
-| Jump back | `Control + -` | `Alt + Left` |
 | Jump to links to a node | `Shift + F12` | `Shift + F12` |
+| Jump back | `Control + -` | `Alt + Left` |
 | Show completions | `Control + Space` | `Control + Space` |
+| Jump to the next error | `F8` | `F8` |
+| Jump to the previous error | `Shift + F8` | `Shift + F8` |
 | Code actions (e.g., create a missing node) | `Command + .` | `Control + .` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
