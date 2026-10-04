@@ -2052,10 +2052,12 @@ fn node_at(
     byte_offset: usize,
     link_extent: LinkExtent,
 ) -> Option<(&TextNode, SourceRange)> {
-    // Prefer a declaration, whose title is the only range it can contribute.
+    // Prefer a declaration, which spans its title line from the `#` through the title, though its
+    // title is the only range it contributes. Navigating to a node leaves the cursor before the
+    // `#`.
     let wiki = snapshot.wiki();
     if let Some(node) = wiki.text_nodes.values().find(|node| {
-        node.title_source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+        node.source_range.start <= byte_offset && byte_offset < node.title_source_range.end
     }) {
         return Some((node, node.title_source_range));
     }
@@ -3043,16 +3045,18 @@ mod tests {
     // Distinguish a known node with no references from a cursor that denotes no node.
     #[test]
     fn references_can_be_empty() {
-        let source = "# Home";
+        let source = "# Home\n\nText";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert_eq!(
-            references_for_document(&snapshot(&uri, source), Position::new(0, 3), false),
-            Some(Vec::new()),
-        );
+        for column in [0, 3] {
+            assert_eq!(
+                references_for_document(&snapshot(&uri, source), Position::new(0, column), false),
+                Some(Vec::new()),
+            );
+        }
         assert!(
-            references_for_document(&snapshot(&uri, source), Position::new(0, 0), false).is_none(),
+            references_for_document(&snapshot(&uri, source), Position::new(2, 1), false).is_none(),
         );
     }
 
@@ -3097,18 +3101,20 @@ mod tests {
     // Highlight an unreferenced declaration while ignoring a cursor outside node occurrences.
     #[test]
     fn document_highlights_distinguish_unreferenced_nodes() {
-        let source = "# Home";
+        let source = "# Home\n\nText";
         let uri = untitled_uri();
 
-        assert_eq!(
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(0, 3)),
-            Some(vec![DocumentHighlight {
-                range: Range::new(Position::new(0, 2), Position::new(0, 6)),
-                kind: Some(DocumentHighlightKind::WRITE),
-            }]),
-        );
+        for column in [0, 3] {
+            assert_eq!(
+                document_highlight_for_document(&snapshot(&uri, source), Position::new(0, column)),
+                Some(vec![DocumentHighlight {
+                    range: Range::new(Position::new(0, 2), Position::new(0, 6)),
+                    kind: Some(DocumentHighlightKind::WRITE),
+                }]),
+            );
+        }
         assert!(
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(0, 0)).is_none(),
+            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 1)).is_none(),
         );
     }
 
@@ -3202,6 +3208,50 @@ mod tests {
                 placeholder: "Greeting".to_owned(),
             },
         );
+    }
+
+    // Rename a node from the start of its title line, where navigating to it leaves the cursor, or
+    // from the space before its title.
+    #[test]
+    fn rename_from_the_start_of_titles() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        for column in [0, 1] {
+            assert_eq!(
+                prepare_rename_for_document(
+                    &snapshot(&untitled_uri(), source),
+                    Position::new(4, column),
+                    false,
+                ),
+                Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                    range: Range::new(Position::new(4, 2), Position::new(4, 10)),
+                    placeholder: "Greeting".to_owned(),
+                })),
+            );
+            let workspace_edit = rename_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(4, column),
+                "Salutation",
+                ALL_FILE_OPERATIONS,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                workspace_edit.changes.unwrap()[&untitled_uri()]
+                    .iter()
+                    .map(|edit| (edit.range, edit.new_text.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (
+                        Range::new(Position::new(2, 1), Position::new(2, 9)),
+                        "Salutation",
+                    ),
+                    (
+                        Range::new(Position::new(4, 2), Position::new(4, 10)),
+                        "Salutation",
+                    ),
+                ],
+            );
+        }
     }
 
     // Rename in a wiki with syntax errors, leaving malformed links unchanged.

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.16] - 2026-10-04
+
+### Fixed
+- Renaming a node, and the other features that act on the node under the cursor, now work with the cursor at the start of the node's title line, before the `#`, where navigating to a node leaves it.
+
 ## [0.36.15] - 2026-10-04
 
 ### Changed
