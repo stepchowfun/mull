@@ -141,6 +141,11 @@ class NodeFocus implements vscode.FoldingRangeProvider {
   // when the cursor leaves it.
   private readonly focusedLines = new Map<string, { start: number; end: number }>();
 
+  // Remember the first lines of each wiki's folds. The editor keeps a fold collapsed after it's no
+  // longer provided unless a cursor is in its hidden lines, so stale folds must be unfolded, as when
+  // the cursor moves onto the visible first line of the wiki.
+  private readonly foldStartLines = new Map<string, number[]>();
+
   // Fold around the node containing the cursor of an editor showing the wiki, preferring the active
   // editor. The editor requests folds again after every edit, which keeps them current.
   public async provideFoldingRanges(document: vscode.TextDocument): Promise<vscode.FoldingRange[]> {
@@ -149,31 +154,42 @@ class NodeFocus implements vscode.FoldingRangeProvider {
     const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
       (candidate) => candidate !== undefined && candidate.document === document,
     );
-    const node =
-      editor === undefined
-        ? undefined
-        : nodeAt(await nodeRanges(document), editor.selection.active);
-    if (editor === undefined || node === undefined) {
-      this.focusedLines.delete(key);
+    if (editor === undefined) {
       return [];
     }
+    const node = nodeAt(await nodeRanges(document), editor.selection.active);
 
     // Fold the lines before the node and those from the blank line after it, where each spans more
-    // than one line.
-    const separatorLine = node.end.line + 1;
-    this.focusedLines.set(key, { start: node.start.line, end: separatorLine });
-    const ranges = [
-      new vscode.FoldingRange(0, node.start.line - 1),
-      new vscode.FoldingRange(separatorLine, document.lineCount - 1),
-    ].filter((range) => range.start < range.end);
+    // than one line. Fold nothing when the cursor is before every node.
+    let ranges: vscode.FoldingRange[] = [];
+    if (node === undefined) {
+      this.focusedLines.delete(key);
+    } else {
+      const separatorLine = node.end.line + 1;
+      this.focusedLines.set(key, { start: node.start.line, end: separatorLine });
+      ranges = [
+        new vscode.FoldingRange(0, node.start.line - 1),
+        new vscode.FoldingRange(separatorLine, document.lineCount - 1),
+      ].filter((range) => range.start < range.end);
+    }
 
-    // Collapse the folds in the active editor. A fold command issued after the folds are returned
-    // waits for the editor to apply them.
-    if (editor === vscode.window.activeTextEditor && ranges.length > 0) {
-      setTimeout(() => {
-        vscode.commands.executeCommand('editor.fold', {
-          selectionLines: ranges.map((range) => range.start),
-        });
+    // Unfold the stale folds and collapse the current ones in the active editor. Fold commands
+    // issued after the folds are returned wait for the editor to apply them.
+    const startLines = ranges.map((range) => range.start);
+    const staleStartLines = (this.foldStartLines.get(key) ?? []).filter(
+      (line) => !startLines.includes(line),
+    );
+    this.foldStartLines.set(key, startLines);
+    if (editor === vscode.window.activeTextEditor) {
+      setTimeout(async () => {
+        if (staleStartLines.length > 0) {
+          await vscode.commands.executeCommand('editor.unfold', {
+            selectionLines: staleStartLines,
+          });
+        }
+        if (startLines.length > 0) {
+          await vscode.commands.executeCommand('editor.fold', { selectionLines: startLines });
+        }
       }, 0);
     }
     return ranges;
