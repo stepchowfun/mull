@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.3] - 2026-10-02
+
+### Fixed
+- Made reporting many errors much faster for large wikis. Each error's source listing no longer scans the wiki from the start to find the error's line, and the command line no longer rebuilds its output for each error it prints. For a 10 MB wiki where no node is reachable from Home, the editor's diagnostics went from about 12 seconds to 0.2 seconds, and `mull check` went from about 13 seconds to under 0.1 seconds.
+
 ## [0.36.2] - 2026-10-02
 
 ### Fixed

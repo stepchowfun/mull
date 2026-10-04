@@ -2,6 +2,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
     format::{CodePath, CodeStr},
+    line_index::LineIndex,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
     wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
@@ -16,6 +17,7 @@ pub fn validate(
     wiki: &Wiki,
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
     cancellation: &CancellationFlag,
 ) -> Outcome<Result<(), Vec<Error>>> {
     // Visit nodes in title order so diagnostics are deterministic.
@@ -23,11 +25,15 @@ pub fn validate(
     nodes.sort_by_key(|node| &node.title);
 
     // Preserve graph errors if resolving the wiki later fails.
-    let mut errors = validate_text_links(wiki, &nodes, source_path, source_contents);
+    let mut errors = validate_text_links(wiki, &nodes, source_path, source_contents, line_index);
 
     // Report each filesystem link precisely when an editor buffer has no filesystem context.
     let Some(wiki_path) = source_path else {
-        errors.extend(validate_untitled_filesystem_links(&nodes, source_contents));
+        errors.extend(validate_untitled_filesystem_links(
+            &nodes,
+            source_contents,
+            line_index,
+        ));
         return Outcome::Completed(errors_to_result(errors));
     };
 
@@ -56,6 +62,7 @@ pub fn validate(
         &wiki_directory,
         wiki_path,
         source_contents,
+        line_index,
         cancellation,
     )
     .map(|filesystem_errors| {
@@ -71,6 +78,7 @@ fn validate_text_links(
     nodes: &[&TextNode],
     source_path: Option<&Path>,
     source_contents: &str,
+    line_index: &LineIndex,
 ) -> Vec<Error> {
     // Keep graph diagnostics deterministic.
     let mut errors = Vec::<Error>::new();
@@ -99,7 +107,7 @@ fn validate_text_links(
                     title,
                     source_range,
                 } if !wiki.text_nodes.contains_key(title) => {
-                    let source_context = Some((source_contents, *source_range));
+                    let source_context = Some((source_contents, line_index, *source_range));
                     errors.push(if title.is_empty() {
                         Error::new(
                             "This link is missing a target.",
@@ -137,7 +145,7 @@ fn validate_text_links(
                             HOME_TITLE.code_str(),
                         ),
                         source_path,
-                        Some((source_contents, node.title_source_range)),
+                        Some((source_contents, line_index, node.title_source_range)),
                         None,
                         None,
                     )
@@ -150,7 +158,11 @@ fn validate_text_links(
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
 // its nodes in title order.
-fn validate_untitled_filesystem_links(nodes: &[&TextNode], source_contents: &str) -> Vec<Error> {
+fn validate_untitled_filesystem_links(
+    nodes: &[&TextNode],
+    source_contents: &str,
+    line_index: &LineIndex,
+) -> Vec<Error> {
     nodes
         .iter()
         .flat_map(|node| &node.links)
@@ -158,7 +170,7 @@ fn validate_untitled_filesystem_links(nodes: &[&TextNode], source_contents: &str
             Link::Filesystem { source_range, .. } => Some(Error::new(
                 "Save the wiki to validate this filesystem link.",
                 None,
-                Some((source_contents, *source_range)),
+                Some((source_contents, line_index, *source_range)),
                 None,
                 None,
             )),
@@ -173,6 +185,7 @@ fn validate_filesystem_links(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
     source_contents: &str,
+    line_index: &LineIndex,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
     // Track valid targets while visiting links.
@@ -202,7 +215,7 @@ fn validate_filesystem_links(
                         error,
                         wiki_path,
                         path,
-                        (source_contents, source_range),
+                        (source_contents, line_index, source_range),
                     ));
                     continue;
                 }
@@ -216,7 +229,7 @@ fn validate_filesystem_links(
                     errors.push(Error::new(
                         &error.message,
                         Some(wiki_path),
-                        Some((source_contents, source_range)),
+                        Some((source_contents, line_index, source_range)),
                         error.reason,
                         None,
                     ));
@@ -229,7 +242,7 @@ fn validate_filesystem_links(
                 errors.push(Error::new(
                     &message,
                     Some(wiki_path),
-                    Some((source_contents, source_range)),
+                    Some((source_contents, line_index, source_range)),
                     None,
                     None,
                 ));
@@ -244,7 +257,7 @@ fn validate_filesystem_links(
                     wiki_path,
                     path,
                     spelled,
-                    (source_contents, source_range),
+                    (source_contents, line_index, source_range),
                     cancellation,
                 ) {
                     Outcome::Completed(error) => errors.extend(error),
@@ -283,7 +296,7 @@ fn inaccessible_target_error(
     error: std::io::Error,
     wiki_path: &Path,
     path: &Path,
-    source_context: (&str, SourceRange),
+    source_context: (&str, &LineIndex, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
         Error::new(
@@ -340,7 +353,7 @@ fn visibility_error(
     wiki_path: &Path,
     path: &Path,
     spelled: &SpelledPath,
-    source_context: (&str, SourceRange),
+    source_context: (&str, &LineIndex, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
     visibility(wiki_directory, spelled, cancellation).map(|visibility| {
@@ -456,6 +469,7 @@ mod tests {
     use crate::{
         cancellation::{CancellationFlag, Outcome},
         error::Error,
+        line_index::LineIndex,
         parser::parse as parse_wiki,
         wiki::Wiki,
     };
@@ -476,16 +490,19 @@ mod tests {
     struct TestWiki {
         wiki: Wiki,
         source_contents: String,
+        line_index: LineIndex,
     }
 
     // Parse a test wiki while retaining its source for validation listings, rejecting sources with
     // syntax errors.
     fn parse(source_contents: &str) -> Result<TestWiki, Vec<Error>> {
-        let (wiki, errors) = parse_wiki(Some(Path::new("test.mull")), source_contents);
+        let line_index = LineIndex::new(source_contents);
+        let (wiki, errors) = parse_wiki(Some(Path::new("test.mull")), source_contents, &line_index);
         if errors.is_empty() {
             Ok(TestWiki {
                 wiki,
                 source_contents: source_contents.to_owned(),
+                line_index,
             })
         } else {
             Err(errors)
@@ -498,6 +515,7 @@ mod tests {
             &wiki.wiki,
             Some(wiki_path),
             &wiki.source_contents,
+            &wiki.line_index,
             &CancellationFlag::default(),
         )
         .assume_completed()
@@ -509,6 +527,7 @@ mod tests {
             &wiki.wiki,
             None,
             &wiki.source_contents,
+            &wiki.line_index,
             &CancellationFlag::default(),
         )
         .assume_completed()
@@ -1111,6 +1130,7 @@ mod tests {
             &wiki.wiki,
             Some(directory.wiki_path().as_path()),
             &wiki.source_contents,
+            &wiki.line_index,
             &cancellation,
         );
         assert!(matches!(outcome, Outcome::Cancelled));
