@@ -126,7 +126,7 @@
         "mull.foldOtherNodes": {
           "type": "boolean",
           "default": true,
-          "description": "Fold everything outside the node containing the cursor, so the node being edited appears to be the whole document."
+          "description": "Fold everything except the current node."
         }
       }
     },
