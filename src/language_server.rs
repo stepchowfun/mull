@@ -286,6 +286,25 @@ impl Backend {
             .get(uri)
             .map(|document| Arc::clone(&document.snapshot))
     }
+
+    // Respond to a language feature request using the latest synchronized snapshot of an open
+    // document. The response is computed on a thread which may block, so parsing a large wiki
+    // doesn't stall the asynchronous executor.
+    async fn respond<T, F>(&self, uri: &Uri, respond: F) -> Result<Option<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Snapshot) -> Result<Option<T>> + Send + 'static,
+    {
+        // Report nothing for a document which isn't open.
+        let Some(snapshot) = self.snapshot(uri) else {
+            return Ok(None);
+        };
+
+        // Compute the response, and report a panic as an internal error.
+        tokio::task::spawn_blocking(move || respond(&snapshot))
+            .await
+            .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
+    }
 }
 
 // Respond to protocol requests and notifications for document synchronization, diagnostics, and
@@ -488,13 +507,14 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         // Complete links against the latest synchronized editor snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document_position.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(
-            completion_for_document(&snapshot, params.text_document_position.position)
-                .map(CompletionResponse::Array),
+        let position = params.text_document_position.position;
+        self.respond(
+            &params.text_document_position.text_document.uri,
+            move |snapshot| {
+                Ok(completion_for_document(snapshot, position).map(CompletionResponse::Array))
+            },
         )
+        .await
     }
 
     async fn goto_definition(
@@ -502,38 +522,39 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         // Resolve the title or text link against the latest synchronized editor snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document_position_params.text_document.uri)
-        else {
-            return Ok(None);
-        };
-        Ok(goto_definition_for_document(
-            &snapshot,
-            params.text_document_position_params.position,
-        ))
+        let position = params.text_document_position_params.position;
+        self.respond(
+            &params.text_document_position_params.text_document.uri,
+            move |snapshot| Ok(goto_definition_for_document(snapshot, position)),
+        )
+        .await
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         // Preview the text-link target from the latest synchronized editor snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document_position_params.text_document.uri)
-        else {
-            return Ok(None);
-        };
-        Ok(hover_for_document(
-            &snapshot,
-            params.text_document_position_params.position,
-        ))
+        let position = params.text_document_position_params.position;
+        self.respond(
+            &params.text_document_position_params.text_document.uri,
+            move |snapshot| Ok(hover_for_document(snapshot, position)),
+        )
+        .await
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         // Find references to the node under the cursor in the latest synchronized snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document_position.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(references_for_document(
-            &snapshot,
-            params.text_document_position.position,
-            params.context.include_declaration,
-        ))
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+        self.respond(
+            &params.text_document_position.text_document.uri,
+            move |snapshot| {
+                Ok(references_for_document(
+                    snapshot,
+                    position,
+                    include_declaration,
+                ))
+            },
+        )
+        .await
     }
 
     async fn document_highlight(
@@ -541,14 +562,12 @@ impl LanguageServer for Backend {
         params: DocumentHighlightParams,
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         // Highlight the wiki occurrences related to the item under the cursor.
-        let Some(snapshot) = self.snapshot(&params.text_document_position_params.text_document.uri)
-        else {
-            return Ok(None);
-        };
-        Ok(document_highlight_for_document(
-            &snapshot,
-            params.text_document_position_params.position,
-        ))
+        let position = params.text_document_position_params.position;
+        self.respond(
+            &params.text_document_position_params.text_document.uri,
+            move |snapshot| Ok(document_highlight_for_document(snapshot, position)),
+        )
+        .await
     }
 
     async fn prepare_rename(
@@ -557,44 +576,40 @@ impl LanguageServer for Backend {
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the occurrence that the editor should select for rename, or explain why the
         // filesystem node a link targets can't be renamed before the user enters a new name.
-        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
-            return Ok(None);
-        };
-        prepare_rename_for_document(
-            &snapshot,
-            params.position,
-            self.supports_file_renames.load(Ordering::Relaxed),
-        )
-        .map_err(JsonRpcError::invalid_params)
+        let position = params.position;
+        let supports_file_renames = self.supports_file_renames.load(Ordering::Relaxed);
+        self.respond(&params.text_document.uri, move |snapshot| {
+            prepare_rename_for_document(snapshot, position, supports_file_renames)
+                .map_err(JsonRpcError::invalid_params)
+        })
+        .await
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        // Rename against the latest snapshot, whose version guards the edit against later changes.
-        let uri = &params.text_document_position.text_document.uri;
+        // Rename the node at the cursor with whichever file operations the client supports,
+        // against the latest snapshot, whose version guards the edit against later changes.
         let position = params.text_document_position.position;
-        let Some(snapshot) = self.snapshot(uri) else {
-            return Ok(None);
+        let new_name = params.new_name;
+        let file_operation_support = FileOperationSupport {
+            rename: self.supports_file_renames.load(Ordering::Relaxed),
+            delete: self.supports_file_deletes.load(Ordering::Relaxed),
         };
-
-        // Rename the node at the cursor with whichever file operations the client supports.
-        rename_for_document(
-            &snapshot,
-            position,
-            &params.new_name,
-            FileOperationSupport {
-                rename: self.supports_file_renames.load(Ordering::Relaxed),
-                delete: self.supports_file_deletes.load(Ordering::Relaxed),
+        self.respond(
+            &params.text_document_position.text_document.uri,
+            move |snapshot| {
+                rename_for_document(snapshot, position, &new_name, file_operation_support)
+                    .map_err(JsonRpcError::invalid_params)
             },
         )
-        .map_err(JsonRpcError::invalid_params)
+        .await
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         // Render the latest synchronized editor snapshot, leaving unparsable contents unchanged.
-        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(formatting_for_document(&snapshot))
+        self.respond(&params.text_document.uri, |snapshot| {
+            Ok(formatting_for_document(snapshot))
+        })
+        .await
     }
 
     async fn document_symbol(
@@ -602,33 +617,33 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         // Describe the nodes in the latest synchronized editor snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(Some(document_symbol_for_document(
-            &snapshot,
-            self.supports_hierarchical_document_symbols
-                .load(Ordering::Relaxed),
-        )))
+        let supports_hierarchy = self
+            .supports_hierarchical_document_symbols
+            .load(Ordering::Relaxed);
+        self.respond(&params.text_document.uri, move |snapshot| {
+            Ok(Some(document_symbol_for_document(
+                snapshot,
+                supports_hierarchy,
+            )))
+        })
+        .await
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         // Offer fixes for the latest synchronized editor snapshot.
-        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(code_action_for_document(
-            &snapshot,
-            &params.context.diagnostics,
-        ))
+        let diagnostics = params.context.diagnostics;
+        self.respond(&params.text_document.uri, move |snapshot| {
+            Ok(code_action_for_document(snapshot, &diagnostics))
+        })
+        .await
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         // Make the filesystem links in the latest synchronized editor snapshot clickable.
-        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
-            return Ok(None);
-        };
-        Ok(document_link_for_document(&snapshot))
+        self.respond(&params.text_document.uri, |snapshot| {
+            Ok(document_link_for_document(snapshot))
+        })
+        .await
     }
 }
 
