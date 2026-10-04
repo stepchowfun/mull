@@ -1002,15 +1002,8 @@ fn filesystem_link_completions(
 // Identify the source range a completion of the text link at the cursor should replace, using only
 // the cursor's line so completion doesn't wait for the wiki to be parsed.
 fn text_link_context(source_contents: &str, byte_offset: usize) -> Option<SourceRange> {
-    // Find the link containing the cursor. A cursor right before a closed link's opening delimiter
-    // is also considered to be in that link.
-    let delimiters = link_delimiters_at(source_contents, byte_offset).or_else(|| {
-        source_contents[byte_offset..]
-            .starts_with('[')
-            .then(|| link_delimiters_at(source_contents, byte_offset + '['.len_utf8()))
-            .flatten()
-            .filter(|delimiters| delimiters.opening == byte_offset && delimiters.closing.is_some())
-    })?;
+    // Find the link containing the cursor.
+    let delimiters = link_delimiters_at(source_contents, byte_offset)?;
 
     // Decline filesystem links, whose targets start with a prefix after any leading whitespace.
     let target_end = delimiters.closing.unwrap_or(byte_offset);
@@ -2535,15 +2528,11 @@ mod tests {
         assert_eq!(edit.range, link_range);
         assert_eq!(edit.new_text, "[Greeting]");
 
-        // Replace the same link from a cursor before its opening delimiter.
-        let completions =
+        // Offer nothing from a cursor before the link's opening delimiter.
+        assert!(
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .unwrap()
-                .items;
-        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("A completion should replace the link.");
-        };
-        assert_eq!(edit.range, link_range);
+                .is_none(),
+        );
     }
 
     // Complete an unfinished link despite a syntax error elsewhere in the wiki.
@@ -2714,8 +2703,8 @@ mod tests {
         assert_eq!(title_names(second.recent_titles()), vec!["Home", "New"]);
     }
 
-    // Find no link at the end of the document, including right before an unclosed link's opening
-    // delimiter.
+    // Complete a link at the end of the document, but not from before its opening delimiter or
+    // outside of any link.
     #[test]
     fn completions_at_the_end_of_the_document() {
         let source = "# Home\n\n[";
