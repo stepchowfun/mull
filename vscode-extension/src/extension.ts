@@ -183,10 +183,17 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeFoldingRanges = this.changeEmitter.event;
 
-  // Remember each wiki's nodes and focus as of the last time the editor requested folds, and the
-  // first lines of the folds last collapsed in its active editor.
+  // Remember each wiki's nodes and focus as of the last time the editor requested folds, the first
+  // lines of the folds last collapsed in its active editor, and whether that editor may not have
+  // them.
   private readonly states = new Map<string, { nodes: vscode.Range[]; focus: Focus | undefined }>();
-  private readonly collapsedStartLines = new Map<string, string>();
+  private readonly collapsedStartLines = new Map<string, number[]>();
+  private readonly uncollapsed = new Set<string>();
+
+  // Determine whether the user wants everything outside the focused node folded.
+  private static isEnabled(): boolean {
+    return vscode.workspace.getConfiguration('mull').get('foldOtherNodes', true);
+  }
 
   // Fold around the node containing the cursor of an editor showing the wiki, preferring the active
   // editor. The editor requests folds again after every edit, which keeps them current.
@@ -200,24 +207,32 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
     }
     const key = document.uri.toString();
     const nodes = await nodeRanges(document);
-    const focus = focusAt(nodes, editor.selection.active, document.lineCount);
+    const focus = NodeFocus.isEnabled()
+      ? focusAt(nodes, editor.selection.active, document.lineCount)
+      : undefined;
     this.states.set(key, { nodes, focus });
 
-    // Collapse new folds in the active editor once it has them, then discard any folds it kept
-    // because they were collapsed when they stopped being provided. Fold commands reveal the cursor,
-    // so they're skipped when the folds haven't moved, as when the editor requests them again
-    // without an edit, which would otherwise interrupt scrolling. Commands issued after the folds
-    // are returned wait for the editor to apply them.
+    // Collapse the new folds in the active editor once it has them, then unfold the old ones and
+    // discard any it kept because they were collapsed when they stopped being provided. Collapsing
+    // first keeps old folds within the new ones from showing in between. Fold commands reveal the
+    // cursor, so they're skipped when the folds haven't moved, as when the editor requests them
+    // again without an edit, which would otherwise interrupt scrolling. Commands issued after the
+    // folds are returned wait for the editor to apply them.
     const folds =
       focus === undefined ? [] : [focus.before, focus.after].filter((fold) => fold !== undefined);
     const startLines = folds.map((fold) => fold.start);
+    const oldStartLines = this.collapsedStartLines.get(key) ?? [];
     if (
       editor === vscode.window.activeTextEditor &&
-      this.collapsedStartLines.get(key) !== startLines.join()
+      (this.uncollapsed.delete(key) || oldStartLines.join() !== startLines.join())
     ) {
-      this.collapsedStartLines.set(key, startLines.join());
+      this.collapsedStartLines.set(key, startLines);
       setTimeout(async () => {
         await setFolded(true, startLines);
+        await setFolded(
+          false,
+          oldStartLines.filter((line) => !startLines.includes(line)),
+        );
         await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
       }, 0);
     }
@@ -227,8 +242,8 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   // Fold around another node when the cursor leaves the focused one, as when navigation or Find
   // moves it into folded text, which the editor unfolds to reveal it.
   public async refocus(editor: vscode.TextEditor | undefined): Promise<void> {
-    // Do nothing while the cursor stays in the focused node.
-    if (editor === undefined || editor.document.languageId !== 'mull') {
+    // Do nothing while the cursor stays in the focused node or folding is off.
+    if (editor === undefined || editor.document.languageId !== 'mull' || !NodeFocus.isEnabled()) {
       return;
     }
     const state = this.states.get(editor.document.uri.toString());
@@ -266,7 +281,14 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   // Collapse the folds again when a wiki's editor becomes active, since it may not have them.
   public activate(editor: vscode.TextEditor | undefined): void {
     if (editor !== undefined && editor.document.languageId === 'mull') {
-      this.collapsedStartLines.delete(editor.document.uri.toString());
+      this.uncollapsed.add(editor.document.uri.toString());
+      this.changeEmitter.fire();
+    }
+  }
+
+  // Add or remove the folds when the user turns folding on or off.
+  public configure(event: vscode.ConfigurationChangeEvent): void {
+    if (event.affectsConfiguration('mull.foldOtherNodes')) {
       this.changeEmitter.fire();
     }
   }
@@ -308,6 +330,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       nodeFocus.activate(editor);
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      nodeFocus.configure(event);
     }),
   );
 
