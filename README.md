@@ -79,6 +79,7 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 - Outline view
 - Prose-friendly word wrapping
 - Reference search (backlinks)
+- Scrolling that snaps back to the current node
 - Syntax highlighting
 
 ### Keyboard shortcuts

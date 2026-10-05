@@ -22,6 +22,18 @@ const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
 const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
 const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
 
+// Wait this long after the view stops moving before settling it onto the current node. Scrolling
+// with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
+// outlast the gaps between those changes, which would otherwise settle the view while it's still
+// being scrolled, yet short enough that settling feels like a response to the scrolling.
+const SETTLE_DELAY_MILLISECONDS = 150;
+
+// When settling, aim this many rows inside the allowance for other nodes. Rows are counted as the
+// fewest that lines could take, and the editor's wrapping at word boundaries usually adds a row or
+// so, so aiming at the allowance itself tends to land just outside it and settle again in a second,
+// small step. Two rows absorbed that shortfall in testing.
+const SETTLE_SLACK_ROWS = 2;
+
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
@@ -158,43 +170,126 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
+// Split text into characters as they appear, for counting the columns a line takes.
+const graphemeSegmenter = new Intl.Segmenter();
+
+// Find the column at which an editor wraps a document's lines, if it's known. Bounded wrapping
+// wraps at that column or at the edge of a narrower view, so it's at most that column.
+function wrappingColumn(document: vscode.TextDocument): number | undefined {
+  const configuration = vscode.workspace.getConfiguration('editor', document);
+  const wordWrap = configuration.get<string>('wordWrap');
+  return wordWrap === 'bounded' || wordWrap === 'wordWrapColumn'
+    ? configuration.get<number>('wordWrapColumn')
+    : undefined;
+}
+
+// Find the fewest rows that some lines could take on screen. The first and last lines may be
+// counted from or to a character, for a view that begins or ends partway through a wrapped line,
+// since counting all of such a line would overcount the rows in view. Each character takes at least
+// a column, and wrapping at word boundaries or at the edge of a narrower view only adds rows, so
+// each line takes at least its characters divided by the wrapping column, rounded up, and at least
+// a row. Without a known wrapping column, each line is counted as a row.
+function minimumRowsOfLines(
+  document: vscode.TextDocument,
+  wrapColumn: number | undefined,
+  firstLine: number,
+  lastLine: number,
+  from = 0,
+  to?: number,
+): number {
+  let rows = 0;
+  for (let line = firstLine; line <= lastLine; line += 1) {
+    const text = document
+      .lineAt(line)
+      .text.slice(line === firstLine ? from : 0, line === lastLine ? to : undefined);
+    const characters = [...graphemeSegmenter.segment(text)].length;
+    rows += wrapColumn === undefined ? 1 : Math.max(1, Math.ceil(characters / wrapColumn));
+  }
+  return rows;
+}
+
+// Find how many rows the editor keeps in view around the cursor when the cursor moves: the larger
+// of the configured surrounding lines and the most lines sticky scroll shows, if it's enabled. The
+// fallbacks are the editor's defaults. The editor also caps this at half the view, which isn't
+// known here, so this may be more than the editor keeps in view, but never less.
+function cursorSurroundingRows(document: vscode.TextDocument): number {
+  const configuration = vscode.workspace.getConfiguration('editor', document);
+  return Math.max(
+    configuration.get<number>('cursorSurroundingLines', 0),
+    configuration.get<boolean>('stickyScroll.enabled', true)
+      ? configuration.get<number>('stickyScroll.maxLineCount', 5)
+      : 0,
+  );
+}
+
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
-// the preview in the references view, have no view column, and aren't dimmed.
+// the preview in the references view, have no view column, and are left alone.
 function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
   return (
     editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
   );
 }
 
-// This dims everything outside the node containing the cursor in each main editor showing a wiki,
-// so the node being edited stands out. Blank lines at the end of the node aren't dimmed.
-class NodeDimmer implements vscode.Disposable {
-  // Draw dimmed text with reduced opacity.
+// This keeps the node containing the cursor, the current node, in focus in each main editor showing
+// a wiki. It dims everything outside the current node, and once the view stops moving, it settles
+// the view back toward the current node, like a rubber band, if the view shows too much of the
+// nodes before or after it.
+//
+// The editor gives extensions little control over scrolling, which shapes how settling works:
+//
+// - Settling happens after the view stops moving, since there's no way to limit or intercept
+//   scrolling, only to observe it after the fact.
+// - The view may show as many rows of other nodes as the editor keeps in view around the cursor,
+//   the allowance. The editor scrolls that far on its own when the cursor nears the current node's
+//   edge, and settling within the allowance would fight it.
+// - Settling scrolls back only the rows beyond the allowance, so crossing it isn't abrupt.
+// - Revealing a range pads it with as many rows as the allowance, so settling scrolls by lines or
+//   rows instead, with the `editorScroll` command, which acts on the focused editor. So only the
+//   active editor settles.
+// - The visible ranges are in lines, but the view is in rows, since lines can wrap. Settling counts
+//   the fewest rows lines could take, which errs toward settling too little rather than too much,
+//   so it never scrolls past the current node's edge.
+class NodeFocus implements vscode.Disposable {
+  // Dim other nodes enough for the current node to stand out, while keeping them readable.
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
     opacity: '0.5',
   });
 
-  // Remember each wiki's nodes, which are refreshed after every edit.
+  // Remember each wiki's nodes, which are found again after every edit.
   private readonly nodes = new Map<string, vscode.Range[]>();
 
-  // Determine whether the user wants everything outside the current node dimmed.
-  private static isEnabled(): boolean {
+  // Remember each editor's pending settling, which is postponed while its view keeps moving.
+  private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
+
+  // Remember the first line of each editor's current node, to notice when the cursor moves to
+  // another node. An editor that hasn't been seen yet has no entry, while one whose cursor is
+  // before every node has an undefined entry.
+  private readonly currentNodeLines = new Map<vscode.TextEditor, number | undefined>();
+
+  // Determine whether the user wants other nodes dimmed.
+  private static dimsOtherNodes(): boolean {
     return vscode.workspace.getConfiguration('mull').get('dimOtherNodes', true);
   }
 
-  // Dim around the cursor of an editor, using the nodes last found in its wiki.
+  // Determine whether the user wants the view to settle back toward the current node.
+  private static snapsBackToCurrentNode(): boolean {
+    return vscode.workspace.getConfiguration('mull').get('snapBackToCurrentNode', true);
+  }
+
+  // Dim around an editor's current node, using the nodes last found in its wiki. Blank lines at the
+  // end of the current node aren't dimmed, since they belong to it.
   public dim(editor: vscode.TextEditor): void {
-    // Find the node containing the cursor and the node after it.
+    // Find the current node and the node after it.
     const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
     const cursor = editor.selection.active;
-    const node = NodeDimmer.isEnabled() ? nodeAt(nodes, cursor) : undefined;
+    const node = NodeFocus.dimsOtherNodes() ? nodeAt(nodes, cursor) : undefined;
     if (node === undefined) {
       editor.setDecorations(this.decorationType, []);
       return;
     }
     const nextNode = nodes.find((range) => range.start.isAfter(cursor));
 
-    // Dim the lines before the node, and those from the next node to the end of the wiki.
+    // Dim the lines before the current node, and those from the next node to the end of the wiki.
     const documentEnd = editor.document.lineAt(editor.document.lineCount - 1).range.end;
     editor.setDecorations(
       this.decorationType,
@@ -229,14 +324,123 @@ class NodeDimmer implements vscode.Disposable {
     await Promise.all([...documents].map(async (document) => this.refresh(document)));
   }
 
+  // Settle an editor's view when the cursor moves to another node, as when clicking a dimmed node,
+  // which pulls the new current node into view. The first cursor position seen in an editor is only
+  // remembered, so opening a wiki doesn't move its view.
+  public followCursor(editor: vscode.TextEditor): void {
+    const node = nodeAt(
+      this.nodes.get(editor.document.uri.toString()) ?? [],
+      editor.selection.active,
+    );
+    const line = node === undefined ? undefined : node.start.line;
+    const seen = this.currentNodeLines.has(editor);
+    const previousLine = this.currentNodeLines.get(editor);
+    this.currentNodeLines.set(editor, line);
+    if (seen && line !== previousLine) {
+      this.scheduleSettle(editor);
+    }
+  }
+
+  // Settle an editor's view once it stops moving, postponing any pending settling.
+  public scheduleSettle(editor: vscode.TextEditor): void {
+    clearTimeout(this.settleTimers.get(editor));
+    this.settleTimers.set(
+      editor,
+      setTimeout(async () => {
+        this.settleTimers.delete(editor);
+        await this.settle(editor);
+      }, SETTLE_DELAY_MILLISECONDS),
+    );
+  }
+
+  // Scroll the view back toward the current node if it shows more rows of the node before it than
+  // the allowance, or more rows of the node after it while the current node's top is out of view.
+  // It scrolls back to show the target number of rows of that node, which is a little inside the
+  // allowance. See the class's description for why it works this way.
+  private async settle(editor: vscode.TextEditor): Promise<void> {
+    // Find the current node and the lines in view, from the first completely visible character to
+    // the last one. Only the active editor can be scrolled without padding.
+    const node = nodeAt(
+      this.nodes.get(editor.document.uri.toString()) ?? [],
+      editor.selection.active,
+    );
+    const firstVisibleRange = editor.visibleRanges.at(0);
+    const lastVisibleRange = editor.visibleRanges.at(-1);
+    if (
+      !NodeFocus.snapsBackToCurrentNode() ||
+      editor !== vscode.window.activeTextEditor ||
+      node === undefined ||
+      firstVisibleRange === undefined ||
+      lastVisibleRange === undefined
+    ) {
+      return;
+    }
+    const firstVisible = firstVisibleRange.start;
+    const lastVisible = lastVisibleRange.end;
+
+    // Count the rows in view before and after the current node.
+    const wrapColumn = wrappingColumn(editor.document);
+    const rows = (firstLine: number, lastLine: number, from?: number, to?: number): number =>
+      minimumRowsOfLines(editor.document, wrapColumn, firstLine, lastLine, from, to);
+    const rowsBefore =
+      firstVisible.line < node.start.line
+        ? rows(firstVisible.line, node.start.line - 1, firstVisible.character)
+        : 0;
+    const rowsAfter =
+      lastVisible.line > node.end.line
+        ? rows(node.end.line + 1, lastVisible.line, 0, lastVisible.character)
+        : 0;
+    const allowance = cursorSurroundingRows(editor.document);
+    const target = Math.max(allowance - SETTLE_SLACK_ROWS, 0);
+
+    // Scroll down by the fewest lines that leave no more than the target number of rows of the node
+    // before the current one. The editor counts these lines from the first completely visible one
+    // and aligns them exactly, so scrolling down by a line puts the next line at the top. The first
+    // visible line may be only partly in view, so scrolling starts at the line after it.
+    if (rowsBefore > allowance) {
+      let topLine = firstVisible.line + 1;
+      while (topLine < node.start.line && rows(topLine, node.start.line - 1) > target) {
+        topLine += 1;
+      }
+      await vscode.commands.executeCommand('editorScroll', {
+        to: 'down',
+        by: 'line',
+        value: topLine - firstVisible.line,
+      });
+      return;
+    }
+
+    // Scroll up by the rows of the node after the current one beyond the target. This scrolls by
+    // rows rather than lines, since the editor would count lines at the top of the view, where the
+    // current node's wrapped lines can take several rows each. Those rows are counted as the fewest
+    // the lines could take, so the current node's end isn't passed, and they're capped at the
+    // fewest rows the current node's text before the view could take, so its top isn't passed
+    // either. A current node whose top is in view isn't scrolled up, since that would only bring
+    // the node before it into view.
+    if (firstVisible.line > node.start.line && rowsAfter > allowance) {
+      const rowsHidden =
+        firstVisible.character > 0
+          ? rows(node.start.line, firstVisible.line, 0, firstVisible.character)
+          : rows(node.start.line, firstVisible.line - 1);
+      await vscode.commands.executeCommand('editorScroll', {
+        to: 'up',
+        by: 'wrappedLine',
+        value: Math.min(rowsAfter - target, rowsHidden),
+      });
+    }
+  }
+
   // Forget the nodes of a wiki that's no longer open.
   public forget(document: vscode.TextDocument): void {
     this.nodes.delete(document.uri.toString());
   }
 
-  // Release the decoration type, which removes the dimming.
+  // Release the decoration type, which removes the dimming, and cancel any pending settling.
   public dispose(): void {
     this.decorationType.dispose();
+    for (const timer of this.settleTimers.values()) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -261,28 +465,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
-  // Dim everything outside the node containing the cursor, following the cursor, edits, the visible
-  // editors, and the setting.
-  const nodeDimmer = new NodeDimmer();
+  // Keep the node containing the cursor in focus, following the cursor, edits, scrolling, the
+  // visible editors, and the settings.
+  const nodeFocus = new NodeFocus();
   context.subscriptions.push(
-    nodeDimmer,
+    nodeFocus,
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
-        nodeDimmer.dim(event.textEditor);
+        nodeFocus.dim(event.textEditor);
+        nodeFocus.followCursor(event.textEditor);
       }
     }),
     vscode.workspace.onDidChangeTextDocument(async (event) => {
       if (event.document.languageId === 'mull') {
-        await nodeDimmer.refresh(event.document);
+        await nodeFocus.refresh(event.document);
       }
     }),
-    vscode.window.onDidChangeVisibleTextEditors(async () => nodeDimmer.refreshVisible()),
+    vscode.window.onDidChangeVisibleTextEditors(async () => nodeFocus.refreshVisible()),
+    vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
+      if (isMainWikiEditor(event.textEditor)) {
+        nodeFocus.scheduleSettle(event.textEditor);
+      }
+    }),
     vscode.workspace.onDidCloseTextDocument((document) => {
-      nodeDimmer.forget(document);
+      nodeFocus.forget(document);
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (event.affectsConfiguration('mull.dimOtherNodes')) {
-        await nodeDimmer.refreshVisible();
+        await nodeFocus.refreshVisible();
       }
     }),
   );
@@ -339,7 +549,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await client.start();
 
   // Find the nodes of the wikis already shown, which needs the language server.
-  await nodeDimmer.refreshVisible();
+  await nodeFocus.refreshVisible();
 }
 
 // Shut down the language client and its server process with the extension.
