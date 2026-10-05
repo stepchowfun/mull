@@ -140,7 +140,7 @@ fn validate_text_links(
                 .map(|node| {
                     Error::new(
                         &format!(
-                            "There's no way to get to {} starting from {}.",
+                            "Node {} can't be reached by following links from {}.",
                             node.title.code_str(),
                             HOME_TITLE.code_str(),
                         ),
@@ -1057,7 +1057,7 @@ mod tests {
         assert!(contains_error(&errors, "Node `Missing` not found."));
         assert!(contains_error(
             &errors,
-            "There's no way to get to `Orphan` starting from `Home`.",
+            "Node `Orphan` can't be reached by following links from `Home`.",
         ));
         assert!(contains_error(&errors, "`missing.txt` not found."));
         assert!(contains_error(
@@ -1101,11 +1101,11 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert!(contains_error(
             &errors,
-            "There's no way to get to `Alpha` starting from `Home`.",
+            "Node `Alpha` can't be reached by following links from `Home`.",
         ));
         assert!(contains_error(
             &errors,
-            "There's no way to get to `Zulu` starting from `Home`.",
+            "Node `Zulu` can't be reached by following links from `Home`.",
         ));
     }
 
