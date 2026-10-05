@@ -2052,12 +2052,12 @@ fn node_at(
     byte_offset: usize,
     link_extent: LinkExtent,
 ) -> Option<(&TextNode, SourceRange)> {
-    // Prefer a declaration, which spans its title line from the `#` through the title, though its
-    // title is the only range it contributes. Navigating to a node leaves the cursor before the
-    // `#`.
+    // Prefer a declaration, which spans its title line from the `#` through the end of the title,
+    // though its title is the only range it contributes. Navigating to a node leaves the cursor
+    // before the `#`.
     let wiki = snapshot.wiki();
     if let Some(node) = wiki.text_nodes.values().find(|node| {
-        node.source_range.start <= byte_offset && byte_offset < node.title_source_range.end
+        node.source_range.start <= byte_offset && byte_offset <= node.title_source_range.end
     }) {
         return Some((node, node.title_source_range));
     }
@@ -3210,12 +3210,12 @@ mod tests {
         );
     }
 
-    // Rename a node from the start of its title line, where navigating to it leaves the cursor, or
-    // from the space before its title.
+    // Rename a node from the start of its title line, where navigating to it leaves the cursor,
+    // from the space before its title, or from the end of its title.
     #[test]
-    fn rename_from_the_start_of_titles() {
+    fn rename_from_the_edges_of_titles() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
-        for column in [0, 1] {
+        for column in [0, 1, 10] {
             assert_eq!(
                 prepare_rename_for_document(
                     &snapshot(&untitled_uri(), source),
