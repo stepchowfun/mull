@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.20] - 2026-10-05
+
+### Added
+- After scrolling past the node containing the cursor, the VS Code extension now eases the view back onto it once the scrolling stops, like a rubber band. It also pulls a node into view when the cursor moves to it, as when clicking a dimmed node. The `mull.snapBackToCurrentNode` setting turns this off.
+
+### Changed
+- The VS Code extension now scrolls Mull files smoothly by default.
+
 ## [0.36.19] - 2026-10-04
 
 ### Changed
