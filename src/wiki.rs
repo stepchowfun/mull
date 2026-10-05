@@ -12,9 +12,19 @@ use std::{
 // starts with `/` is a filesystem link, relative to the wiki's directory, which names a directory
 // if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
-pub const TITLE_MARKER: &str = "#";
+const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
+
+// Find the text after a title line's marker, which is a title marker followed by either a space or
+// the end of the line. A line that isn't a title line has none.
+pub fn title_line_text(line: &str) -> Option<&str> {
+    if line == TITLE_MARKER {
+        Some("")
+    } else {
+        line.strip_prefix(TITLE_PREFIX)
+    }
+}
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // This title identifies the root of every wiki's text-link graph.
@@ -70,7 +80,7 @@ pub struct TextNode {
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete node without leading or trailing whitespace
-    pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
+    pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
     pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
 }
 
@@ -472,12 +482,22 @@ fn render_markdown_literal(text: &str) -> Markdown {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentText, FilesystemTarget, Link, TextNode, Wiki};
+    use super::{ContentText, FilesystemTarget, Link, TextNode, Wiki, title_line_text};
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
     // Use a harmless range when testing rendering, which doesn't inspect source locations.
     const SOURCE_RANGE: SourceRange = SourceRange { start: 0, end: 0 };
+
+    // Recognize a title marker followed by a space or the end of the line, but not other headings.
+    #[test]
+    fn title_lines() {
+        assert_eq!(title_line_text("#"), Some(""));
+        assert_eq!(title_line_text("# Greeting  "), Some("Greeting  "));
+        assert_eq!(title_line_text("#Greeting"), None);
+        assert_eq!(title_line_text("## Greeting"), None);
+        assert_eq!(title_line_text(""), None);
+    }
 
     // Ensure nodes are rendered in the wiki's source format.
     #[test]
