@@ -122,11 +122,6 @@
           "default": "mull",
           "scope": "machine-overridable",
           "description": "Path to the Mull executable used to start the language server."
-        },
-        "mull.foldOtherNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "Fold everything except the current node."
         }
       }
     },
@@ -139,7 +134,6 @@
         "editor.rulers": [
           80
         ],
-        "editor.showFoldingControls": "never",
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
       }
