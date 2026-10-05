@@ -9,8 +9,8 @@ use crate::{
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
     validator,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki, rendering_order_key, unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_PREFIX, TextNode, Wiki,
+        rendering_order_key, title_line_text, unescaped_characters,
     },
     wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
@@ -841,7 +841,7 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     let line = line.strip_suffix('\r').unwrap_or(line);
 
     // Ignore titles, which can't contain links.
-    if line == TITLE_MARKER || line.starts_with(TITLE_PREFIX) {
+    if title_line_text(line).is_some() {
         return None;
     }
 

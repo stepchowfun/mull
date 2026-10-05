@@ -4,8 +4,8 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_MARKER, TITLE_PREFIX,
-        TextNode, Wiki, unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TextNode, Wiki,
+        title_line_text, unescaped_characters,
     },
 };
 use std::{iter, path::Path};
@@ -53,13 +53,8 @@ pub fn parse(
             end: line_start + line.len(),
         };
 
-        // Recognize a title marker followed by either a space or the end of the line.
-        let raw_title = if line == TITLE_MARKER {
-            Some("")
-        } else {
-            line.strip_prefix(TITLE_PREFIX)
-        };
-        if let Some(raw_title) = raw_title {
+        // Start a new region at each title line.
+        if let Some(raw_title) = title_line_text(line) {
             // Treat invalid titles as structural boundaries for subsequent content.
             has_seen_title_marker = true;
 
