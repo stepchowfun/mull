@@ -158,6 +158,88 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
+// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
+// the preview in the references view, have no view column, and aren't dimmed.
+function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
+  return (
+    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
+  );
+}
+
+// This dims everything outside the node containing the cursor in each main editor showing a wiki,
+// so the node being edited stands out. Blank lines at the end of the node aren't dimmed.
+class NodeDimmer implements vscode.Disposable {
+  // Draw dimmed text with reduced opacity.
+  private readonly decorationType = vscode.window.createTextEditorDecorationType({
+    opacity: '0.5',
+  });
+
+  // Remember each wiki's nodes, which are refreshed after every edit.
+  private readonly nodes = new Map<string, vscode.Range[]>();
+
+  // Determine whether the user wants everything outside the current node dimmed.
+  private static isEnabled(): boolean {
+    return vscode.workspace.getConfiguration('mull').get('dimOtherNodes', true);
+  }
+
+  // Dim around the cursor of an editor, using the nodes last found in its wiki.
+  public dim(editor: vscode.TextEditor): void {
+    // Find the node containing the cursor and the node after it.
+    const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
+    const cursor = editor.selection.active;
+    const node = NodeDimmer.isEnabled() ? nodeAt(nodes, cursor) : undefined;
+    if (node === undefined) {
+      editor.setDecorations(this.decorationType, []);
+      return;
+    }
+    const nextNode = nodes.find((range) => range.start.isAfter(cursor));
+
+    // Dim the lines before the node, and those from the next node to the end of the wiki.
+    const documentEnd = editor.document.lineAt(editor.document.lineCount - 1).range.end;
+    editor.setDecorations(
+      this.decorationType,
+      [
+        new vscode.Range(new vscode.Position(0, 0), node.start),
+        ...(nextNode === undefined ? [] : [new vscode.Range(nextNode.start, documentEnd)]),
+      ].filter((range) => !range.isEmpty),
+    );
+  }
+
+  // Find a wiki's nodes again and dim its editors accordingly. A result is discarded if the wiki
+  // changed while it was being found, since a later refresh will replace it.
+  public async refresh(document: vscode.TextDocument): Promise<void> {
+    const { version } = document;
+    const nodes = await nodeRanges(document);
+    if (document.version !== version) {
+      return;
+    }
+    this.nodes.set(document.uri.toString(), nodes);
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (isMainWikiEditor(editor) && editor.document === document) {
+        this.dim(editor);
+      }
+    }
+  }
+
+  // Find the nodes of every wiki shown in a main editor.
+  public async refreshVisible(): Promise<void> {
+    const documents = new Set(
+      vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
+    );
+    await Promise.all([...documents].map(async (document) => this.refresh(document)));
+  }
+
+  // Forget the nodes of a wiki that's no longer open.
+  public forget(document: vscode.TextDocument): void {
+    this.nodes.delete(document.uri.toString());
+  }
+
+  // Release the decoration type, which removes the dimming.
+  public dispose(): void {
+    this.decorationType.dispose();
+  }
+}
+
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Expose the navigation commands that the language server's responses refer to.
@@ -178,6 +260,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand(command, async () => moveToNodeBoundary(boundary, select)),
     );
   }
+
+  // Dim everything outside the node containing the cursor, following the cursor, edits, the visible
+  // editors, and the setting.
+  const nodeDimmer = new NodeDimmer();
+  context.subscriptions.push(
+    nodeDimmer,
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      if (isMainWikiEditor(event.textEditor)) {
+        nodeDimmer.dim(event.textEditor);
+      }
+    }),
+    vscode.workspace.onDidChangeTextDocument(async (event) => {
+      if (event.document.languageId === 'mull') {
+        await nodeDimmer.refresh(event.document);
+      }
+    }),
+    vscode.window.onDidChangeVisibleTextEditors(async () => nodeDimmer.refreshVisible()),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      nodeDimmer.forget(document);
+    }),
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration('mull.dimOtherNodes')) {
+        await nodeDimmer.refreshVisible();
+      }
+    }),
+  );
 
   // Resolve the configured executable before constructing the server process.
   const executablePath = vscode.workspace.getConfiguration('mull').get('executablePath', 'mull');
@@ -229,6 +337,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
+
+  // Find the nodes of the wikis already shown, which needs the language server.
+  await nodeDimmer.refreshVisible();
 }
 
 // Shut down the language client and its server process with the extension.

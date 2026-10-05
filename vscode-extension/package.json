@@ -122,6 +122,11 @@
           "default": "mull",
           "scope": "machine-overridable",
           "description": "Path to the Mull executable used to start the language server."
+        },
+        "mull.dimOtherNodes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Dim everything except the current node."
         }
       }
     },
