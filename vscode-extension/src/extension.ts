@@ -207,6 +207,15 @@ async function setFolded(folded: boolean, startLines: number[]): Promise<void> {
   }
 }
 
+// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
+// the preview in the references view, have no view column, and their cursors don't determine the
+// focus. One becomes the active editor while it has focus, and fold commands then act on it.
+function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
+  return (
+    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
+  );
+}
+
 // This folds everything outside the node containing the cursor, so the node being edited appears to
 // be the whole document.
 class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
@@ -226,12 +235,12 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
     return vscode.workspace.getConfiguration('mull').get('foldOtherNodes', true);
   }
 
-  // Fold around the node containing the cursor of an editor showing the wiki, preferring the active
-  // editor. The editor requests folds again after every edit, which keeps them current.
+  // Fold around the node containing the cursor of a main editor showing the wiki, preferring the
+  // active editor. The editor requests folds again after every edit, which keeps them current.
   public async provideFoldingRanges(document: vscode.TextDocument): Promise<vscode.FoldingRange[]> {
     // Find the focus, if the cursor is in a node.
     const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
-      (candidate) => candidate !== undefined && candidate.document === document,
+      (candidate) => isMainWikiEditor(candidate) && candidate.document === document,
     );
     if (editor === undefined) {
       return [];
@@ -272,7 +281,7 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   // moves it into folded text, which the editor unfolds to reveal it.
   public async refocus(editor: vscode.TextEditor | undefined): Promise<void> {
     // Do nothing while the cursor stays in the focused node or folding is off.
-    if (editor === undefined || editor.document.languageId !== 'mull' || !NodeFocus.isEnabled()) {
+    if (!isMainWikiEditor(editor) || !NodeFocus.isEnabled()) {
       return;
     }
     const state = this.states.get(editor.document.uri.toString());
@@ -309,7 +318,7 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
 
   // Collapse the folds again when a wiki's editor becomes active, since it may not have them.
   public activate(editor: vscode.TextEditor | undefined): void {
-    if (editor !== undefined && editor.document.languageId === 'mull') {
+    if (isMainWikiEditor(editor)) {
       this.uncollapsed.add(editor.document.uri.toString());
       this.changeEmitter.fire();
     }
@@ -323,7 +332,7 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
       return;
     }
     const editor = vscode.window.activeTextEditor;
-    if (!NodeFocus.isEnabled() && editor !== undefined && editor.document.languageId === 'mull') {
+    if (!NodeFocus.isEnabled() && isMainWikiEditor(editor)) {
       await setFolded(false, this.collapsedStartLines.get(editor.document.uri.toString()) ?? []);
     }
     this.changeEmitter.fire();
