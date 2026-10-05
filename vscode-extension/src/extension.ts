@@ -328,45 +328,65 @@ class NodeDimmer implements vscode.Disposable {
     ) {
       return;
     }
-    const firstVisibleLine = firstVisibleRange.start.line;
-    const lastVisibleLine = lastVisibleRange.end.line;
+    const firstVisible = firstVisibleRange.start;
+    const lastVisible = lastVisibleRange.end;
 
-    // Count the rows that lines take at least, which errs toward not settling, and find how many
-    // rows of other nodes the view may show.
+    // Count the rows that some lines take at least, which errs toward not settling. The first and
+    // last lines may be counted from or to a character, since the view can begin or end partway
+    // through a wrapped line, and counting all of it would overcount the rows in view.
     const column = wrappingColumn(editor.document);
-    const rows = (start: number, end: number): number => {
+    const rows = (firstLine: number, lastLine: number, from = 0, to?: number): number => {
       let total = 0;
-      for (let line = start; line < end; line += 1) {
-        total += minimumRows(editor.document.lineAt(line).text, column);
+      for (let line = firstLine; line <= lastLine; line += 1) {
+        const text = editor.document.lineAt(line).text;
+        total += minimumRows(
+          text.slice(line === firstLine ? from : 0, line === lastLine ? to : undefined),
+          column,
+        );
       }
       return total;
     };
+
+    // Count the rows in view before and after the node, and find how many rows of other nodes the
+    // view may show.
+    const rowsBefore =
+      firstVisible.line < node.start.line
+        ? rows(firstVisible.line, node.start.line - 1, firstVisible.character)
+        : 0;
+    const rowsAfter =
+      lastVisible.line > node.end.line
+        ? rows(node.end.line + 1, lastVisible.line, 0, lastVisible.character)
+        : 0;
     const margin = cursorMargin(editor.document);
 
     // Scroll down by the fewest lines that leave no more of the node before it than allowed. The
     // editor counts lines from the first completely visible one and aligns them exactly.
-    if (firstVisibleLine < node.start.line && rows(firstVisibleLine, node.start.line) > margin) {
-      let topLine = firstVisibleLine;
-      while (rows(topLine, node.start.line) > margin) {
+    if (rowsBefore > margin) {
+      let topLine = firstVisible.line + 1;
+      while (topLine < node.start.line && rows(topLine, node.start.line - 1) > margin) {
         topLine += 1;
       }
       await vscode.commands.executeCommand('editorScroll', {
         to: 'down',
         by: 'line',
-        value: topLine - firstVisibleLine,
+        value: topLine - firstVisible.line,
       });
       return;
     }
 
     // Scroll up by the rows the lines after the node take beyond what's allowed. Those lines take
     // at least as many rows as counted, so the node's end isn't passed, nor its top, since the
-    // node's lines before the view take at least as many rows as counted for them.
-    const rowsAfter = rows(node.end.line + 1, lastVisibleLine + 1);
-    if (firstVisibleLine > node.start.line && rowsAfter > margin) {
+    // node's text before the view takes at least as many rows as counted for it.
+    if (firstVisible.line > node.start.line && rowsAfter > margin) {
+      const rowsHidden =
+        firstVisible.character > 0
+          ? rows(node.start.line, firstVisible.line, 0, firstVisible.character)
+          : rows(node.start.line, firstVisible.line - 1);
+      const value = Math.min(rowsAfter - margin, rowsHidden);
       await vscode.commands.executeCommand('editorScroll', {
         to: 'up',
         by: 'wrappedLine',
-        value: Math.min(rowsAfter - margin, rows(node.start.line, firstVisibleLine)),
+        value,
       });
     }
   }
