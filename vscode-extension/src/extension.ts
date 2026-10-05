@@ -22,6 +22,10 @@ const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
 const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
 const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
 
+// This command opens the links to the node containing the cursor, for the backlink lens. It takes no
+// arguments, since VS Code may keep showing a lens after discarding the arguments of its command.
+const SHOW_BACKLINKS_COMMAND = 'mull.showBacklinks';
+
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
@@ -207,12 +211,24 @@ async function setFolded(folded: boolean, startLines: number[]): Promise<void> {
   }
 }
 
+// Determine whether the user wants everything outside the focused node folded.
+function foldsOtherNodes(): boolean {
+  return vscode.workspace.getConfiguration('mull').get('foldOtherNodes', true);
+}
+
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
 // the preview in the references view, have no view column, and their cursors don't determine the
 // focus. One becomes the active editor while it has focus, and fold commands then act on it.
 function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
   return (
     editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
+  );
+}
+
+// Find a main editor showing a document, preferring the active editor.
+function editorShowing(document: vscode.TextDocument): vscode.TextEditor | undefined {
+  return [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
+    (candidate) => isMainWikiEditor(candidate) && candidate.document === document,
   );
 }
 
@@ -230,24 +246,17 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   private readonly collapsedStartLines = new Map<string, number[]>();
   private readonly uncollapsed = new Set<string>();
 
-  // Determine whether the user wants everything outside the focused node folded.
-  private static isEnabled(): boolean {
-    return vscode.workspace.getConfiguration('mull').get('foldOtherNodes', true);
-  }
-
-  // Fold around the node containing the cursor of a main editor showing the wiki, preferring the
-  // active editor. The editor requests folds again after every edit, which keeps them current.
+  // Fold around the node containing the cursor of an editor showing the wiki, preferring the active
+  // editor. The editor requests folds again after every edit, which keeps them current.
   public async provideFoldingRanges(document: vscode.TextDocument): Promise<vscode.FoldingRange[]> {
     // Find the focus, if the cursor is in a node.
-    const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
-      (candidate) => isMainWikiEditor(candidate) && candidate.document === document,
-    );
+    const editor = editorShowing(document);
     if (editor === undefined) {
       return [];
     }
     const key = document.uri.toString();
     const nodes = await nodeRanges(document);
-    const focus = NodeFocus.isEnabled()
+    const focus = foldsOtherNodes()
       ? focusAt(nodes, editor.selection.active, document.lineCount)
       : undefined;
     this.states.set(key, { nodes, focus });
@@ -281,7 +290,7 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
   // moves it into folded text, which the editor unfolds to reveal it.
   public async refocus(editor: vscode.TextEditor | undefined): Promise<void> {
     // Do nothing while the cursor stays in the focused node or folding is off.
-    if (!isMainWikiEditor(editor) || !NodeFocus.isEnabled()) {
+    if (!isMainWikiEditor(editor) || !foldsOtherNodes()) {
       return;
     }
     const state = this.states.get(editor.document.uri.toString());
@@ -332,10 +341,125 @@ class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
       return;
     }
     const editor = vscode.window.activeTextEditor;
-    if (!NodeFocus.isEnabled() && isMainWikiEditor(editor)) {
+    if (!foldsOtherNodes() && isMainWikiEditor(editor)) {
       await setFolded(false, this.collapsedStartLines.get(editor.document.uri.toString()) ?? []);
     }
     this.changeEmitter.fire();
+  }
+
+  // Release the event emitter.
+  public dispose(): void {
+    this.changeEmitter.dispose();
+  }
+}
+
+// This is a code lens over a node's title for its backlinks, which remembers its document.
+class BacklinkLens extends vscode.CodeLens {
+  public readonly uri: vscode.Uri;
+
+  // Place the lens at the start of a node.
+  public constructor(range: vscode.Range, uri: vscode.Uri) {
+    super(range);
+    this.uri = uri;
+  }
+}
+
+// Find the links to a node, which are its references other than its title.
+async function backlinksTo(
+  uri: vscode.Uri,
+  nodeStart: vscode.Position,
+): Promise<vscode.Location[]> {
+  const references =
+    (await vscode.commands.executeCommand<vscode.Location[] | undefined>(
+      'vscode.executeReferenceProvider',
+      uri,
+      nodeStart,
+    )) ?? [];
+  return references.filter(
+    (location) =>
+      location.uri.toString() === uri.toString() && location.range.start.line !== nodeStart.line,
+  );
+}
+
+// Count the links to the node with a lens, which open when the lens is clicked.
+async function resolveBacklinkLens(lens: BacklinkLens): Promise<BacklinkLens> {
+  const count = (await backlinksTo(lens.uri, lens.range.start)).length;
+  lens.command =
+    count === 0
+      ? { title: 'No backlinks', command: '' }
+      : {
+          title: count === 1 ? '1 backlink' : `${count} backlinks`,
+          command: SHOW_BACKLINKS_COMMAND,
+        };
+  return lens;
+}
+
+// Open the links to the node containing the cursor in the references view, using the active main
+// editor showing a wiki, or else a visible one.
+async function showBacklinks(): Promise<void> {
+  const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
+    isMainWikiEditor,
+  );
+  if (editor === undefined) {
+    return;
+  }
+  const node = nodeAt(await nodeRanges(editor.document), editor.selection.active);
+  if (node === undefined) {
+    return;
+  }
+  await vscode.commands.executeCommand(
+    'editor.action.showReferences',
+    editor.document.uri,
+    node.start,
+    await backlinksTo(editor.document.uri, node.start),
+  );
+}
+
+// This shows how many links lead to the node containing the cursor above its title, opening them
+// when clicked. Only that node has a lens, so the lens's command can find it without arguments.
+class BacklinkLenses implements vscode.CodeLensProvider<BacklinkLens>, vscode.Disposable {
+  // Notify the editor that the lens may have moved, so it requests lenses again.
+  private readonly changeEmitter = new vscode.EventEmitter<void>();
+  public readonly onDidChangeCodeLenses = this.changeEmitter.event;
+
+  // Remember each wiki's nodes and the first line of the node with the lens, as of the last time
+  // the editor requested lenses.
+  private readonly states = new Map<
+    string,
+    { nodes: vscode.Range[]; lensLine: number | undefined }
+  >();
+
+  // Place a lens at the start of the node containing the cursor, leaving its counting for when it's
+  // visible.
+  public async provideCodeLenses(document: vscode.TextDocument): Promise<BacklinkLens[]> {
+    const nodes = await nodeRanges(document);
+    const editor = editorShowing(document);
+    const node = editor === undefined ? undefined : nodeAt(nodes, editor.selection.active);
+    this.states.set(document.uri.toString(), {
+      nodes,
+      lensLine: node === undefined ? undefined : node.start.line,
+    });
+    return node === undefined
+      ? []
+      : [new BacklinkLens(new vscode.Range(node.start, node.start), document.uri)];
+  }
+
+  // Count the links when the lens is visible.
+  public readonly resolveCodeLens = resolveBacklinkLens;
+
+  // Move the lens when the cursor moves to another node.
+  public refocus(editor: vscode.TextEditor | undefined): void {
+    if (!isMainWikiEditor(editor)) {
+      return;
+    }
+    const state = this.states.get(editor.document.uri.toString());
+    if (state === undefined) {
+      return;
+    }
+    const node = nodeAt(state.nodes, editor.selection.active);
+    if ((node === undefined ? undefined : node.start.line) !== state.lensLine) {
+      this.changeEmitter.fire();
+    }
   }
 
   // Release the event emitter.
@@ -378,6 +502,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       await nodeFocus.configure(event);
+    }),
+  );
+
+  // Show how many links lead to the node containing the cursor above its title.
+  const backlinkLenses = new BacklinkLenses();
+  context.subscriptions.push(
+    backlinkLenses,
+    vscode.languages.registerCodeLensProvider({ language: 'mull' }, backlinkLenses),
+    vscode.commands.registerCommand(SHOW_BACKLINKS_COMMAND, showBacklinks),
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      backlinkLenses.refocus(event.textEditor);
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      backlinkLenses.refocus(editor);
     }),
   );
 

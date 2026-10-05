@@ -68,6 +68,7 @@ Just as every node must be linked to from the wiki, the same is true of files ne
 
 The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
 
+- Backlink count above the current node's title
 - Clickable links with hover previews
 - Completions for node titles and file paths
 - Diagnostics and quick fixes
