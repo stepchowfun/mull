@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.17] - 2026-10-04
+
+### Added
+- The VS Code extension now shows how many links lead to the node containing the cursor above its title, and clicking the count lists them.
+
+### Fixed
+- In the VS Code extension, clicking in the preview of a references view, such as Find All References opens, no longer folds the preview or moves the folds in the main editor.
+
 ## [0.36.16] - 2026-10-04
 
 ### Fixed
