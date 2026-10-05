@@ -305,11 +305,12 @@ class NodeDimmer implements vscode.Disposable {
     );
   }
 
-  // Scroll the view back onto the node when it shows more of the node before it than the editor
+  // Scroll the view back toward the node when it shows more of the node before it than the editor
   // keeps visible around the cursor, or more of the node after it while the node's top is out of
-  // view. Allowing that much keeps settling from fighting the editor, which may scroll that far to
-  // keep the cursor's surroundings in view. Revealing a range would leave padding around it, so the
-  // view is scrolled by lines instead. Only the active editor can be scrolled this way.
+  // view, until it shows that much. Allowing that much keeps settling from fighting the editor,
+  // which may scroll that far to keep the cursor's surroundings in view, and scrolling back only
+  // the excess keeps it gentle. Revealing a range would leave padding around it, so the view is
+  // scrolled by lines instead. Only the active editor can be scrolled this way.
   private async settle(editor: vscode.TextEditor): Promise<void> {
     // Find the node containing the cursor and the lines in view, which are the completely visible
     // ones.
@@ -342,26 +343,30 @@ class NodeDimmer implements vscode.Disposable {
     };
     const margin = cursorMargin(editor.document);
 
-    // Scroll down to the node's title by lines, which the editor counts from the first completely
-    // visible line and aligns exactly.
+    // Scroll down by the fewest lines that leave no more of the node before it than allowed. The
+    // editor counts lines from the first completely visible one and aligns them exactly.
     if (firstVisibleLine < node.start.line && rows(firstVisibleLine, node.start.line) > margin) {
+      let topLine = firstVisibleLine;
+      while (rows(topLine, node.start.line) > margin) {
+        topLine += 1;
+      }
       await vscode.commands.executeCommand('editorScroll', {
         to: 'down',
         by: 'line',
-        value: node.start.line - firstVisibleLine,
+        value: topLine - firstVisibleLine,
       });
       return;
     }
 
-    // Scroll up by as many rows as the lines after the node take at least, but no more than the
-    // node's lines before the view take at least, so the node's end and top aren't passed. Wrapping
-    // can make this fall short, but the scrolling causes the view to settle again.
+    // Scroll up by the rows the lines after the node take beyond what's allowed. Those lines take
+    // at least as many rows as counted, so the node's end isn't passed, nor its top, since the
+    // node's lines before the view take at least as many rows as counted for them.
     const rowsAfter = rows(node.end.line + 1, lastVisibleLine + 1);
     if (firstVisibleLine > node.start.line && rowsAfter > margin) {
       await vscode.commands.executeCommand('editorScroll', {
         to: 'up',
         by: 'wrappedLine',
-        value: Math.min(rowsAfter, rows(node.start.line, firstVisibleLine)),
+        value: Math.min(rowsAfter - margin, rows(node.start.line, firstVisibleLine)),
       });
     }
   }
