@@ -25,6 +25,11 @@ const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
 // Wait this long after scrolling stops before settling the view back onto the current node.
 const SETTLE_DELAY_MILLISECONDS = 150;
 
+// Settle the view this many rows further than the allowance for the cursor's surroundings requires.
+// Rows are counted as at least as many as lines take, so the view could otherwise land just outside
+// the allowance and settle again.
+const SETTLE_SLACK_ROWS = 2;
+
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
@@ -358,12 +363,13 @@ class NodeDimmer implements vscode.Disposable {
         ? rows(node.end.line + 1, lastVisible.line, 0, lastVisible.character)
         : 0;
     const margin = cursorMargin(editor.document);
+    const target = Math.max(margin - SETTLE_SLACK_ROWS, 0);
 
-    // Scroll down by the fewest lines that leave no more of the node before it than allowed. The
+    // Scroll down by the fewest lines that leave no more of the node before it than the target. The
     // editor counts lines from the first completely visible one and aligns them exactly.
     if (rowsBefore > margin) {
       let topLine = firstVisible.line + 1;
-      while (topLine < node.start.line && rows(topLine, node.start.line - 1) > margin) {
+      while (topLine < node.start.line && rows(topLine, node.start.line - 1) > target) {
         topLine += 1;
       }
       await vscode.commands.executeCommand('editorScroll', {
@@ -374,15 +380,15 @@ class NodeDimmer implements vscode.Disposable {
       return;
     }
 
-    // Scroll up by the rows the lines after the node take beyond what's allowed. Those lines take
-    // at least as many rows as counted, so the node's end isn't passed, nor its top, since the
-    // node's text before the view takes at least as many rows as counted for it.
+    // Scroll up by the rows the lines after the node take beyond the target. Those lines take at
+    // least as many rows as counted, so the node's end isn't passed, nor its top, since the node's
+    // text before the view takes at least as many rows as counted for it.
     if (firstVisible.line > node.start.line && rowsAfter > margin) {
       const rowsHidden =
         firstVisible.character > 0
           ? rows(node.start.line, firstVisible.line, 0, firstVisible.character)
           : rows(node.start.line, firstVisible.line - 1);
-      const value = Math.min(rowsAfter - margin, rowsHidden);
+      const value = Math.min(rowsAfter - target, rowsHidden);
       await vscode.commands.executeCommand('editorScroll', {
         to: 'up',
         by: 'wrappedLine',
