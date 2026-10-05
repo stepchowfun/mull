@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.36.16",
+  "version": "0.36.17",
   "description": "Organize your knowledge.",
   "categories": [
     "Programming Languages"
@@ -123,10 +123,10 @@
           "scope": "machine-overridable",
           "description": "Path to the Mull executable used to start the language server."
         },
-        "mull.foldOtherNodes": {
+        "mull.dimOtherNodes": {
           "type": "boolean",
           "default": true,
-          "description": "Fold everything except the current node."
+          "description": "Dim everything except the current node."
         }
       }
     },
@@ -139,7 +139,6 @@
         "editor.rulers": [
           80
         ],
-        "editor.showFoldingControls": "never",
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80
       }

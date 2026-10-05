@@ -158,189 +158,85 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
-// This describes how to focus on a node: the lines it spans through the line before the next node,
-// and the folds before and after it.
-interface Focus {
-  startLine: number;
-  endLine: number;
-  before: vscode.FoldingRange | undefined;
-  after: vscode.FoldingRange | undefined;
-}
-
-// Make a fold of some lines, if they span more than one line.
-function foldingRange(start: number, end: number): vscode.FoldingRange | undefined {
-  return start < end ? new vscode.FoldingRange(start, end) : undefined;
-}
-
-// Find how to focus on the node containing a position. The folds cover the lines before the node
-// and those from the blank line before the next node. A fold's first line stays visible, so the
-// wiki's first line and that blank line remain on screen, as do blank lines at the end of the node.
-function focusAt(
-  nodes: readonly vscode.Range[],
-  position: vscode.Position,
-  lineCount: number,
-): Focus | undefined {
-  const node = nodeAt(nodes, position);
-  if (node === undefined) {
-    return undefined;
-  }
-  const nextNode = nodes.find((range) => range.start.isAfter(position));
-  return {
-    startLine: node.start.line,
-    endLine: nextNode === undefined ? lineCount - 1 : nextNode.start.line - 1,
-    before: foldingRange(0, node.start.line - 1),
-    after:
-      nextNode === undefined
-        ? undefined
-        : foldingRange(Math.max(node.end.line + 1, nextNode.start.line - 1), lineCount - 1),
-  };
-}
-
-// Fold or unfold exactly the folds starting on some lines of the active editor.
-async function setFolded(folded: boolean, startLines: number[]): Promise<void> {
-  if (startLines.length > 0) {
-    await vscode.commands.executeCommand(folded ? 'editor.fold' : 'editor.unfold', {
-      levels: 1,
-      direction: 'down',
-      selectionLines: startLines,
-    });
-  }
-}
-
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
-// the preview in the references view, have no view column, and their cursors don't determine the
-// focus. One becomes the active editor while it has focus, and fold commands then act on it.
+// the preview in the references view, have no view column, and aren't dimmed.
 function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
   return (
     editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
   );
 }
 
-// This folds everything outside the node containing the cursor, so the node being edited appears to
-// be the whole document.
-class NodeFocus implements vscode.FoldingRangeProvider, vscode.Disposable {
-  // Notify the editor that the folds may have moved, so it requests them again.
-  private readonly changeEmitter = new vscode.EventEmitter<void>();
-  public readonly onDidChangeFoldingRanges = this.changeEmitter.event;
+// This dims everything outside the node containing the cursor in each main editor showing a wiki,
+// so the node being edited stands out. Blank lines at the end of the node aren't dimmed.
+class NodeDimmer implements vscode.Disposable {
+  // Draw dimmed text with reduced opacity.
+  private readonly decorationType = vscode.window.createTextEditorDecorationType({
+    opacity: '0.5',
+  });
 
-  // Remember each wiki's nodes and focus as of the last time the editor requested folds, the first
-  // lines of the folds last collapsed in its active editor, and whether that editor may not have
-  // them.
-  private readonly states = new Map<string, { nodes: vscode.Range[]; focus: Focus | undefined }>();
-  private readonly collapsedStartLines = new Map<string, number[]>();
-  private readonly uncollapsed = new Set<string>();
+  // Remember each wiki's nodes, which are refreshed after every edit.
+  private readonly nodes = new Map<string, vscode.Range[]>();
 
-  // Determine whether the user wants everything outside the focused node folded.
+  // Determine whether the user wants everything outside the current node dimmed.
   private static isEnabled(): boolean {
-    return vscode.workspace.getConfiguration('mull').get('foldOtherNodes', true);
+    return vscode.workspace.getConfiguration('mull').get('dimOtherNodes', true);
   }
 
-  // Fold around the node containing the cursor of a main editor showing the wiki, preferring the
-  // active editor. The editor requests folds again after every edit, which keeps them current.
-  public async provideFoldingRanges(document: vscode.TextDocument): Promise<vscode.FoldingRange[]> {
-    // Find the focus, if the cursor is in a node.
-    const editor = [vscode.window.activeTextEditor, ...vscode.window.visibleTextEditors].find(
-      (candidate) => isMainWikiEditor(candidate) && candidate.document === document,
+  // Dim around the cursor of an editor, using the nodes last found in its wiki.
+  public dim(editor: vscode.TextEditor): void {
+    // Find the node containing the cursor and the node after it.
+    const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
+    const cursor = editor.selection.active;
+    const node = NodeDimmer.isEnabled() ? nodeAt(nodes, cursor) : undefined;
+    if (node === undefined) {
+      editor.setDecorations(this.decorationType, []);
+      return;
+    }
+    const nextNode = nodes.find((range) => range.start.isAfter(cursor));
+
+    // Dim the lines before the node, and those from the next node to the end of the wiki.
+    const documentEnd = editor.document.lineAt(editor.document.lineCount - 1).range.end;
+    editor.setDecorations(
+      this.decorationType,
+      [
+        new vscode.Range(new vscode.Position(0, 0), node.start),
+        ...(nextNode === undefined ? [] : [new vscode.Range(nextNode.start, documentEnd)]),
+      ].filter((range) => !range.isEmpty),
     );
-    if (editor === undefined) {
-      return [];
-    }
-    const key = document.uri.toString();
+  }
+
+  // Find a wiki's nodes again and dim its editors accordingly. A result is discarded if the wiki
+  // changed while it was being found, since a later refresh will replace it.
+  public async refresh(document: vscode.TextDocument): Promise<void> {
+    const { version } = document;
     const nodes = await nodeRanges(document);
-    const focus = NodeFocus.isEnabled()
-      ? focusAt(nodes, editor.selection.active, document.lineCount)
-      : undefined;
-    this.states.set(key, { nodes, focus });
-
-    // Collapse the new folds in the active editor once it has them, then discard any folds it kept
-    // because they were collapsed when they stopped being provided. Collapsing first keeps kept
-    // folds within the new ones from showing in between. Old folds that may still be collapsed are
-    // unfolded before new folds are requested, since by now one may be gone, and unfolding its
-    // first line would unfold a new fold containing it instead. Fold commands reveal the cursor, so
-    // they're skipped when the folds haven't moved, as when the editor requests them again without
-    // an edit, which would otherwise interrupt scrolling. Commands issued after the folds are
-    // returned wait for the editor to apply them.
-    const folds =
-      focus === undefined ? [] : [focus.before, focus.after].filter((fold) => fold !== undefined);
-    const startLines = folds.map((fold) => fold.start);
-    if (
-      editor === vscode.window.activeTextEditor &&
-      (this.uncollapsed.delete(key) ||
-        (this.collapsedStartLines.get(key) ?? []).join() !== startLines.join())
-    ) {
-      this.collapsedStartLines.set(key, startLines);
-      setTimeout(async () => {
-        await setFolded(true, startLines);
-        await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
-      }, 0);
-    }
-    return folds;
-  }
-
-  // Fold around another node when the cursor leaves the focused one, as when navigation or Find
-  // moves it into folded text, which the editor unfolds to reveal it.
-  public async refocus(editor: vscode.TextEditor | undefined): Promise<void> {
-    // Do nothing while the cursor stays in the focused node or folding is off.
-    if (!isMainWikiEditor(editor) || !NodeFocus.isEnabled()) {
+    if (document.version !== version) {
       return;
     }
-    const state = this.states.get(editor.document.uri.toString());
-    if (state === undefined) {
-      return;
-    }
-    const { focus } = state;
-    const line = editor.selection.active.line;
-    if (focus !== undefined && line >= focus.startLine && line <= focus.endLine) {
-      return;
-    }
-
-    // Unfold the old folds that the new ones won't replace before requesting them, since the editor
-    // keeps a collapsed fold that's no longer provided unless the cursor is in its hidden lines, and
-    // a kept fold can displace the new ones. An old fold within the new one after the node can stay.
-    if (editor === vscode.window.activeTextEditor && focus !== undefined) {
-      const newFocus = focusAt(state.nodes, editor.selection.active, editor.document.lineCount);
-      const staleStartLines = [];
-      if (focus.before !== undefined && (newFocus === undefined || newFocus.before === undefined)) {
-        staleStartLines.push(focus.before.start);
+    this.nodes.set(document.uri.toString(), nodes);
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (isMainWikiEditor(editor) && editor.document === document) {
+        this.dim(editor);
       }
-      if (
-        focus.after !== undefined &&
-        (newFocus === undefined ||
-          newFocus.after === undefined ||
-          newFocus.after.start > focus.after.start)
-      ) {
-        staleStartLines.push(focus.after.start);
-      }
-      await setFolded(false, staleStartLines);
-    }
-    this.changeEmitter.fire();
-  }
-
-  // Collapse the folds again when a wiki's editor becomes active, since it may not have them.
-  public activate(editor: vscode.TextEditor | undefined): void {
-    if (isMainWikiEditor(editor)) {
-      this.uncollapsed.add(editor.document.uri.toString());
-      this.changeEmitter.fire();
     }
   }
 
-  // Add or remove the folds when the user turns folding on or off. Turning it off unfolds the
-  // active editor's folds before requesting new ones, since the editor keeps a fold that's collapsed
-  // when it stops being provided.
-  public async configure(event: vscode.ConfigurationChangeEvent): Promise<void> {
-    if (!event.affectsConfiguration('mull.foldOtherNodes')) {
-      return;
-    }
-    const editor = vscode.window.activeTextEditor;
-    if (!NodeFocus.isEnabled() && isMainWikiEditor(editor)) {
-      await setFolded(false, this.collapsedStartLines.get(editor.document.uri.toString()) ?? []);
-    }
-    this.changeEmitter.fire();
+  // Find the nodes of every wiki shown in a main editor.
+  public async refreshVisible(): Promise<void> {
+    const documents = new Set(
+      vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
+    );
+    await Promise.all([...documents].map(async (document) => this.refresh(document)));
   }
 
-  // Release the event emitter.
+  // Forget the nodes of a wiki that's no longer open.
+  public forget(document: vscode.TextDocument): void {
+    this.nodes.delete(document.uri.toString());
+  }
+
+  // Release the decoration type, which removes the dimming.
   public dispose(): void {
-    this.changeEmitter.dispose();
+    this.decorationType.dispose();
   }
 }
 
@@ -365,19 +261,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
-  // Show only the node containing the cursor, as if it were the whole document.
-  const nodeFocus = new NodeFocus();
+  // Dim everything outside the node containing the cursor, following the cursor, edits, the visible
+  // editors, and the setting.
+  const nodeDimmer = new NodeDimmer();
   context.subscriptions.push(
-    nodeFocus,
-    vscode.languages.registerFoldingRangeProvider({ language: 'mull' }, nodeFocus),
-    vscode.window.onDidChangeTextEditorSelection(async (event) => {
-      await nodeFocus.refocus(event.textEditor);
+    nodeDimmer,
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      if (isMainWikiEditor(event.textEditor)) {
+        nodeDimmer.dim(event.textEditor);
+      }
     }),
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      nodeFocus.activate(editor);
+    vscode.workspace.onDidChangeTextDocument(async (event) => {
+      if (event.document.languageId === 'mull') {
+        await nodeDimmer.refresh(event.document);
+      }
+    }),
+    vscode.window.onDidChangeVisibleTextEditors(async () => nodeDimmer.refreshVisible()),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      nodeDimmer.forget(document);
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
-      await nodeFocus.configure(event);
+      if (event.affectsConfiguration('mull.dimOtherNodes')) {
+        await nodeDimmer.refreshVisible();
+      }
     }),
   );
 
@@ -431,6 +337,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
+
+  // Find the nodes of the wikis already shown, which needs the language server.
+  await nodeDimmer.refreshVisible();
 }
 
 // Shut down the language client and its server process with the extension.
