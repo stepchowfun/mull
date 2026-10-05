@@ -203,8 +203,10 @@ class NodeDimmer implements vscode.Disposable {
   // Remember each wiki's nodes, which are refreshed after every edit.
   private readonly nodes = new Map<string, vscode.Range[]>();
 
-  // Remember each editor's pending settling, which is postponed while it keeps scrolling.
+  // Remember each editor's pending settling, which is postponed while it keeps scrolling, and the
+  // first line of the node containing its cursor.
   private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
+  private readonly cursorNodeLines = new Map<vscode.TextEditor, number | undefined>();
 
   // Determine whether the user wants everything outside the current node dimmed.
   private static dimsOtherNodes(): boolean {
@@ -261,6 +263,20 @@ class NodeDimmer implements vscode.Disposable {
       vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
     );
     await Promise.all([...documents].map(async (document) => this.refresh(document)));
+  }
+
+  // Settle an editor's view onto the node containing its cursor when the cursor moves to another
+  // node, as when clicking a dimmed node, pulling the node into view.
+  public followCursor(editor: vscode.TextEditor): void {
+    const key = editor.document.uri.toString();
+    const node = nodeAt(this.nodes.get(key) ?? [], editor.selection.active);
+    const line = node === undefined ? undefined : node.start.line;
+    const hadLine = this.cursorNodeLines.has(editor);
+    const previousLine = this.cursorNodeLines.get(editor);
+    this.cursorNodeLines.set(editor, line);
+    if (hadLine && line !== previousLine) {
+      this.scheduleSettle(editor);
+    }
   }
 
   // Settle an editor's view back onto the node containing its cursor once it stops scrolling, like
@@ -376,6 +392,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
         nodeDimmer.dim(event.textEditor);
+        nodeDimmer.followCursor(event.textEditor);
       }
     }),
     vscode.workspace.onDidChangeTextDocument(async (event) => {
