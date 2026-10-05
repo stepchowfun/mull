@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.19] - 2026-10-04
+
+### Changed
+- The error for a node that can't be reached from `Home` now reads "Node `Title` can't be reached by following links from `Home`." rather than "There's no way to get to `Title` starting from `Home`."
+
 ## [0.36.18] - 2026-10-04
 
 ### Fixed
