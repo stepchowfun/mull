@@ -2052,9 +2052,9 @@ fn node_at(
     byte_offset: usize,
     link_extent: LinkExtent,
 ) -> Option<(&TextNode, SourceRange)> {
-    // Prefer a declaration, which spans its title line from the `#` through the end of the title,
-    // though its title is the only range it contributes. Navigating to a node leaves the cursor
-    // before the `#`.
+    // Prefer a declaration, which spans its title line from the `#` through the end of the title's
+    // range, which extends through trailing whitespace to the end of the line. The title's range is
+    // the only one it contributes. Navigating to a node leaves the cursor before the `#`.
     let wiki = snapshot.wiki();
     if let Some(node) = wiki.text_nodes.values().find(|node| {
         node.source_range.start <= byte_offset && byte_offset <= node.title_source_range.end
@@ -3211,11 +3211,22 @@ mod tests {
     }
 
     // Rename a node from the start of its title line, where navigating to it leaves the cursor,
-    // from the space before its title, or from the end of its title.
+    // from the space before its title, or from the end of its title line, even after trailing
+    // whitespace, whatever the line break. The title's range, which the rename replaces, extends
+    // through the trailing whitespace.
     #[test]
     fn rename_from_the_edges_of_titles() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
-        for column in [0, 1, 10] {
+        for (source, column, title_end) in [
+            ("# Home\n\n[Greeting]\n\n# Greeting", 0, 10),
+            ("# Home\n\n[Greeting]\n\n# Greeting", 1, 10),
+            ("# Home\n\n[Greeting]\n\n# Greeting", 10, 10),
+            ("# Home\n\n[Greeting]\n\n# Greeting  \n\nHi", 12, 12),
+            (
+                "# Home\r\n\r\n[Greeting]\r\n\r\n# Greeting  \r\n\r\nHi",
+                12,
+                12,
+            ),
+        ] {
             assert_eq!(
                 prepare_rename_for_document(
                     &snapshot(&untitled_uri(), source),
@@ -3223,7 +3234,7 @@ mod tests {
                     false,
                 ),
                 Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                    range: Range::new(Position::new(4, 2), Position::new(4, 10)),
+                    range: Range::new(Position::new(4, 2), Position::new(4, title_end)),
                     placeholder: "Greeting".to_owned(),
                 })),
             );
@@ -3246,7 +3257,7 @@ mod tests {
                         "Salutation",
                     ),
                     (
-                        Range::new(Position::new(4, 2), Position::new(4, 10)),
+                        Range::new(Position::new(4, 2), Position::new(4, title_end)),
                         "Salutation",
                     ),
                 ],

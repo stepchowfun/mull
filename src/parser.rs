@@ -81,10 +81,7 @@ pub fn parse(
                 line_index,
                 line_source_range,
             ) {
-                Ok(title_source_range) => Some((
-                    source_contents[title_source_range.start..title_source_range.end].to_owned(),
-                    title_source_range,
-                )),
+                Ok(title) => Some(title),
                 Err(error) => {
                     errors.push(error);
                     None
@@ -141,7 +138,7 @@ fn parse_title(
     source_contents: &str,
     line_index: &LineIndex,
     line_source_range: SourceRange,
-) -> Result<SourceRange, Error> {
+) -> Result<(String, SourceRange), Error> {
     // Strip surrounding whitespace from the text after the marker, which ends the line.
     let title_source_range = trim_source_range(
         source_contents,
@@ -162,7 +159,15 @@ fn parse_title(
             None,
         ))
     } else if !title.starts_with(FILESYSTEM_LINK_PREFIX) {
-        Ok(title_source_range)
+        // Extend the title's range through any trailing whitespace to the end of its line, so the
+        // title is found with the cursor anywhere after it.
+        Ok((
+            title.to_owned(),
+            SourceRange {
+                start: title_source_range.start,
+                end: line_source_range.end,
+            },
+        ))
     } else {
         Err(Error::new(
             &format!(
@@ -488,7 +493,8 @@ mod tests {
             .collect()
     }
 
-    // Parse titles and multiline content while retaining exact source ranges.
+    // Parse titles and multiline content while retaining exact source ranges. A title's range
+    // extends through trailing whitespace, which the title itself excludes.
     #[test]
     fn nodes() {
         let source =
@@ -510,7 +516,7 @@ mod tests {
             "Hello,\nworld!",
         );
         assert_eq!(wiki.text_nodes["Home"].title_source_range.start, 7);
-        assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 11);
+        assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 13);
         assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
         assert_eq!(wiki.text_nodes["Home"].source_range.end, 41);
         let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {

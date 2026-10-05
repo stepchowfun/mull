@@ -70,7 +70,7 @@ pub struct TextNode {
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete node without leading or trailing whitespace
-    pub title_source_range: SourceRange, // The trimmed title text, not including the `#`
+    pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
     pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
 }
 
