@@ -184,6 +184,19 @@ function wrappingColumn(document: vscode.TextDocument): number | undefined {
     : undefined;
 }
 
+// Find how many rows the editor keeps visible around the cursor when it moves, which is the larger
+// of the configured surrounding lines and the most lines sticky scroll shows, if it's enabled. The
+// editor caps this at half the view, so the view never shows more of other nodes for the cursor.
+function cursorMargin(document: vscode.TextDocument): number {
+  const configuration = vscode.workspace.getConfiguration('editor', document);
+  return Math.max(
+    configuration.get<number>('cursorSurroundingLines', 0),
+    configuration.get<boolean>('stickyScroll.enabled', true)
+      ? configuration.get<number>('stickyScroll.maxLineCount', 5)
+      : 0,
+  );
+}
+
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
 // the preview in the references view, have no view column, and aren't dimmed.
 function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
@@ -292,9 +305,11 @@ class NodeDimmer implements vscode.Disposable {
     );
   }
 
-  // Scroll the view back onto the node when it shows the node before it, or the node after it while
-  // the node's top is out of view. Revealing a range would leave padding around it, so the view is
-  // scrolled by lines instead. Only the active editor can be scrolled this way.
+  // Scroll the view back onto the node when it shows more of the node before it than the editor
+  // keeps visible around the cursor, or more of the node after it while the node's top is out of
+  // view. Allowing that much keeps settling from fighting the editor, which may scroll that far to
+  // keep the cursor's surroundings in view. Revealing a range would leave padding around it, so the
+  // view is scrolled by lines instead. Only the active editor can be scrolled this way.
   private async settle(editor: vscode.TextEditor): Promise<void> {
     // Find the node containing the cursor and the lines in view, which are the completely visible
     // ones.
@@ -315,9 +330,21 @@ class NodeDimmer implements vscode.Disposable {
     const firstVisibleLine = firstVisibleRange.start.line;
     const lastVisibleLine = lastVisibleRange.end.line;
 
+    // Count the rows that lines take at least, which errs toward not settling, and find how many
+    // rows of other nodes the view may show.
+    const column = wrappingColumn(editor.document);
+    const rows = (start: number, end: number): number => {
+      let total = 0;
+      for (let line = start; line < end; line += 1) {
+        total += minimumRows(editor.document.lineAt(line).text, column);
+      }
+      return total;
+    };
+    const margin = cursorMargin(editor.document);
+
     // Scroll down to the node's title by lines, which the editor counts from the first completely
     // visible line and aligns exactly.
-    if (firstVisibleLine < node.start.line) {
+    if (firstVisibleLine < node.start.line && rows(firstVisibleLine, node.start.line) > margin) {
       await vscode.commands.executeCommand('editorScroll', {
         to: 'down',
         by: 'line',
@@ -329,22 +356,12 @@ class NodeDimmer implements vscode.Disposable {
     // Scroll up by as many rows as the lines after the node take at least, but no more than the
     // node's lines before the view take at least, so the node's end and top aren't passed. Wrapping
     // can make this fall short, but the scrolling causes the view to settle again.
-    if (lastVisibleLine > node.end.line && firstVisibleLine > node.start.line) {
-      const column = wrappingColumn(editor.document);
-      const rows = (start: number, end: number): number => {
-        let total = 0;
-        for (let line = start; line < end; line += 1) {
-          total += minimumRows(editor.document.lineAt(line).text, column);
-        }
-        return total;
-      };
+    const rowsAfter = rows(node.end.line + 1, lastVisibleLine + 1);
+    if (firstVisibleLine > node.start.line && rowsAfter > margin) {
       await vscode.commands.executeCommand('editorScroll', {
         to: 'up',
         by: 'wrappedLine',
-        value: Math.min(
-          rows(node.end.line + 1, lastVisibleLine + 1),
-          rows(node.start.line, firstVisibleLine),
-        ),
+        value: Math.min(rowsAfter, rows(node.start.line, firstVisibleLine)),
       });
     }
   }
