@@ -152,5 +152,14 @@
   },
   "engines": {
     "vscode": "^1.128.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode, Mull ignores the workspace's setting for its executable path, which could otherwise make the extension run any program.",
+      "restrictedConfigurations": [
+        "mull.executablePath"
+      ]
+    }
   }
 }
