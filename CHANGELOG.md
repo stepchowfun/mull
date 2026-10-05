@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.17] - 2026-10-04
+
+### Added
+- The VS Code extension now dims everything outside the node containing the cursor, so the node being edited stands out. The `mull.dimOtherNodes` setting turns this off.
+
+### Removed
+- The VS Code extension no longer folds everything outside the node being edited, which dimming replaces, so the `mull.foldOtherNodes` setting is gone.
+
 ## [0.36.16] - 2026-10-04
 
 ### Fixed
