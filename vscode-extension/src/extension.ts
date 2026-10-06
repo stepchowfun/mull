@@ -9,7 +9,6 @@ const execFileAsync = promisify(execFile);
 
 // Determine the type of a setting's value.
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
-const isNumber = (value: unknown): value is number => typeof value === 'number';
 const isString = (value: unknown): value is string => typeof value === 'string';
 
 // Read a setting, failing if it's missing, which can't happen since every setting read here has a
@@ -183,87 +182,21 @@ async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
-// Split text into characters as they appear, for counting the columns a line takes.
-const graphemeSegmenter = new Intl.Segmenter();
-
-// Find the column at which an editor wraps a document's lines, if it's known. Bounded wrapping
-// wraps at that column or at the edge of a narrower view, so it's at most that column.
-function wordWrapColumn(document: vscode.TextDocument): number | undefined {
-  const wordWrap = setting('editor', 'wordWrap', isString, document);
-  return wordWrap === 'bounded' || wordWrap === 'wordWrapColumn'
-    ? setting('editor', 'wordWrapColumn', isNumber, document)
-    : undefined;
-}
-
-// Find the fewest rows that some lines could take on screen. The first and last lines may be
-// counted from or to a character, for a view that begins or ends partway through a wrapped line,
-// since counting all of such a line would overcount the rows in view. Each character takes at least
-// a column, and wrapping at word boundaries or at the edge of a narrower view only adds rows, so
-// each line takes at least its characters divided by the wrapping column, rounded up, and at least
-// a row. Without a known wrapping column, each line is counted as a row.
-function minimumRowsOfLines(
-  document: vscode.TextDocument,
-  wrapColumn: number | undefined,
-  firstLine: number,
-  lastLine: number,
-  from = 0,
-  to?: number,
-): number {
-  let rows = 0;
-  for (let line = firstLine; line <= lastLine; line += 1) {
-    const text = document
-      .lineAt(line)
-      .text.slice(line === firstLine ? from : 0, line === lastLine ? to : undefined);
-    const characters = [...graphemeSegmenter.segment(text)].length;
-    rows += wrapColumn === undefined ? 1 : Math.max(1, Math.ceil(characters / wrapColumn));
-  }
-  return rows;
-}
-
-// Find how many rows the editor keeps in view around the cursor when the cursor moves: the larger
-// of the configured surrounding lines and the most lines sticky scroll shows, if it's enabled. The
-// editor also caps this at half the view, which isn't known here, so this may be more than the
-// editor keeps in view, but never less.
-function cursorSurroundingRows(document: vscode.TextDocument): number {
-  return Math.max(
-    setting('editor', 'cursorSurroundingLines', isNumber, document),
-    setting('editor', 'stickyScroll.enabled', isBoolean, document)
-      ? setting('editor', 'stickyScroll.maxLineCount', isNumber, document)
-      : 0,
-  );
-}
-
 // Wait this long after the view stops moving before settling it onto the current node. Scrolling
 // with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
 // outlast the gaps between those changes, which would otherwise settle the view while it's still
 // being scrolled, yet short enough that settling feels like a response to the scrolling.
 const SETTLE_DELAY_MILLISECONDS = 150;
 
-// When settling, aim this many rows inside the allowance for other nodes. Rows are counted as the
-// fewest that lines could take, and the editor's wrapping at word boundaries usually adds a row or
-// so, so aiming at the allowance itself tends to land just outside it and settle again in a second,
-// small step. Two rows absorbed that shortfall in testing.
-const SETTLE_SLACK_ROWS = 2;
-
 // This keeps the node containing the cursor, the current node, in focus in each main editor showing
 // a wiki. It dims everything outside the current node, and once the view and the cursor stop
-// moving, it settles the view back toward the current node, like a rubber band, if the view shows
-// too much of the nodes before or after it.
+// moving, it brings the current node back into view, like a rubber band, if it was scrolled away.
 //
-// The editor gives extensions little control over scrolling, which shapes how settling works:
-//
-// - Settling happens after the view stops moving, since there's no way to limit or intercept
-//   scrolling, only to observe it after the fact.
-// - The view may show as many rows of other nodes as the editor keeps in view around the cursor,
-//   the allowance. The editor scrolls that far on its own when the cursor nears the current node's
-//   edge, and settling within the allowance would fight it.
-// - Settling scrolls back only the rows beyond the allowance, so crossing it isn't abrupt.
-// - Revealing a range pads it with as many rows as the allowance, so settling scrolls by lines or
-//   rows instead, with the `editorScroll` command, which acts on the focused editor. So only the
-//   active editor settles.
-// - The visible ranges are in lines, but the view is in rows, since lines can wrap. Settling counts
-//   the fewest rows lines could take, which errs toward settling too little rather than too much,
-//   so it never scrolls past the current node's edge.
+// Settling waits for the view to stop moving, since there's no way to limit or intercept scrolling,
+// only to observe it after the fact. It reveals only the node's nearer edge, since the editor
+// reveals a range taller than the view by jumping to its start, which would make the rest of a long
+// node unreachable. Revealing a single line scrolls as little as possible, keeping the margin the
+// editor keeps around the cursor, so it doesn't fight the editor's own scrolling.
 class NodeFocus implements vscode.Disposable {
   // Dim other nodes enough for the current node to stand out, while keeping them readable.
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
@@ -342,21 +275,18 @@ class NodeFocus implements vscode.Disposable {
     clearTimeout(this.settleTimers.get(editor));
     this.settleTimers.set(
       editor,
-      setTimeout(async () => {
+      setTimeout(() => {
         this.settleTimers.delete(editor);
-        await this.settle(editor);
+        this.settle(editor);
       }, SETTLE_DELAY_MILLISECONDS),
     );
   }
 
-  // Scroll the view back toward the current node if it shows more rows of the node before it than
-  // the allowance, or more rows of the node after it while the current node's top is out of view.
-  // It scrolls back to show the target number of rows of that node, which is a little inside the
-  // allowance. See the class's description for why it works this way.
-  private async settle(editor: vscode.TextEditor): Promise<void> {
-    // Find the current node, and the lines in view from the first completely visible character to
-    // the last one, without assuming the visible ranges are in order. Only the active editor can be
-    // scrolled without padding.
+  // Reveal the nearer edge of an editor's current node if the node is entirely out of view, without
+  // assuming the visible ranges are in order. The node includes the blank lines after its text,
+  // which belong to it, so it ends just before the next node, or at the end of the wiki.
+  private settle(editor: vscode.TextEditor): void {
+    // Find the current node and the lines in view.
     const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
     const cursor = editor.selection.active;
     const node = nodeAt(nodes, cursor);
@@ -364,72 +294,19 @@ class NodeFocus implements vscode.Disposable {
     for (const range of editor.visibleRanges) {
       visibleRange = visibleRange === undefined ? range : visibleRange.union(range);
     }
-    if (
-      !NodeFocus.snapsBackToCurrentNode() ||
-      editor !== vscode.window.activeTextEditor ||
-      node === undefined ||
-      visibleRange === undefined
-    ) {
+    if (!NodeFocus.snapsBackToCurrentNode() || node === undefined || visibleRange === undefined) {
       return;
     }
-    const firstVisible = visibleRange.start;
-    const lastVisible = visibleRange.end;
-
-    // Find the current node's last line, including the blank lines after its text, which belong to
-    // it. It ends just before the next node, or at the end of the wiki.
     const nextNode = nodes.find((range) => range.start.isAfter(cursor));
-    const nodeLastLine =
+    const lastLine =
       nextNode === undefined ? editor.document.lineCount - 1 : nextNode.start.line - 1;
 
-    // Count the rows in view before and after the current node.
-    const wrapColumn = wordWrapColumn(editor.document);
-    const rows = (firstLine: number, lastLine: number, from?: number, to?: number): number =>
-      minimumRowsOfLines(editor.document, wrapColumn, firstLine, lastLine, from, to);
-    const rowsBefore =
-      firstVisible.line < node.start.line
-        ? rows(firstVisible.line, node.start.line - 1, firstVisible.character)
-        : 0;
-    const rowsAfter =
-      lastVisible.line > nodeLastLine
-        ? rows(nodeLastLine + 1, lastVisible.line, 0, lastVisible.character)
-        : 0;
-    const allowance = cursorSurroundingRows(editor.document);
-    const target = Math.max(allowance - SETTLE_SLACK_ROWS, 0);
-
-    // Scroll down by the fewest lines that leave no more than the target number of rows of the node
-    // before the current one. The editor counts these lines from the first completely visible one
-    // and aligns them exactly, so scrolling down by a line puts the next line at the top. The first
-    // visible line may be only partly in view, so scrolling starts at the line after it.
-    if (rowsBefore > allowance) {
-      let topLine = firstVisible.line + 1;
-      while (topLine < node.start.line && rows(topLine, node.start.line - 1) > target) {
-        topLine += 1;
-      }
-      await vscode.commands.executeCommand('editorScroll', {
-        to: 'down',
-        by: 'line',
-        value: topLine - firstVisible.line,
-      });
-      return;
-    }
-
-    // Scroll up by the rows of the node after the current one beyond the target. This scrolls by
-    // rows rather than lines, since the editor would count lines at the top of the view, where the
-    // current node's wrapped lines can take several rows each. Those rows are counted as the fewest
-    // the lines could take, so the current node's end isn't passed, and they're capped at the
-    // fewest rows the current node's text before the view could take, so its top isn't passed
-    // either. A current node whose top is in view isn't scrolled up, since that would only bring
-    // the node before it into view.
-    if (firstVisible.line > node.start.line && rowsAfter > allowance) {
-      const rowsHidden =
-        firstVisible.character > 0
-          ? rows(node.start.line, firstVisible.line, 0, firstVisible.character)
-          : rows(node.start.line, firstVisible.line - 1);
-      await vscode.commands.executeCommand('editorScroll', {
-        to: 'up',
-        by: 'wrappedLine',
-        value: Math.min(rowsAfter - target, rowsHidden),
-      });
+    // Reveal the node's first line if it's below the view, or its last line if it's above.
+    if (node.start.line > visibleRange.end.line) {
+      editor.revealRange(new vscode.Range(node.start, node.start));
+    } else if (lastLine < visibleRange.start.line) {
+      const end = editor.document.lineAt(lastLine).range.end;
+      editor.revealRange(new vscode.Range(end, end));
     }
   }
 
