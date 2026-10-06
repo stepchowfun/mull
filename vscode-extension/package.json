@@ -76,11 +76,6 @@
         "command": "mull.goForward",
         "title": "Go Forward to Next Node",
         "category": "Mull"
-      },
-      {
-        "command": "mull.clearHistory",
-        "title": "Clear History",
-        "category": "Mull"
       }
     ],
     "menus": {
@@ -107,10 +102,6 @@
         },
         {
           "command": "mull.goForward",
-          "when": "editorLangId == mull"
-        },
-        {
-          "command": "mull.clearHistory",
           "when": "editorLangId == mull"
         }
       ]
@@ -150,12 +141,6 @@
         "command": "mull.goForward",
         "key": "alt+right",
         "mac": "cmd+]",
-        "when": "editorTextFocus && editorLangId == mull"
-      },
-      {
-        "command": "mull.clearHistory",
-        "key": "ctrl+k ctrl+h",
-        "mac": "cmd+k cmd+h",
         "when": "editorTextFocus && editorLangId == mull"
       }
     ],

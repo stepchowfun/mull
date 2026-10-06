@@ -103,7 +103,6 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Jump to the end of the current node | `Command + Down` | `Control + End` |
 | Go back to the previously visited node | `Command + [` | `Alt + Left` |
 | Go forward to the next visited node | `Command + ]` | `Alt + Right` |
-| Clear the history of visited nodes | `Command + K`, `Command + H` | `Control + K`, `Control + H` |
 
 ## Usage
 

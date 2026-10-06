@@ -328,10 +328,13 @@ class NodeFocus implements vscode.Disposable {
 }
 
 // These commands move through the nodes visited in a wiki, like a browser's back and forward
-// buttons, or start the trail over.
+// buttons.
 const GO_BACK_COMMAND = 'mull.goBack';
 const GO_FORWARD_COMMAND = 'mull.goForward';
-const CLEAR_HISTORY_COMMAND = 'mull.clearHistory';
+
+// This title identifies the root of every wiki's text-link graph. Keep this in sync with
+// [group:home_title].
+const HOME_TITLE = 'Home';
 
 // A visit to a node, with the cursor's position in it, relative to the node's start, for returning
 // to where the cursor was.
@@ -341,16 +344,23 @@ interface Visit {
   readonly character: number;
 }
 
-// This keeps a trail of the nodes visited in each wiki, which leads to the current node, and shows
-// the previous node above the current node's title, like a browser's back button.
+// A wiki's trail of visits, ending with the current node, and the visits that going back left
+// ahead, the next one last.
+interface Trail {
+  back: Visit[];
+  forward: Visit[];
+}
+
+// This keeps a trail of the nodes visited in each wiki, which leads from Home to the current node,
+// and shows the previous node above the current node's title, like a browser's back button.
 //
-// Moving the cursor to another node by any means visits that node. Visiting a node already in the
-// trail cuts the trail back to it, so the trail never loops, and visiting any node discards the
-// nodes that going back left ahead.
+// Moving the cursor to another node visits that node. Visiting a node already in the trail cuts the
+// trail back to it, so the trail never loops, and visiting any node discards the visits that going
+// back left ahead. The trail always starts with Home, as if every visit began there, so going back
+// always leads home, and visiting Home starts the trail over.
 class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
-  // Remember each wiki's trail, ending with the current node, and the nodes ahead of it, the next
-  // one last.
-  private readonly trails = new Map<string, { back: Visit[]; forward: Visit[] }>();
+  // Remember each wiki's trail.
+  private readonly trails = new Map<string, Trail>();
 
   // Tell the editor to ask for the code lens again when a trail changes.
   private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -364,22 +374,27 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     this.nodeFocus = nodeFocus;
   }
 
-  // Find a wiki's trail.
-  private trailOf(document: vscode.TextDocument): { back: Visit[]; forward: Visit[] } {
+  // Find a wiki's trail, dropping visits to nodes that no longer exist, as after renaming them.
+  private trailOf(document: vscode.TextDocument, nodes: readonly vscode.DocumentSymbol[]): Trail {
     const key = document.uri.toString();
+    const titles = new Set(nodes.map((node) => node.name));
     const trail = this.trails.get(key) ?? { back: [], forward: [] };
+    trail.back = trail.back.filter((visit) => titles.has(visit.title));
+    trail.forward = trail.forward.filter((visit) => titles.has(visit.title));
     this.trails.set(key, trail);
     return trail;
   }
 
-  // Drop visits to nodes that no longer exist, as after renaming or deleting them.
-  private static prune(
-    trail: { back: Visit[]; forward: Visit[] },
-    nodes: readonly vscode.DocumentSymbol[],
-  ): void {
-    const titles = new Set(nodes.map((node) => node.name));
-    trail.back = trail.back.filter((visit) => titles.has(visit.title));
-    trail.forward = trail.forward.filter((visit) => titles.has(visit.title));
+  // Find the active editor's wiki, its nodes, and its trail, if it's showing one.
+  private activeTrail():
+    | { editor: vscode.TextEditor; nodes: readonly vscode.DocumentSymbol[]; trail: Trail }
+    | undefined {
+    const editor = vscode.window.activeTextEditor;
+    if (!isMainWikiEditor(editor)) {
+      return undefined;
+    }
+    const nodes = this.nodeFocus.nodesOf(editor.document);
+    return { editor, nodes, trail: this.trailOf(editor.document, nodes) };
   }
 
   // Record where an editor's cursor is, visiting its node if it moved to another one.
@@ -398,24 +413,24 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     };
 
     // Within the current node, only remember the cursor's position.
-    const trail = this.trailOf(editor.document);
+    const trail = this.trailOf(editor.document, nodes);
     const current = trail.back.at(-1);
     if (current !== undefined && current.title === visit.title) {
       trail.back[trail.back.length - 1] = visit;
       return;
     }
 
-    // Replace the current node if it no longer exists, as while its title is being edited. Then cut
-    // the trail back to the new node if it's already in it.
-    if (current !== undefined && !nodes.some((other) => other.name === current.title)) {
-      trail.back.pop();
-    }
-    NodeHistory.prune(trail, nodes);
+    // Visit the node, cutting the trail back to it if it's already in it, and start the trail with
+    // Home, unless the wiki has none.
     const index = trail.back.findIndex((other) => other.title === visit.title);
     if (index !== -1) {
       trail.back.splice(index);
     }
     trail.back.push(visit);
+    const [first] = trail.back;
+    if (first.title !== HOME_TITLE && nodes.some((other) => other.name === HOME_TITLE)) {
+      trail.back.unshift({ title: HOME_TITLE, line: 0, character: 0 });
+    }
     trail.forward = [];
     this.changeEmitter.fire();
   }
@@ -432,49 +447,35 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   // Go back to the previous node in the active wiki's trail, keeping the current one for going
   // forward again.
   public goBack(): void {
-    const editor = vscode.window.activeTextEditor;
-    if (!isMainWikiEditor(editor)) {
+    const active = this.activeTrail();
+    if (active === undefined) {
       return;
     }
-    const nodes = this.nodeFocus.nodesOf(editor.document);
-    const trail = this.trailOf(editor.document);
-    NodeHistory.prune(trail, nodes);
-    const visit = trail.back.at(-2) === undefined ? undefined : trail.back.pop();
-    if (visit === undefined) {
+    const { back, forward } = active.trail;
+    const current = back.at(-1);
+    const previous = back.at(-2);
+    if (current === undefined || previous === undefined) {
       return;
     }
-    trail.forward.push(visit);
-    NodeHistory.revisit(editor, nodes, trail.back.at(-1));
+    back.pop();
+    forward.push(current);
+    NodeHistory.revisit(active.editor, active.nodes, previous);
     this.changeEmitter.fire();
   }
 
   // Go forward to the node that going back left ahead in the active wiki.
   public goForward(): void {
-    const editor = vscode.window.activeTextEditor;
-    if (!isMainWikiEditor(editor)) {
+    const active = this.activeTrail();
+    if (active === undefined) {
       return;
     }
-    const nodes = this.nodeFocus.nodesOf(editor.document);
-    const trail = this.trailOf(editor.document);
-    NodeHistory.prune(trail, nodes);
-    const visit = trail.forward.pop();
-    if (visit === undefined) {
+    const { back, forward } = active.trail;
+    const next = forward.pop();
+    if (next === undefined) {
       return;
     }
-    trail.back.push(visit);
-    NodeHistory.revisit(editor, nodes, visit);
-    this.changeEmitter.fire();
-  }
-
-  // Start the active wiki's trail over from the current node.
-  public clear(): void {
-    const editor = vscode.window.activeTextEditor;
-    if (!isMainWikiEditor(editor)) {
-      return;
-    }
-    const trail = this.trailOf(editor.document);
-    trail.back = trail.back.slice(-1);
-    trail.forward = [];
+    back.push(next);
+    NodeHistory.revisit(active.editor, active.nodes, next);
     this.changeEmitter.fire();
   }
 
@@ -483,11 +484,8 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   private static revisit(
     editor: vscode.TextEditor,
     nodes: readonly vscode.DocumentSymbol[],
-    visit: Visit | undefined,
+    visit: Visit,
   ): void {
-    if (visit === undefined) {
-      return;
-    }
     const node = nodes.find((other) => other.name === visit.title);
     if (node === undefined) {
       return;
@@ -504,10 +502,9 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   // Show the previous node above the current node's title, as a link back to it, with the whole
   // trail in its tooltip.
   public async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-    // Find the current and previous nodes, skipping visits to nodes that no longer exist.
+    // Find the current and previous nodes.
     const nodes = await wikiNodes(document);
-    const titles = new Set(nodes.map((node) => node.name));
-    const back = this.trailOf(document).back.filter((visit) => titles.has(visit.title));
+    const { back } = this.trailOf(document, nodes);
     const currentVisit = back.at(-1);
     const previous = back.at(-2);
     const current =
@@ -611,9 +608,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand(GO_FORWARD_COMMAND, () => {
       nodeHistory.goForward();
-    }),
-    vscode.commands.registerCommand(CLEAR_HISTORY_COMMAND, () => {
-      nodeHistory.clear();
     }),
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
