@@ -60,6 +60,20 @@ const MAX_TITLE_COMPLETIONS: usize = 100;
 // [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
+// These are the ways the extension can reveal a range, numbered as in VS Code's
+// `TextEditorRevealType`.
+#[allow(
+    dead_code,
+    reason = "The type mirrors VS Code's, including the ways not chosen yet."
+)]
+#[derive(Clone, Copy)]
+enum RevealType {
+    Default = 0,
+    InCenter = 1,
+    InCenterIfOutsideViewport = 2,
+    AtTop = 3,
+}
+
 // This extension command reveals a directory in the explorer. Keep this in sync with
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
@@ -1101,6 +1115,7 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                     Link::Text { title, .. } => Some(reveal_range_command_url(
                         &snapshot.uri,
                         node_start_range(snapshot, snapshot.wiki().text_nodes.get(title)?),
+                        RevealType::AtTop,
                     )),
                     Link::Filesystem { target, .. } => Some(
                         filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
@@ -1115,18 +1130,41 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
 }
 
 // Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(uri: &Uri, range: Range) -> String {
-    command_url(REVEAL_RANGE_COMMAND, &reveal_range_arguments(uri, range))
+fn reveal_range_command_url(uri: &Uri, range: Range, reveal_type: RevealType) -> String {
+    command_url(
+        REVEAL_RANGE_COMMAND,
+        &reveal_range_arguments(uri, range, reveal_type),
+    )
 }
 
-// Pass the document URI and UTF-16 destination range as positional command arguments.
-fn reveal_range_arguments(uri: &Uri, range: Range) -> Vec<serde_json::Value> {
+// Build an editor navigation command for a code action.
+fn reveal_range_command(
+    title: String,
+    uri: &Uri,
+    range: Range,
+    reveal_type: RevealType,
+) -> Command {
+    Command::new(
+        title,
+        REVEAL_RANGE_COMMAND.to_owned(),
+        Some(reveal_range_arguments(uri, range, reveal_type)),
+    )
+}
+
+// Pass the document URI, UTF-16 destination range, and reveal type as positional command
+// arguments.
+fn reveal_range_arguments(
+    uri: &Uri,
+    range: Range,
+    reveal_type: RevealType,
+) -> Vec<serde_json::Value> {
     vec![
         uri.as_str().into(),
         range.start.line.into(),
         range.start.character.into(),
         range.end.line.into(),
         range.end.character.into(),
+        (reveal_type as u8).into(),
     ]
 }
 
@@ -1926,13 +1964,11 @@ fn code_action_for_document(
                             0,
                         )
                     };
-                    let command = Command::new(
+                    let command = reveal_range_command(
                         format!("Reveal node {}", title.code_str()),
-                        REVEAL_RANGE_COMMAND.to_owned(),
-                        Some(reveal_range_arguments(
-                            &snapshot.uri,
-                            Range::new(cursor, cursor),
-                        )),
+                        &snapshot.uri,
+                        Range::new(cursor, cursor),
+                        RevealType::AtTop,
                     );
                     (
                         format!("Create node {}", title.code_str()),
@@ -2116,12 +2152,12 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, MAX_TITLE_COMPLETIONS, Snapshot, Title, code_action_for_document,
-        completion_for_document, diagnostic_from_error, diagnostics_for_document,
-        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
-        formatting_for_document, goto_definition_for_document, hover_for_document, is_subsequence,
-        prepare_rename_for_document, references_for_document, rename_for_document,
-        reveal_range_command_url,
+        FileOperationSupport, MAX_TITLE_COMPLETIONS, RevealType, Snapshot, Title,
+        code_action_for_document, completion_for_document, diagnostic_from_error,
+        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
+        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
+        hover_for_document, is_subsequence, prepare_rename_for_document, references_for_document,
+        rename_for_document, reveal_range_command_url,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -2207,13 +2243,14 @@ mod tests {
         let url = reveal_range_command_url(
             &untitled_uri(),
             Range::new(Position::new(0, 2), Position::new(0, 6)),
+            RevealType::AtTop,
         );
 
         assert_eq!(
             url,
             concat!(
                 "command:mull.revealRange?",
-                "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%5D",
+                "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%2C3%5D",
             ),
         );
     }
@@ -2911,8 +2948,11 @@ mod tests {
             panic!("A node preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        let home_url =
-            reveal_range_command_url(&uri, Range::new(Position::new(0, 0), Position::new(0, 0)));
+        let home_url = reveal_range_command_url(
+            &uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+            RevealType::AtTop,
+        );
         assert_eq!(
             contents.value,
             format!(
@@ -4003,6 +4043,7 @@ mod tests {
         let arguments = command.arguments.as_ref().unwrap();
         assert_eq!(arguments[0], uri.as_str());
         assert_eq!(arguments[1..3], arguments[3..5]);
+        assert_eq!(arguments[5], RevealType::AtTop as u8);
         let cursor = Position::new(
             u32::try_from(arguments[1].as_u64().unwrap()).unwrap(),
             u32::try_from(arguments[2].as_u64().unwrap()).unwrap(),

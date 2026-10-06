@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.25] - 2026-10-06
+
+### Changed
+- Following a link from a hover preview, or creating a missing node with a quick fix, now scrolls the node's title to the top of the view rather than the middle, showing as much of the node as possible.
+
 ## [0.36.24] - 2026-10-05
 
 ### Added

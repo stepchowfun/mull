@@ -105,13 +105,15 @@ async function revealRange(
   startCharacter: number,
   endLine: number,
   endCharacter: number,
+  revealType: vscode.TextEditorRevealType,
 ): Promise<void> {
-  // Open either a file-backed or untitled document and select the range, which may be empty.
+  // Open either a file-backed or untitled document, select the range, which may be empty, and
+  // reveal it as the language server asks.
   const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriString));
   const editor = await vscode.window.showTextDocument(document);
   const range = new vscode.Range(startLine, startCharacter, endLine, endCharacter);
   editor.selection = new vscode.Selection(range.start, range.end);
-  editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  editor.revealRange(range, revealType);
 }
 
 // This private command lets the language server reveal a directory in the explorer.
