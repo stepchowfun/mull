@@ -79,7 +79,7 @@
       },
       {
         "command": "mull.clearHistory",
-        "title": "Clear History of Visited Nodes",
+        "title": "Clear History",
         "category": "Mull"
       }
     ],
