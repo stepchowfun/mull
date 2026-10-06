@@ -66,6 +66,16 @@
         "command": "mull.selectToNodeEnd",
         "title": "Select to End of Node",
         "category": "Mull"
+      },
+      {
+        "command": "mull.goBack",
+        "title": "Go Back to Previous Node",
+        "category": "Mull"
+      },
+      {
+        "command": "mull.goForward",
+        "title": "Go Forward to Next Node",
+        "category": "Mull"
       }
     ],
     "menus": {
@@ -84,6 +94,14 @@
         },
         {
           "command": "mull.selectToNodeEnd",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.goBack",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.goForward",
           "when": "editorLangId == mull"
         }
       ]
@@ -111,6 +129,18 @@
         "command": "mull.selectToNodeEnd",
         "key": "shift+ctrl+end",
         "mac": "shift+cmd+down",
+        "when": "editorTextFocus && editorLangId == mull"
+      },
+      {
+        "command": "mull.goBack",
+        "key": "alt+left",
+        "mac": "cmd+[",
+        "when": "editorTextFocus && editorLangId == mull"
+      },
+      {
+        "command": "mull.goForward",
+        "key": "alt+right",
+        "mac": "cmd+]",
         "when": "editorTextFocus && editorLangId == mull"
       }
     ],

@@ -73,6 +73,7 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 - Diagnostics and quick fixes
 - Dimming of everything outside the current node
 - Formatting (manual and on save)
+- History of visited nodes, with a link back to the previous one
 - Link occurrence highlighting
 - Navigation to the start or end of a node
 - Node and file renaming
@@ -100,6 +101,8 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 | Jump to the start of the current node | `Command + Up` | `Control + Home` |
 | Jump to the end of the current node | `Command + Down` | `Control + End` |
+| Go back to the previously visited node | `Command + [` | `Alt + Left` |
+| Go forward to the next visited node | `Command + ]` | `Alt + Right` |
 
 ## Usage
 
