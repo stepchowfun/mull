@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.23] - 2026-10-05
+
+### Changed
+- The VS Code extension's snap-back scrolling is simpler and more reliable. It no longer eases the view back whenever too much of a neighboring node is in view. Instead, once the node containing the cursor is scrolled entirely out of view, the extension scrolls just far enough to bring the node's nearer edge back. It now also works in editors that don't have focus.
+
 ## [0.36.22] - 2026-10-05
 
 ### Fixed
