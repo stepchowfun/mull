@@ -328,9 +328,10 @@ class NodeFocus implements vscode.Disposable {
 }
 
 // These commands move through the nodes visited in a wiki, like a browser's back and forward
-// buttons.
+// buttons, or start the trail over.
 const GO_BACK_COMMAND = 'mull.goBack';
 const GO_FORWARD_COMMAND = 'mull.goForward';
+const CLEAR_HISTORY_COMMAND = 'mull.clearHistory';
 
 // A visit to a node, with the cursor's position in it, relative to the node's start, for returning
 // to where the cursor was.
@@ -469,6 +470,18 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     this.changeEmitter.fire();
   }
 
+  // Start the active wiki's trail over from the current node.
+  public clear(): void {
+    const editor = vscode.window.activeTextEditor;
+    if (!isMainWikiEditor(editor)) {
+      return;
+    }
+    const trail = this.trailOf(editor.document);
+    trail.back = trail.back.slice(-1);
+    trail.forward = [];
+    this.changeEmitter.fire();
+  }
+
   // Move the cursor back to where it was in a visited node. The resulting selection change finds
   // the cursor already in the trail's current node, so it doesn't count as a new visit.
   private static revisit(
@@ -602,6 +615,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand(GO_FORWARD_COMMAND, () => {
       nodeHistory.goForward();
+    }),
+    vscode.commands.registerCommand(CLEAR_HISTORY_COMMAND, () => {
+      nodeHistory.clear();
     }),
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
