@@ -131,7 +131,7 @@
         "mull.snapBackToCurrentNode": {
           "type": "boolean",
           "default": true,
-          "description": "After scrolling past the current node, scroll back to it."
+          "description": "After scrolling the current node out of view, scroll back to it."
         }
       }
     },
