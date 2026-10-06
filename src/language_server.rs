@@ -62,8 +62,15 @@ const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 
 // These are the ways the extension can reveal a range, numbered as in VS Code's
 // `TextEditorRevealType`.
+#[allow(
+    dead_code,
+    reason = "The type mirrors VS Code's, including the ways not chosen yet."
+)]
 #[derive(Clone, Copy)]
 enum RevealType {
+    Default = 0,
+    InCenter = 1,
+    InCenterIfOutsideViewport = 2,
     AtTop = 3,
 }
 
