@@ -116,14 +116,21 @@ async function revealRange(
   editor.revealRange(range, revealType);
 }
 
-// This private command lets the language server reveal a directory in the explorer.
+// This private command lets the language server reveal a directory in the explorer, or in the
+// system's file manager.
 // [group:reveal_in_explorer_command]
 const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
 
-// Reveal a directory supplied by the language server in the explorer.
+// Reveal a directory supplied by the language server in the explorer. The explorer only shows the
+// workspace's folders, so a directory outside them opens in the system's file manager instead.
 async function revealInExplorer(uriString: string): Promise<void> {
-  // VS Code's command expects a URI object, which the language server can only pass as a string.
-  await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
+  // VS Code expects a URI object, which the language server can only pass as a string.
+  const uri = vscode.Uri.parse(uriString);
+  if (vscode.workspace.getWorkspaceFolder(uri) === undefined) {
+    await vscode.env.openExternal(uri);
+  } else {
+    await vscode.commands.executeCommand('revealInExplorer', uri);
+  }
 }
 
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
