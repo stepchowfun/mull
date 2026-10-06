@@ -127,6 +127,26 @@ async function revealInExplorer(uriString: string): Promise<void> {
   await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
 }
 
+// Determine the type of a setting's value.
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
+const isNumber = (value: unknown): value is number => typeof value === 'number';
+const isString = (value: unknown): value is string => typeof value === 'string';
+
+// Read a setting, failing if it's missing, which can't happen since every setting read here has a
+// default, or if it was given a value of the wrong type.
+function setting<T>(
+  section: string,
+  key: string,
+  isExpectedType: (value: unknown) => value is T,
+  scope?: vscode.ConfigurationScope,
+): T {
+  const value = vscode.workspace.getConfiguration(section, scope).get<unknown>(key);
+  if (!isExpectedType(value)) {
+    throw new Error(`The setting \`${section}.${key}\` is missing or has the wrong type.`);
+  }
+  return value;
+}
+
 // List the ranges of a wiki's nodes in source order, using the language server's document symbols,
 // whose ranges span entire nodes.
 async function nodeRanges(document: vscode.TextDocument): Promise<vscode.Range[]> {
@@ -176,10 +196,9 @@ const graphemeSegmenter = new Intl.Segmenter();
 // Find the column at which an editor wraps a document's lines, if it's known. Bounded wrapping
 // wraps at that column or at the edge of a narrower view, so it's at most that column.
 function wordWrapColumn(document: vscode.TextDocument): number | undefined {
-  const configuration = vscode.workspace.getConfiguration('editor', document);
-  const wordWrap = configuration.get<string>('wordWrap');
+  const wordWrap = setting('editor', 'wordWrap', isString, document);
   return wordWrap === 'bounded' || wordWrap === 'wordWrapColumn'
-    ? configuration.get<number>('wordWrapColumn')
+    ? setting('editor', 'wordWrapColumn', isNumber, document)
     : undefined;
 }
 
@@ -210,14 +229,13 @@ function minimumRowsOfLines(
 
 // Find how many rows the editor keeps in view around the cursor when the cursor moves: the larger
 // of the configured surrounding lines and the most lines sticky scroll shows, if it's enabled. The
-// fallbacks are the editor's defaults. The editor also caps this at half the view, which isn't
-// known here, so this may be more than the editor keeps in view, but never less.
+// editor also caps this at half the view, which isn't known here, so this may be more than the
+// editor keeps in view, but never less.
 function cursorSurroundingRows(document: vscode.TextDocument): number {
-  const configuration = vscode.workspace.getConfiguration('editor', document);
   return Math.max(
-    configuration.get<number>('cursorSurroundingLines', 0),
-    configuration.get<boolean>('stickyScroll.enabled', true)
-      ? configuration.get<number>('stickyScroll.maxLineCount', 5)
+    setting('editor', 'cursorSurroundingLines', isNumber, document),
+    setting('editor', 'stickyScroll.enabled', isBoolean, document)
+      ? setting('editor', 'stickyScroll.maxLineCount', isNumber, document)
       : 0,
   );
 }
@@ -263,12 +281,12 @@ class NodeFocus implements vscode.Disposable {
 
   // Determine whether the user wants other nodes dimmed.
   private static dimsOtherNodes(): boolean {
-    return vscode.workspace.getConfiguration('mull').get('dimOtherNodes', true);
+    return setting('mull', 'dimOtherNodes', isBoolean);
   }
 
   // Determine whether the user wants the view to settle back toward the current node.
   private static snapsBackToCurrentNode(): boolean {
-    return vscode.workspace.getConfiguration('mull').get('snapBackToCurrentNode', true);
+    return setting('mull', 'snapBackToCurrentNode', isBoolean);
   }
 
   // Dim around an editor's current node, using the nodes last found in its wiki. Blank lines at the
@@ -486,7 +504,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // Resolve the configured executable before constructing the server process.
-  const executablePath = vscode.workspace.getConfiguration('mull').get('executablePath', 'mull');
+  const executablePath = setting('mull', 'executablePath', isString);
 
   // Detect a missing executable before the language client emits its own error.
   const outputChannel = vscode.window.createOutputChannel('Mull', { log: true });
