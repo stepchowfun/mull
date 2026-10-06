@@ -1,24 +1,1225 @@
 # Home
 
-Welcome to the example wiki!
+This is my personal wiki. Everything I want to remember lives here, and every file in this directory is linked from somewhere in it. See [About this wiki] for how it's organized.
 
-This is the [Home] node, which is the starting point for every wiki.
+## Areas
 
-[My favorite art] is another node. It's easy to link to other nodes!
+- [Projects]: things I'm building or working toward
+- [Cooking]: recipes, techniques, and what's in the pantry
+- [Reading]: books I've read and want to read
+- [Travel]: past trips and future plans
+- [People]: friends and family, birthdays, gift ideas
+- [Health]: running, sleep, and stretching
+- [Money]: budget, taxes, and subscriptions
+- [Apartment]: the lease, plants, and upkeep
+- [Learning]: Japanese and guitar
 
-# My favorite art
+## Odds and ends
 
-- My favorite poem is [To make a prairie].
-- My favorite painting is [/mona_lisa.jpg] by Leonardo da Vinci.
+- [Ideas]: an inbox for half-formed thoughts
+- [Quotes]: lines worth keeping
 
-# To make a prairie
+# About this wiki
+
+The whole wiki is one plain text file. Each node starts with a title, and links between nodes use square brackets. I try to keep each node about one thing and link generously, so I can find anything in a couple of hops from [Home].
+
+Files live next to the wiki and are linked like nodes, with a leading slash. For example, the photo from the Louvre on the [Paris 2024] trip is [/photos/paris/mona_lisa.jpg]. A link to a directory, like the 2025 tax documents in [Taxes], covers every file inside it.
+
+Conventions:
+
+- Recipes list ingredients first, then steps.
+- Book notes start with a one-line summary.
+- Anything unsorted goes in [Ideas] until it earns its own node.
+
+# Paris 2024
+
+Six days in May with [Priya].
+
+Highlights:
+
+- The Louvre, early on a weekday. The crowd around the Mona Lisa was unreal; my photo of it is [/photos/paris/mona_lisa.jpg].
+- The Musée d'Orsay, which I liked more than the Louvre.
+- A cooking class on French sauces, which is where [Emulsions] finally made sense to me.
+- Walking along the Seine every evening.
+
+Lessons:
+
+- Book museum tickets ahead with timed entry.
+- Bakeries close on different days, so check before walking across town.
+- Pack shoes that are already broken in. See [Packing list].
+
+# Emulsions
+
+An emulsion is a stable mix of two liquids that don't normally combine, like oil and water. An emulsifier coats the droplets so they don't separate.
+
+Common emulsifiers:
+
+- Mustard, in [House vinaigrette]
+- Egg yolk, in mayonnaise and hollandaise
+- Cheese and starchy water, in cacio e pepe and in [Mushroom risotto]
+
+Adding the oil slowly, or shaking hard, makes smaller droplets and a thicker, more stable result.
+
+# Taxes
+
+Filing every March, ideally early enough that the refund helps with spring travel.
+
+The 2025 return is done. The summary of income and deductions exported from the tax software is in [/documents/taxes/2025/], and the [2025 tax checklist] tracks the paperwork.
+
+Notes for next year:
+
+- The freelance income from the [Bookshelf build] commission meant making estimated tax payments.
+- Keep donation receipts in one folder as they come in.
+- Max out the IRA before the April deadline.
+
+# 2025 tax checklist
+
+- W-2 from the old job, which arrived January 28
+- W-2 from the new job, which arrived January 31
+- 1099-NEC for the [Bookshelf build] commission
+- 1099-INT from the savings account
+- Donation receipts from the food bank and public radio
+- IRA contribution confirmation
+- Receipts for the two estimated tax payments
+- HSA form 5498-SA, which usually arrives in May, so file without it
+
+File by mid-March so the refund lands before the [Kyoto 2025] trip. See [Taxes].
+
+# Apartment
+
+A one-bedroom with a south-facing balcony, rented since 2023.
+
+- [Lease]: terms and dates
+- [Houseplants]: indoor plants and their care
+- [Cleaning schedule]
+- The Wi-Fi setup is described in [Home network].
+- The balcony is the [Balcony garden].
+
+# Balcony garden
+
+Four planters on a south-facing balcony. The [Lease] allows planters as long as nothing drains onto the unit below, so every planter sits in a saucer.
+
+Planted this year:
+
+- Basil, mostly for [Basil pesto]
+- Cherry tomatoes, which [Grandma June] says need more sun than I think
+- Thyme and rosemary, which survived the winter
+- Scallions regrown from the root ends, for [Weeknight fried rice] and [Miso soup]
+
+Notes:
+
+- Water in the morning so the leaves dry out before evening.
+- Pinch the basil flowers off as soon as they appear, or the plant gets bitter.
+- Tomatoes need a stake by early June.
+
+Indoor plants are in [Houseplants].
+
+# Miso soup
+
+A five-minute soup for when I want something warm.
+
+Ingredients:
+
+- 4 cups dashi (instant is fine)
+- 3 tablespoons [Miso]
+- 1 block silken tofu, cubed
+- A handful of dried wakame
+- Scallions from the [Balcony garden]
+
+Steps:
+
+1. Heat the dashi until steaming, but don't let it boil.
+2. Add the tofu and wakame and warm through.
+3. Dissolve the miso in a ladle of broth, then stir it back in.
+4. Top with scallions.
+
+Boiling after adding the miso dulls the flavor. [Elena] says her family adds a little white miso to red miso for balance.
+
+# Weeknight fried rice
+
+The best use of leftovers. Day-old [Rice] is essential, since fresh rice turns mushy.
+
+Ingredients:
+
+- 3 cups cold cooked rice
+- 2 eggs, beaten
+- 3 cloves [Garlic], minced
+- 1 cup of whatever's around: peas, carrots, leftover meat, or chopped [Napa cabbage kimchi]
+- 2 tablespoons soy sauce
+- 1 teaspoon sesame oil
+- Scallions from the [Balcony garden]
+
+Steps:
+
+1. Get the [Cast-iron skillet] very hot with a little neutral oil.
+2. Scramble the eggs, then set them aside.
+3. Fry the garlic and vegetables briefly.
+4. Add the rice and press it into the pan, letting it crisp before tossing.
+5. Add the soy sauce, the eggs, and the sesame oil, and toss.
+6. Top with scallions.
+
+# Cleaning schedule
+
+Daily: dishes, wipe the counters, and ten minutes of tidying.
+
+Weekly:
+
+- Vacuum and mop
+- Clean the bathroom
+- Change the sheets
+- Take out recycling
+
+Monthly:
+
+- Clean the fridge, which pairs well with [Meal planning]
+- Descale the kettle
+- Dust the leaves of the [Monstera]
+
+Twice a year:
+
+- Test the smoke detectors and replace their batteries, which the [Lease] says is my job
+- Deep clean the oven
+
+# Monstera
+
+A big monstera next to the living room window, with leaves that split more every year.
+
+- Bright, indirect light. Direct sun scorched one leaf last summer.
+- Water every one to two weeks.
+- It needed a moss pole once it started leaning.
+- Wipe the leaves with a damp cloth every month so they can photosynthesize.
+
+It will need a bigger pot by spring. See [Houseplants].
+
+# Home network
+
+The apartment's Wi-Fi had a dead zone in the bedroom, and the router was the one the internet provider sent.
+
+What I did:
+
+- Replaced the provider's router with a mesh system: one unit in the living room, one in the hallway.
+- Put the provider's modem in bridge mode so there's only one router.
+- Named the network something boring and used a long passphrase.
+- Moved the smart plugs to a separate guest network.
+
+Speeds went from about 40 Mbps in the bedroom to about 300 Mbps.
+
+The passphrase is on a card in the drawer by the door, not in this wiki. The [Apartment] node has the rest of the upkeep notes.
+
+# Houseplants
+
+- [Pothos], in the bathroom
+- [Monstera], in the living room
+- A snake plant by the door, which ignores me and thrives
+
+General care: water when the top inch of soil is dry, and less in winter. Rotate the pots every few weeks so they grow evenly.
+
+Before trips, see the [Packing list]. The outdoor plants are in the [Balcony garden].
+
+# Pothos
+
+The hardest plant to kill. It trails from the top of the bathroom cabinet and loves the humidity.
+
+- Water every week or two, when the leaves start to droop slightly.
+- Cuttings root in a glass of water within a few weeks, which makes them easy [Gift ideas].
+
+# Lease
+
+The important terms:
+
+- The lease runs from September 1, 2025 to August 31, 2026.
+- Rent is due on the first, and the grace period ends on the fifth.
+- The renewal notice is due 60 days before the lease ends, by July 2, 2026.
+- Small holes from picture hooks are fine. Anything larger needs patching before moving out.
+- The landlord handles appliance repairs. I handle light bulbs and smoke detector batteries.
+- Balcony planters are allowed as long as nothing drains onto the unit below.
+
+Rent is the biggest line in the [Budget]. The landlord is responsive, but requests go through the building's portal rather than email.
+
+# Cooking
+
+I cook most weeknights and do one bigger project on weekends. The best things I make came from learning a technique rather than a single recipe.
+
+- [Recipes]: everything I make regularly
+- [Techniques]: the methods behind the recipes
+- [Pantry]: ingredients I keep stocked
+- [Kitchen equipment]: tools worth having
+- [Meal planning]: how I decide what to cook each week
+
+[Grandma June] taught me most of what I know, starting with her apple pie.
+
+# Grandma June
+
+My grandmother, now in her late eighties, still baking every week.
+
+- She taught me to cook, starting with [Grandma June's apple pie].
+- She gave me my [Dutch oven] and her copy of [Pride and Prejudice].
+- She knows more about tomatoes than anyone, and her advice for the [Balcony garden] is always right.
+
+I call her every Sunday afternoon. Her favorite gifts are listed in [Gift ideas].
+
+# Dutch oven
+
+A heavy enameled cast-iron pot with a tight lid. Essential for [Braising] and for baking [Sourdough bread].
+
+- Avoid metal utensils on the enamel.
+- Brown stuck-on bits come off after soaking with a little baking soda.
+
+Mine was a housewarming gift from [Grandma June].
+
+# Grandma June's apple pie
+
+The first thing [Grandma June] taught me to bake. Her card says "bake until it smells done," so these are my measurements.
+
+Crust (double):
+
+- 2 1/2 cups flour
+- 1 teaspoon [Kosher salt] and 1 tablespoon sugar
+- 1 cup cold butter, cubed
+- 6 to 8 tablespoons ice water
+
+Filling:
+
+- 6 to 7 apples, half tart and half sweet, sliced
+- 3/4 cup sugar
+- 2 tablespoons flour
+- 1 teaspoon cinnamon and a pinch of nutmeg
+- A squeeze of lemon
+
+Steps:
+
+1. Cut the butter into the flour until it's in pea-sized pieces, then add water until it just holds together.
+2. Divide, flatten into disks, and chill for an hour.
+3. Toss the apples with the sugar, flour, spices, and lemon.
+4. Roll out the bottom crust, fill, cover with the top crust, crimp, and cut vents.
+5. Bake at 425°F for 20 minutes, then at 375°F for 40 to 50 minutes, until the filling bubbles through the vents.
+6. Cool for at least three hours so the filling sets.
+
+She always makes one for [Birthdays] in the family.
+
+# Kitchen equipment
+
+The few tools I use constantly:
+
+- [Dutch oven]
+- [Cast-iron skillet]
+- [Chef's knife]
+- [Kitchen scale]
+
+Everything else is optional. A microplane, a fish spatula, and a sheet pan come close.
+
+# Cast-iron skillet
+
+Cheap, nearly indestructible, and the best pan for [Searing].
+
+- Wash it with a little soap and dry it on the stove.
+- Wipe on a thin layer of oil after each wash.
+- Avoid simmering acidic sauces for a long time, since they strip the seasoning. [Shakshuka] is quick enough to be fine.
+
+# Chef's knife
+
+An 8-inch chef's knife does almost every job. See [Knife skills].
+
+Sharpening:
+
+- Hone it on a steel every few uses to straighten the edge.
+- Sharpen it on a whetstone every few months, holding a steady angle of about 15 degrees.
+- Never put it in the dishwasher.
+
+# Kitchen scale
+
+A digital scale that measures in grams. Baking became reliable the day I started using one.
+
+Used for [Sourdough bread], [Sourdough starter], and [Chocolate chip cookies].
+
+# Meal planning
+
+Sunday afternoon routine:
+
+1. Check what's in the fridge that needs using up.
+2. Pick three weeknight dinners from [Recipes] and one weekend project.
+3. Write a grocery list grouped by store section.
+4. Cook a pot of [Rice] and wash greens for the week.
+
+Leftover rice becomes [Weeknight fried rice] by Thursday. If [Marcus] is visiting, I plan for [Braised short ribs].
+
+# Braised short ribs
+
+The best thing I make for guests. It takes all afternoon but almost none of it is active.
+
+Ingredients:
+
+- 4 pounds bone-in short ribs
+- [Kosher salt] and black pepper
+- 2 onions, 2 carrots, and 2 celery stalks, chopped
+- 6 cloves [Garlic], smashed
+- 2 tablespoons tomato paste
+- 1 bottle dry red wine
+- 2 cups beef stock (see [Making stock])
+- Thyme and bay leaves
+
+Steps:
+
+1. Salt the ribs the night before if possible.
+2. Sear the ribs in batches in a [Dutch oven] until deeply browned. See [Searing].
+3. Soften the vegetables in the fat, then add the garlic and tomato paste.
+4. Add the wine, scrape up the browned bits, and reduce by half.
+5. Return the ribs, add stock to come two-thirds up the sides, and add the herbs.
+6. Cover and braise at 300°F for about three hours, until a fork slides in easily. See [Braising].
+7. Skim the fat, reduce the liquid to a sauce, and serve over polenta or mashed potatoes.
+
+It's better the next day. Chilling it overnight also makes the fat easy to lift off.
+
+# Rice
+
+I keep three kinds:
+
+- Short-grain white rice for everyday meals and [Weeknight fried rice]
+- Arborio for [Mushroom risotto]
+- Jasmine for anything with curry
+
+Rinse short-grain and jasmine rice until the water runs clear. Don't rinse arborio, since its surface starch is what makes risotto creamy.
+
+# Pantry
+
+Ingredients I keep stocked, because almost every recipe uses one of them:
+
+- [Garlic]
+- [Miso]
+- [Olive oil]
+- [Kosher salt]
+- [Parmesan]
+- [Rice]
+
+Also always on hand: canned tomatoes, onions, lemons, soy sauce, eggs, butter, flour, and dried pasta.
+
+# Garlic
+
+Used in nearly everything. Raw garlic is sharp; cooked slowly it turns sweet and mellow.
+
+- Smash a clove with the flat of the [Chef's knife] to peel it easily.
+- Add it after the onions, since it burns faster.
+- Pre-peeled garlic in a jar tastes flat. Buy whole heads.
+
+Appears in [Braised short ribs], [Shakshuka], [Basil pesto], [Napa cabbage kimchi], and [Weeknight fried rice].
+
+# Kosher salt
+
+Diamond Crystal, specifically. Its flakes are lighter than other brands, so recipes that say "kosher salt" can mean very different amounts by volume. Weigh it if a recipe gives grams.
+
+- Salt meat ahead of time, ideally the night before, for better seasoning and [Searing].
+- Salt pasta water so it tastes like mild seawater.
+
+# Olive oil
+
+I keep two: an inexpensive one for cooking and a good one for finishing.
+
+- Use the good one in [House vinaigrette] and [Basil pesto], or drizzled on soup.
+- Store it away from heat and light, and use it within a few months of opening.
+
+# Parmesan
+
+Real Parmigiano-Reggiano, bought by the wedge.
+
+- Save the rinds in the freezer and add one to soups and [Making stock].
+- Grate it finely with a microplane so it melts into [Mushroom risotto] and [Basil pesto].
+
+# Recipes
+
+Weeknights:
+
+- [Weeknight fried rice]
+- [Shakshuka]
+- [Miso soup]
+- [Mushroom risotto]
+
+Weekend projects:
+
+- [Braised short ribs]
+- [Sourdough bread]
+- [Napa cabbage kimchi]
+- [Grandma June's apple pie]
+
+Sauces and staples:
+
+- [Basil pesto]
+- [House vinaigrette]
+- [Sourdough starter]
+
+Baking:
+
+- [Chocolate chip cookies]
+
+# Chocolate chip cookies
+
+Brown butter makes these taste like toffee.
+
+Ingredients:
+
+- 1 cup butter, browned and cooled
+- 1 cup brown sugar and 1/2 cup white sugar
+- 2 eggs and 2 teaspoons vanilla
+- 2 1/4 cups flour
+- 1 teaspoon baking soda and 1 teaspoon [Kosher salt]
+- 2 cups chopped dark chocolate
+- Flaky salt for the tops
+
+Steps:
+
+1. Whisk the browned butter with the sugars, then add the eggs and vanilla.
+2. Stir in the flour, baking soda, and salt, then fold in the chocolate.
+3. Chill the dough for at least a day if possible.
+4. Bake 2-ounce balls at 375°F for 11 to 12 minutes, until the edges are set and the centers look underdone.
+5. Sprinkle with flaky salt.
+
+Weighing the dough balls on the [Kitchen scale] keeps them even. [Marcus] requests these every time he visits.
+
+# House vinaigrette
+
+The dressing I make in a jar every week. It's an emulsion, so shaking it hard matters. See [Emulsions].
+
+Ingredients:
+
+- 1 small shallot, minced
+- 3 tablespoons red wine vinegar
+- 1 teaspoon Dijon mustard
+- 1 teaspoon honey
+- 1/2 cup [Olive oil]
+- [Kosher salt] and pepper
+
+Steps:
+
+1. Let the shallot sit in the vinegar with a pinch of salt for 10 minutes to mellow.
+2. Add the mustard and honey.
+3. Add the oil, close the jar, and shake until it's thick and creamy.
+
+The mustard is what holds it together. It keeps for a week in the fridge; shake it again before using.
+
+# Mushroom risotto
+
+A weeknight risotto that doesn't need constant stirring, just frequent stirring.
+
+Ingredients:
+
+- 1 pound mixed mushrooms, sliced
+- 1 1/2 cups arborio [Rice]
+- 1 shallot, minced
+- 1/2 cup white wine
+- 5 to 6 cups hot stock (see [Making stock])
+- 2 tablespoons butter
+- 3/4 cup grated [Parmesan]
+
+Steps:
+
+1. Sear the mushrooms in a hot pan until browned, without crowding them. See [Searing]. Set aside.
+2. Soften the shallot, then toast the rice for two minutes.
+3. Add the wine and stir until it's absorbed.
+4. Add stock a ladle at a time, stirring often, for about 18 minutes.
+5. When the rice is just tender, stir in the mushrooms, butter, and cheese off the heat.
+
+It should be loose enough to spread on the plate.
+
+# Napa cabbage kimchi
+
+Based on what [Priya]'s mom showed me, simplified.
+
+Ingredients:
+
+- 1 large napa cabbage
+- 1/4 cup [Kosher salt]
+- 1 bunch scallions
+- 1 small Korean radish, julienned
+- Paste: 6 cloves [Garlic], a thumb of ginger, 1/4 cup gochugaru, 2 tablespoons fish sauce, 1 tablespoon sugar, and a little rice flour porridge
+
+Steps:
+
+1. Quarter the cabbage, salt it between the leaves, and let it sit for two hours, turning every 30 minutes.
+2. Rinse three times and drain well.
+3. Mix the paste with the radish and scallions.
+4. Rub the paste between every leaf, wearing gloves.
+5. Pack into a jar, leaving room at the top, and leave it at room temperature for one to two days.
+6. Refrigerate once it smells sour and bubbles when pressed.
+
+It keeps for months and gets more sour over time. Old kimchi is perfect for [Weeknight fried rice]. See [Fermentation].
+
+# Shakshuka
+
+Eggs poached in spiced tomato sauce. Fast, cheap, and good at any meal.
+
+Ingredients:
+
+- 2 tablespoons [Olive oil]
+- 1 onion and 1 red bell pepper, sliced
+- 3 cloves [Garlic], sliced
+- 1 teaspoon each cumin and paprika, plus a pinch of chili flakes
+- 1 can (28 ounces) crushed tomatoes
+- 4 to 6 eggs
+- Feta and parsley to finish
+
+Steps:
+
+1. Soften the onion and pepper in the oil in a [Cast-iron skillet].
+2. Add the garlic and spices and cook for a minute.
+3. Add the tomatoes and simmer until thick, about 10 minutes. Season with [Kosher salt].
+4. Make wells in the sauce, crack in the eggs, and cover until the whites set.
+5. Finish with feta and parsley, and serve with bread for scooping.
+
+# Sourdough bread
+
+My weekend loaf. The schedule matters more than the exact numbers.
+
+Ingredients (one loaf):
+
+- 100 grams active [Sourdough starter]
+- 375 grams water
+- 500 grams bread flour
+- 10 grams [Kosher salt]
+
+Schedule:
+
+- Friday night: feed the starter.
+- Saturday 9am: mix the flour and water and let it rest for an hour.
+- Saturday 10am: add the starter and salt and squeeze them in.
+- Saturday 10am to 2pm: four sets of stretch and folds, 30 minutes apart, then let it rise.
+- Saturday 3pm: shape, put it in a floured basket, and refrigerate overnight.
+- Sunday morning: bake in a preheated [Dutch oven] at 475°F, 20 minutes with the lid on and 20 to 25 minutes off.
+
+Weigh everything with the [Kitchen scale]. Cup measurements were the cause of all my early dense loaves.
+
+This is [Fermentation] doing the work, so a warm kitchen speeds everything up and a cold one slows it down.
+
+# Sourdough starter
+
+Flour, water, and patience. Mine is named Clint, after Clint Yeastwood, and he lives in the fridge between bakes.
+
+Maintenance:
+
+- Feed 1:1:1 by weight: 50 grams starter, 50 grams flour, 50 grams water.
+- When it lives in the fridge, feed it weekly.
+- Before baking, feed it twice at room temperature until it doubles within 6 hours.
+
+Signs of health: it smells pleasantly sour, it's bubbly throughout, and it doubles reliably. A layer of grey liquid on top just means it's hungry.
+
+[Elena] has a jar from my starter, which is a good backup if I ever kill mine. Used in [Sourdough bread].
+
+# Techniques
+
+The methods that unlocked the most recipes for me:
+
+- [Braising]: low and slow in liquid
+- [Searing]: browning for flavor
+- [Emulsions]: getting oil and water to mix
+- [Fermentation]: letting microbes do the cooking
+- [Knife skills]: faster and safer prep
+- [Making stock]: the base for soups, sauces, and risotto
+
+# Braising
+
+Cooking tough, flavorful cuts slowly in a small amount of liquid, covered, until the connective tissue melts into gelatin.
+
+The pattern:
+
+1. Season and sear the meat. See [Searing].
+2. Build flavor with aromatics, then deglaze.
+3. Add liquid partway up the meat, cover, and cook low (around 300°F) for hours.
+4. Reduce the liquid into a sauce.
+
+Good cuts for braising: short ribs, chuck roast, pork shoulder, lamb shanks, chicken thighs. A heavy [Dutch oven] is the ideal vessel.
+
+Example: [Braised short ribs].
+
+# Knife skills
+
+Most of cooking is prep, and prep goes faster with a sharp knife and a few good habits.
+
+- Use the claw grip: tuck your fingertips in and guide the blade with your knuckles.
+- Rock the knife rather than chopping straight down.
+- Make a flat side first on round things, like onions and potatoes, so they don't roll.
+- A sharp knife is safer than a dull one, since it doesn't slip.
+
+Dice an onion by halving it through the root, making horizontal and vertical cuts toward the root without cutting through it, then slicing across.
+
+See [Chef's knife] for sharpening.
+
+# Making stock
+
+Homemade stock makes [Mushroom risotto] and [Braised short ribs] noticeably better.
+
+Chicken stock:
+
+1. Save chicken bones and vegetable scraps (onion, carrot, celery) in a bag in the freezer.
+2. When the bag is full, cover everything with cold water in a big pot.
+3. Simmer gently, never boiling, for 4 to 6 hours. Skim the foam early on.
+4. Strain, cool, and refrigerate. Lift off the fat once it solidifies.
+
+It freezes for months. A good stock should jiggle when cold, from the gelatin.
+
+# Searing
+
+Browning food in a hot pan creates flavor through the Maillard reaction.
+
+Rules that matter:
+
+- Dry the surface well. Water has to evaporate before browning starts.
+- Get the pan hot before adding the food.
+- Don't crowd the pan, or the food steams instead.
+- Don't move it until it releases on its own.
+
+A [Cast-iron skillet] or a [Dutch oven] holds heat best. Used in [Braised short ribs] and [Mushroom risotto].
+
+# Health
+
+- [Running]
+- [Sleep]
+- [Stretching routine]
+
+Annual checkup is in the fall. Questions for the doctor go in [Ideas] until the appointment.
+
+# Running
+
+Running three or four days a week, mostly easy pace.
+
+Principles:
+
+- Most runs should be easy enough to hold a conversation.
+- Increase weekly mileage by no more than about 10 percent.
+- New shoes every 300 to 500 miles.
+
+Current goal: the [Half marathon]. [Priya] and I run together on Saturdays.
+
+After every run, do the [Stretching routine].
+
+# Sleep
+
+The habit with the biggest effect on everything else, including [Running] and mood.
+
+What helps:
+
+- The same wake-up time every day, including weekends
+- No screens in the last half hour before bed
+- A cool, dark bedroom
+- No caffeine after noon
+
+On trips, I use the earplugs and eye mask from the [Packing list] and try to get morning light to adjust to the time zone.
+
+# Stretching routine
+
+Ten minutes after every run, from a physical therapist after a sore knee last year.
+
+1. Standing calf stretch, 30 seconds per side
+2. Standing quad stretch, 30 seconds per side
+3. Hamstring stretch, lying down with a strap, 30 seconds per side
+4. Hip flexor lunge stretch, 30 seconds per side
+5. Figure-four glute stretch, 30 seconds per side
+6. Foam roll the outside of the thighs, one minute per side
+
+Skipping this is the fastest way to get hurt during [Half marathon] training.
+
+# Ideas
+
+An inbox for half-formed thoughts. Anything that grows gets its own node.
+
+- Try making [Miso] butter for roasted vegetables.
+- A garlic-and-herb oil from the [Balcony garden], for gifts.
+- Learn to make fresh pasta, then try it with [Basil pesto].
+- Build a step stool for the kitchen after the [Bookshelf build].
+- Ask the doctor about knee pain after long runs, at the next [Health] checkup.
+- Read about the history of the Silk Road, then add it to the [Reading list].
+- Host a dinner where everyone brings something fermented, following on from [Fermentation].
+
+# Basil pesto
+
+Made with basil from the [Balcony garden] all summer.
+
+Ingredients:
+
+- 2 packed cups basil leaves
+- 1/3 cup pine nuts, toasted
+- 1 clove [Garlic]
+- 1/2 cup grated [Parmesan]
+- 1/2 cup [Olive oil]
+- [Kosher salt] and a squeeze of lemon
+
+Steps:
+
+1. Pulse the garlic and pine nuts in a food processor.
+2. Add the basil and pulse until finely chopped.
+3. Stream in the oil, then stir in the cheese, salt, and lemon.
+
+To keep it bright green, blanch the basil for 10 seconds and shock it in ice water first. It freezes well in an ice cube tray.
+
+# Bookshelf build
+
+A six-foot bookshelf for the living room, mostly to get the books off the floor. Walnut-faced plywood for the carcass, solid walnut for the face frame.
+
+The parts are in the [Bookshelf cut list]. The plywood fits on two sheets if I cut the back panel first.
+
+Steps:
+
+1. Break down the plywood sheets at the lumberyard so they fit in the car.
+2. Cut dadoes in the sides for the two fixed shelves.
+3. Glue up the carcass and check that it's square by measuring the diagonals.
+4. Nail the back panel into its rabbet.
+5. Attach the face frame with glue and pocket screws.
+6. Drill holes for shelf pins using a jig.
+7. Finish with three coats of oil, sanding lightly between coats.
+
+Lessons so far:
+
+- Measure the actual plywood thickness. "3/4 inch" plywood was closer to 23/32 inch, so the first dado was loose.
+- A cheap shelf-pin jig is worth it.
+- [Marcus] has a track saw I can borrow, which beats wrestling sheets on the table saw.
+
+Someone at work asked me to build a smaller one, which became the freelance income in [Taxes].
+
+# Bookshelf cut list
+
+All parts are 3/4-inch walnut plywood unless noted. Dimensions are in inches.
+
+| Part | Quantity | Length | Width | Notes |
+| --- | --- | --- | --- | --- |
+| Side | 2 | 72 | 11 1/4 | Dado for each fixed shelf |
+| Top | 1 | 34 1/2 | 11 1/4 | |
+| Bottom | 1 | 34 1/2 | 11 1/4 | Raised 3 inches for the kick plate |
+| Fixed shelf | 2 | 34 1/2 | 11 | Glued into dadoes for rigidity |
+| Adjustable shelf | 3 | 34 1/4 | 11 | Rests on shelf pins |
+| Kick plate | 1 | 34 1/2 | 3 | |
+| Back panel | 1 | 71 1/4 | 35 1/4 | 1/4-inch plywood, nailed into a rabbet |
+| Face frame stile | 2 | 72 | 1 1/2 | Solid walnut |
+| Face frame rail | 2 | 32 | 1 1/2 | Solid walnut |
+
+Measure the actual plywood thickness before cutting the dadoes. See [Bookshelf build].
+
+# Fermentation
+
+Letting bacteria and yeast transform food. It preserves food, adds sourness and depth, and is mostly a matter of controlling salt, temperature, and time.
+
+What I ferment:
+
+- [Sourdough starter] and [Sourdough bread]: wild yeast and lactic acid bacteria
+- [Napa cabbage kimchi]: lactic acid bacteria in a salty environment
+- [Miso] is fermented too, though I buy it
+
+Warmer temperatures speed fermentation up; cooler ones slow it down and often make the flavor more complex.
+
+# Miso
+
+Fermented soybean paste. It adds savory depth to far more than [Miso soup].
+
+- White miso is milder and sweeter; red miso is saltier and stronger.
+- Whisk it into butter for vegetables, or into dressings in place of salt.
+- It keeps for a year in the fridge.
+
+See [Fermentation].
+
+# Reading list
+
+Up next:
+
+- Middlemarch, by George Eliot
+- The Count of Monte Cristo, by Alexandre Dumas
+- A book on Japanese history before the [Kyoto 2025] trip
+- Something about woodworking joinery, for the [Bookshelf build]
+
+Recommended by friends:
+
+- [Priya]: a book about the science of running
+- [Elena]: a novel set in Kyoto
+
+# Learning
+
+- [Japanese]: studying for about two years, with [Elena]
+- [Guitar]: a beginner, practicing a few times a week
+
+What works for me: a little every day beats a lot once a week.
+
+# Elena
+
+A friend from work. We study Japanese together over lunch on Wednesdays.
+
+- She grew up partly in Japan and helps with pronunciation and [Japanese grammar notes].
+- She planned half of my [Kyoto 2025] trip.
+- She keeps a backup of my [Sourdough starter].
+
+# Japanese grammar notes
+
+Notes from the textbook and from lunches with [Elena].
+
+- Japanese is subject-object-verb: "I sushi eat."
+- Particles mark a word's role. "Wa" marks the topic, "ga" the subject, and "o" the object.
+- Verbs come at the end and carry tense and politeness.
+- The polite form ends in "-masu," which is safe with strangers.
+- Subjects are often dropped when context makes them clear.
+
+The difference between "wa" and "ga" still trips me up. Elena says even native speakers can't fully explain it.
+
+# Guitar
+
+A beginner, learning on an acoustic guitar I bought used.
+
+Chords I know and progressions I'm practicing are in [Guitar chords].
+
+Goals:
+
+- Play the F barre chord cleanly
+- Learn three songs well enough to play for [Marcus]
+- Practice 15 minutes a day, which goes better if the guitar stays on a stand instead of in its case
+
+# Guitar chords
+
+Open chords I know, from the low E string to the high E string. An x means the string is muted, and a 0 means it's played open.
 
 ```
-To make a prairie it takes a clover and one bee,
-One clover, and a bee,
-And revery.
-The revery alone will do,
-If bees are few.
+C      x32010
+G      320003
+D      xx0232
+A      x02220
+E      022100
+Am     x02210
+Em     022000
+Dm     xx0231
+F      133211   (barre, still buzzes on the B string)
+Cadd9  x32033
 ```
 
-—Emily Dickinson
+Progressions to practice:
+
+- G, D, Em, C: the four-chord pop progression
+- Am, F, C, G: the same chords with a sadder start
+- C, Am, F, G: the doo-wop progression
+- E, A, B7, E: a short twelve-bar blues
+
+See [Guitar].
+
+# Japanese
+
+Studying about two years, mostly for travel and to read some manga without a dictionary.
+
+Approach:
+
+- Daily flashcards for vocabulary and [Kanji practice]
+- Grammar from a textbook, with notes in [Japanese grammar notes]
+- Weekly conversation practice with [Elena]
+- Learning [Hiragana and katakana] first, which made everything else possible
+
+It paid off on the [Kyoto 2025] trip. The language app is listed in [Subscriptions].
+
+# Hiragana and katakana
+
+The two phonetic scripts, 46 basic characters each. Hiragana is for native words and grammar; katakana is for foreign words and emphasis.
+
+What helped:
+
+- Learning hiragana first, then katakana
+- Mnemonics, like seeing a hook in "shi"
+- Reading menus and signs out loud on the [Kyoto 2025] trip
+
+Katakana words are often English, like "kōhī" for coffee, which makes them satisfying to decode. Next is [Kanji practice].
+
+# Kanji practice
+
+About 500 kanji so far, out of the roughly 2,000 in everyday use.
+
+- Learn each kanji with a few real words that use it, not alone.
+- Write by hand for the first week, then switch to recognition only.
+- Learn the radicals, the common components, which makes new kanji easier.
+
+Daily flashcards take about 15 minutes. See [Japanese].
+
+# Money
+
+- [Budget]
+- [Taxes]
+- [Subscriptions]
+
+The rule I try to follow: save first, then spend what's left without guilt.
+
+# Budget
+
+Monthly, after taxes:
+
+- Rent: about a third of income (see [Lease])
+- Savings and retirement: 20 percent, automated on payday
+- Groceries: kept down by [Meal planning]
+- [Subscriptions]: reviewed every quarter
+- Travel fund: a fixed amount each month, for the [Iceland road trip] next
+- Everything else: guilt-free spending
+
+I review the month on the first weekend of the next one. [Walden] has some extreme ideas about frugality, but the habit of tracking spending stuck.
+
+# Subscriptions
+
+Reviewed every quarter, and anything I haven't used in a month gets canceled.
+
+- Music streaming: keep
+- One video streaming service at a time, rotating: keep
+- Cloud storage: keep
+- A language app for [Japanese]: keep while I'm studying daily
+- A meal-kit service: canceled, since [Meal planning] works better and costs less
+
+# People
+
+- [Priya]: my oldest friend, from college
+- [Marcus]: my younger brother
+- [Grandma June]: my grandmother on Mom's side
+- [Elena]: a friend from work and my Japanese study partner
+
+Also:
+
+- [Birthdays]
+- [Gift ideas]
+
+# Birthdays
+
+- January 14: [Marcus]
+- March 3: [Elena]
+- June 22: [Priya]
+- October 9: [Grandma June]
+
+Every family birthday comes with [Grandma June's apple pie]. Ideas for presents are in [Gift ideas].
+
+# Gift ideas
+
+Notes collected throughout the year, so I'm not scrambling.
+
+- [Priya]: a running vest with pockets, or a book from her wishlist
+- [Marcus]: a good chisel set, since he keeps borrowing mine
+- [Grandma June]: framed photos from my trips, or a new apron
+- [Elena]: a nice ceramic cup from Kyoto (already bought, saving it for her birthday)
+
+Homemade is always welcome: a loaf of [Sourdough bread] or a jar of [Napa cabbage kimchi].
+
+# Marcus
+
+My younger brother. He lives about an hour away.
+
+- He has better tools than I do and lends me his track saw for the [Bookshelf build].
+- He requests [Chocolate chip cookies] every visit.
+- He might come on the [Iceland road trip].
+- He's been learning to cook. Next time he visits, I'll teach him [Braising].
+
+# Priya
+
+My oldest friend. We met in a college chemistry lab and have been friends for over a decade.
+
+- She got me into running and talked me into the [Half marathon].
+- Her mom taught me the basis of my [Napa cabbage kimchi].
+- We travel together every year or two, most recently [Paris 2024].
+- She's allergic to tree nuts, so no [Basil pesto] when she's over.
+
+Birthday: see [Birthdays].
+
+# Projects
+
+Current:
+
+- [Bookshelf build]: a walnut bookshelf for the living room
+- [Balcony garden]: herbs and tomatoes in planters
+- [Half marathon]: training for the spring race
+
+Done:
+
+- [Home network]: rewired the apartment's Wi-Fi in 2025
+
+Someday:
+
+- Build a matching side table once the bookshelf is done.
+- Make a small herb drying rack for the [Balcony garden].
+
+# Half marathon
+
+Spring half marathon, 13.1 miles. The goal is to finish under two hours without walking.
+
+The [Half marathon training plan] runs twelve weeks. It builds the long run by a mile a week, with a lighter week every fourth week.
+
+Things that matter more than I expected:
+
+- [Sleep] the two nights before a long run, not just the night before.
+- Eating something on runs over 90 minutes.
+- Doing the [Stretching routine] after runs instead of skipping it.
+
+[Priya] ran this race last year and said the hill at mile 9 is the hardest part. See [Running] for general notes.
+
+# Half marathon training plan
+
+Miles per day for the twelve weeks before the [Half marathon]. Mondays and Fridays are rest days, and Wednesdays are the [Stretching routine].
+
+| Week | Tuesday | Thursday | Saturday | Sunday | Total |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 3 easy | 3 easy | 5 long | 2 recovery | 13 |
+| 2 | 3 easy | 4 tempo | 6 long | 2 recovery | 15 |
+| 3 | 4 easy | 4 tempo | 7 long | 2 recovery | 17 |
+| 4 | 3 easy | 3 easy | 5 long | 2 recovery | 13 |
+| 5 | 4 easy | 5 intervals | 8 long | 3 recovery | 20 |
+| 6 | 4 easy | 5 tempo | 9 long | 3 recovery | 21 |
+| 7 | 5 easy | 5 intervals | 10 long | 3 recovery | 23 |
+| 8 | 4 easy | 4 tempo | 7 long | 3 recovery | 18 |
+| 9 | 5 easy | 6 tempo | 11 long | 3 recovery | 25 |
+| 10 | 4 easy | 4 easy | 8 long | 2 recovery | 18 |
+| 11 | 3 easy | 3 tempo | 5 long | 2 recovery | 13 |
+| 12 | 3 easy | 2 easy | 13.1 race | rest | 18.1 |
+
+See [Running] for general notes.
+
+# Quotes
+
+> "Our life is frittered away by detail. Simplify, simplify."
+>
+> — Thoreau, from [Walden]
+
+> "You have power over your mind, not outside events. Realize this, and you will find strength."
+>
+> — Marcus Aurelius, paraphrased from [Meditations]
+
+> "Supreme excellence consists in breaking the enemy's resistance without fighting."
+>
+> — Sun Tzu, from [The Art of War]
+
+> "Call me Ishmael."
+>
+> — Melville, from [Moby-Dick], the most famous opening line I know
+
+> "I could easily forgive his pride, if he had not mortified mine."
+>
+> — Elizabeth Bennet, from [Pride and Prejudice]
+
+> "Bake until it smells done."
+>
+> — [Grandma June]
+
+# Meditations
+
+Private notes Marcus Aurelius wrote to himself while ruling Rome, never meant for publication.
+
+What stuck with me:
+
+- Focus on what's in your control, and accept what isn't.
+- Every morning he reminded himself that he'd meet difficult people, and that they were acting from ignorance rather than malice.
+- It's repetitive, because he was reminding himself of the same things over and over, which is oddly comforting.
+
+I reread a few pages when work gets stressful. See [Quotes].
+
+# Moby-Dick
+
+Herman Melville's novel about Captain Ahab's obsessive hunt for the white whale.
+
+What stuck with me:
+
+- It's much funnier than its reputation suggests.
+- Half the book is digressions about whales and whaling, and I ended up liking those best.
+- Ahab is a study in obsession consuming everything around it.
+
+It took me three tries to finish. Reading it during the long flights for [Travel] finally worked.
+
+# Pride and Prejudice
+
+Jane Austen's novel about Elizabeth Bennet and Mr. Darcy, who both misjudge each other.
+
+What stuck with me:
+
+- The dialogue is still sharp and funny.
+- Both main characters have to admit they were wrong, which is rarer in fiction than it should be.
+- Mr. Collins is one of the great comic characters.
+
+[Grandma June] gave me her old copy, with her notes in the margins.
+
+# The Art of War
+
+Sun Tzu's short treatise on military strategy, about 2,500 years old.
+
+What stuck with me:
+
+- Winning without fighting is the best outcome.
+- Know yourself and your opponent.
+- It's often quoted out of context in business books, but it's more about avoiding unnecessary conflict than winning at all costs.
+
+Short enough to read in an afternoon. See [Quotes].
+
+# Walden
+
+Henry David Thoreau's account of two years living simply in a cabin by Walden Pond.
+
+What stuck with me:
+
+- Most of what we own ends up owning us.
+- He tracked every expense, which is an argument for a [Budget] that I didn't expect.
+- The chapters about the pond itself, watching it freeze and thaw, are the best writing in the book.
+
+The middle drags. I skimmed the chapter on economy the second time. A few lines are in [Quotes].
+
+# Reading
+
+- [Reading list]: what's next
+- Notes on books I've finished:
+  - [Walden]
+  - [Meditations]
+  - [Moby-Dick]
+  - [Pride and Prejudice]
+  - [The Art of War]
+
+I aim for one book a month and don't force myself to finish ones I'm not enjoying. Good lines go in [Quotes].
+
+# Travel
+
+Trips:
+
+- [Paris 2024]
+- [Kyoto 2025]
+- [Iceland road trip], which is still a plan
+
+Before any trip, I go through the [Packing list].
+
+# Iceland road trip
+
+A plan for driving the Ring Road, about 830 miles around the island.
+
+- When: September, for fewer crowds and a chance of northern lights
+- How long: 10 to 12 days
+- Who: maybe [Marcus]
+
+To figure out:
+
+- Whether to rent a camper van or book guesthouses
+- Which highland roads a rental car is allowed on
+- A savings target, which I'll add to the [Budget]
+
+# Kyoto 2025
+
+Ten days in April, timed for the cherry blossoms. [Elena] gave me a list of places her family loves.
+
+Highlights:
+
+- Fushimi Inari at sunrise, before the crowds.
+- A tofu restaurant near Nanzen-ji, which changed how I think about [Miso soup].
+- The Nishiki market, where I bought a new [Chef's knife].
+- Getting by with the Japanese from [Learning]. Reading [Hiragana and katakana] helped more than I expected.
+
+Lessons:
+
+- Get a transit card the first day.
+- Many temples close by 5pm.
+- The rail pass wasn't worth it for a trip based in one city.
+
+Paid for partly by the tax refund. See [Taxes].
+
+# Packing list
+
+Always:
+
+- Passport, with at least six months left before it expires
+- Phone, charger, and plug adapter
+- Medications for the whole trip plus a few extra days
+- Broken-in walking shoes
+- A light rain jacket
+- A reusable water bottle
+
+For long flights:
+
+- Earplugs and an eye mask, for [Sleep]
+- A book from the [Reading list]
+- Compression socks
+
+Before leaving:
+
+- Water the [Houseplants] and ask a neighbor to check on them.
+- Tell the bank about the trip.
