@@ -231,9 +231,9 @@ function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vsco
 }
 
 // This keeps the node containing the cursor, the current node, in focus in each main editor showing
-// a wiki. It dims everything outside the current node, and once the view stops moving, it settles
-// the view back toward the current node, like a rubber band, if the view shows too much of the
-// nodes before or after it.
+// a wiki. It dims everything outside the current node, and once the view and the cursor stop
+// moving, it settles the view back toward the current node, like a rubber band, if the view shows
+// too much of the nodes before or after it.
 //
 // The editor gives extensions little control over scrolling, which shapes how settling works:
 //
@@ -260,11 +260,6 @@ class NodeFocus implements vscode.Disposable {
 
   // Remember each editor's pending settling, which is postponed while its view keeps moving.
   private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
-
-  // Remember the first line of each editor's current node, to notice when the cursor moves to
-  // another node. An editor that hasn't been seen yet has no entry, while one whose cursor is
-  // before every node has an undefined entry.
-  private readonly currentNodeLines = new Map<vscode.TextEditor, number | undefined>();
 
   // Determine whether the user wants other nodes dimmed.
   private static dimsOtherNodes(): boolean {
@@ -324,24 +319,10 @@ class NodeFocus implements vscode.Disposable {
     await Promise.all([...documents].map(async (document) => this.refresh(document)));
   }
 
-  // Settle an editor's view when the cursor moves to another node, as when clicking a dimmed node,
-  // which pulls the new current node into view. The first cursor position seen in an editor is only
-  // remembered, so opening a wiki doesn't move its view.
-  public followCursor(editor: vscode.TextEditor): void {
-    const node = nodeAt(
-      this.nodes.get(editor.document.uri.toString()) ?? [],
-      editor.selection.active,
-    );
-    const line = node === undefined ? undefined : node.start.line;
-    const seen = this.currentNodeLines.has(editor);
-    const previousLine = this.currentNodeLines.get(editor);
-    this.currentNodeLines.set(editor, line);
-    if (seen && line !== previousLine) {
-      this.scheduleSettle(editor);
-    }
-  }
-
-  // Settle an editor's view once it stops moving, postponing any pending settling.
+  // Settle an editor's view once it and the cursor stop moving, postponing any pending settling.
+  // Settling after the cursor moves pulls the current node into view when the cursor moves to
+  // another node, as when clicking a dimmed node. Otherwise it finds nothing to do, since the view
+  // already settled when it last moved.
   public scheduleSettle(editor: vscode.TextEditor): void {
     clearTimeout(this.settleTimers.get(editor));
     this.settleTimers.set(
@@ -473,7 +454,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
         nodeFocus.dim(event.textEditor);
-        nodeFocus.followCursor(event.textEditor);
+        nodeFocus.scheduleSettle(event.textEditor);
       }
     }),
     vscode.workspace.onDidChangeTextDocument(async (event) => {
