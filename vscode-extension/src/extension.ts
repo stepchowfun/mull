@@ -175,7 +175,7 @@ const graphemeSegmenter = new Intl.Segmenter();
 
 // Find the column at which an editor wraps a document's lines, if it's known. Bounded wrapping
 // wraps at that column or at the edge of a narrower view, so it's at most that column.
-function wrappingColumn(document: vscode.TextDocument): number | undefined {
+function wordWrapColumn(document: vscode.TextDocument): number | undefined {
   const configuration = vscode.workspace.getConfiguration('editor', document);
   const wordWrap = configuration.get<string>('wordWrap');
   return wordWrap === 'bounded' || wordWrap === 'wordWrapColumn'
@@ -367,7 +367,7 @@ class NodeFocus implements vscode.Disposable {
       nextNode === undefined ? editor.document.lineCount - 1 : nextNode.start.line - 1;
 
     // Count the rows in view before and after the current node.
-    const wrapColumn = wrappingColumn(editor.document);
+    const wrapColumn = wordWrapColumn(editor.document);
     const rows = (firstLine: number, lastLine: number, from?: number, to?: number): number =>
       minimumRowsOfLines(editor.document, wrapColumn, firstLine, lastLine, from, to);
     const rowsBefore =
