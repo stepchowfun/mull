@@ -344,10 +344,11 @@ interface Visit {
 // This keeps a trail of the nodes visited in each wiki, which leads to the current node, and shows
 // the previous node above the current node's title, like a browser's back button.
 //
-// Moving the cursor to another node by any means other than the keyboard, such as following a
-// link, searching for a node, or clicking, visits that node. Moving to a neighboring node with the
-// keyboard, as when reading on past the end of a node, replaces the current node in the trail
-// instead, since it's not a step taken through the wiki's links. Visiting a node already in the
+// Moving the cursor to another node, such as by following a link, searching for a node, or
+// clicking, visits that node. Walking to a neighboring node with the keyboard, as when reading on
+// past the end of a node, replaces the current node in the trail instead, since it's not a step
+// taken through the wiki's links. Choosing a search result with the keyboard counts as moving with
+// the keyboard too, so only a move to a neighbor counts as walking. Visiting a node already in the
 // trail cuts the trail back to it, so the trail never loops, and visiting any node discards the
 // nodes that going back left ahead.
 class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
@@ -386,8 +387,8 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   }
 
   // Record where an editor's cursor is, visiting its node if it moved to another one, unless it
-  // walked there.
-  public record(editor: vscode.TextEditor, walked: boolean): void {
+  // walked there with the keyboard.
+  public record(editor: vscode.TextEditor, byKeyboard: boolean): void {
     // Find the cursor's node and its position in it.
     const nodes = this.nodeFocus.nodesOf(editor.document);
     const cursor = editor.selection.active;
@@ -411,7 +412,10 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
 
     // Replace the current node when walking to a neighbor, or when it no longer exists, as while
     // its title is being edited. Then cut the trail back to the new node if it's already in it.
-    if (current !== undefined && (walked || !nodes.some((other) => other.name === current.title))) {
+    const currentIndex =
+      current === undefined ? -1 : nodes.findIndex((other) => other.name === current.title);
+    const walked = byKeyboard && Math.abs(nodes.indexOf(node) - currentIndex) === 1;
+    if (current !== undefined && (walked || currentIndex === -1)) {
       trail.back.pop();
     }
     NodeHistory.prune(trail, nodes);
@@ -425,7 +429,8 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   }
 
   // Record where the active editor's cursor is once its wiki's nodes are found again, as if it
-  // walked there. This also starts the trail of a newly shown wiki.
+  // moved there with the keyboard, so an edit that moves it to a neighbor doesn't count as a
+  // visit. This also starts the trail of a newly shown wiki.
   public recordActive(): void {
     const editor = vscode.window.activeTextEditor;
     if (isMainWikiEditor(editor)) {
