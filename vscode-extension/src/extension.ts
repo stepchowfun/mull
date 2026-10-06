@@ -339,13 +339,12 @@ class NodeFocus implements vscode.Disposable {
   // It scrolls back to show the target number of rows of that node, which is a little inside the
   // allowance. See the class's description for why it works this way.
   private async settle(editor: vscode.TextEditor): Promise<void> {
-    // Find the current node and the lines in view, from the first completely visible character to
+    // Find the current node, and the lines in view from the first completely visible character to
     // the last one, without assuming the visible ranges are in order. Only the active editor can be
     // scrolled without padding.
-    const node = nodeAt(
-      this.nodes.get(editor.document.uri.toString()) ?? [],
-      editor.selection.active,
-    );
+    const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
+    const cursor = editor.selection.active;
+    const node = nodeAt(nodes, cursor);
     let visibleRange: vscode.Range | undefined = undefined;
     for (const range of editor.visibleRanges) {
       visibleRange = visibleRange === undefined ? range : visibleRange.union(range);
@@ -361,6 +360,12 @@ class NodeFocus implements vscode.Disposable {
     const firstVisible = visibleRange.start;
     const lastVisible = visibleRange.end;
 
+    // Find the current node's last line, including the blank lines after its text, which belong to
+    // it. It ends just before the next node, or at the end of the wiki.
+    const nextNode = nodes.find((range) => range.start.isAfter(cursor));
+    const nodeLastLine =
+      nextNode === undefined ? editor.document.lineCount - 1 : nextNode.start.line - 1;
+
     // Count the rows in view before and after the current node.
     const wrapColumn = wrappingColumn(editor.document);
     const rows = (firstLine: number, lastLine: number, from?: number, to?: number): number =>
@@ -370,8 +375,8 @@ class NodeFocus implements vscode.Disposable {
         ? rows(firstVisible.line, node.start.line - 1, firstVisible.character)
         : 0;
     const rowsAfter =
-      lastVisible.line > node.end.line
-        ? rows(node.end.line + 1, lastVisible.line, 0, lastVisible.character)
+      lastVisible.line > nodeLastLine
+        ? rows(nodeLastLine + 1, lastVisible.line, 0, lastVisible.character)
         : 0;
     const allowance = cursorSurroundingRows(editor.document);
     const target = Math.max(allowance - SETTLE_SLACK_ROWS, 0);
