@@ -7,40 +7,30 @@ import { LanguageClient } from 'vscode-languageclient/node';
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
 
-// This private command lets the language server reveal a source range in a document.
-// [group:reveal_range_command]
-const REVEAL_RANGE_COMMAND = 'mull.revealRange';
+// Determine the type of a setting's value.
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
+const isNumber = (value: unknown): value is number => typeof value === 'number';
+const isString = (value: unknown): value is string => typeof value === 'string';
 
-// This private command lets the language server reveal a directory in the explorer.
-// [group:reveal_in_explorer_command]
-const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
-
-// These commands move the cursor to the start or end of the node containing it, optionally
-// extending the selection.
-const GO_TO_NODE_START_COMMAND = 'mull.goToNodeStart';
-const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
-const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
-const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
-
-// Wait this long after the view stops moving before settling it onto the current node. Scrolling
-// with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
-// outlast the gaps between those changes, which would otherwise settle the view while it's still
-// being scrolled, yet short enough that settling feels like a response to the scrolling.
-const SETTLE_DELAY_MILLISECONDS = 150;
-
-// When settling, aim this many rows inside the allowance for other nodes. Rows are counted as the
-// fewest that lines could take, and the editor's wrapping at word boundaries usually adds a row or
-// so, so aiming at the allowance itself tends to land just outside it and settle again in a second,
-// small step. Two rows absorbed that shortfall in testing.
-const SETTLE_SLACK_ROWS = 2;
+// Read a setting, failing if it's missing, which can't happen since every setting read here has a
+// default, or if it was given a value of the wrong type.
+function setting<T>(
+  section: string,
+  key: string,
+  isExpectedType: (value: unknown) => value is T,
+  scope?: vscode.ConfigurationScope,
+): T {
+  const value = vscode.workspace.getConfiguration(section, scope).get<unknown>(key);
+  if (!isExpectedType(value)) {
+    throw new Error(`The setting \`${section}.${key}\` is missing or has the wrong type.`);
+  }
+  return value;
+}
 
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
 const INSTALLATION_ACTION = 'View installation instructions';
 const CONFIGURATION_ACTION = 'Configure executable path';
-
-// Retain the active client so it can be stopped when the extension is deactivated.
-let client: LanguageClient | undefined;
 
 // Show a notification offering the two ways to get a suitable executable, installing Mull or
 // selecting an existing executable, and perform the one the user selects.
@@ -105,6 +95,10 @@ async function reportVersionMismatch(
   await offerRecovery(false, message);
 }
 
+// This private command lets the language server reveal a source range in a document.
+// [group:reveal_range_command]
+const REVEAL_RANGE_COMMAND = 'mull.revealRange';
+
 // Reveal a source range supplied by the language server.
 async function revealRange(
   uriString: string,
@@ -121,30 +115,22 @@ async function revealRange(
   editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 
+// This private command lets the language server reveal a directory in the explorer.
+// [group:reveal_in_explorer_command]
+const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
+
 // Reveal a directory supplied by the language server in the explorer.
 async function revealInExplorer(uriString: string): Promise<void> {
   // VS Code's command expects a URI object, which the language server can only pass as a string.
   await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(uriString));
 }
 
-// Determine the type of a setting's value.
-const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
-const isNumber = (value: unknown): value is number => typeof value === 'number';
-const isString = (value: unknown): value is string => typeof value === 'string';
-
-// Read a setting, failing if it's missing, which can't happen since every setting read here has a
-// default, or if it was given a value of the wrong type.
-function setting<T>(
-  section: string,
-  key: string,
-  isExpectedType: (value: unknown) => value is T,
-  scope?: vscode.ConfigurationScope,
-): T {
-  const value = vscode.workspace.getConfiguration(section, scope).get<unknown>(key);
-  if (!isExpectedType(value)) {
-    throw new Error(`The setting \`${section}.${key}\` is missing or has the wrong type.`);
-  }
-  return value;
+// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
+// the preview in the references view, have no view column, and are left alone.
+function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
+  return (
+    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
+  );
 }
 
 // List the ranges of a wiki's nodes in source order, using the language server's document symbols,
@@ -167,6 +153,13 @@ function nodeAt(
 ): vscode.Range | undefined {
   return ranges.findLast((range) => range.start.isBeforeOrEqual(position));
 }
+
+// These commands move the cursor to the start or end of the node containing it, optionally
+// extending the selection.
+const GO_TO_NODE_START_COMMAND = 'mull.goToNodeStart';
+const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
+const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
+const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
 
 // Move each cursor to the start or end of the node containing it. A cursor before the first node
 // stays put, and repeating the command changes nothing.
@@ -240,13 +233,17 @@ function cursorSurroundingRows(document: vscode.TextDocument): number {
   );
 }
 
-// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
-// the preview in the references view, have no view column, and are left alone.
-function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
-  return (
-    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
-  );
-}
+// Wait this long after the view stops moving before settling it onto the current node. Scrolling
+// with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
+// outlast the gaps between those changes, which would otherwise settle the view while it's still
+// being scrolled, yet short enough that settling feels like a response to the scrolling.
+const SETTLE_DELAY_MILLISECONDS = 150;
+
+// When settling, aim this many rows inside the allowance for other nodes. Rows are counted as the
+// fewest that lines could take, and the editor's wrapping at word boundaries usually adds a row or
+// so, so aiming at the allowance itself tends to land just outside it and settle again in a second,
+// small step. Two rows absorbed that shortfall in testing.
+const SETTLE_SLACK_ROWS = 2;
 
 // This keeps the node containing the cursor, the current node, in focus in each main editor showing
 // a wiki. It dims everything outside the current node, and once the view and the cursor stop
@@ -449,6 +446,9 @@ class NodeFocus implements vscode.Disposable {
     }
   }
 }
+
+// Retain the active client so it can be stopped when the extension is deactivated.
+let client: LanguageClient | undefined;
 
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
