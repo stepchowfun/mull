@@ -340,24 +340,26 @@ class NodeFocus implements vscode.Disposable {
   // allowance. See the class's description for why it works this way.
   private async settle(editor: vscode.TextEditor): Promise<void> {
     // Find the current node and the lines in view, from the first completely visible character to
-    // the last one. Only the active editor can be scrolled without padding.
+    // the last one, without assuming the visible ranges are in order. Only the active editor can be
+    // scrolled without padding.
     const node = nodeAt(
       this.nodes.get(editor.document.uri.toString()) ?? [],
       editor.selection.active,
     );
-    const firstVisibleRange = editor.visibleRanges.at(0);
-    const lastVisibleRange = editor.visibleRanges.at(-1);
+    let visibleRange: vscode.Range | undefined = undefined;
+    for (const range of editor.visibleRanges) {
+      visibleRange = visibleRange === undefined ? range : visibleRange.union(range);
+    }
     if (
       !NodeFocus.snapsBackToCurrentNode() ||
       editor !== vscode.window.activeTextEditor ||
       node === undefined ||
-      firstVisibleRange === undefined ||
-      lastVisibleRange === undefined
+      visibleRange === undefined
     ) {
       return;
     }
-    const firstVisible = firstVisibleRange.start;
-    const lastVisible = lastVisibleRange.end;
+    const firstVisible = visibleRange.start;
+    const lastVisible = visibleRange.end;
 
     // Count the rows in view before and after the current node.
     const wrapColumn = wrappingColumn(editor.document);
