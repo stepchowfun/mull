@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.36.24] - 2026-10-05
 
 ### Added
-- The VS Code extension now keeps a history of the nodes visited in each wiki. A code lens above the current node's title links back to the previous node, like a browser's back button, and hovering it shows the whole trail. Moving to a node by following a link, searching, or clicking counts as a visit, while moving to a neighboring node with the keyboard doesn't. Commands go back (`Command + [` on macOS, `Alt + Left` elsewhere), go forward (`Command + ]`, `Alt + Right`), and clear the history (`Command + K`, `Command + H`; `Control + K`, `Control + H`).
+- The VS Code extension now keeps a history of the nodes visited in each wiki. A code lens above the current node's title links back to the previous node, like a browser's back button, and hovering it shows the whole trail. Commands go back (`Command + [` on macOS, `Alt + Left` elsewhere), go forward (`Command + ]`, `Alt + Right`), and clear the history (`Command + K`, `Command + H`; `Control + K`, `Control + H`).
 
 ## [0.36.23] - 2026-10-05
 
