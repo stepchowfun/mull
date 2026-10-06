@@ -27,7 +27,8 @@ pub fn title_line_text(line: &str) -> Option<&str> {
 }
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
-// This title identifies the root of every wiki's text-link graph.
+// This title identifies the root of every wiki's text-link graph. Keep this in sync with
+// [group:home_title].
 pub const HOME_TITLE: &str = "Home";
 
 // This struct represents a parsed wiki.
