@@ -331,8 +331,8 @@ impl FilesystemTarget {
         Self::new(PathBuf::new(), true)
     }
 
-    // List the directories containing this target, from nearest to farthest, ending with the wiki
-    // directory.
+    // List the directories containing this target, from nearest to farthest, ending with the
+    // attachments directory.
     pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
         self.path
             .ancestors()
