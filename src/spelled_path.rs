@@ -1,4 +1,7 @@
-use crate::{format::CodePath, path_util::relative_path, wiki::FilesystemTarget};
+use crate::{
+    format::{CodeStr, CodeWikiPath},
+    wiki::{FilesystemTarget, WIKI_EXTENSION},
+};
 use colored::ColoredString;
 use std::{
     collections::{HashMap, HashSet},
@@ -75,9 +78,9 @@ impl SpelledPath {
                             if spelled.as_os_str().is_empty() {
                                 "the wiki directory".to_owned()
                             } else {
-                                spelled.code_path().to_string()
+                                spelled.code_wiki_path().to_string()
                             },
-                            path.code_path(),
+                            path.code_wiki_path(),
                         ),
                         reason: Some(error.clone()),
                     });
@@ -88,7 +91,7 @@ impl SpelledPath {
                 return Err(SpellingError {
                     message: format!(
                         "{} doesn't match the spelling of any name on disk.",
-                        spelled.code_path(),
+                        spelled.code_wiki_path(),
                     ),
                     reason: None,
                 });
@@ -98,10 +101,10 @@ impl SpelledPath {
     }
 }
 
-// Format a spelled path for human-facing diagnostic output.
-impl CodePath for SpelledPath {
-    fn code_path(&self) -> ColoredString {
-        self.0.code_path()
+// Format a spelled path for human-facing diagnostic output as a link would write it.
+impl CodeWikiPath for SpelledPath {
+    fn code_wiki_path(&self) -> ColoredString {
+        self.0.code_wiki_path()
     }
 }
 
@@ -113,48 +116,36 @@ pub struct SpellingError {
     pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
-// This is the directory containing a wiki, as given, with the wiki's path within it spelled as on
-// disk if the wiki is there. The directory's own spelling doesn't matter, since it's only a prefix
-// from which every other path is derived, and it's never compared with a path spelled
-// independently of it.
+// This is a wiki's directory, which sits beside the wiki and is named after it without its
+// extension, as derived from the wiki's path as given. It contains every file the wiki can link to,
+// and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which every
+// other path is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
 pub struct WikiDirectory {
     path: PathBuf,
-    wiki_path: Option<SpelledPath>,
 }
 
 impl WikiDirectory {
-    // Find the directory containing a wiki, and require the wiki's path within it to be spelled as
-    // on disk, unless the wiki isn't there at all, as when it was deleted while open.
-    pub fn new(wiki_path: &Path) -> Result<Self, SpellingError> {
-        let path = wiki_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_owned();
-        let spelled_wiki_path = match SpelledPath::spell(
-            &path,
-            relative_path(&path, wiki_path),
-            &mut DirectoryListings::new(),
-        ) {
-            Ok(spelled) => Some(spelled),
-            Err(_) if fs::symlink_metadata(wiki_path).is_err() => None,
-            Err(error) => return Err(error),
-        };
+    // Find a wiki's directory by removing the wiki's extension, which it must have, since otherwise
+    // the directory would be the wiki itself.
+    pub fn new(wiki_path: &Path) -> Result<Self, String> {
+        if !wiki_path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION))
+        {
+            return Err(format!(
+                "The wiki's file name must end in {}.",
+                format!(".{WIKI_EXTENSION}").code_str(),
+            ));
+        }
         Ok(Self {
-            path,
-            wiki_path: spelled_wiki_path,
+            path: wiki_path.with_extension(""),
         })
     }
 
     // Expose the directory as given, which filesystem operations resolve paths against.
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    // Expose the wiki's path within the directory, spelled as on disk, if the wiki is there.
-    pub fn wiki_path(&self) -> Option<&SpelledPath> {
-        self.wiki_path.as_ref()
     }
 
     // Locate a spelled path for filesystem operations.
@@ -208,7 +199,7 @@ impl WikiDirectory {
                             if candidate.as_os_str().is_empty() {
                                 "the wiki directory".to_owned()
                             } else {
-                                candidate.code_path().to_string()
+                                candidate.code_wiki_path().to_string()
                             },
                         ),
                         reason: Some(Arc::new(error)),
@@ -261,7 +252,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = env::temp_dir().join(format!("mull-access-{}", process::id()));
-        let locked = directory.join("locked");
+        let locked = directory.join("wiki/locked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
@@ -273,10 +264,9 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&directory).unwrap();
         if !accessible {
-            let inner_path = std::path::Path::new("locked").join("inner");
             assert_eq!(
                 result.unwrap_err().message,
-                format!("Unable to access `{}`.", inner_path.display()),
+                "Unable to access `/locked/inner`.",
             );
         }
     }
@@ -286,7 +276,7 @@ mod tests {
     #[test]
     fn missing_component() {
         let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
-        fs::create_dir_all(&directory).unwrap();
+        fs::create_dir_all(directory.join("wiki")).unwrap();
         let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
 
         let error = wiki_directory
@@ -298,7 +288,7 @@ mod tests {
         fs::remove_dir_all(&directory).unwrap();
         assert_eq!(
             error.message,
-            "`missing` doesn't match the spelling of any name on disk.",
+            "`/missing` doesn't match the spelling of any name on disk.",
         );
     }
 }

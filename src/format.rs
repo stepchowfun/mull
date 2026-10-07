@@ -12,6 +12,23 @@ impl CodePath for Path {
     }
 }
 
+// This trait formats a path relative to the wiki directory for human-facing diagnostic output as a
+// link would write it, starting with `/` and separating components with `/`, so it isn't mistaken
+// for a path relative to the current directory.
+pub trait CodeWikiPath {
+    fn code_wiki_path(&self) -> ColoredString;
+}
+
+impl CodeWikiPath for Path {
+    fn code_wiki_path(&self) -> ColoredString {
+        let components = self
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>();
+        format!("/{}", components.join("/")).code_str()
+    }
+}
+
 // This trait has a function for formatting "code-like" text, such as a file path. The reason it's
 // implemented as a trait and not just a function is so we can use it with method syntax, as in
 // `x.code_str()`. Rust doesn't allow us to implement methods on primitive types such as `str`.
@@ -33,11 +50,22 @@ impl CodeStr for str {
 
 #[cfg(test)]
 mod tests {
-    use crate::format::CodeStr;
+    use crate::format::{CodeStr, CodeWikiPath};
+    use std::path::Path;
 
     #[test]
     fn code_str_display() {
         // This test, like many others, depends on colors being disabled [ref:colorless_tests].
         assert_eq!(format!("{}", "foo".code_str()), "`foo`");
+    }
+
+    // Root a path relative to the wiki directory at `/`, as a link would write it.
+    #[test]
+    fn code_wiki_path_display() {
+        assert_eq!(format!("{}", Path::new("").code_wiki_path()), "`/`");
+        assert_eq!(
+            format!("{}", Path::new("photos").join("paris").code_wiki_path()),
+            "`/photos/paris`",
+        );
     }
 }
