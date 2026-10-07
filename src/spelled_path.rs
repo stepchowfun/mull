@@ -1,5 +1,5 @@
 use crate::{
-    format::{CodeStr, code_wiki_path},
+    format::CodeStr,
     wiki::{FilesystemTarget, WIKI_EXTENSION},
 };
 use colored::ColoredString;
@@ -217,6 +217,17 @@ impl WikiDirectory {
     }
 }
 
+// Format a path relative to the wiki directory as a link would write it, starting with `/` and
+// separating components with `/`, so it isn't mistaken for a path relative to the current
+// directory.
+pub fn code_wiki_path(path: &Path) -> ColoredString {
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    format!("/{}", components.join("/")).code_str()
+}
+
 // These are the names of the entries in each directory, listed at most once per validation or
 // rename, or else why a directory can't be listed.
 pub type DirectoryListings = HashMap<PathBuf, Result<HashSet<OsString>, Arc<io::Error>>>;
@@ -241,9 +252,19 @@ pub fn entry_identity(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryListings, WikiDirectory};
+    use super::{DirectoryListings, WikiDirectory, code_wiki_path};
     use crate::wiki::{ContentText, FilesystemTarget};
-    use std::{env, fs, process};
+    use std::{env, fs, path::Path, process};
+
+    // Root a path relative to the wiki directory at `/`, as a link would write it.
+    #[test]
+    fn code_wiki_path_display() {
+        assert_eq!(format!("{}", code_wiki_path(Path::new(""))), "`/`");
+        assert_eq!(
+            format!("{}", code_wiki_path(&Path::new("photos").join("paris"))),
+            "`/photos/paris`",
+        );
+    }
 
     // Report an ancestor whose existence can't be determined, rather than treating it as missing.
     // Permissions don't restrict a superuser, so skip this where the ancestor remains accessible.

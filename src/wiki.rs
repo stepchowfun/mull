@@ -1,6 +1,7 @@
 use crate::{
     error::SourceRange,
-    format::{CodeStr, code_wiki_path},
+    format::CodeStr,
+    spelled_path::code_wiki_path,
 };
 use colored::ColoredString;
 use std::{

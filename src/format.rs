@@ -27,35 +27,13 @@ impl CodeStr for Path {
     }
 }
 
-// Format a path relative to the wiki directory as a link would write it, starting with `/` and
-// separating components with `/`, so it isn't mistaken for a path relative to the current
-// directory.
-pub fn code_wiki_path(path: &Path) -> ColoredString {
-    let components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>();
-    format!("/{}", components.join("/")).code_str()
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::format::{CodeStr, code_wiki_path};
-    use std::path::Path;
+    use crate::format::CodeStr;
 
     #[test]
     fn code_str_display() {
         // This test, like many others, depends on colors being disabled [ref:colorless_tests].
         assert_eq!(format!("{}", "foo".code_str()), "`foo`");
-    }
-
-    // Root a path relative to the wiki directory at `/`, as a link would write it.
-    #[test]
-    fn code_wiki_path_display() {
-        assert_eq!(format!("{}", code_wiki_path(Path::new(""))), "`/`");
-        assert_eq!(
-            format!("{}", code_wiki_path(&Path::new("photos").join("paris"))),
-            "`/photos/paris`",
-        );
     }
 }
