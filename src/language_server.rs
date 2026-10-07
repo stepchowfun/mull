@@ -1,18 +1,18 @@
 use crate::{
+    attachments_tree::{Visibility, attachments_tree_walker, visibility},
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
-    format::{CodePath, CodeStr},
+    format::CodeStr,
     line_index::LineIndex,
     lsp_position::LspPosition,
     parser,
     scoring::traversal_order,
-    spelled_path::{DirectoryListings, SpelledPath, WikiDirectory, entry_identity},
+    spelled_path::{AttachmentsDirectory, DirectoryListings, SpelledPath, entry_identity},
     validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_PREFIX, TextNode, Wiki,
         rendering_order_key, title_line_text, unescaped_characters,
     },
-    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
@@ -799,7 +799,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     let target_start = delimiters.opening + '['.len_utf8();
     let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
 
-    // Complete a filesystem link from the directory containing the wiki.
+    // Complete a filesystem link from the attachments directory.
     if typed_target.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Some(CompletionList {
             is_incomplete: false,
@@ -892,7 +892,7 @@ fn filesystem_link_completions(
     cursor: usize,
     closing_delimiter: Option<usize>,
 ) -> Option<Vec<CompletionItem>> {
-    // Resolve the typed directory, declining paths which escape the wiki tree
+    // Resolve the typed directory, declining paths which escape the attachments tree
     // [ref:filesystem_path_components].
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
@@ -908,31 +908,29 @@ fn filesystem_link_completions(
         }
     }
 
-    // Derive every filesystem path from the wiki's containing directory, as validation does.
-    let Ok(wiki_directory) = WikiDirectory::new(wiki_path) else {
+    // Derive every filesystem path from the attachments directory, as validation does.
+    let Ok(attachments_directory) = AttachmentsDirectory::new(wiki_path) else {
         return Some(Vec::new());
     };
 
-    // Descend only along the typed directory so large subtrees are read only once they're named,
-    // and exclude the wiki itself.
-    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
+    // Descend only along the typed directory so large subtrees are read only once they're named.
+    let mut walker_builder = attachments_tree_walker(attachments_directory.path());
     walker_builder
         .max_depth(Some(directory.components().count() + 1))
         .filter_entry({
-            let wiki_directory = wiki_directory.clone();
+            let attachments_directory = attachments_directory.clone();
             let directory = directory.clone();
             move |entry| {
-                let path = wiki_directory.entry_path(entry);
-                wiki_directory.wiki_path() != Some(&path)
-                    && (directory.starts_with(path.as_path())
-                        || path.as_path().parent() == Some(directory.as_path()))
+                let path = attachments_directory.entry_path(entry);
+                directory.starts_with(path.as_path())
+                    || path.as_path().parent() == Some(directory.as_path())
             }
         });
 
     // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
-        let path = wiki_directory.entry_path(&entry);
+        let path = attachments_directory.entry_path(&entry);
         let file_type = entry
             .file_type()
             .expect("Only standard input lacks a file type.");
@@ -946,7 +944,8 @@ fn filesystem_link_completions(
         // Omit a directory which a link couldn't name because it contains no files.
         if file_type.is_dir()
             && !matches!(
-                visibility(&wiki_directory, &path, &CancellationFlag::default()).assume_completed(),
+                visibility(&attachments_directory, &path, &CancellationFlag::default())
+                    .assume_completed(),
                 Visibility::Visible,
             )
         {
@@ -1102,10 +1101,10 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
 
     // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
     // in a saved wiki, its filesystem links to their targets.
-    let wiki_directory = snapshot
+    let attachments_directory = snapshot
         .path
         .as_deref()
-        .and_then(|wiki_path| WikiDirectory::new(wiki_path).ok());
+        .and_then(|wiki_path| AttachmentsDirectory::new(wiki_path).ok());
     let mut listings = DirectoryListings::new();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -1118,9 +1117,13 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                         RevealType::AtTop,
                     )),
                     Link::Filesystem { target, .. } => Some(
-                        filesystem_link_target(wiki_directory.as_ref()?, target, &mut listings)?
-                            .as_str()
-                            .to_owned(),
+                        filesystem_link_target(
+                            attachments_directory.as_ref()?,
+                            target,
+                            &mut listings,
+                        )?
+                        .as_str()
+                        .to_owned(),
                     ),
                 })
                 .into_string(),
@@ -1435,7 +1438,7 @@ fn rename_filesystem_node_for_document(
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
     let Some(RenamableFilesystemNode {
-        wiki_directory,
+        attachments_directory,
         old_target,
         old_path,
         ..
@@ -1451,8 +1454,10 @@ fn rename_filesystem_node_for_document(
     if new_target == old_target {
         return Ok(Some(WorkspaceEdit::default()));
     }
-    if new_target.is_wiki_directory() {
-        return Err("A file or directory can't be renamed to the wiki directory.".to_owned());
+    if new_target.is_attachments_directory() {
+        return Err(
+            "A file or directory can't be renamed to the attachments directory.".to_owned(),
+        );
     }
 
     // Require the existing directories along the new path to be spelled as they are on disk, as a
@@ -1461,11 +1466,13 @@ fn rename_filesystem_node_for_document(
     // go wrong. For example, a directory which will contain the node could look empty after the
     // rename and be deleted along with it. The rest of the new path doesn't exist, other than
     // possibly its final name, so it has no other spelling.
-    let (new_ancestor, new_suffix) = wiki_directory
+    let (new_ancestor, new_suffix) = attachments_directory
         .spell_existing_ancestor(&new_target)
         .map_err(|error| error.message)?;
-    let old_absolute_path = wiki_directory.resolve(&old_path);
-    let new_absolute_path = wiki_directory.resolve(&new_ancestor).join(new_suffix);
+    let old_absolute_path = attachments_directory.resolve(&old_path);
+    let new_absolute_path = attachments_directory
+        .resolve(&new_ancestor)
+        .join(new_suffix);
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
     // everything at its destination moves along with it, so nothing there can conflict. The old
@@ -1474,21 +1481,24 @@ fn rename_filesystem_node_for_document(
     let moves_into_itself = is_directory && new_ancestor.starts_with(&old_path);
     if is_directory
         && !moves_into_itself
-        && resolves_within(&wiki_directory.resolve(&new_ancestor), &old_absolute_path)
-            .unwrap_or(false)
+        && resolves_within(
+            &attachments_directory.resolve(&new_ancestor),
+            &old_absolute_path,
+        )
+        .unwrap_or(false)
     {
         // A move into itself goes through a temporary sibling, which would leave the symlink
         // leading nowhere, so refuse to move a directory into itself through one.
         return Err(format!(
             "{} can't be moved into itself through a symlink.",
-            old_path.code_path(),
+            old_path.code_str(),
         ));
     }
     if !moves_into_itself {
         check_rename_destination(
-            &wiki_directory,
+            &attachments_directory,
             &old_path,
-            new_target.path(),
+            &new_target,
             &new_ancestor,
             &new_absolute_path,
         )?;
@@ -1541,11 +1551,11 @@ fn rename_filesystem_node_for_document(
     // directories once the renamed node has moved.
     if file_operation_support.delete
         && let Some(directory) =
-            outermost_directory_emptied_by_rename(&wiki_directory, &old_path, &new_ancestor)
+            outermost_directory_emptied_by_rename(&attachments_directory, &old_path, &new_ancestor)
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
-                uri: file_uri(&wiki_directory.resolve(&directory)),
+                uri: file_uri(&attachments_directory.resolve(&directory)),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
                     ignore_if_not_exists: Some(true),
@@ -1563,7 +1573,7 @@ fn rename_filesystem_node_for_document(
 // This describes the filesystem node targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
 struct RenamableFilesystemNode {
-    wiki_directory: WikiDirectory,
+    attachments_directory: AttachmentsDirectory,
     path_source_range: SourceRange,
     old_target: FilesystemTarget,
     old_path: SpelledPath,
@@ -1596,30 +1606,27 @@ fn renamable_filesystem_node_at(
         return Err("This editor doesn't support renaming files.".to_owned());
     }
 
-    // Require the linked node to exist as the kind the link names, other than the wiki directory,
-    // resolving it from the wiki's containing directory as validation does.
-    let wiki_directory = WikiDirectory::new(wiki_path).map_err(|error| error.message)?;
-    if old_target.is_wiki_directory() {
-        return Err("The wiki directory can't be renamed.".to_owned());
+    // Require the linked node to exist as the kind the link names, other than the attachments
+    // directory, resolving it from the attachments directory as validation does.
+    let attachments_directory = AttachmentsDirectory::new(wiki_path)?;
+    if old_target.is_attachments_directory() {
+        return Err("The attachments directory can't be renamed.".to_owned());
     }
     let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(wiki_directory.path().join(old_path))
+    if !fs::metadata(attachments_directory.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
-        return Err(format!("{kind} {} not found.", old_path.code_path()));
+        return Err(format!("{kind} {} not found.", old_target.code_str()));
     }
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
-    let old_path = wiki_directory
+    let old_path = attachments_directory
         .spell(old_target, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
-    if wiki_directory.wiki_path() == Some(&old_path) {
-        return Err("The wiki can't be renamed through one of its own links.".to_owned());
-    }
 
     Ok(Some(RenamableFilesystemNode {
-        wiki_directory,
+        attachments_directory,
         path_source_range,
         old_target: old_target.clone(),
         old_path,
@@ -1643,12 +1650,12 @@ fn filesystem_link_path_source_range(
 }
 
 // Require a rename's destination to be free. Missing directories will be created, but not beneath
-// an existing file. The new path is written as the user typed it, and its deepest existing
+// an existing file. The new target is written as the user typed it, and its deepest existing
 // ancestor is spelled as on disk.
 fn check_rename_destination(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     old_path: &SpelledPath,
-    new_path: &Path,
+    new_target: &FilesystemTarget,
     new_ancestor: &SpelledPath,
     new_absolute_path: &Path,
 ) -> std::result::Result<(), String> {
@@ -1661,25 +1668,25 @@ fn check_rename_destination(
     if fs::symlink_metadata(new_absolute_path).is_ok() {
         return Err(
             if entry_identity(new_absolute_path)
-                == entry_identity(&wiki_directory.resolve(old_path))
+                == entry_identity(&attachments_directory.resolve(old_path))
             {
                 format!(
                     "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
                         explorer instead, then fix its links.",
-                    old_path.code_path(),
-                    new_path.code_path(),
+                    old_path.code_str(),
+                    new_target.code_str(),
                 )
             } else {
-                format!("{} already exists.", new_path.code_path())
+                format!("{} already exists.", new_target.code_str())
             },
         );
     }
 
     // Refuse to create a directory beneath an existing file.
-    if !wiki_directory.resolve(new_ancestor).is_dir() {
+    if !attachments_directory.resolve(new_ancestor).is_dir() {
         return Err(format!(
             "Path {} isn't a directory.",
-            new_ancestor.code_path(),
+            new_ancestor.code_str(),
         ));
     }
     Ok(())
@@ -1758,21 +1765,21 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // since it exists, is when the new path's deepest existing ancestor leads into it, even through a
 // symlink, or if that can't be determined. It isn't kept merely because a directory link names
 // it, since such a link only stands for the files within the directory. The search never reaches
-// the wiki directory itself.
+// the attachments directory itself.
 fn outermost_directory_emptied_by_rename(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     old_path: &SpelledPath,
     new_ancestor: &SpelledPath,
 ) -> Option<SpelledPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
-    let new_ancestor_absolute_path = wiki_directory.resolve(new_ancestor);
+    let new_ancestor_absolute_path = attachments_directory.resolve(new_ancestor);
     let mut emptied_directory = None;
     let mut removed_entry = old_path.clone();
     while let Some(directory) = removed_entry
         .parent()
-        .filter(|directory| !directory.is_wiki_directory())
+        .filter(|directory| !directory.is_attachments_directory())
     {
-        let absolute_directory = wiki_directory.resolve(&directory);
+        let absolute_directory = attachments_directory.resolve(&directory);
         if resolves_within(&new_ancestor_absolute_path, &absolute_directory).unwrap_or(true) {
             break;
         }
@@ -1999,9 +2006,9 @@ fn code_action_for_document(
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
 // directory is revealed in the explorer.
 fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> {
-    // Resolve filesystem links from the directory containing a saved wiki, recovering from syntax
+    // Resolve filesystem links from a saved wiki's attachments directory, recovering from syntax
     // errors so the links remain clickable while they're fixed.
-    let wiki_directory = WikiDirectory::new(snapshot.path.as_deref()?).ok()?;
+    let attachments_directory = AttachmentsDirectory::new(snapshot.path.as_deref()?).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut listings = DirectoryListings::new();
@@ -2024,7 +2031,7 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
             Some(DocumentLink {
                 range: snapshot.range(*source_range),
                 target: Some(filesystem_link_target(
-                    &wiki_directory,
+                    &attachments_directory,
                     target,
                     &mut listings,
                 )?),
@@ -2043,14 +2050,15 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
 // is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
 // differently than on disk leads nowhere, just as the checker reports it.
 fn filesystem_link_target(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
 ) -> Option<Uri> {
     // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
     // names.
     let is_directory = target.is_directory();
-    let target_path = wiki_directory.resolve(&wiki_directory.spell(target, listings).ok()?);
+    let target_path =
+        attachments_directory.resolve(&attachments_directory.spell(target, listings).ok()?);
     if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
         return None;
     }
@@ -2067,9 +2075,10 @@ fn filesystem_link_target(
     })
 }
 
-// Convert a path within a saved wiki's directory, which is absolute, into a file URI.
+// Convert a path within a saved wiki's attachments directory, which is absolute, into a file URI.
 fn file_uri(path: &Path) -> Uri {
-    Uri::from_file_path(path).expect("A path within a saved wiki's directory should be absolute.")
+    Uri::from_file_path(path)
+        .expect("A path within a saved wiki's attachments directory should be absolute.")
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -2199,7 +2208,7 @@ mod tests {
         .expect("A check without cancellation should complete.")
     }
 
-    // This guard owns a temporary wiki directory and removes it after each test.
+    // This guard owns a temporary directory containing a wiki and removes it after each test.
     struct TestWiki(PathBuf);
 
     impl TestWiki {
@@ -2217,6 +2226,13 @@ mod tests {
         // Expose the temporary wiki path to the formatter.
         fn path(&self) -> &Path {
             &self.0
+        }
+
+        // Expose the attachments directory, creating it so tests can fill it.
+        fn directory(&self) -> PathBuf {
+            let directory = self.0.with_file_name("wiki_attachments");
+            fs::create_dir_all(&directory).unwrap();
+            directory
         }
     }
 
@@ -2731,12 +2747,12 @@ mod tests {
             .collect()
     }
 
-    // Complete a filesystem link with the visible entries of the wiki directory.
+    // Complete a filesystem link with the visible entries of the attachments directory.
     #[test]
     fn completions_list_filesystem_entries() {
         let source = "# Home\n\n[/]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
         fs::write(directory.join("ignored.txt"), "ignored").unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -2775,7 +2791,7 @@ mod tests {
     fn completions_follow_prefix() {
         let source = "# Home\n\n[/no";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 4))
             .unwrap()
@@ -2791,13 +2807,39 @@ mod tests {
         );
     }
 
+    // Complete only entries within the attachments directory, which may not exist, and never those
+    // beside the wiki.
+    #[test]
+    fn completions_list_only_the_attachments_directory() {
+        let source = "# Home\n\n[/";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = || {
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+                .unwrap()
+                .items
+        };
+
+        assert_eq!(completion_edits(&completions()), vec![]);
+        fs::write(wiki.directory().join("within.txt"), "within").unwrap();
+        assert_eq!(
+            completion_edits(&completions()),
+            vec![(
+                "within.txt",
+                Range::new(Position::new(2, 2), Position::new(2, 2)),
+                "within.txt]",
+            )],
+        );
+    }
+
     // Complete the children of the directory named by an unfinished link, replacing only the
     // component being typed and omitting directories without files.
     #[test]
     fn completions_list_nested_directories() {
         let source = "# Home\n\n[/images/r";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw/large")).unwrap();
         fs::write(directory.join("images/raw/large/photo.tiff"), "photo").unwrap();
         fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
@@ -2824,7 +2866,7 @@ mod tests {
     fn completions_escape_path_delimiters() {
         let source = "# Home\n\n[/a\\[b\\]/]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir_all(directory.join("a[b]")).unwrap();
         fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -2859,7 +2901,7 @@ mod tests {
     fn completions_ignore_invalid_filesystem_contexts() {
         let source = "# [/\n\n[/../] \\[/";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         // Ignore titles, escaping paths, and escaped delimiters.
@@ -2971,7 +3013,7 @@ mod tests {
     fn hovers_link_filesystem_targets() {
         let source = "# Home\n\n[Other]\n\n# Other\n\n[/notes.txt] [/images/] [/missing.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
         fs::create_dir(directory.join("images")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -3515,7 +3557,7 @@ mod tests {
     fn rename_dispatches_by_node_kind() {
         let source = "# Home\n\n[Home] [/notes.txt]";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let rename = |character, new_name| {
             rename_for_document(
@@ -3546,7 +3588,7 @@ mod tests {
     fn rename_preparation_selects_filesystem_paths() {
         let source = "# Home\n\n[ /a\\[1\\].txt ] [/images/raw/]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join("a[1].txt"), "a").unwrap();
         fs::create_dir_all(directory.join("images/raw")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -3575,9 +3617,9 @@ mod tests {
     // Explain why a filesystem node can't be renamed before asking for a new name.
     #[test]
     fn rename_preparation_rejects_unrenamable_entries() {
-        let source = "# Home\n\n[/notes.txt] [/missing.txt] [/] [/wiki.mull]";
+        let source = "# Home\n\n[/notes.txt] [/missing.txt] [/]";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let prepare = |uri: &Uri, character, supports_file_renames| {
             prepare_rename_for_document(
@@ -3596,14 +3638,10 @@ mod tests {
             prepare(&uri, 2, false),
             "This editor doesn't support renaming files.",
         );
-        assert_eq!(prepare(&uri, 14, true), "File `missing.txt` not found.");
+        assert_eq!(prepare(&uri, 14, true), "File `/missing.txt` not found.");
         assert_eq!(
             prepare(&uri, 29, true),
-            "The wiki directory can't be renamed.",
-        );
-        assert_eq!(
-            prepare(&uri, 33, true),
-            "The wiki can't be renamed through one of its own links.",
+            "The attachments directory can't be renamed.",
         );
     }
 
@@ -3612,7 +3650,7 @@ mod tests {
     fn rename_moves_linked_files() {
         let source = "# Home\n\n[/notes.txt] [/notes.txt] [/notes/]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
         fs::create_dir(directory.join("notes")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -3641,7 +3679,7 @@ mod tests {
     fn rename_moves_linked_directories() {
         let source = "# Home\n\n[/images/] [/images/raw/] [/images/photo.jpg] [/images.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         fs::write(directory.join("images.txt"), "images").unwrap();
@@ -3671,7 +3709,7 @@ mod tests {
     fn rename_to_same_path_does_nothing() {
         let source = "# Home\n\n[/notes.txt]";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
@@ -3692,7 +3730,7 @@ mod tests {
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir_all(directory.join("a/b")).unwrap();
         fs::write(directory.join("a/b/photo.jpg"), "photo").unwrap();
         fs::create_dir_all(directory.join("c/d")).unwrap();
@@ -3760,7 +3798,7 @@ mod tests {
 
         let source = "# Home\n\n[/d/x.txt] [/d/] [/alias/]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir(directory.join("d")).unwrap();
         fs::write(directory.join("d/x.txt"), "x").unwrap();
         symlink("d", directory.join("alias")).unwrap();
@@ -3780,7 +3818,7 @@ mod tests {
         assert_eq!(deleted_uris, Vec::<Uri>::new());
         assert_eq!(
             rename(13, "alias/sub").unwrap_err(),
-            "`d` can't be moved into itself through a symlink.",
+            "`/d` can't be moved into itself through a symlink.",
         );
     }
 
@@ -3790,7 +3828,7 @@ mod tests {
     fn rename_moves_directories_into_themselves() {
         let source = "# Home\n\n[/images/] [/images/photo.jpg] [/notes.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -3853,10 +3891,9 @@ mod tests {
     // Reject filesystem renames which the parser, the filesystem, or the editor can't support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
-        let source =
-            "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/wiki.mull] [/NOTES.txt]";
+        let source = "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
         fs::write(directory.join("other.txt"), "other").unwrap();
         fs::create_dir(directory.join("images")).unwrap();
@@ -3893,65 +3930,50 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "/", ALL_FILE_OPERATIONS),
-            "A file or directory can't be renamed to the wiki directory.",
+            "A file or directory can't be renamed to the attachments directory.",
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
-            "`other.txt` already exists.",
+            "`/other.txt` already exists.",
         );
         assert_eq!(
             rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
-            "Path `notes.txt` isn't a directory.",
+            "Path `/notes.txt` isn't a directory.",
         );
         assert_eq!(
             rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),
-            "File `missing.txt` not found.",
+            "File `/missing.txt` not found.",
         );
         assert_eq!(
             rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),
-            "The wiki directory can't be renamed.",
-        );
-        assert_eq!(
-            rename(&uri, 44, "renamed.mull", ALL_FILE_OPERATIONS),
-            "The wiki can't be renamed through one of its own links.",
+            "The attachments directory can't be renamed.",
         );
 
         // Reject a link or a new path through an existing directory spelled differently than on
         // disk, which only a filesystem that ignores case finds.
         if fs::metadata(directory.join("IMAGES")).is_ok() {
             assert_eq!(
-                rename(&uri, 58, "renamed.txt", ALL_FILE_OPERATIONS),
-                "`NOTES.txt` doesn't match the spelling of any name on disk.",
+                rename(&uri, 45, "renamed.txt", ALL_FILE_OPERATIONS),
+                "`/NOTES.txt` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
                 rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
-                "`IMAGES` doesn't match the spelling of any name on disk.",
+                "`/IMAGES` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
                 rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
-                "`IMAGES` doesn't match the spelling of any name on disk.",
-            );
-
-            // Reject a wiki whose path the editor spells differently than on disk.
-            assert_eq!(
-                rename(
-                    &Uri::from_file_path(directory.join("WIKI.mull")).unwrap(),
-                    44,
-                    "renamed.mull",
-                    ALL_FILE_OPERATIONS,
-                ),
-                "`WIKI.mull` doesn't match the spelling of any name on disk.",
+                "`/IMAGES` doesn't match the spelling of any name on disk.",
             );
 
             // Reject a rename which only changes the case of a name, which VS Code would skip.
             assert_eq!(
                 rename(&uri, 2, "NOTES.txt", ALL_FILE_OPERATIONS),
-                "`notes.txt` and `NOTES.txt` differ only in case, which VS Code can't rename. \
+                "`/notes.txt` and `/NOTES.txt` differ only in case, which VS Code can't rename. \
                     Rename it in the explorer instead, then fix its links.",
             );
             assert_eq!(
                 rename(&uri, 15, "Images", ALL_FILE_OPERATIONS),
-                "`images` and `Images` differ only in case, which VS Code can't rename. Rename \
+                "`/images` and `/Images` differ only in case, which VS Code can't rename. Rename \
                     it in the explorer instead, then fix its links.",
             );
         }
@@ -3962,7 +3984,7 @@ mod tests {
     fn document_links_recover_from_syntax_errors() {
         let source = "# Home\n\n[/notes.txt] Unexpected]";
         let wiki = TestWiki::new(source);
-        fs::write(wiki.path().parent().unwrap().join("notes.txt"), "notes").unwrap();
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
@@ -3980,7 +4002,7 @@ mod tests {
         let source =
             "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
-        let directory = wiki.path().parent().unwrap();
+        let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
         fs::create_dir(directory.join("images")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -4019,6 +4041,23 @@ mod tests {
 
         // Decline to resolve links relative to an unsaved wiki.
         assert!(document_link_for_document(&snapshot(&untitled_uri(), source)).is_none());
+    }
+
+    // Resolve filesystem links within the attachments directory rather than beside the wiki.
+    #[test]
+    fn document_links_resolve_within_the_attachments_directory() {
+        let source = "# Home\n\n[/beside.txt] [/within.txt]";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
+        fs::write(wiki.directory().join("within.txt"), "within").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let document_links = document_link_for_document(&snapshot(&uri, source)).unwrap();
+        assert_eq!(document_links.len(), 1);
+        assert_eq!(
+            document_links[0].target,
+            Some(Uri::from_file_path(wiki.directory().join("within.txt")).unwrap()),
+        );
     }
 
     // Apply the single text edit of a code action's workspace edit to a source, then mark the

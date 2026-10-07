@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.36.26",
+  "version": "0.37.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"

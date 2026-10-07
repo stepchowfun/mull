@@ -1,17 +1,16 @@
-use crate::{
-    error::SourceRange,
-    format::{CodePath, CodeStr},
-};
+use crate::{error::SourceRange, format::CodeStr, spelled_path::code_attachment_path};
+use colored::ColoredString;
 use std::{
     collections::HashMap,
     fmt,
     path::{Component, Path, PathBuf},
 };
 
-// These strings define the wiki format's extension and structural markers. A link whose target
-// starts with `/` is a filesystem link, relative to the wiki's directory, which names a directory
-// if it ends with `/`.
+// These strings define the wiki format's extension, the suffix that names a wiki's attachments
+// directory, and structural markers. A link whose target starts with `/` is a filesystem link,
+// relative to the attachments directory, which names a directory if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
+pub const ATTACHMENTS_DIRECTORY_SUFFIX: &str = "_attachments";
 const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
@@ -283,30 +282,30 @@ impl FilesystemTarget {
     }
 
     // Parse a path written without link syntax or escapes, such as a rename's new name, for a
-    // target of the given kind. The path is relative to the wiki directory even if it starts with
-    // `/`, and it must stay inside the wiki's logical tree.
+    // target of the given kind. The path is relative to the attachments directory even if it starts
+    // with `/`, and it must stay inside the logical attachments tree.
     pub fn from_name(path: &str, is_directory: bool) -> Result<Self, String> {
-        // Reject components that escape the logical wiki tree [tag:filesystem_path_components]. A
-        // root or prefix makes the path absolute.
+        // Reject components that escape the logical attachments tree
+        // [tag:filesystem_path_components]. A root or prefix makes the path absolute.
         let path = Path::new(path.trim_start_matches('/'));
         if path
             .components()
             .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
         {
             return Err(format!(
-                "Path {} must be relative to the wiki directory.",
-                path.code_path(),
+                "Path {} must be relative to the attachments directory.",
+                path.code_str(),
             ));
         }
 
-        // A parent component could lead outside the wiki directory.
+        // A parent component could lead outside the attachments directory.
         if path
             .components()
             .any(|component| component == Component::ParentDir)
         {
             return Err(format!(
                 "Path {} must not contain {}.",
-                path.code_path(),
+                path.code_str(),
                 "..".code_str(),
             ));
         }
@@ -325,6 +324,20 @@ impl FilesystemTarget {
                 .collect(),
             is_directory,
         ))
+    }
+
+    // Target the attachments directory itself.
+    pub fn attachments_directory() -> Self {
+        Self::new(PathBuf::new(), true)
+    }
+
+    // List the directories containing this target, from nearest to farthest, ending with the wiki
+    // directory.
+    pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
+        self.path
+            .ancestors()
+            .skip(1)
+            .map(|ancestor| Self::new(ancestor.to_owned(), true))
     }
 
     // Move this target from one directory to another, keeping its kind, if it's the directory or
@@ -358,14 +371,14 @@ impl FilesystemTarget {
         ContentText::escape(&text)
     }
 
-    // Expose the path relative to the wiki directory, without any root, prefix, `.`, or `..`
+    // Expose the path relative to the attachments directory, without any root, prefix, `.`, or `..`
     // components. It's spelled as written, which may differ from the names on disk.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    // Determine whether the target is the wiki directory itself.
-    pub fn is_wiki_directory(&self) -> bool {
+    // Determine whether the target is the attachments directory itself.
+    pub fn is_attachments_directory(&self) -> bool {
         self.path.as_os_str().is_empty()
     }
 
@@ -374,12 +387,19 @@ impl FilesystemTarget {
         self.is_directory
     }
 
-    // Create a target from a normalized path. The wiki directory is always a directory.
+    // Create a target from a normalized path. The attachments directory is always a directory.
     fn new(path: PathBuf, is_directory: bool) -> Self {
         Self {
             is_directory: is_directory || path.as_os_str().is_empty(),
             path,
         }
+    }
+}
+
+// Format a target for human-facing diagnostic output by its path as written.
+impl CodeStr for FilesystemTarget {
+    fn code_str(&self) -> ColoredString {
+        code_attachment_path(&self.path)
     }
 }
 

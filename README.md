@@ -12,7 +12,7 @@ A *wiki* is a text file with a `.mull` extension. It contains *nodes* with *link
 
 Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
 
-To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`.
+To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`. These paths start at the *attachments directory*, which sits beside the wiki and is named after it, with `_attachments` in place of the `.mull` extension. For example, if the wiki is `notes.mull`, then `[/mona_lisa.jpg]` refers to `notes_attachments/mona_lisa.jpg`. A wiki that doesn't link to any files doesn't need an attachments directory.
 
 Here's an example wiki with 3 nodes:
 
@@ -56,11 +56,11 @@ Mull verifies these structural properties:
 It also verifies these connectivity properties:
 
 - All nodes are reachable by following links from the `Home` node, which must exist.
-- All files nested in the directory containing the wiki are linked to from the wiki.
+- All files nested in the attachments directory are linked to from the wiki.
 
 Mull formats the wiki for you. It chooses the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will flag that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every node must be linked to from the wiki, the same is true of files nested in the directory containing the wiki. Thus, the wiki serves as an index of the local file system. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the wiki root directory), all files are covered.
+Just as every node must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
 
 ## What does the IDE extension do?
 

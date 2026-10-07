@@ -1,6 +1,6 @@
 # Home
 
-This is my personal wiki. Everything I want to remember lives here, and every file in this directory is linked from somewhere in it. See [About this wiki] for how it's organized.
+This is my personal wiki. Everything I want to remember lives here, and every file in the attachments directory is linked from somewhere in it. See [About this wiki] for how it's organized.
 
 ## Areas
 
@@ -23,7 +23,7 @@ This is my personal wiki. Everything I want to remember lives here, and every fi
 
 The whole wiki is one plain text file. Each node starts with a title, and links between nodes use square brackets. I try to keep each node about one thing and link generously, so I can find anything in a couple of hops from [Home].
 
-Files live next to the wiki and are linked like nodes, with a leading slash. For example, the photo from the Louvre on the [Paris 2024] trip is [/photos/paris/mona_lisa.jpg]. A link to a directory, like the 2025 tax documents in [Taxes], covers every file inside it.
+Files live in the wiki's attachments directory, `example_attachments`, beside the wiki, and are linked like nodes, with a leading slash. For example, the photo from the Louvre on the [Paris 2024] trip is [/photos/paris/mona_lisa.jpg]. A link to a directory, like the 2025 tax documents in [Taxes], covers every file inside it.
 
 Conventions:
 

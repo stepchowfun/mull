@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0] - 2026-10-07
+
+### Changed
+- Filesystem links are now relative to the *attachments directory*, which sits beside the wiki and is named after it, with `_attachments` in place of the `.mull` extension. For example, `[/photo.jpg]` in `notes.mull` refers to `notes_attachments/photo.jpg`. Only files in the attachments directory need to be linked to, so files next to the wiki no longer cause errors, and a wiki without an attachments directory has no files to check. To migrate an existing wiki, move the files it links to into its attachments directory. The links themselves don't need to change.
+- Diagnostics now write paths as links would, starting with `/`, so they aren't mistaken for paths relative to the current directory. A link to a missing file also names the attachments directory it was sought in.
+
 ## [0.36.26] - 2026-10-06
 
 ### Fixed
