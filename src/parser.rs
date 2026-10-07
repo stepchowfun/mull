@@ -616,7 +616,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     }
 
     // Format links by trimming their targets and normalizing filesystem paths, writing a directory
-    // with a trailing `/` and the wiki directory as `/`.
+    // with a trailing `/` and the attachments directory as `/`.
     #[test]
     fn formatted_links() {
         let wiki = parse_test(

@@ -1,11 +1,11 @@
 use crate::{
+    attachments_tree::{Visibility, attachments_tree_walker, visibility},
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
     format::CodeStr,
     line_index::LineIndex,
-    spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
+    spelled_path::{AttachmentsDirectory, DirectoryListings, SpelledPath},
     wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
-    wiki_tree::{Visibility, visibility, wiki_tree_walker},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -42,9 +42,9 @@ pub fn validate(
         return Outcome::Cancelled;
     }
 
-    // Check the filesystem relative to the wiki's directory.
-    let wiki_directory = match WikiDirectory::new(wiki_path) {
-        Ok(wiki_directory) => wiki_directory,
+    // Check the filesystem relative to the attachments directory.
+    let attachments_directory = match AttachmentsDirectory::new(wiki_path) {
+        Ok(attachments_directory) => attachments_directory,
         Err(message) => {
             errors.push(Error::new(&message, Some(wiki_path), None, None, None));
             return Outcome::Completed(errors_to_result(errors));
@@ -52,7 +52,7 @@ pub fn validate(
     };
     validate_filesystem_links(
         &nodes,
-        &wiki_directory,
+        &attachments_directory,
         wiki_path,
         source_contents,
         line_index,
@@ -175,7 +175,7 @@ fn validate_untitled_filesystem_links(
 // Validate filesystem links and coverage, given the wiki's nodes in title order.
 fn validate_filesystem_links(
     nodes: &[&TextNode],
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     wiki_path: &Path,
     source_contents: &str,
     line_index: &LineIndex,
@@ -201,12 +201,12 @@ fn validate_filesystem_links(
             let source_range = link.source_range();
 
             // Follow symbolic links when classifying each target.
-            let metadata = match fs::metadata(wiki_directory.path().join(target.path())) {
+            let metadata = match fs::metadata(attachments_directory.path().join(target.path())) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
                         error,
-                        wiki_directory,
+                        attachments_directory,
                         wiki_path,
                         target,
                         (source_contents, line_index, source_range),
@@ -216,8 +216,8 @@ fn validate_filesystem_links(
             };
 
             // Require the path to be spelled exactly as on disk, so it matches the entries found
-            // when walking the wiki's directory. A misspelled link doesn't cover its target.
-            let spelled = match wiki_directory.spell(target, &mut listings) {
+            // when walking the attachments directory. A misspelled link doesn't cover its target.
+            let spelled = match attachments_directory.spell(target, &mut listings) {
                 Ok(spelled) => Some(spelled),
                 Err(error) => {
                     errors.push(Error::new(
@@ -247,7 +247,7 @@ fn validate_filesystem_links(
             // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
             if let Some(spelled) = &spelled {
                 match visibility_error(
-                    wiki_directory,
+                    attachments_directory,
                     wiki_path,
                     target,
                     spelled,
@@ -272,7 +272,7 @@ fn validate_filesystem_links(
 
     // Report uncovered filesystem entries.
     find_unreferenced_filesystem_links(
-        wiki_directory,
+        attachments_directory,
         wiki_path,
         &referenced_files,
         &referenced_directories,
@@ -288,7 +288,7 @@ fn validate_filesystem_links(
 // directory it was sought in, but any other failure keeps its underlying cause.
 fn inaccessible_target_error(
     error: std::io::Error,
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     wiki_path: &Path,
     target: &FilesystemTarget,
     source_context: (&str, &LineIndex, SourceRange),
@@ -298,7 +298,7 @@ fn inaccessible_target_error(
             &format!(
                 "{} not found in {}.",
                 target.code_str(),
-                wiki_directory.path().code_str(),
+                attachments_directory.path().code_str(),
             ),
             Some(wiki_path),
             Some(source_context),
@@ -344,17 +344,17 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
     }
 }
 
-// Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
-// it, where `spelled` is the target's spelling on disk.
+// Explain why a walk of the attachments tree doesn't reach a filesystem link's target, or a file
+// within it, where `spelled` is the target's spelling on disk.
 fn visibility_error(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     wiki_path: &Path,
     target: &FilesystemTarget,
     spelled: &SpelledPath,
     source_context: (&str, &LineIndex, SourceRange),
     cancellation: &CancellationFlag,
 ) -> Outcome<Option<Error>> {
-    visibility(wiki_directory, spelled, cancellation).map(|visibility| {
+    visibility(attachments_directory, spelled, cancellation).map(|visibility| {
         let message = match visibility {
             Visibility::Visible => return None,
             Visibility::Empty => format!(
@@ -376,28 +376,29 @@ fn visibility_error(
 // Find unreferenced files, up to a limit so pathological directories remain manageable, while
 // pruning covered directories.
 fn find_unreferenced_filesystem_links(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     wiki_path: &Path,
     referenced_files: &HashSet<SpelledPath>,
     referenced_directories: &HashSet<SpelledPath>,
     cancellation: &CancellationFlag,
 ) -> Outcome<Vec<Error>> {
-    // Handle a link to the wiki directory because the walk root bypasses the entry filter.
+    // Handle a link to the attachments directory because the walk root bypasses the entry filter.
     if referenced_directories
         .iter()
-        .any(SpelledPath::is_wiki_directory)
+        .any(SpelledPath::is_attachments_directory)
     {
         return Outcome::Completed(Vec::new());
     }
 
-    // Require the wiki directory to be a directory, if it exists. A missing one contains no files.
-    match fs::metadata(wiki_directory.path()) {
+    // Require the attachments directory to be a directory, if it exists. A missing one contains no
+    // files.
+    match fs::metadata(attachments_directory.path()) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Outcome::Completed(vec![Error::new(
                 &format!(
-                    "The wiki directory {} isn't a directory.",
-                    wiki_directory.path().code_str(),
+                    "The attachments directory {} isn't a directory.",
+                    attachments_directory.path().code_str(),
                 ),
                 Some(wiki_path),
                 None,
@@ -411,8 +412,8 @@ fn find_unreferenced_filesystem_links(
         Err(error) => {
             return Outcome::Completed(vec![Error::new(
                 &format!(
-                    "Unable to access the wiki directory {}.",
-                    wiki_directory.path().code_str(),
+                    "Unable to access the attachments directory {}.",
+                    attachments_directory.path().code_str(),
                 ),
                 Some(wiki_path),
                 None,
@@ -422,13 +423,13 @@ fn find_unreferenced_filesystem_links(
         }
     }
 
-    // Walk the wiki tree with the same visibility rules as every other filesystem consumer, pruning
-    // subtrees covered by explicit directory links.
-    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
+    // Walk the attachments tree with the same visibility rules as every other filesystem consumer,
+    // pruning subtrees covered by explicit directory links.
+    let mut walker_builder = attachments_tree_walker(attachments_directory.path());
     walker_builder.filter_entry({
-        let wiki_directory = wiki_directory.clone();
+        let attachments_directory = attachments_directory.clone();
         let referenced_directories = referenced_directories.clone();
-        move |entry| !referenced_directories.contains(&wiki_directory.entry_path(entry))
+        move |entry| !referenced_directories.contains(&attachments_directory.entry_path(entry))
     });
 
     // Stop traversing once the error limit is reached.
@@ -443,7 +444,7 @@ fn find_unreferenced_filesystem_links(
             Ok(entry) => entry,
             Err(error) => {
                 errors.push(Error::new(
-                    "Unable to walk the wiki directory.",
+                    "Unable to walk the attachments directory.",
                     Some(wiki_path),
                     None,
                     Some(Arc::new(error)),
@@ -455,7 +456,7 @@ fn find_unreferenced_filesystem_links(
                 continue;
             }
         };
-        let path = wiki_directory.entry_path(&entry);
+        let path = attachments_directory.entry_path(&entry);
         if entry
             .file_type()
             .expect("Only standard input lacks a file type.")
@@ -510,7 +511,7 @@ mod tests {
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     // This guard owns a temporary directory containing a wiki, `wiki.mull`, and removes it after a
-    // test. The wiki's directory, `wiki`, exists only once a test puts something in it.
+    // test. The wiki's attachments directory, `wiki`, exists only once a test puts something in it.
     struct TestDirectory(PathBuf);
 
     // This fixture keeps parsed nodes together with the source their ranges address.
@@ -567,7 +568,7 @@ mod tests {
             .any(|error| error.to_string().contains(message))
     }
 
-    // Create an isolated directory containing a wiki without a wiki directory.
+    // Create an isolated directory containing a wiki without an attachments directory.
     impl TestDirectory {
         fn new() -> Self {
             let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
@@ -588,20 +589,20 @@ mod tests {
             self.0.join("wiki.mull")
         }
 
-        // Locate a path within the wiki directory, creating the directory and the path's other
-        // ancestors.
+        // Locate a path within the attachments directory, creating the directory and the path's
+        // other ancestors.
         fn join(&self, path: &str) -> PathBuf {
             let path = self.0.join("wiki").join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             path
         }
 
-        // Write a file within the wiki directory.
+        // Write a file within the attachments directory.
         fn write(&self, path: &str, contents: &str) {
             fs::write(self.join(path), contents).unwrap();
         }
 
-        // Create a directory, and any missing ancestors, within the wiki directory.
+        // Create a directory, and any missing ancestors, within the attachments directory.
         fn create_dir(&self, path: &str) {
             fs::create_dir_all(self.join(path)).unwrap();
         }
@@ -646,10 +647,10 @@ mod tests {
         );
     }
 
-    // Accept a wiki without a wiki directory, which contains no files, even when other files sit
-    // beside the wiki.
+    // Accept a wiki without an attachments directory, which contains no files, even when other
+    // files sit beside the wiki.
     #[test]
-    fn missing_wiki_directory() {
+    fn missing_attachments_directory() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("unmanaged.txt"), "unmanaged").unwrap();
         fs::create_dir(directory.path().join("other")).unwrap();
@@ -659,9 +660,10 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Report filesystem links in a wiki without a wiki directory, since their targets are missing.
+    // Report filesystem links in a wiki without an attachments directory, since their targets are
+    // missing.
     #[test]
-    fn links_without_wiki_directory() {
+    fn links_without_attachments_directory() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("notes.txt"), "notes").unwrap();
         let wiki = parse("# Home\n[/notes.txt] [/]").unwrap();
@@ -672,9 +674,9 @@ mod tests {
         assert!(contains_error(&errors, "`/` not found in `"));
     }
 
-    // Report files beside the wiki only if they're in the wiki directory.
+    // Report files beside the wiki only if they're in the attachments directory.
     #[test]
-    fn only_the_wiki_directory_is_managed() {
+    fn only_the_attachments_directory_is_managed() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("beside.txt"), "beside").unwrap();
         directory.write("within.txt", "within");
@@ -688,16 +690,16 @@ mod tests {
         ));
     }
 
-    // Reject a wiki directory which is a file.
+    // Reject an attachments directory which is a file.
     #[test]
-    fn wiki_directory_is_a_file() {
+    fn attachments_directory_is_a_file() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("wiki"), "file").unwrap();
         let wiki = parse("# Home").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert!(contains_error(&errors, "The wiki directory `"));
+        assert!(contains_error(&errors, "The attachments directory `"));
         assert!(contains_error(&errors, "` isn't a directory."));
     }
 
@@ -717,7 +719,7 @@ mod tests {
         ));
     }
 
-    // Name the wiki directory after the wiki without its extension, whatever its case.
+    // Name the attachments directory after the wiki without its extension, whatever its case.
     #[test]
     fn uppercase_extension() {
         let directory = TestDirectory::new();
@@ -730,7 +732,7 @@ mod tests {
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
 
-    // Treat another wiki within the wiki directory as an ordinary file.
+    // Treat another wiki within the attachments directory as an ordinary file.
     #[test]
     fn nested_wiki() {
         let directory = TestDirectory::new();
@@ -759,7 +761,7 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Consult ignore files within the wiki directory but not beside the wiki.
+    // Consult ignore files within the attachments directory but not beside the wiki.
     #[test]
     fn ignore_files_beside_the_wiki() {
         let directory = TestDirectory::new();
@@ -775,9 +777,9 @@ mod tests {
         ));
     }
 
-    // Allow a wiki-directory link to cover every file in the wiki directory.
+    // Allow a link to the attachments directory to cover every file in the attachments directory.
     #[test]
-    fn wiki_directory_link() {
+    fn attachments_directory_link() {
         let directory = TestDirectory::new();
         directory.write("notes.txt", "notes");
         directory.write("images/photo.jpg", "photo");
@@ -786,7 +788,7 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Validate against the wiki directory when an open wiki disappears from disk.
+    // Validate against the attachments directory when an open wiki disappears from disk.
     #[test]
     fn missing_wiki_path() {
         let directory = TestDirectory::new();
@@ -825,10 +827,10 @@ mod tests {
         assert!(validate(&wiki, &alias.join("wiki.mull")).is_ok());
     }
 
-    // Follow a symlinked wiki directory and validate files through its logical path.
+    // Follow a symlinked attachments directory and validate files through its logical path.
     #[cfg(unix)]
     #[test]
-    fn symlinked_wiki_directory() {
+    fn symlinked_attachments_directory() {
         use std::os::unix::fs::symlink;
 
         let directory = TestDirectory::new();
@@ -959,7 +961,8 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Allow directory symlinks outside the wiki directory and validate their logical contents.
+    // Allow directory symlinks outside the attachments directory and validate their logical
+    // contents.
     #[cfg(unix)]
     #[test]
     fn external_directory_symlink() {
@@ -1009,7 +1012,7 @@ mod tests {
 
         assert!(contains_error(
             &validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            "Unable to walk the wiki directory.",
+            "Unable to walk the attachments directory.",
         ));
     }
 
@@ -1025,7 +1028,7 @@ mod tests {
 
         assert!(contains_error(
             &validate(&wiki, &directory.wiki_path()).unwrap_err(),
-            "Unable to walk the wiki directory.",
+            "Unable to walk the attachments directory.",
         ));
     }
 

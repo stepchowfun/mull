@@ -1,15 +1,15 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    spelled_path::{SpelledPath, WikiDirectory},
+    spelled_path::{AttachmentsDirectory, SpelledPath},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::path::Path;
 
-// Configure a walk of the wiki tree which follows directory symlinks, includes hidden entries, and
-// honors ignore files within the tree while excluding VCS metadata.
-pub fn wiki_tree_walker(wiki_directory: &Path) -> WalkBuilder {
+// Configure a walk of the attachments tree which follows directory symlinks, includes hidden
+// entries, and honors ignore files within the tree while excluding VCS metadata.
+pub fn attachments_tree_walker(attachments_directory: &Path) -> WalkBuilder {
     // Exclude VCS metadata, which never needs links.
-    let mut overrides = OverrideBuilder::new(wiki_directory);
+    let mut overrides = OverrideBuilder::new(attachments_directory);
     overrides
         .add("!.git/")
         .expect("The static .git override should be valid.")
@@ -19,10 +19,10 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> WalkBuilder {
         .build()
         .expect("The static overrides should compile.");
 
-    // Consult ignore files only within the wiki tree, whether or not it's a Git repository.
-    let mut walker_builder = WalkBuilder::new(wiki_directory);
+    // Consult ignore files only within the attachments tree, whether or not it's a Git repository.
+    let mut walker_builder = WalkBuilder::new(attachments_directory);
     walker_builder
-        .current_dir(wiki_directory)
+        .current_dir(attachments_directory)
         .follow_links(true)
         .hidden(false)
         .parents(false)
@@ -31,7 +31,7 @@ pub fn wiki_tree_walker(wiki_directory: &Path) -> WalkBuilder {
     walker_builder
 }
 
-// This describes whether a walk of the wiki tree reaches a path.
+// This describes whether a walk of the attachments tree reaches a path.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Visibility {
     // The walk reaches the file, or a file within the directory.
@@ -44,21 +44,21 @@ pub enum Visibility {
     Ignored,
 }
 
-// Determine whether a walk of the wiki tree reaches a path. The walk descends only along the path
-// and into its target, stopping at the first file it finds there, so it applies every ignore rule
-// without reading unrelated subtrees.
+// Determine whether a walk of the attachments tree reaches a path. The walk descends only along the
+// path and into its target, stopping at the first file it finds there, so it applies every ignore
+// rule without reading unrelated subtrees.
 pub fn visibility(
-    wiki_directory: &WikiDirectory,
+    attachments_directory: &AttachmentsDirectory,
     target: &SpelledPath,
     cancellation: &CancellationFlag,
 ) -> Outcome<Visibility> {
     // Keep only the ancestors of the target and the entries within it.
-    let mut walker_builder = wiki_tree_walker(wiki_directory.path());
+    let mut walker_builder = attachments_tree_walker(attachments_directory.path());
     walker_builder.filter_entry({
-        let wiki_directory = wiki_directory.clone();
+        let attachments_directory = attachments_directory.clone();
         let target = target.clone();
         move |entry| {
-            let path = wiki_directory.entry_path(entry);
+            let path = attachments_directory.entry_path(entry);
             target.starts_with(&path) || path.starts_with(&target)
         }
     });
@@ -73,7 +73,7 @@ pub fn visibility(
         }
 
         // Note reaching the target, and stop at the first file at or within it.
-        let path = wiki_directory.entry_path(&entry);
+        let path = attachments_directory.entry_path(&entry);
         if path == *target {
             reached = true;
         }

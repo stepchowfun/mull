@@ -11,10 +11,10 @@ use std::{
     sync::Arc,
 };
 
-// A path relative to the wiki directory whose components are spelled exactly as the names in their
-// directories' listings. Comparing such paths as written then agrees with the filesystem, whether
-// or not it ignores case. Such a path describes the disk when it was spelled, so it shouldn't
-// outlive a check or request.
+// A path relative to the attachments directory whose components are spelled exactly as the names in
+// their directories' listings. Comparing such paths as written then agrees with the filesystem,
+// whether or not it ignores case. Such a path describes the disk when it was spelled, so it
+// shouldn't outlive a check or request.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SpelledPath(PathBuf);
 
@@ -24,8 +24,8 @@ impl SpelledPath {
         &self.0
     }
 
-    // Determine whether this path is the wiki directory itself.
-    pub fn is_wiki_directory(&self) -> bool {
+    // Determine whether this path is the attachments directory itself.
+    pub fn is_attachments_directory(&self) -> bool {
         self.0.as_os_str().is_empty()
     }
 
@@ -50,7 +50,7 @@ impl SpelledPath {
     // filesystems and wouldn't match the names found when walking the directory. No attempt is made
     // to guess which name a misspelling refers to.
     fn spell(
-        wiki_directory: &Path,
+        attachments_directory: &Path,
         target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<Self, SpellingError> {
@@ -59,7 +59,7 @@ impl SpelledPath {
             // Accept a name only if its directory lists it exactly as written. If the directory
             // can't be listed, the spelling can't be checked at all.
             let name = component.as_os_str();
-            let directory = wiki_directory.join(&spelled.0);
+            let directory = attachments_directory.join(&spelled.0);
             let names = match listings.entry(directory.clone()).or_insert_with(|| {
                 fs::read_dir(&directory)
                     .map(|entries| {
@@ -75,8 +75,8 @@ impl SpelledPath {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to list {}, so the spelling of {} can't be checked.",
-                            if spelled.is_wiki_directory() {
-                                "the wiki directory".to_owned()
+                            if spelled.is_attachments_directory() {
+                                "the attachments directory".to_owned()
                             } else {
                                 spelled.code_str().to_string()
                             },
@@ -104,7 +104,7 @@ impl SpelledPath {
 // Format a spelled path for human-facing diagnostic output as a link would write it.
 impl CodeStr for SpelledPath {
     fn code_str(&self) -> ColoredString {
-        code_wiki_path(&self.0)
+        code_attachment_path(&self.0)
     }
 }
 
@@ -116,18 +116,18 @@ pub struct SpellingError {
     pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
-// This is a wiki's directory, which sits beside the wiki and is named after it without its
-// extension, as derived from the wiki's path as given. It contains every file the wiki can link to,
-// and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which every
-// other path is derived, and it's never compared with a path spelled independently of it.
+// This is a wiki's attachments directory, which sits beside the wiki and is named after it without
+// its extension, as derived from the wiki's path as given. It contains every file the wiki can link
+// to, and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which
+// every other path is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
-pub struct WikiDirectory {
+pub struct AttachmentsDirectory {
     path: PathBuf,
 }
 
-impl WikiDirectory {
-    // Find a wiki's directory by removing the wiki's extension, which it must have, since otherwise
-    // the directory would be the wiki itself.
+impl AttachmentsDirectory {
+    // Find a wiki's attachments directory by removing the wiki's extension, which it must have,
+    // since otherwise the directory would be the wiki itself.
     pub fn new(wiki_path: &Path) -> Result<Self, String> {
         if !wiki_path
             .extension()
@@ -153,14 +153,14 @@ impl WikiDirectory {
         self.path.join(&path.0)
     }
 
-    // Spell the path of an entry found by walking the wiki directory, whose components come from
-    // directory listings.
+    // Spell the path of an entry found by walking the attachments directory, whose components come
+    // from directory listings.
     pub fn entry_path(&self, entry: &ignore::DirEntry) -> SpelledPath {
         SpelledPath(
             entry
                 .path()
                 .strip_prefix(&self.path)
-                .expect("A walk of the wiki directory should only find entries within it.")
+                .expect("A walk of the attachments directory should only find entries within it.")
                 .to_owned(),
         )
     }
@@ -174,16 +174,16 @@ impl WikiDirectory {
         SpelledPath::spell(&self.path, target, listings)
     }
 
-    // Spell the deepest proper ancestor of a target that exists, which may be the wiki directory
-    // itself, and return it with the rest of the target's path as written. None of the rest exists
-    // except possibly the final name, which is never spelled, so a rename can tell whether it names
-    // the node being renamed. An ancestor whose existence can't be determined is an error rather
-    // than a missing directory.
+    // Spell the deepest proper ancestor of a target that exists, which may be the attachments
+    // directory itself, and return it with the rest of the target's path as written. None of the
+    // rest exists except possibly the final name, which is never spelled, so a rename can tell
+    // whether it names the node being renamed. An ancestor whose existence can't be determined is
+    // an error rather than a missing directory.
     pub fn spell_existing_ancestor(
         &self,
         target: &FilesystemTarget,
     ) -> Result<(SpelledPath, PathBuf), SpellingError> {
-        let mut ancestor = FilesystemTarget::wiki_directory();
+        let mut ancestor = FilesystemTarget::attachments_directory();
         for candidate in target.ancestors() {
             match self.path.join(candidate.path()).try_exists() {
                 Ok(true) => {
@@ -195,8 +195,8 @@ impl WikiDirectory {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to access {}.",
-                            if candidate.is_wiki_directory() {
-                                "the wiki directory".to_owned()
+                            if candidate.is_attachments_directory() {
+                                "the attachments directory".to_owned()
                             } else {
                                 candidate.code_str().to_string()
                             },
@@ -217,10 +217,10 @@ impl WikiDirectory {
     }
 }
 
-// Format a path relative to the wiki directory as a link would write it, starting with `/` and
-// separating components with `/`, so it isn't mistaken for a path relative to the current
+// Format a path relative to the attachments directory as a link would write it, starting with `/`
+// and separating components with `/`, so it isn't mistaken for a path relative to the current
 // directory.
-pub fn code_wiki_path(path: &Path) -> ColoredString {
+pub fn code_attachment_path(path: &Path) -> ColoredString {
     let components = path
         .components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -252,16 +252,19 @@ pub fn entry_identity(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryListings, WikiDirectory, code_wiki_path};
+    use super::{AttachmentsDirectory, DirectoryListings, code_attachment_path};
     use crate::wiki::{ContentText, FilesystemTarget};
     use std::{env, fs, path::Path, process};
 
-    // Root a path relative to the wiki directory at `/`, as a link would write it.
+    // Root a path relative to the attachments directory at `/`, as a link would write it.
     #[test]
-    fn code_wiki_path_display() {
-        assert_eq!(format!("{}", code_wiki_path(Path::new(""))), "`/`");
+    fn code_attachment_path_display() {
+        assert_eq!(format!("{}", code_attachment_path(Path::new(""))), "`/`");
         assert_eq!(
-            format!("{}", code_wiki_path(&Path::new("photos").join("paris"))),
+            format!(
+                "{}",
+                code_attachment_path(&Path::new("photos").join("paris")),
+            ),
             "`/photos/paris`",
         );
     }
@@ -277,9 +280,10 @@ mod tests {
         let locked = directory.join("wiki/locked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
+        let attachments_directory =
+            AttachmentsDirectory::new(&directory.join("wiki.mull")).unwrap();
 
-        let result = wiki_directory.spell_existing_ancestor(
+        let result = attachments_directory.spell_existing_ancestor(
             &FilesystemTarget::parse(&ContentText::from_source("/locked/inner/file.txt")).unwrap(),
         );
         let accessible = locked.join("inner").try_exists().is_ok();
@@ -299,9 +303,10 @@ mod tests {
     fn missing_component() {
         let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
         fs::create_dir_all(directory.join("wiki")).unwrap();
-        let wiki_directory = WikiDirectory::new(&directory.join("wiki.mull")).unwrap();
+        let attachments_directory =
+            AttachmentsDirectory::new(&directory.join("wiki.mull")).unwrap();
 
-        let error = wiki_directory
+        let error = attachments_directory
             .spell(
                 &FilesystemTarget::parse(&ContentText::from_source("/missing/file.txt")).unwrap(),
                 &mut DirectoryListings::new(),

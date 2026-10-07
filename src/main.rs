@@ -1,5 +1,6 @@
 mod analyzer;
 mod assertions;
+mod attachments_tree;
 mod cancellation;
 mod error;
 mod format;
@@ -12,7 +13,6 @@ mod scoring;
 mod spelled_path;
 mod validator;
 mod wiki;
-mod wiki_tree;
 
 use crate::{
     analyzer::analyze,
