@@ -1,8 +1,4 @@
-use crate::{
-    error::SourceRange,
-    format::CodeStr,
-    spelled_path::code_wiki_path,
-};
+use crate::{error::SourceRange, format::CodeStr, spelled_path::code_wiki_path};
 use colored::ColoredString;
 use std::{
     collections::HashMap,
