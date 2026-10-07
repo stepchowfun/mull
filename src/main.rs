@@ -18,7 +18,7 @@ use crate::{
     analyzer::analyze,
     cancellation::CancellationFlag,
     error::{Error, format_errors},
-    format::{CodePath, CodeStr},
+    format::CodeStr,
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
@@ -148,7 +148,7 @@ async fn entry() -> Result<(), Vec<Error>> {
 
     // Accept a canonical wiki, then either fix a noncanonical one or reject it with a diff.
     if wiki_contents == rendered_wiki {
-        println!("Wiki {} looks good.", wiki_path.code_path());
+        println!("Wiki {} looks good.", wiki_path.code_str());
     } else if should_fix {
         fs::write(&wiki_path, rendered_wiki).map_err(|error| {
             vec![Error::new(
@@ -161,7 +161,7 @@ async fn entry() -> Result<(), Vec<Error>> {
         })?;
 
         // Report that the wiki was fixed.
-        println!("Fixed {}.", wiki_path.code_path());
+        println!("Fixed {}.", wiki_path.code_str());
     } else {
         return Err(vec![Error::new(
             &format!(
@@ -188,7 +188,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
     for directory in current_directory.ancestors() {
         let entries = fs::read_dir(directory).map_err(|error| {
             Error::new(
-                &format!("Unable to read {}.", directory.code_path()),
+                &format!("Unable to read {}.", directory.code_str()),
                 None,
                 None,
                 Some(Arc::new(error)),
@@ -201,7 +201,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
         for entry in entries {
             let entry = entry.map_err(|error| {
                 Error::new(
-                    &format!("Unable to read an entry in {}.", directory.code_path()),
+                    &format!("Unable to read an entry in {}.", directory.code_str()),
                     None,
                     None,
                     Some(Arc::new(error)),
@@ -216,7 +216,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
             if has_wiki_extension {
                 let metadata = fs::metadata(&path).map_err(|error| {
                     Error::new(
-                        &format!("Unable to inspect {}.", path.code_path()),
+                        &format!("Unable to inspect {}.", path.code_str()),
                         None,
                         None,
                         Some(Arc::new(error)),
@@ -239,7 +239,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
                         path.file_name()
                             .expect("A directory entry's path should end with its name."),
                     )
-                    .code_path()
+                    .code_str()
                     .to_string()
                 })
                 .collect::<Vec<String>>()
@@ -247,7 +247,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
             return Err(Error::new(
                 &format!(
                     "Found multiple wikis in {}: {file_names}",
-                    directory.code_path(),
+                    directory.code_str(),
                 ),
                 None,
                 None,
@@ -266,7 +266,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
     Err(Error::new(
         &format!(
             "No wiki found in {} or its ancestors.",
-            current_directory.code_path(),
+            current_directory.code_str(),
         ),
         None,
         None,

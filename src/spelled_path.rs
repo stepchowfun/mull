@@ -1,5 +1,5 @@
 use crate::{
-    format::{CodeStr, CodeWikiPath},
+    format::{CodeStr, code_wiki_path},
     wiki::{FilesystemTarget, WIKI_EXTENSION},
 };
 use colored::ColoredString;
@@ -44,22 +44,22 @@ impl SpelledPath {
         self.0.file_name()
     }
 
-    // Require a path, relative to a directory, to be spelled exactly as the names in each of its
-    // directories' listings. Filesystems that ignore case or Unicode normalization find an entry
-    // even when its path is spelled differently, but such a path would break on other filesystems
-    // and wouldn't match the names found when walking the directory. No attempt is made to guess
-    // which name a misspelling refers to.
+    // Require a target's path, relative to a directory, to be spelled exactly as the names in each
+    // of its directories' listings. Filesystems that ignore case or Unicode normalization find an
+    // entry even when its path is spelled differently, but such a path would break on other
+    // filesystems and wouldn't match the names found when walking the directory. No attempt is made
+    // to guess which name a misspelling refers to.
     fn spell(
         wiki_directory: &Path,
-        path: &Path,
+        target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<Self, SpellingError> {
-        let mut spelled = PathBuf::new();
-        for component in path.components() {
+        let mut spelled = SpelledPath(PathBuf::new());
+        for component in target.path().components() {
             // Accept a name only if its directory lists it exactly as written. If the directory
             // can't be listed, the spelling can't be checked at all.
             let name = component.as_os_str();
-            let directory = wiki_directory.join(&spelled);
+            let directory = wiki_directory.join(&spelled.0);
             let names = match listings.entry(directory.clone()).or_insert_with(|| {
                 fs::read_dir(&directory)
                     .map(|entries| {
@@ -75,36 +75,36 @@ impl SpelledPath {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to list {}, so the spelling of {} can't be checked.",
-                            if spelled.as_os_str().is_empty() {
+                            if spelled.is_wiki_directory() {
                                 "the wiki directory".to_owned()
                             } else {
-                                spelled.code_wiki_path().to_string()
+                                spelled.code_str().to_string()
                             },
-                            path.code_wiki_path(),
+                            target.code_str(),
                         ),
                         reason: Some(error.clone()),
                     });
                 }
             };
-            spelled.push(name);
+            spelled.0.push(name);
             if !names.contains(name) {
                 return Err(SpellingError {
                     message: format!(
                         "{} doesn't match the spelling of any name on disk.",
-                        spelled.code_wiki_path(),
+                        spelled.code_str(),
                     ),
                     reason: None,
                 });
             }
         }
-        Ok(SpelledPath(spelled))
+        Ok(spelled)
     }
 }
 
 // Format a spelled path for human-facing diagnostic output as a link would write it.
-impl CodeWikiPath for SpelledPath {
-    fn code_wiki_path(&self) -> ColoredString {
-        self.0.code_wiki_path()
+impl CodeStr for SpelledPath {
+    fn code_str(&self) -> ColoredString {
+        code_wiki_path(&self.0)
     }
 }
 
@@ -171,7 +171,7 @@ impl WikiDirectory {
         target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<SpelledPath, SpellingError> {
-        SpelledPath::spell(&self.path, target.path(), listings)
+        SpelledPath::spell(&self.path, target, listings)
     }
 
     // Spell the deepest proper ancestor of a target that exists, which may be the wiki directory
@@ -183,10 +183,9 @@ impl WikiDirectory {
         &self,
         target: &FilesystemTarget,
     ) -> Result<(SpelledPath, PathBuf), SpellingError> {
-        let path = target.path();
-        let mut ancestor = Path::new("");
-        for candidate in path.ancestors().skip(1) {
-            match self.path.join(candidate).try_exists() {
+        let mut ancestor = FilesystemTarget::wiki_directory();
+        for candidate in target.ancestors() {
+            match self.path.join(candidate.path()).try_exists() {
                 Ok(true) => {
                     ancestor = candidate;
                     break;
@@ -196,10 +195,10 @@ impl WikiDirectory {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to access {}.",
-                            if candidate.as_os_str().is_empty() {
+                            if candidate.is_wiki_directory() {
                                 "the wiki directory".to_owned()
                             } else {
-                                candidate.code_wiki_path().to_string()
+                                candidate.code_str().to_string()
                             },
                         ),
                         reason: Some(Arc::new(error)),
@@ -208,8 +207,10 @@ impl WikiDirectory {
             }
         }
         Ok((
-            SpelledPath::spell(&self.path, ancestor, &mut DirectoryListings::new())?,
-            path.strip_prefix(ancestor)
+            SpelledPath::spell(&self.path, &ancestor, &mut DirectoryListings::new())?,
+            target
+                .path()
+                .strip_prefix(ancestor.path())
                 .expect("An ancestor of a path should be a prefix of it.")
                 .to_owned(),
         ))

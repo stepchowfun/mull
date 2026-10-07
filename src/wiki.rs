@@ -1,7 +1,8 @@
 use crate::{
     error::SourceRange,
-    format::{CodePath, CodeStr},
+    format::{CodeStr, code_wiki_path},
 };
+use colored::ColoredString;
 use std::{
     collections::HashMap,
     fmt,
@@ -295,7 +296,7 @@ impl FilesystemTarget {
         {
             return Err(format!(
                 "Path {} must be relative to the wiki directory.",
-                path.code_path(),
+                path.code_str(),
             ));
         }
 
@@ -306,7 +307,7 @@ impl FilesystemTarget {
         {
             return Err(format!(
                 "Path {} must not contain {}.",
-                path.code_path(),
+                path.code_str(),
                 "..".code_str(),
             ));
         }
@@ -325,6 +326,20 @@ impl FilesystemTarget {
                 .collect(),
             is_directory,
         ))
+    }
+
+    // Target the wiki directory itself.
+    pub fn wiki_directory() -> Self {
+        Self::new(PathBuf::new(), true)
+    }
+
+    // List the directories containing this target, from nearest to farthest, ending with the wiki
+    // directory.
+    pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
+        self.path
+            .ancestors()
+            .skip(1)
+            .map(|ancestor| Self::new(ancestor.to_owned(), true))
     }
 
     // Move this target from one directory to another, keeping its kind, if it's the directory or
@@ -380,6 +395,13 @@ impl FilesystemTarget {
             is_directory: is_directory || path.as_os_str().is_empty(),
             path,
         }
+    }
+}
+
+// Format a target for human-facing diagnostic output by its path as written.
+impl CodeStr for FilesystemTarget {
+    fn code_str(&self) -> ColoredString {
+        code_wiki_path(&self.path)
     }
 }
 

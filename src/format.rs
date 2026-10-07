@@ -1,34 +1,6 @@
 use colored::{ColoredString, Colorize, control::SHOULD_COLORIZE};
 use std::path::Path;
 
-// This trait formats a filesystem path for human-facing diagnostic output.
-pub trait CodePath {
-    fn code_path(&self) -> ColoredString;
-}
-
-impl CodePath for Path {
-    fn code_path(&self) -> ColoredString {
-        self.to_string_lossy().code_str()
-    }
-}
-
-// This trait formats a path relative to the wiki directory for human-facing diagnostic output as a
-// link would write it, starting with `/` and separating components with `/`, so it isn't mistaken
-// for a path relative to the current directory.
-pub trait CodeWikiPath {
-    fn code_wiki_path(&self) -> ColoredString;
-}
-
-impl CodeWikiPath for Path {
-    fn code_wiki_path(&self) -> ColoredString {
-        let components = self
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>();
-        format!("/{}", components.join("/")).code_str()
-    }
-}
-
 // This trait has a function for formatting "code-like" text, such as a file path. The reason it's
 // implemented as a trait and not just a function is so we can use it with method syntax, as in
 // `x.code_str()`. Rust doesn't allow us to implement methods on primitive types such as `str`.
@@ -48,9 +20,27 @@ impl CodeStr for str {
     }
 }
 
+// Format a path as given, such as one relative to the current directory.
+impl CodeStr for Path {
+    fn code_str(&self) -> ColoredString {
+        self.to_string_lossy().code_str()
+    }
+}
+
+// Format a path relative to the wiki directory as a link would write it, starting with `/` and
+// separating components with `/`, so it isn't mistaken for a path relative to the current
+// directory.
+pub fn code_wiki_path(path: &Path) -> ColoredString {
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    format!("/{}", components.join("/")).code_str()
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::format::{CodeStr, CodeWikiPath};
+    use crate::format::{CodeStr, code_wiki_path};
     use std::path::Path;
 
     #[test]
@@ -62,9 +52,9 @@ mod tests {
     // Root a path relative to the wiki directory at `/`, as a link would write it.
     #[test]
     fn code_wiki_path_display() {
-        assert_eq!(format!("{}", Path::new("").code_wiki_path()), "`/`");
+        assert_eq!(format!("{}", code_wiki_path(Path::new(""))), "`/`");
         assert_eq!(
-            format!("{}", Path::new("photos").join("paris").code_wiki_path()),
+            format!("{}", code_wiki_path(&Path::new("photos").join("paris"))),
             "`/photos/paris`",
         );
     }

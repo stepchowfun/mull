@@ -1,7 +1,7 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
-    format::{CodePath, CodeStr, CodeWikiPath},
+    format::CodeStr,
     line_index::LineIndex,
     spelled_path::{DirectoryListings, SpelledPath, WikiDirectory},
     wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
@@ -198,17 +198,17 @@ fn validate_filesystem_links(
                 Link::Filesystem { target, .. } => target,
                 Link::Text { .. } => continue,
             };
-            let (path, source_range) = (target.path(), link.source_range());
+            let source_range = link.source_range();
 
             // Follow symbolic links when classifying each target.
-            let metadata = match fs::metadata(wiki_directory.path().join(path)) {
+            let metadata = match fs::metadata(wiki_directory.path().join(target.path())) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     errors.push(inaccessible_target_error(
                         error,
                         wiki_directory,
                         wiki_path,
-                        path,
+                        target,
                         (source_contents, line_index, source_range),
                     ));
                     continue;
@@ -249,7 +249,7 @@ fn validate_filesystem_links(
                 match visibility_error(
                     wiki_directory,
                     wiki_path,
-                    path,
+                    target,
                     spelled,
                     (source_contents, line_index, source_range),
                     cancellation,
@@ -290,15 +290,15 @@ fn inaccessible_target_error(
     error: std::io::Error,
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &Path,
+    target: &FilesystemTarget,
     source_context: (&str, &LineIndex, SourceRange),
 ) -> Error {
     if error.kind() == std::io::ErrorKind::NotFound {
         Error::new(
             &format!(
                 "{} not found in {}.",
-                path.code_wiki_path(),
-                wiki_directory.path().code_path(),
+                target.code_str(),
+                wiki_directory.path().code_str(),
             ),
             Some(wiki_path),
             Some(source_context),
@@ -307,7 +307,7 @@ fn inaccessible_target_error(
         )
     } else {
         Error::new(
-            &format!("Unable to access {}.", path.code_wiki_path()),
+            &format!("Unable to access {}.", target.code_str()),
             Some(wiki_path),
             Some(source_context),
             Some(Arc::new(error)),
@@ -319,38 +319,37 @@ fn inaccessible_target_error(
 // Explain why a filesystem link's target has the wrong type, if it does, suggesting a change to the
 // link's trailing `/` only when that change would fix the link.
 fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata) -> Option<String> {
-    let path = target.path();
     if target.is_directory() {
         if metadata.is_dir() {
             None
         } else if metadata.is_file() {
             Some(format!(
                 "{} is a file, so its link must not end with {}.",
-                path.code_wiki_path(),
+                target.code_str(),
                 "/".code_str(),
             ))
         } else {
-            Some(format!("{} isn't a directory.", path.code_wiki_path()))
+            Some(format!("{} isn't a directory.", target.code_str()))
         }
     } else if metadata.is_file() {
         None
     } else if metadata.is_dir() {
         Some(format!(
             "{} is a directory, so its link must end with {}.",
-            path.code_wiki_path(),
+            target.code_str(),
             "/".code_str(),
         ))
     } else {
-        Some(format!("{} isn't a file.", path.code_wiki_path()))
+        Some(format!("{} isn't a file.", target.code_str()))
     }
 }
 
 // Explain why a walk of the wiki tree doesn't reach a filesystem link's target, or a file within
-// it, where `path` is the link's path and `spelled` is its spelling on disk.
+// it, where `spelled` is the target's spelling on disk.
 fn visibility_error(
     wiki_directory: &WikiDirectory,
     wiki_path: &Path,
-    path: &Path,
+    target: &FilesystemTarget,
     spelled: &SpelledPath,
     source_context: (&str, &LineIndex, SourceRange),
     cancellation: &CancellationFlag,
@@ -360,9 +359,9 @@ fn visibility_error(
             Visibility::Visible => return None,
             Visibility::Empty => format!(
                 "{} doesn't contain any files that aren't ignored.",
-                path.code_wiki_path(),
+                target.code_str(),
             ),
-            Visibility::Ignored => format!("{} is ignored.", path.code_wiki_path()),
+            Visibility::Ignored => format!("{} is ignored.", target.code_str()),
         };
         Some(Error::new(
             &message,
@@ -398,7 +397,7 @@ fn find_unreferenced_filesystem_links(
             return Outcome::Completed(vec![Error::new(
                 &format!(
                     "The wiki directory {} isn't a directory.",
-                    wiki_directory.path().code_path(),
+                    wiki_directory.path().code_str(),
                 ),
                 Some(wiki_path),
                 None,
@@ -413,7 +412,7 @@ fn find_unreferenced_filesystem_links(
             return Outcome::Completed(vec![Error::new(
                 &format!(
                     "Unable to access the wiki directory {}.",
-                    wiki_directory.path().code_path(),
+                    wiki_directory.path().code_str(),
                 ),
                 Some(wiki_path),
                 None,
@@ -464,7 +463,7 @@ fn find_unreferenced_filesystem_links(
             && !referenced_files.contains(&path)
         {
             errors.push(Error::new(
-                &format!("File {} isn't linked to.", path.code_wiki_path()),
+                &format!("File {} isn't linked to.", path.code_str()),
                 Some(wiki_path),
                 None,
                 None,

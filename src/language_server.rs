@@ -1,7 +1,7 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
-    format::{CodeStr, CodeWikiPath},
+    format::CodeStr,
     line_index::LineIndex,
     lsp_position::LspPosition,
     parser,
@@ -1479,14 +1479,14 @@ fn rename_filesystem_node_for_document(
         // leading nowhere, so refuse to move a directory into itself through one.
         return Err(format!(
             "{} can't be moved into itself through a symlink.",
-            old_path.code_wiki_path(),
+            old_path.code_str(),
         ));
     }
     if !moves_into_itself {
         check_rename_destination(
             &wiki_directory,
             &old_path,
-            new_target.path(),
+            &new_target,
             &new_ancestor,
             &new_absolute_path,
         )?;
@@ -1604,7 +1604,7 @@ fn renamable_filesystem_node_at(
     if !fs::metadata(wiki_directory.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
-        return Err(format!("{kind} {} not found.", old_path.code_wiki_path()));
+        return Err(format!("{kind} {} not found.", old_target.code_str()));
     }
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
@@ -1638,12 +1638,12 @@ fn filesystem_link_path_source_range(
 }
 
 // Require a rename's destination to be free. Missing directories will be created, but not beneath
-// an existing file. The new path is written as the user typed it, and its deepest existing
+// an existing file. The new target is written as the user typed it, and its deepest existing
 // ancestor is spelled as on disk.
 fn check_rename_destination(
     wiki_directory: &WikiDirectory,
     old_path: &SpelledPath,
-    new_path: &Path,
+    new_target: &FilesystemTarget,
     new_ancestor: &SpelledPath,
     new_absolute_path: &Path,
 ) -> std::result::Result<(), String> {
@@ -1661,11 +1661,11 @@ fn check_rename_destination(
                 format!(
                     "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
                         explorer instead, then fix its links.",
-                    old_path.code_wiki_path(),
-                    new_path.code_wiki_path(),
+                    old_path.code_str(),
+                    new_target.code_str(),
                 )
             } else {
-                format!("{} already exists.", new_path.code_wiki_path())
+                format!("{} already exists.", new_target.code_str())
             },
         );
     }
@@ -1674,7 +1674,7 @@ fn check_rename_destination(
     if !wiki_directory.resolve(new_ancestor).is_dir() {
         return Err(format!(
             "Path {} isn't a directory.",
-            new_ancestor.code_wiki_path(),
+            new_ancestor.code_str(),
         ));
     }
     Ok(())
