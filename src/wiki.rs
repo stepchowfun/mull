@@ -6,10 +6,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-// These strings define the wiki format's extension and structural markers. A link whose target
-// starts with `/` is a filesystem link, relative to the attachments directory, which names a
-// directory if it ends with `/`.
+// These strings define the wiki format's extension, the suffix that names a wiki's attachments
+// directory, and structural markers. A link whose target starts with `/` is a filesystem link,
+// relative to the attachments directory, which names a directory if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
+pub const ATTACHMENTS_DIRECTORY_SUFFIX: &str = "_attachments";
 const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";

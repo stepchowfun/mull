@@ -12,7 +12,7 @@ A *wiki* is a text file with a `.mull` extension. It contains *nodes* with *link
 
 Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
 
-To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`. These paths start at the *attachments directory*, which sits beside the wiki and has the same name without the `.mull` extension. For example, if the wiki is `notes.mull`, then `[/mona_lisa.jpg]` refers to `notes/mona_lisa.jpg`. A wiki that doesn't link to any files doesn't need an attachments directory.
+To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`. These paths start at the *attachments directory*, which sits beside the wiki and is named after it, with `_attachments` in place of the `.mull` extension. For example, if the wiki is `notes.mull`, then `[/mona_lisa.jpg]` refers to `notes_attachments/mona_lisa.jpg`. A wiki that doesn't link to any files doesn't need an attachments directory.
 
 Here's an example wiki with 3 nodes:
 

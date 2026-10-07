@@ -511,7 +511,8 @@ mod tests {
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     // This guard owns a temporary directory containing a wiki, `wiki.mull`, and removes it after a
-    // test. The wiki's attachments directory, `wiki`, exists only once a test puts something in it.
+    // test. The wiki's attachments directory, `wiki_attachments`, exists only once a test puts
+    // something in it.
     struct TestDirectory(PathBuf);
 
     // This fixture keeps parsed nodes together with the source their ranges address.
@@ -592,7 +593,7 @@ mod tests {
         // Locate a path within the attachments directory, creating the directory and the path's
         // other ancestors.
         fn join(&self, path: &str) -> PathBuf {
-            let path = self.0.join("wiki").join(path);
+            let path = self.0.join("wiki_attachments").join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             path
         }
@@ -694,7 +695,7 @@ mod tests {
     #[test]
     fn attachments_directory_is_a_file() {
         let directory = TestDirectory::new();
-        fs::write(directory.path().join("wiki"), "file").unwrap();
+        fs::write(directory.path().join("wiki_attachments"), "file").unwrap();
         let wiki = parse("# Home").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
@@ -703,33 +704,29 @@ mod tests {
         assert!(contains_error(&errors, "` isn't a directory."));
     }
 
-    // Reject a wiki without the extension, since its directory would be the wiki itself.
+    // Name the attachments directory after the wiki, replacing the usual extension, whatever its
+    // case, and keeping any other.
     #[test]
-    fn wiki_without_extension() {
-        let directory = TestDirectory::new();
-        let wiki_path = directory.path().join("wiki");
-        fs::write(&wiki_path, "# Home\n").unwrap();
-        let wiki = parse("# Home\n[/wiki]").unwrap();
+    fn attachments_directory_names() {
+        for (wiki_name, directory_name) in [
+            ("notes.mull", "notes_attachments"),
+            ("notes.MULL", "notes_attachments"),
+            ("notes", "notes_attachments"),
+            ("notes.txt", "notes.txt_attachments"),
+        ] {
+            let directory = TestDirectory::new();
+            let wiki_path = directory.path().join(wiki_name);
+            fs::write(&wiki_path, "# Home\n").unwrap();
+            fs::create_dir(directory.path().join(directory_name)).unwrap();
+            fs::write(
+                directory.path().join(directory_name).join("file.txt"),
+                "file",
+            )
+            .unwrap();
+            let wiki = parse("# Home\n[/file.txt]").unwrap();
 
-        let errors = validate(&wiki, &wiki_path).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(contains_error(
-            &errors,
-            "The wiki's file name must end in `.mull`.",
-        ));
-    }
-
-    // Name the attachments directory after the wiki without its extension, whatever its case.
-    #[test]
-    fn uppercase_extension() {
-        let directory = TestDirectory::new();
-        let wiki_path = directory.path().join("notes.MULL");
-        fs::write(&wiki_path, "# Home\n").unwrap();
-        fs::create_dir(directory.path().join("notes")).unwrap();
-        fs::write(directory.path().join("notes/file.txt"), "file").unwrap();
-        let wiki = parse("# Home\n[/file.txt]").unwrap();
-
-        assert!(validate(&wiki, &wiki_path).is_ok());
+            assert!(validate(&wiki, &wiki_path).is_ok(), "{wiki_name}");
+        }
     }
 
     // Treat another wiki within the attachments directory as an ordinary file.
@@ -837,7 +834,7 @@ mod tests {
         let target = TestDirectory::new();
         target.write("notes.txt", "notes");
         target.write("unreferenced.txt", "unreferenced");
-        symlink(target.join(""), directory.path().join("wiki")).unwrap();
+        symlink(target.join(""), directory.path().join("wiki_attachments")).unwrap();
         let wiki = parse("# Home\n[/notes.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();

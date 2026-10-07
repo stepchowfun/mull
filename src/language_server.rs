@@ -2230,7 +2230,7 @@ mod tests {
 
         // Expose the attachments directory, creating it so tests can fill it.
         fn directory(&self) -> PathBuf {
-            let directory = self.0.with_extension("");
+            let directory = self.0.with_file_name("wiki_attachments");
             fs::create_dir_all(&directory).unwrap();
             directory
         }

@@ -1,6 +1,6 @@
 use crate::{
     format::CodeStr,
-    wiki::{FilesystemTarget, WIKI_EXTENSION},
+    wiki::{ATTACHMENTS_DIRECTORY_SUFFIX, FilesystemTarget, WIKI_EXTENSION},
 };
 use colored::ColoredString;
 use std::{
@@ -116,8 +116,8 @@ pub struct SpellingError {
     pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
-// This is a wiki's attachments directory, which sits beside the wiki and is named after it without
-// its extension, as derived from the wiki's path as given. It contains every file the wiki can link
+// This is a wiki's attachments directory, which sits beside the wiki and is named after it, as
+// derived from the wiki's path as given. It contains every file the wiki can link
 // to, and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which
 // every other path is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
@@ -126,20 +126,27 @@ pub struct AttachmentsDirectory {
 }
 
 impl AttachmentsDirectory {
-    // Find a wiki's attachments directory by removing the wiki's extension, which it must have,
-    // since otherwise the directory would be the wiki itself.
+    // Find a wiki's attachments directory by replacing the wiki's extension, if it's the usual one,
+    // with the attachments suffix, or else by appending the suffix to the wiki's name. The suffix
+    // keeps the directory from ever being the wiki itself.
     pub fn new(wiki_path: &Path) -> Result<Self, String> {
-        if !wiki_path
+        let Some(name) = wiki_path.file_name() else {
+            return Err("The wiki's path must end with a file name.".to_owned());
+        };
+        let mut directory_name = if Path::new(name)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case(WIKI_EXTENSION))
         {
-            return Err(format!(
-                "The wiki's file name must end in {}.",
-                format!(".{WIKI_EXTENSION}").code_str(),
-            ));
-        }
+            Path::new(name)
+                .file_stem()
+                .expect("A file name with an extension should have a stem.")
+                .to_owned()
+        } else {
+            name.to_owned()
+        };
+        directory_name.push(ATTACHMENTS_DIRECTORY_SUFFIX);
         Ok(Self {
-            path: wiki_path.with_extension(""),
+            path: wiki_path.with_file_name(directory_name),
         })
     }
 
@@ -277,7 +284,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = env::temp_dir().join(format!("mull-access-{}", process::id()));
-        let locked = directory.join("wiki/locked");
+        let locked = directory.join("wiki_attachments/locked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let attachments_directory =
@@ -302,7 +309,7 @@ mod tests {
     #[test]
     fn missing_component() {
         let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
-        fs::create_dir_all(directory.join("wiki")).unwrap();
+        fs::create_dir_all(directory.join("wiki_attachments")).unwrap();
         let attachments_directory =
             AttachmentsDirectory::new(&directory.join("wiki.mull")).unwrap();
 
