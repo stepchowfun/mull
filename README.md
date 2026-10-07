@@ -60,7 +60,7 @@ It also verifies these connectivity properties:
 
 Mull formats the wiki for you. It chooses the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will flag that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every node must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered. Files matched by ignore files (such as `.gitignore`) within the attachments directory don't need to be linked to, and can't be. Files outside the attachments directory, including any next to the wiki, don't concern Mull at all. If there's no attachments directory, there are no files to check.
+Just as every node must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
 
 ## What does the IDE extension do?
 
