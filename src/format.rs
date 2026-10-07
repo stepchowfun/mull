@@ -20,7 +20,6 @@ impl CodeStr for str {
     }
 }
 
-// Format a path as given, such as one relative to the current directory.
 impl CodeStr for Path {
     fn code_str(&self) -> ColoredString {
         self.to_string_lossy().code_str()
