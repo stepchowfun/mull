@@ -64,7 +64,7 @@ Just as every node must be linked to from the wiki, the same is true of files ne
 
 ## What does the IDE extension do?
 
-![Renaming a link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/refactoring.png)
+![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completion.png)
 
 The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
 
