@@ -6,4 +6,4 @@ It launches Mull's language server to report wiki errors and provides dimming of
 
 The extension requires the Mull executable. It uses `mull` from `PATH` by default; set `mull.executablePath` if Mull is installed elsewhere.
 
-By default, everything outside the node being edited is dimmed. Set `mull.dimOtherNodes` to `false` to turn this off. After you scroll the node being edited out of view, the view snaps back to it; set `mull.snapBackToCurrentNode` to `false` to turn that off.
+By default, everything outside the node being edited is dimmed. Set `mull.dimOtherNodes` to `false` to turn this off. Set `mull.snapBackToCurrentNode` to `true` to have the view snap back to the node being edited after you scroll it out of view.
