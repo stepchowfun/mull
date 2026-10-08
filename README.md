@@ -2,9 +2,9 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
-
 *Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, completions, diagnostics, formatting, refactoring, hover previews, etc.
+
+![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
 ## An example wiki
 
@@ -45,8 +45,6 @@ If bees are few.
 
 ## What does Mull check?
 
-![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
-
 Mull verifies these structural properties:
 
 - The wiki has valid syntax (links are closed, etc.).
@@ -58,13 +56,13 @@ It also verifies these connectivity properties:
 - All nodes are reachable by following links from the `Home` node, which must exist.
 - All files nested in the attachments directory are linked to from the wiki.
 
+![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
+
 Mull formats the wiki for you. It chooses the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will flag that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
 Just as every node must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
 
 ## What does the IDE extension do?
-
-![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completion.png)
 
 The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
 
@@ -82,6 +80,8 @@ The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It
 - Reference search (backlinks)
 - Scrolling that snaps back to the current node
 - Syntax highlighting
+
+![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completion.png)
 
 ### Keyboard shortcuts
 
