@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.2] - 2026-10-08
+
+### Changed
+- The VS Code extension's history of visited nodes now works like a browser's. Going back always returns to the node visited just before, even if that means revisiting nodes. Before, revisiting a node cut the history back to its earlier visit, so after visiting `Home`, `A`, `B`, `C`, and `A` again, going back led to `Home` rather than `C`. The history also no longer always starts with `Home`. The back link's tooltip shows the latest visits.
+
 ## [0.37.1] - 2026-10-07
 
 ### Changed

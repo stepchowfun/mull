@@ -341,9 +341,11 @@ class NodeFocus implements vscode.Disposable {
 const GO_BACK_COMMAND = 'mull.goBack';
 const GO_FORWARD_COMMAND = 'mull.goForward';
 
-// This title identifies the root of every wiki's text-link graph. Keep this in sync with
-// [group:home_title].
-const HOME_TITLE = 'Home';
+// This caps how many visits each wiki's trail remembers, forgetting the oldest first.
+const MAX_HISTORY_LENGTH = 100;
+
+// This caps how many of the latest visits the back link's tooltip lists.
+const MAX_TOOLTIP_VISITS = 10;
 
 // A visit to a node, with the cursor's position in it, relative to the node's start, for returning
 // to where the cursor was.
@@ -360,13 +362,12 @@ interface Trail {
   forward: Visit[];
 }
 
-// This keeps a trail of the nodes visited in each wiki, which leads from Home to the current node,
-// and shows the previous node above the current node's title, like a browser's back button.
+// This keeps a trail of the nodes visited in each wiki, and shows the previous node above the
+// current node's title, like a browser's back button.
 //
-// Moving the cursor to another node visits that node. Visiting a node already in the trail cuts the
-// trail back to it, so the trail never loops, and visiting any node discards the visits that going
-// back left ahead. The trail always starts with Home, as if every visit began there, so going back
-// always leads home, and visiting Home starts the trail over.
+// Moving the cursor to another node, by any means, visits that node. Like a browser's history, the
+// trail is never pruned of loops, so going back always returns to the node visited just before,
+// and visiting a node discards the visits that going back left ahead.
 class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
   // Remember each wiki's trail.
   private readonly trails = new Map<string, Trail>();
@@ -388,10 +389,28 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     const key = document.uri.toString();
     const titles = new Set(nodes.map((node) => node.name));
     const trail = this.trails.get(key) ?? { back: [], forward: [] };
-    trail.back = trail.back.filter((visit) => titles.has(visit.title));
-    trail.forward = trail.forward.filter((visit) => titles.has(visit.title));
+    trail.back = NodeHistory.existingVisits(trail.back, titles);
+    trail.forward = NodeHistory.existingVisits(trail.forward, titles);
     this.trails.set(key, trail);
     return trail;
+  }
+
+  // Keep the visits to nodes that still exist, merging visits to the same node that become
+  // adjacent into the later one, so going back or forward always changes the node.
+  private static existingVisits(visits: readonly Visit[], titles: ReadonlySet<string>): Visit[] {
+    const kept: Visit[] = [];
+    for (const visit of visits) {
+      if (!titles.has(visit.title)) {
+        continue;
+      }
+      const last = kept.at(-1);
+      if (last !== undefined && last.title === visit.title) {
+        kept[kept.length - 1] = visit;
+      } else {
+        kept.push(visit);
+      }
+    }
+    return kept;
   }
 
   // Find the active editor's wiki, its nodes, and its trail, if it's showing one.
@@ -429,16 +448,10 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
       return;
     }
 
-    // Visit the node, cutting the trail back to it if it's already in it, and start the trail with
-    // Home, unless the wiki has none.
-    const index = trail.back.findIndex((other) => other.title === visit.title);
-    if (index !== -1) {
-      trail.back.splice(index);
-    }
+    // Visit the node, forgetting the oldest visit once there are too many.
     trail.back.push(visit);
-    const [first] = trail.back;
-    if (first.title !== HOME_TITLE && nodes.some((other) => other.name === HOME_TITLE)) {
-      trail.back.unshift({ title: HOME_TITLE, line: 0, character: 0 });
+    if (trail.back.length > MAX_HISTORY_LENGTH) {
+      trail.back.shift();
     }
     trail.forward = [];
     this.changeEmitter.fire();
@@ -508,8 +521,8 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     );
   }
 
-  // Show the previous node above the current node's title, as a link back to it, with the whole
-  // trail in its tooltip.
+  // Show the previous node above the current node's title, as a link back to it, with the latest
+  // visits in its tooltip.
   public async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
     // Find the current and previous nodes.
     const nodes = await wikiNodes(document);
@@ -524,12 +537,18 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
       return [];
     }
 
+    // List the latest visits, marking where older ones are left out.
+    const titles = back.slice(-MAX_TOOLTIP_VISITS).map((visit) => visit.title);
+    if (back.length > MAX_TOOLTIP_VISITS) {
+      titles.unshift('…');
+    }
+
     // Place the link above the current node's title. The command takes no arguments, since the
     // editor may keep showing a lens's command after the lens is replaced.
     return [
       new vscode.CodeLens(document.lineAt(current.range.start.line).range, {
         title: `← ${previous.title}`,
-        tooltip: back.map((visit) => visit.title).join(' › '),
+        tooltip: titles.join(' › '),
         command: GO_BACK_COMMAND,
       }),
     ];
