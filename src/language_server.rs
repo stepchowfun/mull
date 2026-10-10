@@ -1,13 +1,13 @@
 use crate::{
-    attachments_tree::{Visibility, attachments_tree_walker, visibility},
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
+    files_tree::{Visibility, files_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
     lsp_position::LspPosition,
     parser,
     scoring::traversal_order,
-    spelled_path::{AttachmentsDirectory, DirectoryListings, SpelledPath, entry_identity},
+    spelled_path::{DirectoryListings, FilesDirectory, SpelledPath, entry_identity},
     validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
@@ -799,7 +799,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     let target_start = delimiters.opening + '['.len_utf8();
     let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
 
-    // Complete a filesystem link from the attachments directory.
+    // Complete a filesystem link from the files directory.
     if typed_target.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Some(CompletionList {
             is_incomplete: false,
@@ -892,7 +892,7 @@ fn filesystem_link_completions(
     cursor: usize,
     closing_delimiter: Option<usize>,
 ) -> Option<Vec<CompletionItem>> {
-    // Resolve the typed directory, declining paths which escape the attachments tree
+    // Resolve the typed directory, declining paths which escape the files tree
     // [ref:filesystem_path_components].
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
@@ -908,20 +908,20 @@ fn filesystem_link_completions(
         }
     }
 
-    // Derive every filesystem path from the attachments directory, as validation does.
-    let Ok(attachments_directory) = AttachmentsDirectory::new(wiki_path) else {
+    // Derive every filesystem path from the files directory, as validation does.
+    let Ok(files_directory) = FilesDirectory::new(wiki_path) else {
         return Some(Vec::new());
     };
 
     // Descend only along the typed directory so large subtrees are read only once they're named.
-    let mut walker_builder = attachments_tree_walker(attachments_directory.path());
+    let mut walker_builder = files_tree_walker(files_directory.path());
     walker_builder
         .max_depth(Some(directory.components().count() + 1))
         .filter_entry({
-            let attachments_directory = attachments_directory.clone();
+            let files_directory = files_directory.clone();
             let directory = directory.clone();
             move |entry| {
-                let path = attachments_directory.entry_path(entry);
+                let path = files_directory.entry_path(entry);
                 directory.starts_with(path.as_path())
                     || path.as_path().parent() == Some(directory.as_path())
             }
@@ -930,7 +930,7 @@ fn filesystem_link_completions(
     // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
     let mut completions = Vec::new();
     for entry in walker_builder.build().flatten() {
-        let path = attachments_directory.entry_path(&entry);
+        let path = files_directory.entry_path(&entry);
         let file_type = entry
             .file_type()
             .expect("Only standard input lacks a file type.");
@@ -944,7 +944,7 @@ fn filesystem_link_completions(
         // Omit a directory which a link couldn't name because it contains no files.
         if file_type.is_dir()
             && !matches!(
-                visibility(&attachments_directory, &path, &CancellationFlag::default())
+                visibility(&files_directory, &path, &CancellationFlag::default())
                     .assume_completed(),
                 Visibility::Visible,
             )
@@ -1101,10 +1101,10 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
 
     // Render the page as Markdown, linking its resolvable text links to the pages they name and,
     // in a saved wiki, its filesystem links to their targets.
-    let attachments_directory = snapshot
+    let files_directory = snapshot
         .path
         .as_deref()
-        .and_then(|wiki_path| AttachmentsDirectory::new(wiki_path).ok());
+        .and_then(|wiki_path| FilesDirectory::new(wiki_path).ok());
     let mut listings = DirectoryListings::new();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -1117,13 +1117,9 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
                         RevealType::AtTop,
                     )),
                     Link::Filesystem { target, .. } => Some(
-                        filesystem_link_target(
-                            attachments_directory.as_ref()?,
-                            target,
-                            &mut listings,
-                        )?
-                        .as_str()
-                        .to_owned(),
+                        filesystem_link_target(files_directory.as_ref()?, target, &mut listings)?
+                            .as_str()
+                            .to_owned(),
                     ),
                 })
                 .into_string(),
@@ -1438,7 +1434,7 @@ fn rename_filesystem_entry_for_document(
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Find the renamable filesystem entry at the cursor, leaving other positions to pages.
     let Some(RenamableFilesystemEntry {
-        attachments_directory,
+        files_directory,
         old_target,
         old_path,
         ..
@@ -1454,10 +1450,8 @@ fn rename_filesystem_entry_for_document(
     if new_target == old_target {
         return Ok(Some(WorkspaceEdit::default()));
     }
-    if new_target.is_attachments_directory() {
-        return Err(
-            "A file or directory can't be renamed to the attachments directory.".to_owned(),
-        );
+    if new_target.is_files_directory() {
+        return Err("A file or directory can't be renamed to the files directory.".to_owned());
     }
 
     // Require the existing directories along the new path to be spelled as they are on disk, as a
@@ -1466,13 +1460,11 @@ fn rename_filesystem_entry_for_document(
     // go wrong. For example, a directory which will contain the page could look empty after the
     // rename and be deleted along with it. The rest of the new path doesn't exist, other than
     // possibly its final name, so it has no other spelling.
-    let (new_ancestor, new_suffix) = attachments_directory
+    let (new_ancestor, new_suffix) = files_directory
         .spell_existing_ancestor(&new_target)
         .map_err(|error| error.message)?;
-    let old_absolute_path = attachments_directory.resolve(&old_path);
-    let new_absolute_path = attachments_directory
-        .resolve(&new_ancestor)
-        .join(new_suffix);
+    let old_absolute_path = files_directory.resolve(&old_path);
+    let new_absolute_path = files_directory.resolve(&new_ancestor).join(new_suffix);
 
     // Require the destination to be free and creatable, unless a directory moves into itself. Then
     // everything at its destination moves along with it, so nothing there can conflict. The old
@@ -1481,11 +1473,8 @@ fn rename_filesystem_entry_for_document(
     let moves_into_itself = is_directory && new_ancestor.starts_with(&old_path);
     if is_directory
         && !moves_into_itself
-        && resolves_within(
-            &attachments_directory.resolve(&new_ancestor),
-            &old_absolute_path,
-        )
-        .unwrap_or(false)
+        && resolves_within(&files_directory.resolve(&new_ancestor), &old_absolute_path)
+            .unwrap_or(false)
     {
         // A move into itself goes through a temporary sibling, which would leave the symlink
         // leading nowhere, so refuse to move a directory into itself through one.
@@ -1496,7 +1485,7 @@ fn rename_filesystem_entry_for_document(
     }
     if !moves_into_itself {
         check_rename_destination(
-            &attachments_directory,
+            &files_directory,
             &old_path,
             &new_target,
             &new_ancestor,
@@ -1551,11 +1540,11 @@ fn rename_filesystem_entry_for_document(
     // directories once the renamed page has moved.
     if file_operation_support.delete
         && let Some(directory) =
-            outermost_directory_emptied_by_rename(&attachments_directory, &old_path, &new_ancestor)
+            outermost_directory_emptied_by_rename(&files_directory, &old_path, &new_ancestor)
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
-                uri: file_uri(&attachments_directory.resolve(&directory)),
+                uri: file_uri(&files_directory.resolve(&directory)),
                 options: Some(DeleteFileOptions {
                     recursive: Some(true),
                     ignore_if_not_exists: Some(true),
@@ -1573,7 +1562,7 @@ fn rename_filesystem_entry_for_document(
 // This describes the filesystem entry targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
 struct RenamableFilesystemEntry {
-    attachments_directory: AttachmentsDirectory,
+    files_directory: FilesDirectory,
     path_source_range: SourceRange,
     old_target: FilesystemTarget,
     old_path: SpelledPath,
@@ -1606,14 +1595,14 @@ fn renamable_filesystem_entry_at(
         return Err("This editor doesn't support renaming files.".to_owned());
     }
 
-    // Require the linked page to exist as the kind the link names, other than the attachments
-    // directory, resolving it from the attachments directory as validation does.
-    let attachments_directory = AttachmentsDirectory::new(wiki_path)?;
-    if old_target.is_attachments_directory() {
-        return Err("The attachments directory can't be renamed.".to_owned());
+    // Require the linked page to exist as the kind the link names, other than the files
+    // directory, resolving it from the files directory as validation does.
+    let files_directory = FilesDirectory::new(wiki_path)?;
+    if old_target.is_files_directory() {
+        return Err("The files directory can't be renamed.".to_owned());
     }
     let kind = if is_directory { "Directory" } else { "File" };
-    if !fs::metadata(attachments_directory.path().join(old_path))
+    if !fs::metadata(files_directory.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
         return Err(format!("{kind} {} not found.", old_target.code_str()));
@@ -1621,12 +1610,12 @@ fn renamable_filesystem_entry_at(
 
     // Require the path to be spelled as it is on disk, as the checker does. Otherwise, the rename
     // would update only the links spelled like this one, breaking any spelled correctly.
-    let old_path = attachments_directory
+    let old_path = files_directory
         .spell(old_target, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
 
     Ok(Some(RenamableFilesystemEntry {
-        attachments_directory,
+        files_directory,
         path_source_range,
         old_target: old_target.clone(),
         old_path,
@@ -1653,7 +1642,7 @@ fn filesystem_link_path_source_range(
 // an existing file. The new target is written as the user typed it, and its deepest existing
 // ancestor is spelled as on disk.
 fn check_rename_destination(
-    attachments_directory: &AttachmentsDirectory,
+    files_directory: &FilesDirectory,
     old_path: &SpelledPath,
     new_target: &FilesystemTarget,
     new_ancestor: &SpelledPath,
@@ -1668,7 +1657,7 @@ fn check_rename_destination(
     if fs::symlink_metadata(new_absolute_path).is_ok() {
         return Err(
             if entry_identity(new_absolute_path)
-                == entry_identity(&attachments_directory.resolve(old_path))
+                == entry_identity(&files_directory.resolve(old_path))
             {
                 format!(
                     "{} and {} differ only in case, which VS Code can't rename. Rename it in the \
@@ -1683,7 +1672,7 @@ fn check_rename_destination(
     }
 
     // Refuse to create a directory beneath an existing file.
-    if !attachments_directory.resolve(new_ancestor).is_dir() {
+    if !files_directory.resolve(new_ancestor).is_dir() {
         return Err(format!(
             "Path {} isn't a directory.",
             new_ancestor.code_str(),
@@ -1765,21 +1754,21 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // since it exists, is when the new path's deepest existing ancestor leads into it, even through a
 // symlink, or if that can't be determined. It isn't kept merely because a directory link names
 // it, since such a link only stands for the files within the directory. The search never reaches
-// the attachments directory itself.
+// the files directory itself.
 fn outermost_directory_emptied_by_rename(
-    attachments_directory: &AttachmentsDirectory,
+    files_directory: &FilesDirectory,
     old_path: &SpelledPath,
     new_ancestor: &SpelledPath,
 ) -> Option<SpelledPath> {
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
-    let new_ancestor_absolute_path = attachments_directory.resolve(new_ancestor);
+    let new_ancestor_absolute_path = files_directory.resolve(new_ancestor);
     let mut emptied_directory = None;
     let mut removed_entry = old_path.clone();
     while let Some(directory) = removed_entry
         .parent()
-        .filter(|directory| !directory.is_attachments_directory())
+        .filter(|directory| !directory.is_files_directory())
     {
-        let absolute_directory = attachments_directory.resolve(&directory);
+        let absolute_directory = files_directory.resolve(&directory);
         if resolves_within(&new_ancestor_absolute_path, &absolute_directory).unwrap_or(true) {
             break;
         }
@@ -2006,9 +1995,9 @@ fn code_action_for_document(
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
 // directory is revealed in the explorer.
 fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> {
-    // Resolve filesystem links from a saved wiki's attachments directory, recovering from syntax
+    // Resolve filesystem links from a saved wiki's files directory, recovering from syntax
     // errors so the links remain clickable while they're fixed.
-    let attachments_directory = AttachmentsDirectory::new(snapshot.path.as_deref()?).ok()?;
+    let files_directory = FilesDirectory::new(snapshot.path.as_deref()?).ok()?;
 
     // Link each filesystem link to its target, skipping any that the checker would report.
     let mut listings = DirectoryListings::new();
@@ -2031,7 +2020,7 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
             Some(DocumentLink {
                 range: snapshot.range(*source_range),
                 target: Some(filesystem_link_target(
-                    &attachments_directory,
+                    &files_directory,
                     target,
                     &mut listings,
                 )?),
@@ -2050,15 +2039,14 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
 // is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
 // differently than on disk leads nowhere, just as the checker reports it.
 fn filesystem_link_target(
-    attachments_directory: &AttachmentsDirectory,
+    files_directory: &FilesDirectory,
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
 ) -> Option<Uri> {
     // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
     // names.
     let is_directory = target.is_directory();
-    let target_path =
-        attachments_directory.resolve(&attachments_directory.spell(target, listings).ok()?);
+    let target_path = files_directory.resolve(&files_directory.spell(target, listings).ok()?);
     if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
         return None;
     }
@@ -2075,10 +2063,10 @@ fn filesystem_link_target(
     })
 }
 
-// Convert a path within a saved wiki's attachments directory, which is absolute, into a file URI.
+// Convert a path within a saved wiki's files directory, which is absolute, into a file URI.
 fn file_uri(path: &Path) -> Uri {
     Uri::from_file_path(path)
-        .expect("A path within a saved wiki's attachments directory should be absolute.")
+        .expect("A path within a saved wiki's files directory should be absolute.")
 }
 
 // This describes which part of a resolved text link a caller considers relevant.
@@ -2228,9 +2216,9 @@ mod tests {
             &self.0
         }
 
-        // Expose the attachments directory, creating it so tests can fill it.
+        // Expose the files directory, creating it so tests can fill it.
         fn directory(&self) -> PathBuf {
-            let directory = self.0.with_file_name("wiki_attachments");
+            let directory = self.0.with_file_name("wiki_files");
             fs::create_dir_all(&directory).unwrap();
             directory
         }
@@ -2747,7 +2735,7 @@ mod tests {
             .collect()
     }
 
-    // Complete a filesystem link with the visible entries of the attachments directory.
+    // Complete a filesystem link with the visible entries of the files directory.
     #[test]
     fn completions_list_filesystem_entries() {
         let source = "# Home\n\n[/]";
@@ -2807,10 +2795,10 @@ mod tests {
         );
     }
 
-    // Complete only entries within the attachments directory, which may not exist, and never those
+    // Complete only entries within the files directory, which may not exist, and never those
     // beside the wiki.
     #[test]
-    fn completions_list_only_the_attachments_directory() {
+    fn completions_list_only_the_files_directory() {
         let source = "# Home\n\n[/";
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
@@ -3641,7 +3629,7 @@ mod tests {
         assert_eq!(prepare(&uri, 14, true), "File `/missing.txt` not found.");
         assert_eq!(
             prepare(&uri, 29, true),
-            "The attachments directory can't be renamed.",
+            "The files directory can't be renamed.",
         );
     }
 
@@ -3930,7 +3918,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "/", ALL_FILE_OPERATIONS),
-            "A file or directory can't be renamed to the attachments directory.",
+            "A file or directory can't be renamed to the files directory.",
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
@@ -3946,7 +3934,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),
-            "The attachments directory can't be renamed.",
+            "The files directory can't be renamed.",
         );
 
         // Reject a link or a new path through an existing directory spelled differently than on
@@ -4043,9 +4031,9 @@ mod tests {
         assert!(document_link_for_document(&snapshot(&untitled_uri(), source)).is_none());
     }
 
-    // Resolve filesystem links within the attachments directory rather than beside the wiki.
+    // Resolve filesystem links within the files directory rather than beside the wiki.
     #[test]
-    fn document_links_resolve_within_the_attachments_directory() {
+    fn document_links_resolve_within_the_files_directory() {
         let source = "# Home\n\n[/beside.txt] [/within.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
