@@ -200,13 +200,22 @@ fn finish_page(
             end: source_end,
         },
     );
-    let content_source_range = trim_source_range(
+    let mut content_source_range = trim_source_range(
         source_contents,
         SourceRange {
             start: content_start,
             end: source_end,
         },
     );
+
+    // Keep the indentation of the content's first line, trimming only the blank lines before it,
+    // so an indented line which starts with a title marker doesn't become a title once rendered.
+    if content_source_range.start < content_source_range.end {
+        content_source_range.start = source_contents[..content_source_range.start]
+            .rfind('\n')
+            .map_or(0, |index| index + '\n'.len_utf8())
+            .max(content_start);
+    }
     let (content, links, content_errors) = parse_content(
         source_path,
         source_contents,
@@ -384,8 +393,8 @@ fn parse_content(
     for index in ContentText::invalid_escapes(original_content) {
         let offset = source_range.start + index;
         errors.push(Error::new(
-            "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
-             backslash itself.",
+            "A backslash must be followed by `[`, `]`, or `\\`, so write `\\\\` for a backslash \
+             itself.",
             source_path,
             Some((
                 source_contents,
@@ -513,7 +522,8 @@ mod tests {
     }
 
     // Parse titles and multiline content while retaining exact source ranges. A title's range
-    // extends through trailing whitespace, which the title itself excludes.
+    // extends through trailing whitespace, which the title itself excludes. Content keeps the
+    // indentation of its first line.
     #[test]
     fn pages() {
         let source =
@@ -524,13 +534,13 @@ mod tests {
         assert_eq!(wiki.pages["Home"].title, "Home");
         assert_eq!(
             wiki.pages["Home"].content.as_str(),
-            "Check out the [Greeting].",
+            " Check out the [Greeting].",
         );
         assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
         );
-        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello,\nworld!");
+        assert_eq!(wiki.pages["Greeting"].content.as_str(), " Hello,\nworld!");
         assert_eq!(wiki.pages["Home"].title_source_range.start, 7);
         assert_eq!(wiki.pages["Home"].title_source_range.end, 13);
         assert_eq!(wiki.pages["Home"].source_range.start, 3);
@@ -635,6 +645,33 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .contains("A backslash must be followed by")
         }));
         assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+    }
+
+    // Reject a backslash before `#`, which can't be escaped, since only a title marker at the start
+    // of a line is special.
+    #[test]
+    fn hashes_cant_be_escaped() {
+        let (_wiki, errors) = parse_fixture("# Home\nC\\# and \\#1");
+
+        assert_eq!(
+            errors.iter().map(Error::fix).collect::<Vec<_>>(),
+            vec![
+                Some(&Fix::EscapeBackslash(8)),
+                Some(&Fix::EscapeBackslash(15)),
+            ],
+        );
+    }
+
+    // Keep an indented line which starts with a title marker as content, even as the first line of
+    // a page's content, so rendering the wiki doesn't turn it into a title.
+    #[test]
+    fn indented_title_markers() {
+        let source = "# Home\n\n  # Not a title\n";
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(wiki.pages.len(), 1);
+        assert_eq!(wiki.pages["Home"].content.as_str(), "  # Not a title");
+        assert_eq!(wiki.to_string(), source);
     }
 
     // Parse file and directory links separately from text links.

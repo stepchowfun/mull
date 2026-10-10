@@ -106,11 +106,8 @@ impl fmt::Display for Page {
 pub struct ContentText(String);
 
 impl ContentText {
-    // Escape plain text, such as a page title or a path, so it retains its meaning within a line of
-    // content, as in a link. Unlike the other characters which can be escaped
-    // [ref:content_escapes], `#` is only special at the start of a line, where it would begin a
-    // title, so it's left as is. Text placed at the start of a line would also need a leading `#`
-    // escaped.
+    // Escape plain text, such as a page title or a path, so it retains its meaning in content
+    // [ref:content_escapes].
     pub fn escape(plain: &str) -> Self {
         Self(
             plain
@@ -183,7 +180,7 @@ impl ContentText {
 
     // Determine whether a backslash escapes a character in content [tag:content_escapes].
     fn is_escapable(character: char) -> bool {
-        matches!(character, '\\' | '[' | ']' | '#')
+        matches!(character, '\\' | '[' | ']')
     }
 }
 
@@ -428,8 +425,8 @@ mod tests {
             r"a\[b]\c\",
         );
         assert_eq!(ContentText::from_source(r"\a\\\").unescape(), r"\a\\");
-        assert_eq!(ContentText::from_source(r"\#a\\#").unescape(), r"#a\#");
-        assert_eq!(ContentText::escape(r"\#").unescape(), r"\#");
+        assert_eq!(ContentText::from_source(r"\#a\\#").unescape(), r"\#a\#");
+        assert_eq!(ContentText::escape(r"#\#").as_str(), r"#\\#");
     }
 
     // Reject filesystem link paths which would escape the wiki's logical tree.
