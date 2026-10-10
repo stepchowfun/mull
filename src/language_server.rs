@@ -37,16 +37,16 @@ use tower_lsp_server::{
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
         DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
         DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher,
-        GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-        HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
-        OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
-        PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
-        RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentPositionParams,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
-        WorkDoneProgressOptions, WorkspaceEdit,
+        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
+        ExecuteCommandParams, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+        InitializeParams, InitializeResult, InitializedParams, LSPAny, Location, LocationLink,
+        MarkupContent, MarkupKind, MessageType, OneOf, OptionalVersionedTextDocumentIdentifier,
+        Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
+        Registration, RenameFile, RenameOptions, RenameParams, ResourceOp, ResourceOperationKind,
+        ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
@@ -77,6 +77,10 @@ enum RevealType {
 // This extension command reveals a directory in the explorer. Keep this in sync with
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
+
+// This server command rechecks every open wiki, as when the filesystem changed without the
+// editor reporting it. The extension gives it a title in [file:vscode-extension/package.json].
+const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
@@ -332,7 +336,7 @@ impl Backend {
 
     // Recheck open documents after filesystem changes, which their filesystem links may reflect.
     // Documents whose own files changed are skipped, since editor synchronization covers them.
-    fn recheck_open_documents(&self, changed_uris: &[&Uri]) {
+    fn recheck_open_documents(&self, changed_uris: &[&Uri], delay: Duration) {
         // Collect the snapshots before scheduling, without retaining the lock across that
         // operation.
         let snapshots = lock(&self.documents)
@@ -341,9 +345,9 @@ impl Backend {
             .map(|(_uri, document)| Arc::clone(&document.snapshot))
             .collect::<Vec<_>>();
 
-        // Debounce the checks, since a single operation can change many files in quick succession.
+        // Schedule the checks after the given delay.
         for snapshot in snapshots {
-            self.store_and_check_document(snapshot, CHECK_DELAY);
+            self.store_and_check_document(snapshot, delay);
         }
     }
 
@@ -456,6 +460,10 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![CHECK_WIKI_COMMAND.to_owned()],
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -572,14 +580,30 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        // Recheck open documents against the changed filesystem.
+        // Recheck open documents against the changed filesystem. Debounce the checks, since a
+        // single operation can change many files in quick succession.
         self.recheck_open_documents(
             &params
                 .changes
                 .iter()
                 .map(|change| &change.uri)
                 .collect::<Vec<_>>(),
+            CHECK_DELAY,
         );
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
+        // Reject commands this server doesn't provide.
+        if params.command != CHECK_WIKI_COMMAND {
+            return Err(JsonRpcError::invalid_params(format!(
+                "Unknown command {}.",
+                params.command.code_str(),
+            )));
+        }
+
+        // Recheck every open wiki right away.
+        self.recheck_open_documents(&[], Duration::ZERO);
+        Ok(None)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

@@ -7,3 +7,5 @@ It launches Mull's language server to report wiki errors and provides dimming of
 The extension requires the Mull executable. It uses `mull` from `PATH` by default; set `mull.executablePath` if Mull is installed elsewhere.
 
 By default, everything outside the page being edited is dimmed. Set `mull.dimOtherPages` to `false` to turn this off. Set `mull.snapBackToCurrentPage` to `true` to have the view snap back to the page being edited after you scroll it out of view.
+
+The wiki is checked again whenever it or the files it links to change. If its diagnostics ever seem out of date, run `Mull: Check Wiki` from the command palette to check it again.
