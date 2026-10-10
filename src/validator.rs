@@ -666,7 +666,7 @@ mod tests {
         assert!(contains_error(&errors, "`/` not found in `"));
     }
 
-    // Report files beside the wiki only if they're in the file root.
+    // Report only files in the file root, not other files beside the wiki.
     #[test]
     fn only_the_file_root_is_managed() {
         let directory = TestDirectory::new();
@@ -682,7 +682,7 @@ mod tests {
         ));
     }
 
-    // Reject a file root which is a file.
+    // Reject a file root that isn't a directory.
     #[test]
     fn file_root_is_a_file() {
         let directory = TestDirectory::new();
@@ -765,7 +765,7 @@ mod tests {
         ));
     }
 
-    // Allow a link to the file root to cover every file in the file root.
+    // Allow a link to the file root to cover every file in it.
     #[test]
     fn file_root_link() {
         let directory = TestDirectory::new();

@@ -663,7 +663,7 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        // Rename the page at the cursor with whichever file operations the client supports,
+        // Rename the entry at the cursor with whichever file operations the client supports,
         // against the latest snapshot, whose version guards the edit against later changes.
         let position = params.text_document_position.position;
         let new_name = params.new_name;
@@ -1424,7 +1424,7 @@ fn rename_page_for_document(
 
 // Rename the file or directory of a filesystem link on disk and update every link to it or, for a
 // directory, to anything within it. The client creates any missing directories, and directories
-// that contained nothing but the renamed page are deleted when the client supports it.
+// that contained nothing but the renamed entry are deleted when the client supports it.
 fn rename_filesystem_entry_for_document(
     snapshot: &Snapshot,
     cursor_offset: usize,
@@ -1442,8 +1442,9 @@ fn rename_filesystem_entry_for_document(
         return Ok(None);
     };
 
-    // Accept only a new path which the parser would accept in a link, for a page of the same kind.
-    // A new target written exactly like the old one, which is spelled as on disk, changes nothing.
+    // Accept only a new path which the parser would accept in a link, for an entry of the same
+    // kind. A new target written exactly like the old one, which is spelled as on disk, changes
+    // nothing.
     let is_directory = old_target.is_directory();
     let new_target = FilesystemTarget::from_name(new_name.trim(), is_directory)?;
     if new_target == old_target {
@@ -1454,9 +1455,9 @@ fn rename_filesystem_entry_for_document(
     }
 
     // Require the existing directories along the new path to be spelled as they are on disk, as a
-    // link would have to be. A filesystem that ignores case would otherwise put the page in a
+    // link would have to be. A filesystem that ignores case would otherwise put the entry in a
     // directory whose path doesn't match the new path as written, and the comparisons below would
-    // go wrong. For example, a directory which will contain the page could look empty after the
+    // go wrong. For example, a directory which will contain the entry could look empty after the
     // rename and be deleted along with it. The rest of the new path doesn't exist, other than
     // possibly its final name, so it has no other spelling.
     let (new_ancestor, new_suffix) = file_root
@@ -1513,7 +1514,7 @@ fn rename_filesystem_entry_for_document(
             .collect(),
     });
 
-    // Rename the page. No filesystem can move a directory into itself directly, so such a move
+    // Rename the entry. No filesystem can move a directory into itself directly, so such a move
     // goes through a temporary sibling, from which the directory moves to its new path, recreating
     // its old path as a parent. VS Code validates a run of renames before performing any of them,
     // so the text edit separates the two renames to let the first one happen before the second is
@@ -1535,7 +1536,7 @@ fn rename_filesystem_entry_for_document(
     // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
     // before performing any of them, so a nested empty directory would block deleting its parent.
     // Instead, one recursive deletion removes the outermost directory, which contains only empty
-    // directories once the renamed page has moved.
+    // directories once the renamed entry has moved.
     if file_operation_support.delete
         && let Some(directory) =
             outermost_directory_emptied_by_rename(&file_root, &old_path, &new_ancestor)
@@ -1585,7 +1586,7 @@ fn renamable_filesystem_entry_at(
         (old_target.is_directory(), old_target.path(), *source_range);
     let path_source_range = filesystem_link_path_source_range(&snapshot.contents, source_range);
 
-    // The client renames the page on disk, which requires a saved wiki and a capable client.
+    // The client renames the entry on disk, which requires a saved wiki and a capable client.
     let Some(wiki_path) = &snapshot.path else {
         return Err("Save the wiki before renaming the files it links to.".to_owned());
     };
@@ -1593,8 +1594,8 @@ fn renamable_filesystem_entry_at(
         return Err("This editor doesn't support renaming files.".to_owned());
     }
 
-    // Require the linked page to exist as the kind the link names, other than the file
-    // root, resolving it from the file root as validation does.
+    // Require the linked entry to exist as the kind the link names, resolving it from the file root
+    // as validation does.
     let file_root = FileRoot::new(wiki_path)?;
     if old_target.is_file_root() {
         let name = Path::new(file_root.path().file_name().unwrap_or_default());
@@ -1647,9 +1648,9 @@ fn check_rename_destination(
     new_ancestor: &SpelledPath,
     new_absolute_path: &Path,
 ) -> std::result::Result<(), String> {
-    // Refuse to replace another page. Something exists at the new path if its own metadata can be
+    // Refuse to replace another entry. Something exists at the new path if its own metadata can be
     // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
-    // default one, the new path may instead name the page being renamed, spelled differently, as
+    // default one, the new path may instead name the entry being renamed, spelled differently, as
     // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
     // spellings as the same file and silently skips the rename while still editing the links,
     // which leaves them misspelled.
@@ -1716,13 +1717,13 @@ fn filesystem_rename_edits(
     edits
 }
 
-// Choose an unused, hidden name beside a page for a temporary rename. Staying in the same directory
-// keeps the rename on the same filesystem.
+// Choose an unused, hidden name beside an entry for a temporary rename. Staying in the same
+// directory keeps the rename on the same filesystem.
 fn unused_sibling_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .expect("A renamed page should have a UTF-8 name.");
+        .expect("A renamed entry should have a UTF-8 name.");
     (1..=u64::MAX)
         .map(|attempt| {
             path.with_file_name(if attempt == 1 {
@@ -1735,7 +1736,7 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
         .expect("An unused temporary name should exist.")
 }
 
-// Build an operation that renames a page from one absolute path to another.
+// Build an operation that renames an entry from one absolute path to another.
 fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
     DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
         old_uri: file_uri(old_path),
@@ -1745,7 +1746,7 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
     }))
 }
 
-// Find the outermost directory whose only entry is the page being moved, directly or through
+// Find the outermost directory whose only entry is the one being moved, directly or through
 // directories whose only entry leads to it. Any other entry keeps a directory, even an empty
 // directory or an ignored file. A directory is also kept if it will contain the new path, which,
 // since it exists, is when the new path's deepest existing ancestor leads into it, even through a
@@ -3475,7 +3476,7 @@ mod tests {
         delete: true,
     };
 
-    // Apply a filesystem rename's text edits to a source, and return the result with the page
+    // Apply a filesystem rename's text edits to a source, and return the result with the entry
     // rename's old and new URIs and the URIs of the directories it deletes.
     fn apply_filesystem_rename(
         source: &str,
@@ -3490,7 +3491,7 @@ mod tests {
             deletions @ ..,
         ] = operations.as_slice()
         else {
-            panic!("A filesystem rename should edit the wiki and then rename one page.");
+            panic!("A filesystem rename should edit the wiki and then rename one entry.");
         };
         assert_eq!(text_document_edit.text_document.version, Some(TEST_VERSION));
 
@@ -3510,9 +3511,7 @@ mod tests {
             .iter()
             .map(|operation| {
                 let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
-                    panic!(
-                        "A filesystem rename should only delete directories after renaming a page.",
-                    );
+                    panic!("A filesystem rename should only delete directories after the rename.");
                 };
                 assert_eq!(
                     deletion
@@ -3532,9 +3531,9 @@ mod tests {
         )
     }
 
-    // Rename whichever kind of page the link at the cursor targets.
+    // Rename whichever kind of target the link at the cursor names.
     #[test]
-    fn rename_dispatches_by_page_kind() {
+    fn rename_dispatches_by_target_kind() {
         let source = "# Home\n\n[Home] [/notes.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
@@ -3702,7 +3701,7 @@ mod tests {
     }
 
     // Leave missing directories to the client, and delete the outermost directory which contained
-    // nothing but the renamed page, keeping any which will contain the new path.
+    // nothing but the renamed entry, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
@@ -3766,7 +3765,7 @@ mod tests {
         );
     }
 
-    // Keep a directory that a new path leads into through a symlink, rather than deleting the page
+    // Keep a directory that a new path leads into through a symlink, rather than deleting the entry
     // just moved into it, and refuse to move a directory into itself through a symlink.
     #[cfg(unix)]
     #[test]
