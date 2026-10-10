@@ -8,11 +8,11 @@
 
 ## An example wiki
 
-A *wiki* is a text file with a `.mull` extension. It contains *pages* with *links* between them.
+A *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other.
 
 Each page starts with a `# Title`. The content comes after the title and is written in Markdown.
 
-To link to a page, put the title in square brackets like `[My favorite art]`. If the wiki is called `my_wiki.mull`, files (images, PDFs, spreadsheets, etc.) go in a directory named `my_wiki_files` (in general, `<wiki>_files`). You can link to files in it like `[/mona_lisa.jpg]`.
+To link to a page, put its title in square brackets like `[My favorite art]`. If the wiki is called `my_wiki.mull`, files (images, PDFs, spreadsheets, etc.) go in a directory named `my_wiki_files` (in general, `<wiki>_files`). You can link to files in it like `[/mona_lisa.jpg]`.
 
 Here's an example wiki with 3 pages:
 
