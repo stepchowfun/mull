@@ -1,8 +1,8 @@
-use crate::{error::SourceRange, format::CodeStr, spelled_path::code_file_path};
+use crate::{error::SourceRange, escaping::escape, format::CodeStr, spelled_path::code_file_path};
 use colored::ColoredString;
 use std::{
     collections::HashMap,
-    fmt, iter,
+    fmt,
     path::{Component, Path, PathBuf},
 };
 
@@ -29,13 +29,23 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
-// This struct represents a parsed wiki.
-#[derive(Clone, Debug, Default)]
+// This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
+// source ranges address and which it's rendered from.
+#[derive(Clone, Debug)]
 pub struct Wiki {
     pub pages: HashMap<String, Page>,
+    source: String,
 }
 
 impl Wiki {
+    // Start a wiki without any pages for the given source.
+    pub fn new(source: &str) -> Self {
+        Self {
+            pages: HashMap::new(),
+            source: source.to_owned(),
+        }
+    }
+
     // Iterate over the links of every page, in no particular order.
     pub fn links(&self) -> impl Iterator<Item = &Link> {
         self.pages.values().flat_map(|page| &page.links)
@@ -52,18 +62,25 @@ impl Wiki {
 }
 
 // Render pages deterministically in traversal order, with unreachable pages last in title order.
+// Rendering assumes the wiki has no syntax errors, so every link in a page's content was parsed.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable pages by traversal order, followed by unreachable pages in title order.
         let mut pages = self.pages.iter().collect::<Vec<_>>();
         pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
 
-        // Add one line break between pages because each page already ends with one.
+        // Write each page as a heading and its content, omitting the content separator when there's
+        // no content. Add one line break between pages because each page already ends with one.
         for (index, (_title, page)) in pages.into_iter().enumerate() {
             if index > 0 {
                 writeln!(formatter)?;
             }
-            write!(formatter, "{page}")?;
+            let content = self.rendered_content(page);
+            if content.is_empty() {
+                writeln!(formatter, "{TITLE_PREFIX}{}", page.title)?;
+            } else {
+                writeln!(formatter, "{TITLE_PREFIX}{}\n\n{content}", page.title)?;
+            }
         }
 
         // Rendering succeeded.
@@ -71,116 +88,61 @@ impl fmt::Display for Wiki {
     }
 }
 
+impl Wiki {
+    // Render a page's content from the source, with each link written in its canonical form, Unix
+    // line endings, and no whitespace at the end of a line.
+    fn rendered_content(&self, page: &Page) -> String {
+        // Find the content after the title line, skipping the blank lines around it but keeping the
+        // indentation of its first line, so an indented line which starts with a title marker
+        // doesn't become a title.
+        let content_end = page.source_range.end;
+        let after_title = &self.source[page.title_source_range.end..content_end];
+        let Some(first_character) = after_title.find(|character: char| !character.is_whitespace())
+        else {
+            return String::new();
+        };
+        let content_start = page.title_source_range.end
+            + after_title[..first_character]
+                .rfind('\n')
+                .map_or(0, |index| index + '\n'.len_utf8());
+
+        // Copy the content, replacing each link with its canonical form: a text link's title
+        // escaped, and a filesystem link's normalized target.
+        let mut links = page.links.iter().collect::<Vec<_>>();
+        links.sort_by_key(|link| link.source_range().start);
+        let mut content = String::new();
+        let mut copied_through = content_start;
+        for link in links {
+            let source_range = link.source_range();
+            content.push_str(&self.source[copied_through..source_range.start]);
+            content.push('[');
+            content.push_str(&match link {
+                Link::Text { title, .. } => escape(title),
+                Link::Filesystem { target, .. } => target.text(),
+            });
+            content.push(']');
+            copied_through = source_range.end;
+        }
+        content.push_str(&self.source[copied_through..content_end]);
+
+        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
+        // line breaks, and each ends with a delimiter, so this never changes one.
+        content
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 // This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
 pub struct Page {
-    pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
-    pub content: ContentText, // No surrounding blank lines or whitespace at line ends
+    pub title: String, // Non-empty, one line, trimmed, and not starting with `/`
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
-}
-
-// Render pages in the wiki's heading-and-content format.
-impl fmt::Display for Page {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Omit the content separator when there's no content.
-        if self.content.as_str().is_empty() {
-            writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
-        } else {
-            writeln!(
-                formatter,
-                "{TITLE_PREFIX}{}\n\n{}",
-                self.title,
-                self.content.as_str(),
-            )
-        }
-    }
-}
-
-// This is text as it appears in a page's content, where `[` and `]` delimit links and a backslash
-// escapes the character after it [ref:content_escapes]. A heading isn't content: a page's title
-// appears in its heading as is.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ContentText(String);
-
-impl ContentText {
-    // Escape plain text, such as a page title or a path, so it retains its meaning in content
-    // [ref:content_escapes].
-    pub fn escape(plain: &str) -> Self {
-        Self(
-            plain
-                .replace('\\', "\\\\")
-                .replace('[', "\\[")
-                .replace(']', "\\]"),
-        )
-    }
-
-    // Accept text that's already written as content, such as part of a wiki's source.
-    pub fn from_source(source: &str) -> Self {
-        Self(source.to_owned())
-    }
-
-    // Decode escaped characters into plain text, as the parser does. There's no plain text if a
-    // backslash doesn't escape anything [ref:content_escapes].
-    pub fn unescape(&self) -> Option<String> {
-        let mut plain = String::new();
-        let mut characters = self.0.chars();
-        while let Some(character) = characters.next() {
-            plain.push(if character == '\\' {
-                characters.next().filter(|&next| Self::is_escapable(next))?
-            } else {
-                character
-            });
-        }
-        Some(plain)
-    }
-
-    // Expose the text as written, such as to scan it for delimiters.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    // Release the text as written, such as for an edit to the source.
-    pub fn into_string(self) -> String {
-        self.0
-    }
-
-    // Scan text written as content, such as part of a wiki's source, for the characters which
-    // aren't escaped [ref:content_escapes], such as unescaped link delimiters.
-    pub fn unescaped_characters(source: &str) -> impl Iterator<Item = (usize, char)> {
-        let mut previous_was_escape = false;
-        source.char_indices().filter(move |&(_, character)| {
-            let is_escaped = previous_was_escape && Self::is_escapable(character);
-            previous_was_escape = character == '\\' && !is_escaped;
-            !is_escaped
-        })
-    }
-
-    // Find the backslashes in text written as content which don't escape anything, because they
-    // aren't followed by a character which can be escaped [ref:content_escapes]. Every other
-    // backslash escapes the next character, so a backslash itself is written as `\\`.
-    pub fn invalid_escapes(source: &str) -> impl Iterator<Item = usize> {
-        let mut characters = source.char_indices().peekable();
-        iter::from_fn(move || {
-            while let Some((index, character)) = characters.next() {
-                if character == '\\'
-                    && characters
-                        .next_if(|&(_, next_character)| Self::is_escapable(next_character))
-                        .is_none()
-                {
-                    return Some(index);
-                }
-            }
-            None
-        })
-    }
-
-    // Determine whether a backslash escapes a character in content [tag:content_escapes].
-    fn is_escapable(character: char) -> bool {
-        matches!(character, '\\' | '[' | ']')
-    }
 }
 
 // These are the source occurrences through which a page can reference a target.
@@ -293,7 +255,7 @@ impl FilesystemTarget {
 
     // Write the link text: `/` and the path's components, followed by `/` for a directory, escaped
     // as content. This is the only place that decides how a link is written.
-    pub fn text(&self) -> ContentText {
+    pub fn text(&self) -> String {
         // Join the components with the separator that links use on every platform. Link paths come
         // from UTF-8 text.
         let components = self
@@ -312,7 +274,7 @@ impl FilesystemTarget {
         }
 
         // Escape the finished text once, as it will appear in the source.
-        ContentText::escape(&text)
+        escape(&text)
     }
 
     // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
@@ -349,12 +311,15 @@ impl CodeStr for FilesystemTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentText, FilesystemTarget, Page, Wiki, title_line_text};
-    use crate::error::SourceRange;
-    use std::collections::HashMap;
+    use super::{FilesystemTarget, Wiki, title_line_text};
+    use crate::{escaping::unescape, line_index::LineIndex, parser::parse};
 
-    // Use a harmless range when testing rendering, which doesn't inspect source locations.
-    const SOURCE_RANGE: SourceRange = SourceRange { start: 0, end: 0 };
+    // Parse a wiki without syntax errors for rendering.
+    fn parse_wiki(source: &str) -> Wiki {
+        let (wiki, errors) = parse(None, source, &LineIndex::new(source));
+        assert!(errors.is_empty());
+        wiki
+    }
 
     // Recognize a title marker followed by a space or the end of the line, but not other headings.
     #[test]
@@ -364,36 +329,6 @@ mod tests {
         assert_eq!(title_line_text("#Greeting"), None);
         assert_eq!(title_line_text("## Greeting"), None);
         assert_eq!(title_line_text(""), None);
-    }
-
-    // Ensure pages are rendered in the wiki's source format.
-    #[test]
-    fn page_display() {
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::from_source("Hello, world!"),
-            links: Vec::new(),
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-        };
-
-        assert_eq!(page.to_string(), "# Greeting\n\nHello, world!\n");
-    }
-
-    // Ensure empty pages don't contain a redundant content separator.
-    #[test]
-    fn empty_page_display() {
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::default(),
-            links: Vec::new(),
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-        };
-
-        assert_eq!(page.to_string(), "# Greeting\n");
     }
 
     // Establish a filesystem link's canonical text when parsing it, which parses back to itself.
@@ -406,31 +341,14 @@ mod tests {
             ("/", "/", true),
             ("/.", "/", true),
         ] {
-            let target =
-                FilesystemTarget::parse(&ContentText::from_source(text).unescape().unwrap())
-                    .unwrap();
-            assert_eq!(target.text().as_str(), canonical);
+            let target = FilesystemTarget::parse(&unescape(text).unwrap()).unwrap();
+            assert_eq!(target.text(), canonical);
             assert_eq!(target.is_directory(), is_directory);
             assert_eq!(
-                FilesystemTarget::parse(&target.text().unescape().unwrap()).unwrap(),
+                FilesystemTarget::parse(&unescape(&target.text()).unwrap()).unwrap(),
                 target,
             );
         }
-    }
-
-    // Escape delimiters and backslashes in plain text, and decode escapes, but decode nothing when
-    // a backslash doesn't escape anything.
-    #[test]
-    fn content_text_escaping() {
-        assert_eq!(ContentText::escape(r"a\[b]\c\").as_str(), r"a\\\[b\]\\c\\");
-        assert_eq!(
-            ContentText::from_source(r"a\\\[b\]\\c\\").unescape(),
-            Some(r"a\[b]\c\".to_owned()),
-        );
-        assert_eq!(ContentText::from_source(r"\a").unescape(), None);
-        assert_eq!(ContentText::from_source(r"\#").unescape(), None);
-        assert_eq!(ContentText::from_source(r"a\\\").unescape(), None);
-        assert_eq!(ContentText::escape(r"#\#").as_str(), r"#\\#");
     }
 
     // Reject filesystem link paths which would escape the wiki's logical tree.
@@ -445,12 +363,9 @@ mod tests {
     #[test]
     fn filesystem_target_from_name() {
         let target = FilesystemTarget::from_name("photos/a[1]/", false).unwrap();
-        assert_eq!(target.text().as_str(), "/photos/a\\[1\\]");
+        assert_eq!(target.text(), "/photos/a\\[1\\]");
         assert_eq!(
-            FilesystemTarget::from_name("photos", true)
-                .unwrap()
-                .text()
-                .as_str(),
+            FilesystemTarget::from_name("photos", true).unwrap().text(),
             "/photos/",
         );
     }
@@ -464,7 +379,7 @@ mod tests {
             FilesystemTarget::parse(text)
                 .unwrap()
                 .moved(&directory, &destination)
-                .map(|target| target.text().into_string())
+                .map(|target| target.text())
         };
         assert_eq!(moved("/photos/"), Some("/archive/photos/".to_owned()));
         assert_eq!(
@@ -474,66 +389,21 @@ mod tests {
         assert_eq!(moved("/photographs/cat.jpg"), None);
     }
 
-    // Ensure a wiki containing an empty page has only its trailing line break.
+    // Ensure a wiki containing an empty page has only its trailing line break, without a redundant
+    // content separator.
     #[test]
     fn empty_page_wiki_display() {
-        let wiki = Wiki {
-            pages: HashMap::from([(
-                "Greeting".to_owned(),
-                Page {
-                    title: "Greeting".to_owned(),
-                    content: ContentText::default(),
-                    links: Vec::new(),
-                    traversal_index: None,
-                    source_range: SOURCE_RANGE,
-                    title_source_range: SOURCE_RANGE,
-                },
-            )]),
-        };
-
-        assert_eq!(wiki.to_string(), "# Greeting\n");
+        assert_eq!(parse_wiki("# Greeting\n\n\n").to_string(), "# Greeting\n");
     }
 
-    // Render pages in traversal order, placing pages without a traversal index last.
+    // Render pages in traversal order, placing unreachable pages last.
     #[test]
     fn wiki_display() {
-        let wiki = Wiki {
-            pages: HashMap::from([
-                (
-                    "Greeting".to_owned(),
-                    Page {
-                        title: "Greeting".to_owned(),
-                        content: ContentText::from_source("Hello, world!"),
-                        links: Vec::new(),
-                        traversal_index: Some(1),
-                        source_range: SOURCE_RANGE,
-                        title_source_range: SOURCE_RANGE,
-                    },
-                ),
-                (
-                    "Home".to_owned(),
-                    Page {
-                        title: "Home".to_owned(),
-                        content: ContentText::from_source("Check out the [Greeting]."),
-                        links: Vec::new(),
-                        traversal_index: Some(0),
-                        source_range: SOURCE_RANGE,
-                        title_source_range: SOURCE_RANGE,
-                    },
-                ),
-                (
-                    "Orphan".to_owned(),
-                    Page {
-                        title: "Orphan".to_owned(),
-                        content: ContentText::default(),
-                        links: Vec::new(),
-                        traversal_index: None,
-                        source_range: SOURCE_RANGE,
-                        title_source_range: SOURCE_RANGE,
-                    },
-                ),
-            ]),
-        };
+        let wiki = parse_wiki(concat!(
+            "# Orphan\n",
+            "# Greeting\n\nHello, world!\n",
+            "# Home\n\nCheck out the [Greeting].",
+        ));
 
         assert_eq!(
             wiki.to_string(),
@@ -545,9 +415,29 @@ mod tests {
         );
     }
 
+    // Write content as written, apart from links in their canonical forms, blank lines around the
+    // content, and whitespace at the ends of lines, keeping the indentation of the first line.
+    #[test]
+    fn content_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\r\n\r\n\r\n  # Indented  \r\n",
+            "See [ Other ] and [//images/./raw//].  \r\n\r\n",
+            "\tDone.\r\n\r\n",
+            "# Other",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n  # Indented\nSee [Other] and [/images/raw/].\n\n\tDone.\n\n",
+                "# Other\n",
+            ),
+        );
+    }
+
     // Ensure an empty wiki has no output.
     #[test]
     fn empty_wiki_display() {
-        assert_eq!(Wiki::default().to_string(), "");
+        assert_eq!(Wiki::new("").to_string(), "");
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
+    escaping::{escape, unescape, unescaped_characters},
     file_tree::{Visibility, file_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
@@ -10,8 +11,7 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
-        title_line_text,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki, title_line_text,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -916,7 +916,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     // nothing while the typed text has a backslash which doesn't escape anything.
     Some(text_link_completions(
         snapshot,
-        &ContentText::from_source(typed_target).unescape()?,
+        &unescape(typed_target)?,
         SourceRange {
             start: delimiters.opening,
             end: delimiters
@@ -954,7 +954,7 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     // delimiters as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
-    for (index, character) in ContentText::unescaped_characters(line) {
+    for (index, character) in unescaped_characters(line) {
         let offset = line_start + index;
         if offset < cursor {
             match character {
@@ -988,10 +988,7 @@ fn filesystem_link_completions(
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
     let mut directory = PathBuf::new();
-    for component in
-        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape()?)
-            .components()
-    {
+    for component in Path::new(&unescape(typed_directory.trim_start_matches('/'))?).components() {
         match component {
             Component::Normal(component) => directory.push(component),
             Component::CurDir => {}
@@ -1009,7 +1006,7 @@ fn filesystem_link_completions(
     for child in visible_children(&file_root, &directory) {
         // Leave a directory's link open for its children, and close a file's link.
         let name = child.name.as_str();
-        let escaped_name = ContentText::escape(name).into_string();
+        let escaped_name = escape(name);
         let (label, kind, new_text, replacement_end, command) = if child.is_directory {
             (
                 format!("{name}/"),
@@ -1150,7 +1147,7 @@ fn text_link_completions(
             .chain(other_matches)
             .take(MAX_TITLE_COMPLETIONS)
             .map(|title| {
-                let escaped_title = ContentText::escape(title).into_string();
+                let escaped_title = escape(title);
                 CompletionItem {
                     label: title.clone(),
                     kind: Some(CompletionItemKind::REFERENCE),
@@ -1304,7 +1301,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
             let path = target.path().join(&child.name);
             let child_target =
                 FilesystemTarget::from_name(path.to_str()?, child.is_directory).ok()?;
-            Some(format!("[{}]", child_target.text().as_str()))
+            Some(format!("[{}]", child_target.text()))
         })
         .collect::<Vec<_>>();
     if let Some(remaining) = children.len().checked_sub(MAX_DIRECTORY_PREVIEW_ENTRIES)
@@ -1531,9 +1528,7 @@ fn prepare_rename_for_document(
                 start,
                 end: start + trimmed.len(),
             }),
-            placeholder: ContentText::from_source(trimmed)
-                .unescape()
-                .expect("A link's escapes should have been checked."),
+            placeholder: unescape(trimmed).expect("A link's escapes should have been checked."),
         }));
     }
 
@@ -1618,7 +1613,7 @@ fn rename_page_for_document(
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
-    let escaped_title = ContentText::escape(new_title).into_string();
+    let escaped_title = escape(new_title);
     let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
@@ -1931,7 +1926,7 @@ fn filesystem_rename_edits(
         if let Some(moved_target) = moved_target {
             edits.push((
                 filesystem_link_path_source_range(source_contents, *source_range),
-                moved_target.text().into_string(),
+                moved_target.text(),
             ));
         }
     }
