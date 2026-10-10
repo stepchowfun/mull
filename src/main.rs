@@ -1,8 +1,8 @@
 mod analyzer;
 mod assertions;
-mod attachments_tree;
 mod cancellation;
 mod error;
+mod file_tree;
 mod format;
 mod language_server;
 mod line_index;

@@ -12,7 +12,7 @@ A *wiki* is a text file with a `.mull` extension. It contains *pages* with *link
 
 Each page starts with a `# Title`. The content comes after the title and is written in Markdown.
 
-To link to a page, put the title in square brackets like `[My favorite art]`. If your wiki is called `my_wiki.mull`, you can create a directory called `my_wiki_attachments` and link to files in there like `[/mona_lisa.jpg]`.
+To link to a page, put the title in square brackets like `[My favorite art]`. If the wiki is called `my_wiki.mull`, files (images, PDFs, spreadsheets, etc.) go in a directory named `my_wiki_files` (in general, `<wiki>_files`). You can link to files in it like `[/mona_lisa.jpg]`.
 
 Here's an example wiki with 3 pages:
 
@@ -54,13 +54,13 @@ Mull verifies these structural properties:
 It also verifies these connectivity properties:
 
 - All pages are reachable by following links from the `Home` page, which must exist.
-- All files in the attachments directory are linked to from the wiki.
+- All files in `<wiki>_files` are linked to from the wiki.
 
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
 Mull formats the wiki for you. It chooses the ordering of the pages in the file, so you don't have to think about that. But when you create a new page, you must link to it from somewhere. If you remove all the links to a page, Mull will flag that the page isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every page must be linked to from the wiki, the same is true of files in the attachments directory. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
+Just as every page must be linked to from the wiki, the same is true of files in `<wiki>_files`. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to `<wiki>_files` itself), all files are covered.
 
 ## What does the IDE extension do?
 
