@@ -2,7 +2,7 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-*Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, completions, diagnostics, formatting, refactoring, hover previews, etc.
+*Mull* is a tool for managing a wiki stored in a plain text file. There's a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, hover previews, completions, diagnostics, formatting, refactoring, etc.
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
@@ -62,28 +62,7 @@ Mull formats the wiki for you. It chooses the ordering of the pages in the file,
 
 Just as every page must be linked to from the wiki, the same is true of files in `<wiki>_files`. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to `<wiki>_files` itself), all files are covered.
 
-## What does the IDE extension do?
-
-The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
-
-- Clickable links with hover previews
-- Completions for page titles and file paths
-- Diagnostics and quick fixes
-- Dimming of everything outside the current page
-- Formatting (manual and on save)
-- History of visited pages
-- Link occurrence highlighting
-- Navigation to the start or end of a page
-- Page and file renaming
-- Outline view
-- Prose-friendly word wrapping
-- Reference search (backlinks)
-- Scrolling that snaps back to the current page
-- Syntax highlighting
-
-![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completion.png)
-
-### Keyboard shortcuts
+## Keyboard shortcuts
 
 These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
