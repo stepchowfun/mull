@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Hovering over a link to an image file, such as `[/photo.jpg]`, now previews the image, scaled down to fit within 480 by 360 pixels. The image must exist as spelled in the wiki's `_files` directory.
+- Hovering over a link to a directory, such as `[/photos/]`, now lists the files and directories in it as the links that would name them, with directories first.
 
 ## [0.39.4] - 2026-10-09
 

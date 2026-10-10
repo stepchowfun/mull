@@ -85,6 +85,10 @@ const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 // These file extensions identify the images which hovering over a filesystem link previews.
 const IMAGE_EXTENSIONS: &[&str] = &["bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"];
 
+// List at most this many entries when previewing a directory, so a large one doesn't flood the
+// hover.
+const MAX_DIRECTORY_PREVIEW_ENTRIES: usize = 50;
+
 // Scale image previews down to fit within this many pixels, since hovers don't limit their size.
 const MAX_IMAGE_WIDTH: usize = 480;
 const MAX_IMAGE_HEIGHT: usize = 360;
@@ -999,47 +1003,13 @@ fn filesystem_link_completions(
         return Some(Vec::new());
     };
 
-    // Descend only along the typed directory so large subtrees are read only once they're named.
-    let mut walker_builder = file_tree_walker(file_root.path());
-    walker_builder
-        .max_depth(Some(directory.components().count() + 1))
-        .filter_entry({
-            let file_root = file_root.clone();
-            let directory = directory.clone();
-            move |entry| {
-                let path = file_root.entry_path(entry);
-                directory.starts_with(path.as_path())
-                    || path.as_path().parent() == Some(directory.as_path())
-            }
-        });
-
-    // Offer each visible child of the typed directory, skipping the ancestors walked to reach it.
+    // Offer each child of the typed directory which a link could name.
     let mut completions = Vec::new();
-    for entry in walker_builder.build().flatten() {
-        let path = file_root.entry_path(&entry);
-        let file_type = entry
-            .file_type()
-            .expect("Only standard input lacks a file type.");
-        let Some(name) = entry.file_name().to_str() else {
-            continue;
-        };
-        if path.as_path().parent() != Some(directory.as_path()) {
-            continue;
-        }
-
-        // Omit a directory which a link couldn't name because it contains no files.
-        if file_type.is_dir()
-            && !matches!(
-                visibility(&file_root, &path, &CancellationFlag::default()).assume_completed(),
-                Visibility::Visible,
-            )
-        {
-            continue;
-        }
-
+    for child in visible_children(&file_root, &directory) {
         // Leave a directory's link open for its children, and close a file's link.
+        let name = child.name.as_str();
         let escaped_name = ContentText::escape(name).into_string();
-        let (label, kind, new_text, replacement_end, command) = if file_type.is_dir() {
+        let (label, kind, new_text, replacement_end, command) = if child.is_directory {
             (
                 format!("{name}/"),
                 CompletionItemKind::FOLDER,
@@ -1081,6 +1051,63 @@ fn filesystem_link_completions(
     // Present entries deterministically.
     completions.sort_by(|a, b| a.label.cmp(&b.label));
     Some(completions)
+}
+
+// This is an entry of a directory in the file tree which a link could name.
+struct VisibleChild {
+    name: String,
+    is_directory: bool,
+}
+
+// List the entries of a directory in the file tree which a link could name, sorted by name. The
+// walk descends only along the directory, so large subtrees are read only once they're named.
+// Ignored entries, names which aren't UTF-8, and directories without files are left out.
+fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild> {
+    // Keep only the directory's ancestors and children.
+    let mut walker_builder = file_tree_walker(file_root.path());
+    walker_builder
+        .max_depth(Some(directory.components().count() + 1))
+        .filter_entry({
+            let file_root = file_root.clone();
+            let directory = directory.to_owned();
+            move |entry| {
+                let path = file_root.entry_path(entry);
+                directory.starts_with(path.as_path())
+                    || path.as_path().parent() == Some(directory.as_path())
+            }
+        });
+
+    // Collect the children, skipping the ancestors walked to reach them.
+    let mut children = Vec::new();
+    for entry in walker_builder.build().flatten() {
+        let path = file_root.entry_path(&entry);
+        let is_directory = entry
+            .file_type()
+            .expect("Only standard input lacks a file type.")
+            .is_dir();
+        let Some(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if path.as_path().parent() != Some(directory) {
+            continue;
+        }
+
+        // Omit a directory which a link couldn't name because it contains no files.
+        if is_directory
+            && !matches!(
+                visibility(file_root, &path, &CancellationFlag::default()).assume_completed(),
+                Visibility::Visible,
+            )
+        {
+            continue;
+        }
+        children.push(VisibleChild {
+            name: name.to_owned(),
+            is_directory,
+        });
+    }
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    children
 }
 
 // Complete a text link with the page titles which contain the typed text's characters in order,
@@ -1182,7 +1209,7 @@ fn page_start_range(snapshot: &Snapshot, page: &Page) -> Range {
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering over a text link or title doesn't require
     // filesystem validation, and recover from syntax errors so previews keep working while they're
-    // fixed. A filesystem link may preview an image instead.
+    // fixed. A filesystem link may preview a directory or an image instead.
     let wiki = snapshot.wiki();
     let (page, source_range) = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
         Occurrence::Title(page) => (page, page.title_source_range),
@@ -1193,52 +1220,104 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
         Occurrence::Link(Link::Filesystem {
             target,
             source_range,
-        }) => return image_hover(snapshot, target, *source_range),
+        }) => return filesystem_hover(snapshot, target, *source_range),
         Occurrence::Prose(_) => return None,
     };
 
-    // Show the page as written, in a code block which the editor highlights as Mull and displays in
-    // the editor's font. The fence is longer than every backtick run in the page.
-    let source = &snapshot.contents[page.source_range.start..page.source_range.end];
+    // Show the page as written.
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: mull_code_block(
+                &snapshot.contents[page.source_range.start..page.source_range.end],
+            ),
+        }),
+        range: Some(snapshot.range(source_range)),
+    })
+}
+
+// Put Mull source in a Markdown code block, which the editor highlights as Mull and displays in
+// the editor's font. The fence is longer than every backtick run in the source.
+fn mull_code_block(source: &str) -> String {
     let longest_run = source
         .split(|character| character != '`')
         .map(str::len)
         .max()
         .expect("Splitting text should yield at least one piece.");
     let fence = "`".repeat((longest_run + 1).max(3));
+    format!("{fence}mull\n{source}\n{fence}")
+}
+
+// Preview the directory or image a filesystem link names, if it exists as spelled in a saved wiki's
+// file root. Images are recognized by their extensions, and other files have no preview.
+fn filesystem_hover(
+    snapshot: &Snapshot,
+    target: &FilesystemTarget,
+    source_range: SourceRange,
+) -> Option<Hover> {
+    // Skip files which aren't images, ignoring the case of their extensions.
+    let is_image = target
+        .path()
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            IMAGE_EXTENSIONS
+                .iter()
+                .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
+        });
+    if !target.is_directory() && !is_image {
+        return None;
+    }
+
+    // Find the entry as following the link would.
+    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
+    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!("{fence}mull\n{source}\n{fence}"),
+            value: if target.is_directory() {
+                directory_preview(&file_root, target)
+            } else {
+                image_preview(&uri)?
+            },
         }),
         range: Some(snapshot.range(source_range)),
     })
 }
 
-// Preview the image a filesystem link names, if it's a file with an image extension which exists as
-// spelled in a saved wiki's file root. Other filesystem links have no preview.
-fn image_hover(
-    snapshot: &Snapshot,
-    target: &FilesystemTarget,
-    source_range: SourceRange,
-) -> Option<Hover> {
-    // Recognize images by their extensions, ignoring case.
-    let extension = target.path().extension()?.to_str()?;
-    if target.is_directory()
-        || !IMAGE_EXTENSIONS
-            .iter()
-            .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
-    {
-        return None;
+// List a directory's entries as the links which would name them, in a code block like a page
+// preview, with directories first. Only so many are listed, followed by a count of the rest.
+fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String {
+    // Describe a directory with nothing to list.
+    let mut children = visible_children(file_root, target.path());
+    if children.is_empty() {
+        return "This directory contains no files.".to_owned();
     }
 
-    // Find the image as following the link would.
-    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
-    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
+    // List the first entries, keeping each group in name order.
+    children.sort_by_key(|child| !child.is_directory);
+    let mut lines = children
+        .iter()
+        .take(MAX_DIRECTORY_PREVIEW_ENTRIES)
+        .filter_map(|child| {
+            let path = target.path().join(&child.name);
+            let child_target =
+                FilesystemTarget::from_name(path.to_str()?, child.is_directory).ok()?;
+            Some(format!("[{}]", child_target.text().as_str()))
+        })
+        .collect::<Vec<_>>();
+    if let Some(remaining) = children.len().checked_sub(MAX_DIRECTORY_PREVIEW_ENTRIES)
+        && remaining > 0
+    {
+        lines.push(format!("…and {remaining} more"));
+    }
+    mull_code_block(&lines.join("\n"))
+}
 
-    // Embed the image as HTML, which unlike Markdown can size it. Shrink it to fit within the
-    // maximum size, keeping its aspect ratio. An image whose size can't be read, such as an SVG,
-    // just gets the maximum width.
+// Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
+// size, keeping its aspect ratio. An image whose size can't be read, such as an SVG, just gets the
+// maximum width.
+fn image_preview(uri: &Uri) -> Option<String> {
     let dimensions = match imagesize::size(uri.to_file_path()?) {
         Ok(size) => {
             let (width, height) = image_preview_size(size.width, size.height);
@@ -1247,13 +1326,7 @@ fn image_hover(
         Err(_) => format!("width=\"{MAX_IMAGE_WIDTH}\""),
     };
     let source = uri.as_str().replace('&', "&amp;").replace('"', "&quot;");
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!("<img src=\"{source}\" {dimensions}>"),
-        }),
-        range: Some(snapshot.range(source_range)),
-    })
+    Some(format!("<img src=\"{source}\" {dimensions}>"))
 }
 
 // Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
@@ -2313,12 +2386,13 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH, MAX_TITLE_COMPLETIONS, RevealType,
-        Snapshot, Title, code_action_for_document, completion_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
-        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
+        MAX_TITLE_COMPLETIONS, RevealType, Snapshot, Title, code_action_for_document,
+        completion_for_document, diagnostic_from_error, diagnostics_for_document,
+        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
+        formatting_for_document, goto_definition_for_document, hover_for_document,
+        image_preview_size, is_subsequence, prepare_rename_for_document, references_for_document,
+        rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4413,8 +4487,8 @@ mod tests {
         header
     }
 
-    // Preview images which filesystem links name, but not other files, directories, missing
-    // images, or images in an unsaved wiki.
+    // Preview images which filesystem links name, but not other files, missing images, or images in
+    // an unsaved wiki. A directory with an image's extension is previewed as a directory.
     #[test]
     fn hovers_preview_images() {
         let source = "# Home\n\n[/photo.PNG] [/notes.txt] [/images.png/] [/missing.png]";
@@ -4443,14 +4517,75 @@ mod tests {
             hover.range,
             Some(Range::new(Position::new(2, 0), Position::new(2, 12))),
         );
-        for column in [15, 30, 45] {
+        for column in [15, 45] {
             assert!(
                 hover_for_document(&snapshot(&uri, source), Position::new(2, column)).is_none(),
             );
         }
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 30))
+                .unwrap()
+                .contents
+        else {
+            panic!("A directory preview should use markup content.");
+        };
+        assert_eq!(contents.value, "This directory contains no files.");
         assert!(
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
         );
+    }
+
+    // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
+    fn hover_markdown(uri: &Uri, source: &str, position: Position) -> Option<String> {
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(uri, source), position)?.contents
+        else {
+            panic!("A preview should use markup content.");
+        };
+        Some(contents.value)
+    }
+
+    // List a directory's visible entries as links, with directories first, leaving out ignored
+    // entries and directories without files. A missing directory has no preview.
+    #[test]
+    fn hovers_preview_directories() {
+        let source = "# Home\n\n[/] [/b/] [/missing/]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+        fs::write(directory.join("a.txt"), "a").unwrap();
+        fs::create_dir_all(directory.join("b")).unwrap();
+        fs::write(directory.join("b").join("c [1].txt"), "c").unwrap();
+        fs::create_dir(directory.join("empty")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 1)).unwrap(),
+            "```mull\n[/b/]\n[/.gitignore]\n[/a.txt]\n```",
+        );
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
+            "```mull\n[/b/c \\[1\\].txt]\n```",
+        );
+        assert!(hover_markdown(&uri, source, Position::new(2, 12)).is_none());
+    }
+
+    // List only so many of a directory's entries, followed by a count of the rest.
+    #[test]
+    fn hovers_preview_large_directories() {
+        let source = "# Home\n\n[/]";
+        let wiki = TestWiki::new(source);
+        for index in 0..MAX_DIRECTORY_PREVIEW_ENTRIES + 2 {
+            fs::write(wiki.directory().join(format!("{index:03}.txt")), "").unwrap();
+        }
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let markdown = hover_markdown(&uri, source, Position::new(2, 1)).unwrap();
+        let lines = markdown.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), MAX_DIRECTORY_PREVIEW_ENTRIES + 3);
+        assert_eq!(lines[1], "[/000.txt]");
+        assert_eq!(lines[MAX_DIRECTORY_PREVIEW_ENTRIES + 1], "…and 2 more");
     }
 
     // Give an image whose size can't be read the maximum preview width.
