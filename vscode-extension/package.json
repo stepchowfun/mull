@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.37.2",
+  "version": "0.38.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -48,52 +48,52 @@
     ],
     "commands": [
       {
-        "command": "mull.goToNodeStart",
-        "title": "Go to Start of Node",
+        "command": "mull.goToPageStart",
+        "title": "Go to Start of Page",
         "category": "Mull"
       },
       {
-        "command": "mull.goToNodeEnd",
-        "title": "Go to End of Node",
+        "command": "mull.goToPageEnd",
+        "title": "Go to End of Page",
         "category": "Mull"
       },
       {
-        "command": "mull.selectToNodeStart",
-        "title": "Select to Start of Node",
+        "command": "mull.selectToPageStart",
+        "title": "Select to Start of Page",
         "category": "Mull"
       },
       {
-        "command": "mull.selectToNodeEnd",
-        "title": "Select to End of Node",
+        "command": "mull.selectToPageEnd",
+        "title": "Select to End of Page",
         "category": "Mull"
       },
       {
         "command": "mull.goBack",
-        "title": "Go Back to Previous Node",
+        "title": "Go Back to Previous Page",
         "category": "Mull"
       },
       {
         "command": "mull.goForward",
-        "title": "Go Forward to Next Node",
+        "title": "Go Forward to Next Page",
         "category": "Mull"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "mull.goToNodeStart",
+          "command": "mull.goToPageStart",
           "when": "editorLangId == mull"
         },
         {
-          "command": "mull.goToNodeEnd",
+          "command": "mull.goToPageEnd",
           "when": "editorLangId == mull"
         },
         {
-          "command": "mull.selectToNodeStart",
+          "command": "mull.selectToPageStart",
           "when": "editorLangId == mull"
         },
         {
-          "command": "mull.selectToNodeEnd",
+          "command": "mull.selectToPageEnd",
           "when": "editorLangId == mull"
         },
         {
@@ -108,25 +108,25 @@
     },
     "keybindings": [
       {
-        "command": "mull.goToNodeStart",
+        "command": "mull.goToPageStart",
         "key": "ctrl+home",
         "mac": "cmd+up",
         "when": "editorTextFocus && editorLangId == mull"
       },
       {
-        "command": "mull.goToNodeEnd",
+        "command": "mull.goToPageEnd",
         "key": "ctrl+end",
         "mac": "cmd+down",
         "when": "editorTextFocus && editorLangId == mull"
       },
       {
-        "command": "mull.selectToNodeStart",
+        "command": "mull.selectToPageStart",
         "key": "shift+ctrl+home",
         "mac": "shift+cmd+up",
         "when": "editorTextFocus && editorLangId == mull"
       },
       {
-        "command": "mull.selectToNodeEnd",
+        "command": "mull.selectToPageEnd",
         "key": "shift+ctrl+end",
         "mac": "shift+cmd+down",
         "when": "editorTextFocus && editorLangId == mull"
@@ -153,15 +153,15 @@
           "scope": "machine-overridable",
           "description": "Path to the Mull executable used to start the language server."
         },
-        "mull.dimOtherNodes": {
+        "mull.dimOtherPages": {
           "type": "boolean",
           "default": true,
-          "description": "Dim everything except the current node."
+          "description": "Dim everything except the current page."
         },
-        "mull.snapBackToCurrentNode": {
+        "mull.snapBackToCurrentPage": {
           "type": "boolean",
           "default": false,
-          "description": "After scrolling the current node out of view, scroll back to it."
+          "description": "After scrolling the current page out of view, scroll back to it."
         }
       }
     },

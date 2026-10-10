@@ -60,10 +60,10 @@ mod tests {
                 .to_string()
                 .contains("Unexpected closing link delimiter."),
         );
-        assert!(errors[1].to_string().contains("Node `Missing` not found."));
+        assert!(errors[1].to_string().contains("Page `Missing` not found."));
     }
 
-    // Keep a node with a syntax error from making the nodes it links to unreachable.
+    // Keep a page with a syntax error from making the pages it links to unreachable.
     #[test]
     fn syntax_errors_preserve_reachability() {
         let errors =

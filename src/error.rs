@@ -20,8 +20,8 @@ pub struct SourceRange {
 // travels to the editor and back as JSON.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Fix {
-    // Declare a node with this title.
-    CreateNode(String),
+    // Declare a page with this title.
+    CreatePage(String),
 }
 
 // This is the primary error type we'll be using everywhere. Its parts are exposed through accessors

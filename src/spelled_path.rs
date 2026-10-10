@@ -184,7 +184,7 @@ impl AttachmentsDirectory {
     // Spell the deepest proper ancestor of a target that exists, which may be the attachments
     // directory itself, and return it with the rest of the target's path as written. None of the
     // rest exists except possibly the final name, which is never spelled, so a rename can tell
-    // whether it names the node being renamed. An ancestor whose existence can't be determined is
+    // whether it names the page being renamed. An ancestor whose existence can't be determined is
     // an error rather than a missing directory.
     pub fn spell_existing_ancestor(
         &self,

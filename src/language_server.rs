@@ -10,7 +10,7 @@ use crate::{
     spelled_path::{AttachmentsDirectory, DirectoryListings, SpelledPath, entry_identity},
     validator,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TITLE_PREFIX, TextNode, Wiki,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
         rendering_order_key, title_line_text, unescaped_characters,
     },
 };
@@ -53,7 +53,7 @@ use tower_lsp_server::{
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
 
-// Limit the node titles offered as completions so responses remain small in large wikis.
+// Limit the page titles offered as completions so responses remain small in large wikis.
 const MAX_TITLE_COMPLETIONS: usize = 100;
 
 // This extension command reveals a source range in a document. Keep this in sync with
@@ -192,12 +192,12 @@ impl Snapshot {
         &self.parsed().0
     }
 
-    // List the titles of the nodes in the wiki in title order, for completion.
+    // List the titles of the pages in the wiki in title order, for completion.
     fn titles(&self) -> &Arc<[Title]> {
         self.titles.get_or_init(|| {
             let mut titles = self
                 .wiki()
-                .text_nodes
+                .pages
                 .keys()
                 .map(|title| Title {
                     title: title.clone(),
@@ -220,7 +220,7 @@ impl Snapshot {
     }
 }
 
-// This is a node title along with its lowercase form, which typed text is matched against
+// This is a page title along with its lowercase form, which typed text is matched against
 // regardless of case.
 #[derive(Debug)]
 struct Title {
@@ -618,7 +618,7 @@ impl LanguageServer for Backend {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        // Find references to the node under the cursor in the latest synchronized snapshot.
+        // Find references to the page under the cursor in the latest synchronized snapshot.
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
         self.respond(
@@ -652,7 +652,7 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         // Identify the occurrence that the editor should select for rename, or explain why the
-        // filesystem node a link targets can't be renamed before the user enters a new name.
+        // filesystem entry a link targets can't be renamed before the user enters a new name.
         let position = params.position;
         let supports_file_renames = self.supports_file_renames.load(Ordering::Relaxed);
         self.respond(&params.text_document.uri, move |snapshot| {
@@ -663,7 +663,7 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        // Rename the node at the cursor with whichever file operations the client supports,
+        // Rename the page at the cursor with whichever file operations the client supports,
         // against the latest snapshot, whose version guards the edit against later changes.
         let position = params.text_document_position.position;
         let new_name = params.new_name;
@@ -693,7 +693,7 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        // Describe the nodes in the latest synchronized editor snapshot.
+        // Describe the pages in the latest synchronized editor snapshot.
         let supports_hierarchy = self
             .supports_hierarchical_document_symbols
             .load(Ordering::Relaxed);
@@ -789,7 +789,7 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     }
 }
 
-// Complete the link target at an editor position with node titles or filesystem paths.
+// Complete the link target at an editor position with page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
     // Find the link containing the cursor using only the cursor's line, so completion doesn't wait
     // for the wiki to be parsed. Targets are trimmed by the parser, so the text typed so far starts
@@ -821,7 +821,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
         return None;
     }
 
-    // Complete a text link with the titles of the nodes in the wiki which match the typed text,
+    // Complete a text link with the titles of the pages in the wiki which match the typed text,
     // replacing a closed link in its entirety and an unfinished link through the cursor.
     Some(text_link_completions(
         snapshot,
@@ -998,7 +998,7 @@ fn filesystem_link_completions(
     Some(completions)
 }
 
-// Complete a text link with the node titles which contain the typed text's characters in order,
+// Complete a text link with the page titles which contain the typed text's characters in order,
 // ignoring case, replacing the link at a source range. If there are too many, offer those which
 // start with the typed text first, and mark the list as incomplete so the client asks again as more
 // is typed.
@@ -1065,20 +1065,20 @@ fn is_subsequence(query: &str, text: &str) -> bool {
     query_characters.peek().is_none()
 }
 
-// Locate the node declared or linked at an editor position.
+// Locate the page declared or linked at an editor position.
 fn goto_definition_for_document(
     snapshot: &Snapshot,
     cursor: Position,
 ) -> Option<GotoDefinitionResponse> {
     // Parse only the wiki syntax because navigation doesn't require filesystem validation, and
     // recover from syntax errors so navigation keeps working while they're fixed.
-    let (node, origin_source_range) =
-        node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    let (page, origin_source_range) =
+        page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
-    // Identify the complete source link or title, and target the start of the destination node with
+    // Identify the complete source link or title, and target the start of the destination page with
     // an empty range. Editors preview the source of a nonempty target range alongside the hover
     // preview, and the selection range has to be within the target range.
-    let target_range = node_start_range(snapshot, node);
+    let target_range = page_start_range(snapshot, page);
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
         origin_selection_range: Some(snapshot.range(origin_source_range)),
         target_uri: snapshot.uri.clone(),
@@ -1087,9 +1087,9 @@ fn goto_definition_for_document(
     }]))
 }
 
-// Find where navigating to a node leads: an empty range at its start, right before its `#`.
-fn node_start_range(snapshot: &Snapshot, node: &TextNode) -> Range {
-    let start = snapshot.position(node.source_range.start);
+// Find where navigating to a page leads: an empty range at its start, right before its `#`.
+fn page_start_range(snapshot: &Snapshot, page: &Page) -> Range {
+    let start = snapshot.position(page.source_range.start);
     Range::new(start, start)
 }
 
@@ -1097,9 +1097,9 @@ fn node_start_range(snapshot: &Snapshot, node: &TextNode) -> Range {
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering doesn't require filesystem validation, and
     // recover from syntax errors so previews keep working while they're fixed.
-    let (node, source_range) = node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    let (page, source_range) = page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
-    // Render the node as Markdown, linking its resolvable text links to the nodes they name and,
+    // Render the page as Markdown, linking its resolvable text links to the pages they name and,
     // in a saved wiki, its filesystem links to their targets.
     let attachments_directory = snapshot
         .path
@@ -1109,11 +1109,11 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: node
+            value: page
                 .to_markdown(|link| match link {
                     Link::Text { title, .. } => Some(reveal_range_command_url(
                         &snapshot.uri,
-                        node_start_range(snapshot, snapshot.wiki().text_nodes.get(title)?),
+                        page_start_range(snapshot, snapshot.wiki().pages.get(title)?),
                         RevealType::AtTop,
                     )),
                     Link::Filesystem { target, .. } => Some(
@@ -1182,7 +1182,7 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
     )
 }
 
-// Locate every text link to the node at an editor position.
+// Locate every text link to the page at an editor position.
 fn references_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -1190,13 +1190,13 @@ fn references_for_document(
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
     // from syntax errors so references can be found while they're fixed.
-    let (node, _source_range) =
-        node_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    let (page, _source_range) =
+        page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
     // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(snapshot.wiki(), &node.title);
+    let mut source_ranges = text_link_source_ranges(snapshot.wiki(), &page.title);
     if include_declaration {
-        source_ranges.push(node.title_source_range);
+        source_ranges.push(page.title_source_range);
     }
     source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
 
@@ -1211,7 +1211,7 @@ fn references_for_document(
 
 // Collect every complete text-link range that resolves to a title.
 fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
-    // Links live on nodes in an unordered map, so sort their ranges into source order.
+    // Links live on pages in an unordered map, so sort their ranges into source order.
     let mut source_ranges = wiki
         .links()
         .filter_map(|link| match link {
@@ -1226,7 +1226,7 @@ fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
     source_ranges
 }
 
-// Highlight related node or filesystem-link occurrences at an editor position.
+// Highlight related page or filesystem-link occurrences at an editor position.
 fn document_highlight_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -1236,14 +1236,14 @@ fn document_highlight_for_document(
     let wiki = snapshot.wiki();
     let byte_offset = snapshot.byte_offset(cursor)?;
 
-    // Distinguish a text-node declaration from its references.
+    // Distinguish a page declaration from its references.
     let mut highlights =
-        if let Some((node, _source_range)) = node_at(snapshot, byte_offset, LinkExtent::Whole) {
-            let mut highlights = text_link_source_ranges(wiki, &node.title)
+        if let Some((page, _source_range)) = page_at(snapshot, byte_offset, LinkExtent::Whole) {
+            let mut highlights = text_link_source_ranges(wiki, &page.title)
                 .into_iter()
                 .map(|source_range| (source_range, DocumentHighlightKind::READ))
                 .collect::<Vec<_>>();
-            highlights.push((node.title_source_range, DocumentHighlightKind::WRITE));
+            highlights.push((page.title_source_range, DocumentHighlightKind::WRITE));
             highlights
         } else {
             // Filesystem links have no declaration in the wiki, so every matching link is a
@@ -1285,8 +1285,8 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<
         .collect()
 }
 
-// Identify the source occurrence that should be selected before renaming a node, file, or
-// directory, or explain why the filesystem node a link targets can't be renamed.
+// Identify the source occurrence that should be selected before renaming a page, file, or
+// directory, or explain why the filesystem entry a link targets can't be renamed.
 fn prepare_rename_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -1301,10 +1301,10 @@ fn prepare_rename_for_document(
     // Select only the path of a filesystem link between its leading `/` and any trailing `/`, and
     // seed the rename prompt with its decoded text as written. The rename writes both slashes
     // itself, so the new name needs neither.
-    if let Some(filesystem_node) =
-        renamable_filesystem_node_at(snapshot, cursor_offset, supports_file_renames)?
+    if let Some(filesystem_entry) =
+        renamable_filesystem_entry_at(snapshot, cursor_offset, supports_file_renames)?
     {
-        let path_source_range = filesystem_node.path_source_range;
+        let path_source_range = filesystem_entry.path_source_range;
         let path_source = &snapshot.contents[path_source_range.start..path_source_range.end];
         let start_trimmed = path_source.trim_start_matches('/');
         let trimmed = start_trimmed.trim_end_matches('/');
@@ -1319,14 +1319,14 @@ fn prepare_rename_for_document(
     }
 
     // Otherwise, resolve either a title declaration or text link.
-    let Some((node, source_range)) = node_at(snapshot, cursor_offset, LinkExtent::Target) else {
+    let Some((page, source_range)) = page_at(snapshot, cursor_offset, LinkExtent::Target) else {
         return Ok(None);
     };
 
     // Select only the title text and seed the rename prompt with its decoded value.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
-        placeholder: node.title.clone(),
+        placeholder: page.title.clone(),
     }))
 }
 
@@ -1337,7 +1337,7 @@ struct FileOperationSupport {
     delete: bool,
 }
 
-// Rename the filesystem node or text node at an editor position, along with every link to it.
+// Rename the filesystem entry or page at an editor position, along with every link to it.
 fn rename_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -1345,33 +1345,33 @@ fn rename_for_document(
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
     // Resolve the cursor in an editor snapshot, which need not pass semantic validation, recovering
-    // from syntax errors. A malformed link to the renamed node isn't updated, but it's reported as
+    // from syntax errors. A malformed link to the renamed page isn't updated, but it's reported as
     // a broken link once the syntax errors are fixed, since the old name no longer exists
     // [tag:rename_despite_syntax_errors].
     let Some(cursor_offset) = snapshot.byte_offset(cursor) else {
         return Ok(None);
     };
 
-    // Try the filesystem node a link targets, and otherwise fall back to a text node.
-    match rename_filesystem_node_for_document(
+    // Try the filesystem entry a link targets, and otherwise fall back to a page.
+    match rename_filesystem_entry_for_document(
         snapshot,
         cursor_offset,
         new_name,
         file_operation_support,
     ) {
-        Ok(None) => rename_text_node_for_document(snapshot, cursor_offset, new_name),
+        Ok(None) => rename_page_for_document(snapshot, cursor_offset, new_name),
         result => result,
     }
 }
 
-// Rename one text node and every text link that targets it.
-fn rename_text_node_for_document(
+// Rename one page and every text link that targets it.
+fn rename_page_for_document(
     snapshot: &Snapshot,
     cursor_offset: usize,
     new_name: &str,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Resolve the text node declared or linked at the cursor.
-    let Some((node, _source_range)) = node_at(snapshot, cursor_offset, LinkExtent::Target) else {
+    // Resolve the page declared or linked at the cursor.
+    let Some((page, _source_range)) = page_at(snapshot, cursor_offset, LinkExtent::Target) else {
         return Ok(None);
     };
 
@@ -1381,26 +1381,26 @@ fn rename_text_node_for_document(
         .chars()
         .any(|character| matches!(character, '\r' | '\n'))
     {
-        return Err("A node title can't contain a line break.".to_owned());
+        return Err("A page title can't contain a line break.".to_owned());
     }
     let new_title = new_name.trim();
     if new_title.is_empty() {
-        return Err("A node title can't be empty.".to_owned());
+        return Err("A page title can't be empty.".to_owned());
     }
     if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
         return Err(format!(
-            "A node title can't start with {}.",
+            "A page title can't start with {}.",
             FILESYSTEM_LINK_PREFIX.code_str(),
         ));
     }
-    if new_title != node.title && snapshot.wiki().text_nodes.contains_key(new_title) {
-        return Err(format!("Node {} already exists.", new_title.code_str()));
+    if new_title != page.title && snapshot.wiki().pages.contains_key(new_title) {
+        return Err(format!("Page {} already exists.", new_title.code_str()));
     }
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
     let escaped_title = ContentText::escape(new_title).into_string();
-    let mut edits = text_link_source_ranges(snapshot.wiki(), &node.title)
+    let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
             (
@@ -1409,7 +1409,7 @@ fn rename_text_node_for_document(
             )
         })
         .collect::<Vec<_>>();
-    edits.push((node.title_source_range, new_title));
+    edits.push((page.title_source_range, new_title));
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
@@ -1429,25 +1429,25 @@ fn rename_text_node_for_document(
 
 // Rename the file or directory of a filesystem link on disk and update every link to it or, for a
 // directory, to anything within it. The client creates any missing directories, and directories
-// that contained nothing but the renamed node are deleted when the client supports it.
-fn rename_filesystem_node_for_document(
+// that contained nothing but the renamed page are deleted when the client supports it.
+fn rename_filesystem_entry_for_document(
     snapshot: &Snapshot,
     cursor_offset: usize,
     new_name: &str,
     file_operation_support: FileOperationSupport,
 ) -> std::result::Result<Option<WorkspaceEdit>, String> {
-    // Find the renamable filesystem node at the cursor, leaving other positions to text nodes.
-    let Some(RenamableFilesystemNode {
+    // Find the renamable filesystem entry at the cursor, leaving other positions to pages.
+    let Some(RenamableFilesystemEntry {
         attachments_directory,
         old_target,
         old_path,
         ..
-    }) = renamable_filesystem_node_at(snapshot, cursor_offset, file_operation_support.rename)?
+    }) = renamable_filesystem_entry_at(snapshot, cursor_offset, file_operation_support.rename)?
     else {
         return Ok(None);
     };
 
-    // Accept only a new path which the parser would accept in a link, for a node of the same kind.
+    // Accept only a new path which the parser would accept in a link, for a page of the same kind.
     // A new target written exactly like the old one, which is spelled as on disk, changes nothing.
     let is_directory = old_target.is_directory();
     let new_target = FilesystemTarget::from_name(new_name.trim(), is_directory)?;
@@ -1461,9 +1461,9 @@ fn rename_filesystem_node_for_document(
     }
 
     // Require the existing directories along the new path to be spelled as they are on disk, as a
-    // link would have to be. A filesystem that ignores case would otherwise put the node in a
+    // link would have to be. A filesystem that ignores case would otherwise put the page in a
     // directory whose path doesn't match the new path as written, and the comparisons below would
-    // go wrong. For example, a directory which will contain the node could look empty after the
+    // go wrong. For example, a directory which will contain the page could look empty after the
     // rename and be deleted along with it. The rest of the new path doesn't exist, other than
     // possibly its final name, so it has no other spelling.
     let (new_ancestor, new_suffix) = attachments_directory
@@ -1526,7 +1526,7 @@ fn rename_filesystem_node_for_document(
             .collect(),
     });
 
-    // Rename the node. No filesystem can move a directory into itself directly, so such a move
+    // Rename the page. No filesystem can move a directory into itself directly, so such a move
     // goes through a temporary sibling, from which the directory moves to its new path, recreating
     // its old path as a parent. VS Code validates a run of renames before performing any of them,
     // so the text edit separates the two renames to let the first one happen before the second is
@@ -1548,7 +1548,7 @@ fn rename_filesystem_node_for_document(
     // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
     // before performing any of them, so a nested empty directory would block deleting its parent.
     // Instead, one recursive deletion removes the outermost directory, which contains only empty
-    // directories once the renamed node has moved.
+    // directories once the renamed page has moved.
     if file_operation_support.delete
         && let Some(directory) =
             outermost_directory_emptied_by_rename(&attachments_directory, &old_path, &new_ancestor)
@@ -1570,22 +1570,22 @@ fn rename_filesystem_node_for_document(
     }))
 }
 
-// This describes the filesystem node targeted by the link at the cursor, once it's known to be
+// This describes the filesystem entry targeted by the link at the cursor, once it's known to be
 // renamable regardless of its new name.
-struct RenamableFilesystemNode {
+struct RenamableFilesystemEntry {
     attachments_directory: AttachmentsDirectory,
     path_source_range: SourceRange,
     old_target: FilesystemTarget,
     old_path: SpelledPath,
 }
 
-// Find the filesystem node targeted by the link at the cursor and check whether it can be renamed
-// at all. Every other position yields no node, leaving it to text node renaming.
-fn renamable_filesystem_node_at(
+// Find the filesystem entry targeted by the link at the cursor and check whether it can be renamed
+// at all. Every other position yields no page, leaving it to page renaming.
+fn renamable_filesystem_entry_at(
     snapshot: &Snapshot,
     cursor_offset: usize,
     supports_file_renames: bool,
-) -> std::result::Result<Option<RenamableFilesystemNode>, String> {
+) -> std::result::Result<Option<RenamableFilesystemEntry>, String> {
     // Resolve the filesystem link at the cursor and its target.
     let Some(Link::Filesystem {
         target: old_target,
@@ -1598,7 +1598,7 @@ fn renamable_filesystem_node_at(
         (old_target.is_directory(), old_target.path(), *source_range);
     let path_source_range = filesystem_link_path_source_range(&snapshot.contents, source_range);
 
-    // The client renames the node on disk, which requires a saved wiki and a capable client.
+    // The client renames the page on disk, which requires a saved wiki and a capable client.
     let Some(wiki_path) = &snapshot.path else {
         return Err("Save the wiki before renaming the files it links to.".to_owned());
     };
@@ -1606,7 +1606,7 @@ fn renamable_filesystem_node_at(
         return Err("This editor doesn't support renaming files.".to_owned());
     }
 
-    // Require the linked node to exist as the kind the link names, other than the attachments
+    // Require the linked page to exist as the kind the link names, other than the attachments
     // directory, resolving it from the attachments directory as validation does.
     let attachments_directory = AttachmentsDirectory::new(wiki_path)?;
     if old_target.is_attachments_directory() {
@@ -1625,7 +1625,7 @@ fn renamable_filesystem_node_at(
         .spell(old_target, &mut DirectoryListings::new())
         .map_err(|error| error.message)?;
 
-    Ok(Some(RenamableFilesystemNode {
+    Ok(Some(RenamableFilesystemEntry {
         attachments_directory,
         path_source_range,
         old_target: old_target.clone(),
@@ -1659,9 +1659,9 @@ fn check_rename_destination(
     new_ancestor: &SpelledPath,
     new_absolute_path: &Path,
 ) -> std::result::Result<(), String> {
-    // Refuse to replace another node. Something exists at the new path if its own metadata can be
+    // Refuse to replace another page. Something exists at the new path if its own metadata can be
     // read, even if it's a broken symlink. On a filesystem that ignores case, such as macOS's
-    // default one, the new path may instead name the node being renamed, spelled differently, as
+    // default one, the new path may instead name the page being renamed, spelled differently, as
     // when renaming `photo.jpg` to `Photo.jpg`. Refuse that too, since VS Code treats both
     // spellings as the same file and silently skips the rename while still editing the links,
     // which leaves them misspelled.
@@ -1730,13 +1730,13 @@ fn filesystem_rename_edits(
     edits
 }
 
-// Choose an unused, hidden name beside a node for a temporary rename. Staying in the same directory
+// Choose an unused, hidden name beside a page for a temporary rename. Staying in the same directory
 // keeps the rename on the same filesystem.
 fn unused_sibling_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .expect("A renamed node should have a UTF-8 name.");
+        .expect("A renamed page should have a UTF-8 name.");
     (1..=u64::MAX)
         .map(|attempt| {
             path.with_file_name(if attempt == 1 {
@@ -1749,7 +1749,7 @@ fn unused_sibling_path(path: &Path) -> PathBuf {
         .expect("An unused temporary name should exist.")
 }
 
-// Build an operation that renames a node from one absolute path to another.
+// Build an operation that renames a page from one absolute path to another.
 fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation {
     DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
         old_uri: file_uri(old_path),
@@ -1759,7 +1759,7 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
     }))
 }
 
-// Find the outermost directory whose only entry is the node being moved, directly or through
+// Find the outermost directory whose only entry is the page being moved, directly or through
 // directories whose only entry leads to it. Any other entry keeps a directory, even an empty
 // directory or an ignored file. A directory is also kept if it will contain the new path, which,
 // since it exists, is when the new path's deepest existing ancestor leads into it, even through a
@@ -1833,7 +1833,7 @@ fn formatting_for_document(snapshot: &Snapshot) -> Option<Vec<TextEdit>> {
     }
 }
 
-// Describe every parsed text node for editor outlines and document-symbol navigation.
+// Describe every parsed page for editor outlines and document-symbol navigation.
 #[allow(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
@@ -1842,40 +1842,40 @@ fn document_symbol_for_document(
     snapshot: &Snapshot,
     supports_hierarchy: bool,
 ) -> DocumentSymbolResponse {
-    // Parse syntax without semantic validation, recovering from syntax errors so the nodes remain
+    // Parse syntax without semantic validation, recovering from syntax errors so the pages remain
     // navigable while they're fixed.
-    let mut nodes = snapshot.wiki().text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| node.source_range.start);
+    let mut pages = snapshot.wiki().pages.values().collect::<Vec<_>>();
+    pages.sort_by_key(|page| page.source_range.start);
 
-    // Use separate node and selection ranges when the client supports hierarchical symbols, and
+    // Use separate page and selection ranges when the client supports hierarchical symbols, and
     // locate each flat symbol by its selection range otherwise. Selecting a symbol leads to the
-    // start of its node.
+    // start of its page.
     if supports_hierarchy {
         DocumentSymbolResponse::Nested(
-            nodes
+            pages
                 .into_iter()
-                .map(|node| DocumentSymbol {
-                    name: node.title.clone(),
+                .map(|page| DocumentSymbol {
+                    name: page.title.clone(),
                     detail: None,
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
-                    range: snapshot.range(node.source_range),
-                    selection_range: node_start_range(snapshot, node),
+                    range: snapshot.range(page.source_range),
+                    selection_range: page_start_range(snapshot, page),
                     children: None,
                 })
                 .collect(),
         )
     } else {
         DocumentSymbolResponse::Flat(
-            nodes
+            pages
                 .into_iter()
-                .map(|node| SymbolInformation {
-                    name: node.title.clone(),
+                .map(|page| SymbolInformation {
+                    name: page.title.clone(),
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
-                    location: Location::new(snapshot.uri.clone(), node_start_range(snapshot, node)),
+                    location: Location::new(snapshot.uri.clone(), page_start_range(snapshot, page)),
                     container_name: None,
                 })
                 .collect(),
@@ -1903,18 +1903,18 @@ fn code_action_for_document(
     }
 
     // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made,
-    // recovering from syntax errors since validation reports missing nodes despite them.
+    // recovering from syntax errors since validation reports missing pages despite them.
     let wiki = snapshot.wiki();
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
             let (title, edit, command) = match fix {
-                Fix::CreateNode(title) if wiki.text_nodes.contains_key(&title) => return None,
-                Fix::CreateNode(title) => {
-                    // Insert the node where the formatter would render it, which doesn't move any
-                    // other node since the new one has no links. That's after the node it would
-                    // follow or, if it would come first, as the home node does, before the first
-                    // node. A wiki without nodes gets it at the end.
+                Fix::CreatePage(title) if wiki.pages.contains_key(&title) => return None,
+                Fix::CreatePage(title) => {
+                    // Insert the page where the formatter would render it, which doesn't move any
+                    // other page since the new one has no links. That's after the page it would
+                    // follow or, if it would come first, as the home page does, before the first
+                    // page. A wiki without pages gets it at the end.
                     let traversal_indices = traversal_order(wiki, Some(&title))
                         .into_iter()
                         .enumerate()
@@ -1922,22 +1922,22 @@ fn code_action_for_document(
                         .collect::<HashMap<_, _>>();
                     let new_key =
                         rendering_order_key(traversal_indices.get(title.as_str()).copied(), &title);
-                    let preceding_node = wiki
-                        .text_nodes
+                    let preceding_page = wiki
+                        .pages
                         .values()
-                        .map(|node| {
-                            let index = traversal_indices.get(node.title.as_str()).copied();
-                            (rendering_order_key(index, &node.title), node)
+                        .map(|page| {
+                            let index = traversal_indices.get(page.title.as_str()).copied();
+                            (rendering_order_key(index, &page.title), page)
                         })
-                        .filter(|(key, _node)| *key < new_key)
-                        .max_by_key(|(key, _node)| *key);
-                    let first_node = wiki
-                        .text_nodes
+                        .filter(|(key, _page)| *key < new_key)
+                        .max_by_key(|(key, _page)| *key);
+                    let first_page = wiki
+                        .pages
                         .values()
-                        .min_by_key(|node| node.source_range.start);
-                    let (offset, before_title, after_title) = match (preceding_node, first_node) {
-                        (Some((_key, node)), _) => (node.source_range.end, "\n\n", ""),
-                        (None, Some(node)) => (node.source_range.start, "", "\n\n"),
+                        .min_by_key(|page| page.source_range.start);
+                    let (offset, before_title, after_title) = match (preceding_page, first_page) {
+                        (Some((_key, page)), _) => (page.source_range.end, "\n\n", ""),
+                        (None, Some(page)) => (page.source_range.start, "", "\n\n"),
                         (None, None) => {
                             let before_title = if snapshot.contents.is_empty()
                                 || snapshot.contents.ends_with("\n\n")
@@ -1972,13 +1972,13 @@ fn code_action_for_document(
                         )
                     };
                     let command = reveal_range_command(
-                        format!("Reveal node {}", title.code_str()),
+                        format!("Reveal page {}", title.code_str()),
                         &snapshot.uri,
                         Range::new(cursor, cursor),
                         RevealType::AtTop,
                     );
                     (
-                        format!("Create node {}", title.code_str()),
+                        format!("Create page {}", title.code_str()),
                         edit,
                         Some(command),
                     )
@@ -2091,20 +2091,20 @@ enum LinkExtent {
     Target,
 }
 
-// Resolve the node denoted by a declaration or text link at a source offset.
-fn node_at(
+// Resolve the page denoted by a declaration or text link at a source offset.
+fn page_at(
     snapshot: &Snapshot,
     byte_offset: usize,
     link_extent: LinkExtent,
-) -> Option<(&TextNode, SourceRange)> {
+) -> Option<(&Page, SourceRange)> {
     // Prefer a declaration, which spans its title line from the `#` through the end of the title's
     // range, which extends through trailing whitespace to the end of the line. The title's range is
-    // the only one it contributes. Navigating to a node leaves the cursor before the `#`.
+    // the only one it contributes. Navigating to a page leaves the cursor before the `#`.
     let wiki = snapshot.wiki();
-    if let Some(node) = wiki.text_nodes.values().find(|node| {
-        node.source_range.start <= byte_offset && byte_offset <= node.title_source_range.end
+    if let Some(page) = wiki.pages.values().find(|page| {
+        page.source_range.start <= byte_offset && byte_offset <= page.title_source_range.end
     }) {
-        return Some((node, node.title_source_range));
+        return Some((page, page.title_source_range));
     }
 
     // Resolve a reference, reporting whichever extent of the link the caller asked for.
@@ -2117,7 +2117,7 @@ fn node_at(
     };
     let source_range = *source_range;
     Some((
-        wiki.text_nodes.get(title)?,
+        wiki.pages.get(title)?,
         match link_extent {
             LinkExtent::Whole => source_range,
             LinkExtent::Target => text_link_target_source_range(&snapshot.contents, source_range),
@@ -2278,7 +2278,7 @@ mod tests {
         let DocumentSymbolResponse::Nested(symbols) =
             document_symbol_for_document(&snapshot(&untitled_uri(), source), true)
         else {
-            panic!("Text nodes should be represented as nested document symbols.");
+            panic!("Pages should be represented as nested document symbols.");
         };
 
         assert_eq!(
@@ -2290,9 +2290,9 @@ mod tests {
         );
     }
 
-    // Expose text nodes in source order for saved and untitled editor outlines.
+    // Expose pages in source order for saved and untitled editor outlines.
     #[test]
-    fn document_symbols_describe_text_nodes() {
+    fn document_symbols_describe_pages() {
         let source = "# Zebra\n\nFirst\n\n# Alpha\n\nSecond";
         let wiki = TestWiki::new(source);
         let uris = [untitled_uri(), Uri::from_file_path(wiki.path()).unwrap()];
@@ -2300,7 +2300,7 @@ mod tests {
         for uri in uris {
             let response = document_symbol_for_document(&snapshot(&uri, source), true);
             let DocumentSymbolResponse::Nested(symbols) = response else {
-                panic!("Text nodes should be represented as nested document symbols.");
+                panic!("Pages should be represented as nested document symbols.");
             };
             assert_eq!(
                 symbols
@@ -2332,7 +2332,7 @@ mod tests {
                 Range::new(Position::new(4, 0), Position::new(4, 0)),
             );
 
-            // Fall back to universally supported flat symbols at the start of each node.
+            // Fall back to universally supported flat symbols at the start of each page.
             let response = document_symbol_for_document(&snapshot(&uri, source), false);
             let DocumentSymbolResponse::Flat(symbols) = response else {
                 panic!("Clients without hierarchy support should receive flat symbols.");
@@ -2355,14 +2355,14 @@ mod tests {
         }
     }
 
-    // Analyze ordinary text-node structure in a new editor buffer.
+    // Analyze ordinary page structure in a new editor buffer.
     #[test]
     fn untitled_text_only_wikis_receive_diagnostics() {
         let source = "# Home\nSee [Missing].";
         let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].message, "Node `Missing` not found.");
+        assert_eq!(diagnostics[0].message, "Page `Missing` not found.");
         assert_eq!(
             diagnostics[0].range,
             Range::new(Position::new(1, 4), Position::new(1, 13)),
@@ -2396,7 +2396,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "Unexpected closing link delimiter.",
-                "Node `Missing` not found.",
+                "Page `Missing` not found.",
             ],
         );
     }
@@ -2423,7 +2423,7 @@ mod tests {
         );
     }
 
-    // Navigate among text nodes without requiring a new editor buffer to have a path.
+    // Navigate among pages without requiring a new editor buffer to have a path.
     #[test]
     fn untitled_wikis_support_navigation() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
@@ -2691,7 +2691,7 @@ mod tests {
         assert_eq!(applied, "# Home\n\n[Greeting]\n\n# Greeting");
     }
 
-    // Escape link delimiters when inserting a node title as a completion.
+    // Escape link delimiters when inserting a page title as a completion.
     #[test]
     fn completions_escape_title_delimiters() {
         let source = "# Home\n\n[]\n\n# A[B]";
@@ -2711,7 +2711,7 @@ mod tests {
         assert_eq!(edit.new_text, "[A\\[B\\]]");
     }
 
-    // Offer text-node completions only while the cursor is inside a text link target.
+    // Offer page completions only while the cursor is inside a text link target.
     #[test]
     fn completions_ignore_other_contexts() {
         let source = "# Home\n\nprose [/notes.txt]";
@@ -2948,9 +2948,9 @@ mod tests {
         );
     }
 
-    // Jump from a text link to the start of its destination node.
+    // Jump from a text link to the start of its destination page.
     #[test]
-    fn definitions_target_node_titles() {
+    fn definitions_target_page_titles() {
         let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nHello!";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -2978,16 +2978,16 @@ mod tests {
         );
     }
 
-    // Preview the complete destination node while highlighting the source link.
+    // Preview the complete destination page while highlighting the source link.
     #[test]
-    fn hovers_preview_nodes() {
+    fn hovers_preview_pages() {
         let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nLiteral \\[brackets\\] and [Home].";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("A node preview should use markup content.");
+            panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         let home_url = reveal_range_command_url(
@@ -3020,7 +3020,7 @@ mod tests {
         let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 2)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("A node preview should use markup content.");
+            panic!("A page preview should use markup content.");
         };
         let file_uri = Uri::from_file_path(directory.join("notes.txt")).unwrap();
         let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
@@ -3044,7 +3044,7 @@ mod tests {
         let hover =
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2)).unwrap();
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("A node preview should use markup content.");
+            panic!("A page preview should use markup content.");
         };
         assert_eq!(
             contents.value,
@@ -3052,16 +3052,16 @@ mod tests {
         );
     }
 
-    // Preview a node directly from its title declaration.
+    // Preview a page directly from its title declaration.
     #[test]
-    fn hovers_preview_node_titles() {
+    fn hovers_preview_page_titles() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello!";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let hover = hover_for_document(&snapshot(&uri, source), Position::new(4, 4)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
-            panic!("A node preview should use markup content.");
+            panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
         assert_eq!(contents.value, "# Greeting\n\nHello!");
@@ -3124,7 +3124,7 @@ mod tests {
         );
     }
 
-    // Distinguish a known node with no references from a cursor that denotes no node.
+    // Distinguish a known page with no references from a cursor that denotes no page.
     #[test]
     fn references_can_be_empty() {
         let source = "# Home\n\nText";
@@ -3142,9 +3142,9 @@ mod tests {
         );
     }
 
-    // Highlight a node declaration and all its text links from either kind of occurrence.
+    // Highlight a page declaration and all its text links from either kind of occurrence.
     #[test]
-    fn document_highlights_find_node_occurrences() {
+    fn document_highlights_find_page_occurrences() {
         let source = concat!(
             "# Home\n\n",
             "[Greeting] and [Greeting].\n\n",
@@ -3180,9 +3180,9 @@ mod tests {
         assert_eq!(from_link, expected);
     }
 
-    // Highlight an unreferenced declaration while ignoring a cursor outside node occurrences.
+    // Highlight an unreferenced declaration while ignoring a cursor outside page occurrences.
     #[test]
-    fn document_highlights_distinguish_unreferenced_nodes() {
+    fn document_highlights_distinguish_unreferenced_pages() {
         let source = "# Home\n\nText";
         let uri = untitled_uri();
 
@@ -3292,7 +3292,7 @@ mod tests {
         );
     }
 
-    // Rename a node from the start of its title line, where navigating to it leaves the cursor,
+    // Rename a page from the start of its title line, where navigating to it leaves the cursor,
     // from the space before its title, or from the end of its title line, even after trailing
     // whitespace, whatever the line break. The title's range, which the rename replaces, extends
     // through the trailing whitespace.
@@ -3423,7 +3423,7 @@ mod tests {
         assert_eq!(edits[1].new_text, "A[B]");
     }
 
-    // Allow renaming the structural home node even though validation will report its absence.
+    // Allow renaming the structural home page even though validation will report its absence.
     #[test]
     fn rename_allows_home() {
         let source = "# Home";
@@ -3441,7 +3441,7 @@ mod tests {
         assert_eq!(edits[0].new_text, "Start");
     }
 
-    // Reject only syntactically unusable or duplicate node titles during rename.
+    // Reject only syntactically unusable or duplicate page titles during rename.
     #[test]
     fn rename_rejects_invalid_titles() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting";
@@ -3455,7 +3455,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title can't be empty.",
+            "A page title can't be empty.",
         );
         assert_eq!(
             rename_for_document(
@@ -3465,7 +3465,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title can't contain a line break.",
+            "A page title can't contain a line break.",
         );
         assert_eq!(
             rename_for_document(
@@ -3475,7 +3475,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "Node `Home` already exists.",
+            "Page `Home` already exists.",
         );
         assert_eq!(
             rename_for_document(
@@ -3485,7 +3485,7 @@ mod tests {
                 ALL_FILE_OPERATIONS,
             )
             .unwrap_err(),
-            "A node title can't start with `/`.",
+            "A page title can't start with `/`.",
         );
     }
 
@@ -3495,7 +3495,7 @@ mod tests {
         delete: true,
     };
 
-    // Apply a filesystem rename's text edits to a source, and return the result with the node
+    // Apply a filesystem rename's text edits to a source, and return the result with the page
     // rename's old and new URIs and the URIs of the directories it deletes.
     fn apply_filesystem_rename(
         source: &str,
@@ -3510,7 +3510,7 @@ mod tests {
             deletions @ ..,
         ] = operations.as_slice()
         else {
-            panic!("A filesystem rename should edit the wiki and then rename one node.");
+            panic!("A filesystem rename should edit the wiki and then rename one page.");
         };
         assert_eq!(text_document_edit.text_document.version, Some(TEST_VERSION));
 
@@ -3531,7 +3531,7 @@ mod tests {
             .map(|operation| {
                 let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
                     panic!(
-                        "A filesystem rename should only delete directories after renaming a node.",
+                        "A filesystem rename should only delete directories after renaming a page.",
                     );
                 };
                 assert_eq!(
@@ -3552,9 +3552,9 @@ mod tests {
         )
     }
 
-    // Rename whichever kind of node the link at the cursor targets.
+    // Rename whichever kind of page the link at the cursor targets.
     #[test]
-    fn rename_dispatches_by_node_kind() {
+    fn rename_dispatches_by_page_kind() {
         let source = "# Home\n\n[Home] [/notes.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
@@ -3569,13 +3569,13 @@ mod tests {
             .unwrap()
         };
 
-        // A text node is renamed with plain text edits, and a filesystem node with file operations.
-        let text_node_edit = rename(2, "Start").unwrap();
-        assert!(text_node_edit.changes.is_some() && text_node_edit.document_changes.is_none());
-        let filesystem_node_edit = rename(10, "renamed.txt").unwrap();
+        // A page is renamed with plain text edits, and a filesystem entry with file operations.
+        let page_edit = rename(2, "Start").unwrap();
+        assert!(page_edit.changes.is_some() && page_edit.document_changes.is_none());
+        let filesystem_entry_edit = rename(10, "renamed.txt").unwrap();
         assert!(
-            filesystem_node_edit.changes.is_none()
-                && filesystem_node_edit.document_changes.is_some(),
+            filesystem_entry_edit.changes.is_none()
+                && filesystem_entry_edit.document_changes.is_some(),
         );
 
         // Other positions have nothing to rename.
@@ -3614,7 +3614,7 @@ mod tests {
         );
     }
 
-    // Explain why a filesystem node can't be renamed before asking for a new name.
+    // Explain why a filesystem entry can't be renamed before asking for a new name.
     #[test]
     fn rename_preparation_rejects_unrenamable_entries() {
         let source = "# Home\n\n[/notes.txt] [/missing.txt] [/]";
@@ -3704,7 +3704,7 @@ mod tests {
         );
     }
 
-    // Treat renaming a filesystem node to its own path, however it's written, as a no-op.
+    // Treat renaming a filesystem entry to its own path, however it's written, as a no-op.
     #[test]
     fn rename_to_same_path_does_nothing() {
         let source = "# Home\n\n[/notes.txt]";
@@ -3725,7 +3725,7 @@ mod tests {
     }
 
     // Leave missing directories to the client, and delete the outermost directory which contained
-    // nothing but the renamed node, keeping any which will contain the new path.
+    // nothing but the renamed page, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
         let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
@@ -3789,7 +3789,7 @@ mod tests {
         );
     }
 
-    // Keep a directory that a new path leads into through a symlink, rather than deleting the node
+    // Keep a directory that a new path leads into through a symlink, rather than deleting the page
     // just moved into it, and refuse to move a directory into itself through a symlink.
     #[cfg(unix)]
     #[test]
@@ -4091,10 +4091,10 @@ mod tests {
         applied
     }
 
-    // Create the missing destination of text links, resolving every diagnostic the node would fix
+    // Create the missing destination of text links, resolving every diagnostic the page would fix
     // and no others.
     #[test]
-    fn code_actions_create_missing_nodes() {
+    fn code_actions_create_missing_pages() {
         let source = "# Home\n\n[Greeting] [Greeting]";
         let uri = untitled_uri();
         let link_diagnostics = diagnostics(&uri, source);
@@ -4115,12 +4115,12 @@ mod tests {
         let CodeActionOrCommand::CodeAction(code_action) = action else {
             panic!("A code action shouldn't be a bare command.");
         };
-        assert_eq!(code_action.title, "Create node `Greeting`");
+        assert_eq!(code_action.title, "Create page `Greeting`");
         assert_eq!(code_action.kind, Some(CodeActionKind::QUICKFIX));
         assert_eq!(code_action.diagnostics, Some(link_diagnostics));
         assert_eq!(code_action.is_preferred, Some(true));
 
-        // Confirm that the created node makes the wiki valid.
+        // Confirm that the created page makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
         assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n|# Greeting");
         assert_eq!(
@@ -4129,7 +4129,7 @@ mod tests {
         );
     }
 
-    // Offer to create a missing node despite a syntax error elsewhere in the wiki.
+    // Offer to create a missing page despite a syntax error elsewhere in the wiki.
     #[test]
     fn code_actions_recover_from_syntax_errors() {
         let source = "# Home\n\n[Greeting] Unexpected]";
@@ -4146,8 +4146,8 @@ mod tests {
         );
     }
 
-    // Insert the created node where the formatter renders it, after the subtrees of its siblings
-    // with earlier titles rather than right after the node linking to it.
+    // Insert the created page where the formatter renders it, after the subtrees of its siblings
+    // with earlier titles rather than right after the page linking to it.
     #[test]
     fn code_actions_insert_in_rendering_order() {
         let source = concat!(
@@ -4177,9 +4177,9 @@ mod tests {
         );
     }
 
-    // Insert a node that only unreachable nodes link to among them in title order.
+    // Insert a page that only unreachable pages link to among them in title order.
     #[test]
-    fn code_actions_insert_unreachable_nodes_in_title_order() {
+    fn code_actions_insert_unreachable_pages_in_title_order() {
         let source = "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Zebra\n";
         let uri = untitled_uri();
         let actions =
@@ -4196,10 +4196,10 @@ mod tests {
         );
     }
 
-    // Place the node from a stale diagnostic according to the current wiki, regardless of where the
+    // Place the page from a stale diagnostic according to the current wiki, regardless of where the
     // diagnostic was.
     #[test]
-    fn code_actions_append_without_linking_nodes() {
+    fn code_actions_append_without_linking_pages() {
         let uri = untitled_uri();
         let stale_diagnostics = diagnostics(&uri, "# Home\n\nSome text first, then [Greeting]\n");
         let source = "# Home\n";
@@ -4212,10 +4212,10 @@ mod tests {
         );
     }
 
-    // Create a missing home node at the start of the document, resolving only its diagnostic
+    // Create a missing home page at the start of the document, resolving only its diagnostic
     // among those without source ranges, which are all reported there.
     #[test]
-    fn code_actions_create_missing_home_nodes() {
+    fn code_actions_create_missing_home_pages() {
         let uri = untitled_uri();
         let home_diagnostic = diagnostics(&uri, "").remove(0);
         let unrelated_diagnostic = Diagnostic {
@@ -4230,12 +4230,12 @@ mod tests {
         )
         .unwrap();
         let [action] = actions.as_slice() else {
-            panic!("A missing home node should have exactly one code action.");
+            panic!("A missing home page should have exactly one code action.");
         };
         let CodeActionOrCommand::CodeAction(code_action) = action else {
             panic!("A code action shouldn't be a bare command.");
         };
-        assert_eq!(code_action.title, "Create node `Home`");
+        assert_eq!(code_action.title, "Create page `Home`");
         assert_eq!(code_action.diagnostics, Some(vec![home_diagnostic]));
         let applied = apply_code_action(&uri, "", action);
         assert_eq!(applied, "|# Home\n");
@@ -4244,7 +4244,7 @@ mod tests {
             Vec::<Diagnostic>::new(),
         );
 
-        // Separate the home node from the nodes that follow it.
+        // Separate the home page from the pages that follow it.
         let source = "# Greeting\n";
         let actions =
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
@@ -4254,7 +4254,7 @@ mod tests {
         );
     }
 
-    // Skip a fix from a stale diagnostic whose node now exists.
+    // Skip a fix from a stale diagnostic whose page now exists.
     #[test]
     fn code_actions_skip_stale_fixes() {
         let uri = untitled_uri();
@@ -4265,7 +4265,7 @@ mod tests {
         );
     }
 
-    // Offer no fixes for diagnostics that declaring a node wouldn't resolve.
+    // Offer no fixes for diagnostics that declaring a page wouldn't resolve.
     #[test]
     fn code_actions_ignore_other_diagnostics() {
         let source = "# Home\n\n[Home] [] [/notes.txt] prose";
@@ -4292,7 +4292,7 @@ mod tests {
         );
     }
 
-    // Keep navigating a wiki with syntax errors, previewing only the title of a node with them.
+    // Keep navigating a wiki with syntax errors, previewing only the title of a page with them.
     #[test]
     fn navigation_recovers_from_syntax_errors() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected] [Home]";
@@ -4319,7 +4319,7 @@ mod tests {
                 .unwrap()
                 .contents
         else {
-            panic!("A node preview should use markup content.");
+            panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.value, "# Greeting");
     }
@@ -4362,7 +4362,7 @@ mod tests {
     }
 
     // Refuse to format a wiki whose recovered form would omit some of its source, like a duplicate
-    // node.
+    // page.
     #[test]
     fn formatting_rejects_source_it_would_lose() {
         let source = "# Home\n\n# Home\n\nThis would be lost.\n";
@@ -4372,7 +4372,7 @@ mod tests {
         assert!(formatting_for_document(&snapshot(&uri, source)).is_none());
     }
 
-    // Format wikis that parse but fail validation, such as one without a home node.
+    // Format wikis that parse but fail validation, such as one without a home page.
     #[test]
     fn formatting_supports_invalid_wikis() {
         let source = "# Zulu\n\n# Elsewhere";

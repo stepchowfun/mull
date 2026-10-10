@@ -32,29 +32,29 @@ pub const HOME_TITLE: &str = "Home";
 // This struct represents a parsed wiki.
 #[derive(Clone, Debug, Default)]
 pub struct Wiki {
-    pub text_nodes: HashMap<String, TextNode>,
+    pub pages: HashMap<String, Page>,
 }
 
 impl Wiki {
-    // Iterate over the links of every node, in no particular order.
+    // Iterate over the links of every page, in no particular order.
     pub fn links(&self) -> impl Iterator<Item = &Link> {
-        self.text_nodes.values().flat_map(|node| &node.links)
+        self.pages.values().flat_map(|page| &page.links)
     }
 }
 
-// Render nodes deterministically in traversal order, with unreachable nodes last in title order.
+// Render pages deterministically in traversal order, with unreachable pages last in title order.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort reachable nodes by traversal order, followed by unreachable nodes in title order.
-        let mut nodes = self.text_nodes.iter().collect::<Vec<_>>();
-        nodes.sort_by_key(|(title, node)| rendering_order_key(node.traversal_index, title));
+        // Sort reachable pages by traversal order, followed by unreachable pages in title order.
+        let mut pages = self.pages.iter().collect::<Vec<_>>();
+        pages.sort_by_key(|(title, page)| rendering_order_key(page.traversal_index, title));
 
-        // Add one line break between nodes because each node already ends with one.
-        for (index, (_title, node)) in nodes.into_iter().enumerate() {
+        // Add one line break between pages because each page already ends with one.
+        for (index, (_title, page)) in pages.into_iter().enumerate() {
             if index > 0 {
                 writeln!(formatter)?;
             }
-            write!(formatter, "{node}")?;
+            write!(formatter, "{page}")?;
         }
 
         // Rendering succeeded.
@@ -62,8 +62,8 @@ impl fmt::Display for Wiki {
     }
 }
 
-// Order nodes as the wiki is rendered: reachable nodes by their traversal index, followed by
-// unreachable nodes in title order.
+// Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
+// unreachable pages in title order.
 pub fn rendering_order_key(
     traversal_index: Option<usize>,
     title: &str,
@@ -71,26 +71,26 @@ pub fn rendering_order_key(
     (traversal_index.is_none(), traversal_index, title)
 }
 
-// This struct represents a text node in a wiki.
+// This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
-pub struct TextNode {
+pub struct Page {
     pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
     pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
-    pub source_range: SourceRange,      // The complete node without leading or trailing whitespace
+    pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
     pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
 }
 
-impl TextNode {
-    // Render the node for a Markdown preview, linking each link to the destination the callback
+impl Page {
+    // Render the page for a Markdown preview, linking each link to the destination the callback
     // provides, if any. The prose around links becomes Markdown once Mull's escapes are removed.
     pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
     where
         F: FnMut(&Link) -> Option<String>,
     {
-        // Render only the title of a node with syntax errors, since its content may have delimiters
+        // Render only the title of a page with syntax errors, since its content may have delimiters
         // which don't correspond to its links.
         let title = render_markdown_literal(&self.title).0;
         if self.has_syntax_errors {
@@ -104,7 +104,7 @@ impl TextNode {
         let mut link_start = None;
         let mut links = self.links.iter();
         for (index, character) in unescaped_characters(source) {
-            // Track complete unescaped delimiter pairs, which are valid in a node without syntax
+            // Track complete unescaped delimiter pairs, which are valid in a page without syntax
             // errors.
             match character {
                 '[' => link_start = Some(index),
@@ -113,7 +113,7 @@ impl TextNode {
                     // this delimiter pair.
                     let start = link_start
                         .take()
-                        .expect("A node without syntax errors should have balanced delimiters.");
+                        .expect("A page without syntax errors should have balanced delimiters.");
                     content.push_str(
                         &render_markdown_before_link(&ContentText::from_source(
                             &source[copied_through..start],
@@ -121,7 +121,7 @@ impl TextNode {
                         .0,
                     );
                     let link = links.next().expect(
-                        "A node without syntax errors should have a link per delimiter pair.",
+                        "A page without syntax errors should have a link per delimiter pair.",
                     );
                     let url = link_url(link);
                     content.push_str(
@@ -151,8 +151,8 @@ impl TextNode {
     }
 }
 
-// Render nodes in the wiki's heading-and-content format.
-impl fmt::Display for TextNode {
+// Render pages in the wiki's heading-and-content format.
+impl fmt::Display for Page {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omit the content separator when there's no content.
         if self.content.as_str().is_empty() {
@@ -168,15 +168,15 @@ impl fmt::Display for TextNode {
     }
 }
 
-// This is text as it appears in a node's content, where `[` and `]` delimit links and a backslash
+// This is text as it appears in a page's content, where `[` and `]` delimit links and a backslash
 // escapes a following `[`, `]`, `#`, or backslash [ref:content_escapes]. Once the escapes are
-// removed, the text around links is Markdown. A heading isn't content: a node's title appears in
+// removed, the text around links is Markdown. A heading isn't content: a page's title appears in
 // its heading as is.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContentText(String);
 
 impl ContentText {
-    // Escape plain text, such as a node title or a path, so it retains its meaning in content.
+    // Escape plain text, such as a page title or a path, so it retains its meaning in content.
     pub fn escape(plain: &str) -> Self {
         Self(
             plain
@@ -234,7 +234,7 @@ fn is_escapable(character: char) -> bool {
     matches!(character, '\\' | '[' | ']' | '#')
 }
 
-// These are the source occurrences through which a node can reference a target.
+// These are the source occurrences through which a page can reference a target.
 #[derive(Clone, Debug)]
 pub enum Link {
     Text {
@@ -441,10 +441,10 @@ fn render_markdown_before_link(prose: &ContentText) -> Markdown {
     Markdown(markdown)
 }
 
-// Render a text link to the node with the given title as ordinary bracketed text with an optional
+// Render a text link to the page with the given title as ordinary bracketed text with an optional
 // Markdown destination.
 fn render_markdown_text_link(title: &str, url: Option<&str>) -> Markdown {
-    // Keep Markdown punctuation in node titles from changing the rendered label, and retain the
+    // Keep Markdown punctuation in page titles from changing the rendered label, and retain the
     // visible Mull delimiters inside the clickable region.
     let label = format!("&#91;{}&#93;", render_markdown_literal(title).0);
     Markdown(match url {
@@ -502,7 +502,7 @@ fn render_markdown_literal(text: &str) -> Markdown {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentText, FilesystemTarget, Link, TextNode, Wiki, title_line_text};
+    use super::{ContentText, FilesystemTarget, Link, Page, Wiki, title_line_text};
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
@@ -519,10 +519,10 @@ mod tests {
         assert_eq!(title_line_text(""), None);
     }
 
-    // Ensure nodes are rendered in the wiki's source format.
+    // Ensure pages are rendered in the wiki's source format.
     #[test]
-    fn node_display() {
-        let node = TextNode {
+    fn page_display() {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::from_source("Hello, world!"),
             links: Vec::new(),
@@ -532,13 +532,13 @@ mod tests {
             has_syntax_errors: false,
         };
 
-        assert_eq!(node.to_string(), "# Greeting\n\nHello, world!\n");
+        assert_eq!(page.to_string(), "# Greeting\n\nHello, world!\n");
     }
 
-    // Ensure empty nodes don't contain a redundant content separator.
+    // Ensure empty pages don't contain a redundant content separator.
     #[test]
-    fn empty_node_display() {
-        let node = TextNode {
+    fn empty_page_display() {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::default(),
             links: Vec::new(),
@@ -548,14 +548,14 @@ mod tests {
             has_syntax_errors: false,
         };
 
-        assert_eq!(node.to_string(), "# Greeting\n");
+        assert_eq!(page.to_string(), "# Greeting\n");
     }
 
     // Remove Mull's escapes from prose in Markdown previews, leaving Markdown syntax such as a
     // link, while rendering Mull links.
     #[test]
-    fn node_markdown() {
-        let node = TextNode {
+    fn page_markdown() {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::from_source(r"\[Text\](url), \\, \#, and [Home]."),
             links: vec![Link::Text {
@@ -569,7 +569,7 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|link| match link {
+            page.to_markdown(|link| match link {
                 Link::Text { title, .. } if title == "Home" => {
                     Some("command:mull.revealRange?destination".to_owned())
                 }
@@ -586,12 +586,12 @@ mod tests {
     // Keep the prose before a link from escaping the link or making it an image, while leaving
     // escaped characters as they are.
     #[test]
-    fn node_markdown_link_boundaries() {
+    fn page_markdown_link_boundaries() {
         let home = Link::Text {
             title: "Home".to_owned(),
             source_range: SOURCE_RANGE,
         };
-        let node = TextNode {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::from_source(r"\\[Home] ![Home] \![Home] \\\\[Home]"),
             links: vec![home.clone(), home.clone(), home.clone(), home],
@@ -602,7 +602,7 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_| Some("url".to_owned())).into_string(),
+            page.to_markdown(|_| Some("url".to_owned())).into_string(),
             concat!(
                 "# Greeting\n\n&#92;[&#91;Home&#93;](url) &#33;[&#91;Home&#93;](url) ",
                 r"\![&#91;Home&#93;](url) \\[&#91;Home&#93;](url)",
@@ -610,10 +610,10 @@ mod tests {
         );
     }
 
-    // Render only the title of a node with syntax errors, whose delimiters may not match its links.
+    // Render only the title of a page with syntax errors, whose delimiters may not match its links.
     #[test]
-    fn node_markdown_syntax_errors() {
-        let node = TextNode {
+    fn page_markdown_syntax_errors() {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::from_source("Unexpected] [Gree[ting]"),
             links: Vec::new(),
@@ -623,13 +623,13 @@ mod tests {
             has_syntax_errors: true,
         };
 
-        assert_eq!(node.to_markdown(|_link| None).into_string(), "# Greeting");
+        assert_eq!(page.to_markdown(|_link| None).into_string(), "# Greeting");
     }
 
     // Render titles literally rather than as Markdown syntax.
     #[test]
-    fn node_markdown_title() {
-        let node = TextNode {
+    fn page_markdown_title() {
+        let page = Page {
             title: "A*B* [C](d) <e> #".to_owned(),
             content: ContentText::default(),
             links: Vec::new(),
@@ -640,15 +640,15 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_link| None).into_string(),
+            page.to_markdown(|_link| None).into_string(),
             "# A&#42;B&#42; &#91;C&#93;(d) &lt;e&gt; &#35;",
         );
     }
 
     // Keep unresolved text links visible but non-clickable in Markdown previews.
     #[test]
-    fn unresolved_node_markdown_link() {
-        let node = TextNode {
+    fn unresolved_page_markdown_link() {
+        let page = Page {
             title: "Greeting".to_owned(),
             content: ContentText::from_source("See [Missing]."),
             links: vec![Link::Text {
@@ -662,7 +662,7 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|_link| None).into_string(),
+            page.to_markdown(|_link| None).into_string(),
             "# Greeting\n\nSee &#91;Missing&#93;.",
         );
     }
@@ -671,7 +671,7 @@ mod tests {
     // with destinations.
     #[test]
     fn filesystem_link_markdown() {
-        let node = TextNode {
+        let page = Page {
             title: "Files".to_owned(),
             content: ContentText::from_source("[/notes.txt] and [/odd`name/]"),
             links: vec![
@@ -693,7 +693,7 @@ mod tests {
         };
 
         assert_eq!(
-            node.to_markdown(|link| match link {
+            page.to_markdown(|link| match link {
                 Link::Filesystem { target, .. } if !target.is_directory() => {
                     Some("file:///wiki/notes.txt".to_owned())
                 }
@@ -777,13 +777,13 @@ mod tests {
         assert_eq!(moved("/photographs/cat.jpg"), None);
     }
 
-    // Ensure a wiki containing an empty node has only its trailing line break.
+    // Ensure a wiki containing an empty page has only its trailing line break.
     #[test]
-    fn empty_node_wiki_display() {
+    fn empty_page_wiki_display() {
         let wiki = Wiki {
-            text_nodes: HashMap::from([(
+            pages: HashMap::from([(
                 "Greeting".to_owned(),
-                TextNode {
+                Page {
                     title: "Greeting".to_owned(),
                     content: ContentText::default(),
                     links: Vec::new(),
@@ -798,14 +798,14 @@ mod tests {
         assert_eq!(wiki.to_string(), "# Greeting\n");
     }
 
-    // Render nodes in traversal order, placing nodes without a traversal index last.
+    // Render pages in traversal order, placing pages without a traversal index last.
     #[test]
     fn wiki_display() {
         let wiki = Wiki {
-            text_nodes: HashMap::from([
+            pages: HashMap::from([
                 (
                     "Greeting".to_owned(),
-                    TextNode {
+                    Page {
                         title: "Greeting".to_owned(),
                         content: ContentText::from_source("Hello, world!"),
                         links: Vec::new(),
@@ -817,7 +817,7 @@ mod tests {
                 ),
                 (
                     "Home".to_owned(),
-                    TextNode {
+                    Page {
                         title: "Home".to_owned(),
                         content: ContentText::from_source("Check out the [Greeting]."),
                         links: Vec::new(),
@@ -829,7 +829,7 @@ mod tests {
                 ),
                 (
                     "Orphan".to_owned(),
-                    TextNode {
+                    Page {
                         title: "Orphan".to_owned(),
                         content: ContentText::default(),
                         links: Vec::new(),

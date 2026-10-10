@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0] - 2026-10-09
+
+### Changed
+- Nodes are now called *pages*, a friendlier word for the same thing. Diagnostics, hover text, and documentation say "page" instead of "node", and the VS Code extension's commands and settings are renamed to match: `mull.dimOtherNodes` is now `mull.dimOtherPages`, `mull.snapBackToCurrentNode` is now `mull.snapBackToCurrentPage`, and the `mull.goToNodeStart`, `mull.goToNodeEnd`, `mull.selectToNodeStart`, and `mull.selectToNodeEnd` commands are now `mull.goToPageStart`, `mull.goToPageEnd`, `mull.selectToPageStart`, and `mull.selectToPageEnd`.
+
 ## [0.37.2] - 2026-10-08
 
 ### Changed
