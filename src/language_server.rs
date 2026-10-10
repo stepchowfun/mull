@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
-use tokio::task::JoinHandle;
+use tokio::{sync::oneshot, task::JoinHandle};
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::{Error as JsonRpcError, Result},
@@ -37,11 +37,11 @@ use tower_lsp_server::{
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
         DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
         DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher,
-        GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-        HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, Location, LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
-        OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
+        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
+        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        InitializedParams, LSPAny, Location, LocationLink, MarkupContent, MarkupKind, MessageType,
+        OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
         PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
         RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
         SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentPositionParams,
@@ -77,6 +77,10 @@ enum RevealType {
 // This extension command reveals a directory in the explorer. Keep this in sync with
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
+
+// This server command rechecks the open wiki named by its argument, as when the filesystem changed
+// without the editor reporting it. Keep this in sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
@@ -228,6 +232,12 @@ struct Title {
     lowercase: String,
 }
 
+// This is the result of a check whose diagnostics were published. A check which is cancelled or
+// superseded by a newer one reports nothing.
+struct PublishedCheck {
+    diagnostic_count: usize,
+}
+
 // This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
 #[derive(Debug)]
 struct PendingCheck {
@@ -257,10 +267,16 @@ impl Backend {
         }
     }
 
-    // Replace an editor snapshot and schedule diagnostics for its new generation.
-    fn store_and_check_document(&self, snapshot: Arc<Snapshot>, delay: Duration) {
+    // Replace an editor snapshot and schedule diagnostics for its new generation. The returned
+    // channel reports the check's result if its diagnostics are published, and closes otherwise.
+    fn store_and_check_document(
+        &self,
+        snapshot: Arc<Snapshot>,
+        delay: Duration,
+    ) -> oneshot::Receiver<PublishedCheck> {
         // Prepare the resources owned by the diagnostic task.
         let client = self.client.clone();
+        let (result_sender, result_receiver) = oneshot::channel();
         let documents = Arc::clone(&self.documents);
         let diagnostic_snapshot = Arc::clone(&snapshot);
         let cancellation = CancellationFlag::default();
@@ -317,6 +333,7 @@ impl Backend {
                     .get(&diagnostic_snapshot.uri)
                     .is_some_and(|document| document.generation == generation)
                 {
+                    let diagnostic_count = diagnostics.len();
                     client
                         .publish_diagnostics(
                             diagnostic_snapshot.uri.clone(),
@@ -324,10 +341,14 @@ impl Backend {
                             Some(diagnostic_snapshot.version),
                         )
                         .await;
+
+                    // Report the result to anyone waiting for it.
+                    let _ = result_sender.send(PublishedCheck { diagnostic_count });
                 }
             }),
             cancellation,
         });
+        result_receiver
     }
 
     // Recheck open documents after filesystem changes, which their filesystem links may reflect.
@@ -580,6 +601,64 @@ impl LanguageServer for Backend {
                 .map(|change| &change.uri)
                 .collect::<Vec<_>>(),
         );
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
+        // Reject commands this server doesn't provide.
+        if params.command != CHECK_WIKI_COMMAND {
+            return Err(JsonRpcError::invalid_params(format!(
+                "Unknown command {}.",
+                params.command.code_str(),
+            )));
+        }
+
+        // Recheck the named wiki right away.
+        let Some(argument) = params.arguments.into_iter().next() else {
+            return Err(JsonRpcError::invalid_params(
+                "The command requires the URI of a document to check.",
+            ));
+        };
+        let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
+            JsonRpcError::invalid_params(format!("The argument must be a document URI: {error}."))
+        })?;
+        let Some(snapshot) = self.snapshot(&uri) else {
+            self.client
+                .show_message(
+                    MessageType::WARNING,
+                    format!(
+                        "Unable to check {}, since it isn't open.",
+                        uri.as_str().code_str(),
+                    ),
+                )
+                .await;
+            return Ok(None);
+        };
+        let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
+
+        // Report the result once it's published, or that a newer check superseded it, without
+        // claiming a result which isn't shown in the editor.
+        let name = snapshot
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(
+                || snapshot.uri.as_str().code_str(),
+                |name| name.to_string_lossy().code_str(),
+            );
+        let (message_type, message) = match result.await.map(|check| check.diagnostic_count) {
+            Ok(0) => (MessageType::INFO, format!("{name} looks good.")),
+            Ok(1) => (MessageType::INFO, format!("{name} has 1 problem.")),
+            Ok(count) => (MessageType::INFO, format!("{name} has {count} problems.")),
+            Err(_) => (
+                MessageType::WARNING,
+                format!(
+                    "The check of {name} was interrupted by a newer change. Its diagnostics will \
+                     update when the newer check finishes.",
+                ),
+            ),
+        };
+        self.client.show_message(message_type, message).await;
+        Ok(None)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

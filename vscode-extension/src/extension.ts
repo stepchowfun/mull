@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
-import { LanguageClient } from 'vscode-languageclient/node';
+import { ExecuteCommandRequest, LanguageClient } from 'vscode-languageclient/node';
 
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
@@ -568,6 +568,22 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
 // Retain the active client so it can be stopped when the extension is deactivated.
 let client: LanguageClient | undefined;
 
+// This command checks the wiki being edited again, through the language server command of the same
+// name. Keep this in sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+
+// Ask the language server to check the wiki being edited, which reports the result.
+async function checkActiveWiki(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (client === undefined || !isMainWikiEditor(editor)) {
+    return;
+  }
+  await client.sendRequest(ExecuteCommandRequest.type, {
+    command: CHECK_WIKI_COMMAND,
+    arguments: [editor.document.uri.toString()],
+  });
+}
+
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Expose the navigation commands that the language server's responses refer to.
@@ -575,6 +591,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),
   );
+
+  // Expose the command that checks the wiki being edited again.
+  context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
 
   // Expose the commands that move the cursor within the page containing it.
   const pageBoundaryCommands = [
