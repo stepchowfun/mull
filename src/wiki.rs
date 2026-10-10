@@ -153,7 +153,7 @@ impl ContentText {
 }
 
 // Scan content for the characters which aren't escaped, such as unescaped link delimiters. A
-// backslash escapes a following `[`, `]`, `#`, or backslash [tag:content_escapes].
+// backslash escapes a following `[`, `]`, `#`, or backslash [ref:content_escapes].
 pub fn unescaped_characters(content: &str) -> impl Iterator<Item = (usize, char)> {
     let mut previous_was_escape = false;
     content.char_indices().filter(move |&(_, character)| {
@@ -182,7 +182,7 @@ pub fn invalid_escapes(content: &str) -> impl Iterator<Item = usize> {
     })
 }
 
-// Determine whether a backslash escapes a character in content.
+// Determine whether a backslash escapes a character in content [tag:content_escapes].
 fn is_escapable(character: char) -> bool {
     matches!(character, '\\' | '[' | ']' | '#')
 }
