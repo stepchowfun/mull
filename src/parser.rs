@@ -249,39 +249,6 @@ fn finish_page(
     content_errors
 }
 
-// Reject each backslash in a page's content which doesn't escape anything, so it can't be mistaken
-// for an escape, and offer to escape it.
-fn invalid_escape_errors(
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_index: &LineIndex,
-    content_source_range: SourceRange,
-) -> Vec<Error> {
-    invalid_escapes(&source_contents[content_source_range.start..content_source_range.end])
-        .map(|index| {
-            // Locate the backslash in the source.
-            let offset = content_source_range.start + index;
-
-            // List the characters which can be escaped [ref:content_escapes].
-            Error::new(
-                "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
-                 backslash itself.",
-                source_path,
-                Some((
-                    source_contents,
-                    line_index,
-                    SourceRange {
-                        start: offset,
-                        end: offset + '\\'.len_utf8(),
-                    },
-                )),
-                None,
-                Some(Fix::EscapeBackslash(offset)),
-            )
-        })
-        .collect()
-}
-
 // Parse link occurrences and produce the normalized content stored on a page.
 #[allow(
     clippy::too_many_lines,
@@ -412,13 +379,27 @@ fn parse_content(
         errors.push(syntax_error("Unclosed link.", link_source_range));
     }
 
-    // Reject each backslash which doesn't escape anything.
-    errors.extend(invalid_escape_errors(
-        source_path,
-        source_contents,
-        line_index,
-        source_range,
-    ));
+    // Reject each backslash which doesn't escape anything, so it can't be mistaken for an escape,
+    // and offer to escape it. The message lists the characters which can be escaped
+    // [ref:content_escapes].
+    for index in invalid_escapes(original_content) {
+        let offset = source_range.start + index;
+        errors.push(Error::new(
+            "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
+             backslash itself.",
+            source_path,
+            Some((
+                source_contents,
+                line_index,
+                SourceRange {
+                    start: offset,
+                    end: offset + '\\'.len_utf8(),
+                },
+            )),
+            None,
+            Some(Fix::EscapeBackslash(offset)),
+        ));
+    }
 
     // Retain the content following the final link, then normalize the finished content. Links
     // can't contain line breaks, and each ends with a delimiter, so normalizing never changes one.
