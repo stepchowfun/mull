@@ -78,8 +78,9 @@ enum RevealType {
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
-// This server command rechecks every open wiki, as when the filesystem changed without the
-// editor reporting it. The extension gives it a title in [file:vscode-extension/package.json].
+// This server command rechecks the open wiki named by its argument, or every open wiki without
+// one, as when the filesystem changed without the editor reporting it. The extension gives it a
+// title in [file:vscode-extension/package.json]. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
@@ -627,13 +628,36 @@ impl LanguageServer for Backend {
             )));
         }
 
-        // Recheck every open wiki right away.
-        let checks = self.recheck_open_documents(&[], Duration::ZERO);
-        if checks.is_empty() {
-            self.client
-                .show_message(MessageType::INFO, "There are no open wikis to check.")
-                .await;
-        }
+        // Recheck the named wiki right away, or every open wiki if none is named.
+        let checks = if let Some(argument) = params.arguments.into_iter().next() {
+            let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
+                JsonRpcError::invalid_params(format!(
+                    "The argument must be a document URI: {error}.",
+                ))
+            })?;
+            let Some(snapshot) = self.snapshot(&uri) else {
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        format!(
+                            "Unable to check {}, since it isn't open.",
+                            uri.as_str().code_str(),
+                        ),
+                    )
+                    .await;
+                return Ok(None);
+            };
+            let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
+            vec![(snapshot, result)]
+        } else {
+            let checks = self.recheck_open_documents(&[], Duration::ZERO);
+            if checks.is_empty() {
+                self.client
+                    .show_message(MessageType::INFO, "There are no open wikis to check.")
+                    .await;
+            }
+            checks
+        };
 
         // Report each result once it's published, or that a newer check superseded it, without
         // claiming a result which isn't shown in the editor.

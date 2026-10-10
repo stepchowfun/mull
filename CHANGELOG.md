@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.39.1] - 2026-10-09
 
 ### Added
-- The VS Code extension has a `Mull: Check Wiki` command, which checks open wikis again right away and reports the result, or that a newer change interrupted the check. It helps if the diagnostics ever miss a change to the filesystem.
+- The VS Code extension has a `Mull: Check Wiki` command, which checks the current wiki again right away and reports the result, or that a newer change interrupted the check. It helps if the diagnostics ever miss a change to the filesystem.
 
 ## [0.39.0] - 2026-10-09
 

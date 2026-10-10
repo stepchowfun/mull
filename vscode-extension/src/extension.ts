@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
-import { LanguageClient } from 'vscode-languageclient/node';
+import { type ExecuteCommandSignature, LanguageClient } from 'vscode-languageclient/node';
 
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
@@ -139,6 +139,23 @@ function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vsco
   return (
     editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
   );
+}
+
+// This language server command checks a wiki again, defaulting to every open wiki. Keep this in
+// sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+
+// Check only the wiki being edited when the check command doesn't name one.
+function checkActiveWiki(
+  command: string,
+  args: unknown[],
+  next: ExecuteCommandSignature,
+): vscode.ProviderResult<unknown> {
+  const editor = vscode.window.activeTextEditor;
+  if (command === CHECK_WIKI_COMMAND && args.length === 0 && isMainWikiEditor(editor)) {
+    return next(command, [editor.document.uri.toString()]);
+  }
+  return next(command, args);
 }
 
 // List a wiki's pages in source order, using the language server's document symbols, which are
@@ -694,6 +711,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         enabledCommands: [REVEAL_RANGE_COMMAND, REVEAL_IN_EXPLORER_COMMAND],
       },
     },
+    middleware: { executeCommand: checkActiveWiki },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
