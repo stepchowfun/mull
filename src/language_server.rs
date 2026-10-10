@@ -1237,19 +1237,25 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
     )
 }
 
-// Locate every text link to the page at an editor position.
+// Locate every text link to the page at an editor position. Outside a title or link, that's the
+// page containing the position.
 fn references_for_document(
     snapshot: &Snapshot,
     cursor: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
-    // from syntax errors so references can be found while they're fixed.
-    let (page, _source_range) =
-        page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    // from syntax errors so references can be found while they're fixed. A link to a missing page
+    // or a filesystem link denotes no page.
+    let wiki = snapshot.wiki();
+    let page = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
+        Occurrence::Title(page) | Occurrence::Prose(page) => page,
+        Occurrence::Link(Link::Text { title, .. }) => wiki.pages.get(title)?,
+        Occurrence::Link(Link::Filesystem { .. }) => return None,
+    };
 
     // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(snapshot.wiki(), &page.title);
+    let mut source_ranges = text_link_source_ranges(wiki, &page.title);
     if include_declaration {
         source_ranges.push(page.title_source_range);
     }
@@ -1291,27 +1297,20 @@ fn document_highlight_for_document(
     let wiki = snapshot.wiki();
     let byte_offset = snapshot.byte_offset(cursor)?;
 
-    // Distinguish a page declaration from its references.
-    let mut highlights =
-        if let Some((page, _source_range)) = page_at(snapshot, byte_offset, LinkExtent::Whole) {
-            let mut highlights = text_link_source_ranges(wiki, &page.title)
-                .into_iter()
-                .map(|source_range| (source_range, DocumentHighlightKind::READ))
-                .collect::<Vec<_>>();
-            highlights.push((page.title_source_range, DocumentHighlightKind::WRITE));
-            highlights
-        } else {
-            // Filesystem links have no declaration in the wiki, so every matching link is a
-            // reference. A text link reaches this branch only when its target doesn't exist, so it
-            // has nothing to highlight.
-            let Some(Link::Filesystem { target, .. }) = link_at(wiki, byte_offset) else {
-                return None;
-            };
+    // Distinguish a page declaration from its references. Filesystem links have no declaration in
+    // the wiki, so every matching link is a reference. A link to a missing page and other text in a
+    // page have nothing to highlight.
+    let mut highlights = match occurrence_at(wiki, byte_offset)? {
+        Occurrence::Title(page) => page_highlights(wiki, page),
+        Occurrence::Link(Link::Text { title, .. }) => page_highlights(wiki, wiki.pages.get(title)?),
+        Occurrence::Link(Link::Filesystem { target, .. }) => {
             filesystem_link_source_ranges(wiki, target)
                 .into_iter()
                 .map(|source_range| (source_range, DocumentHighlightKind::READ))
                 .collect()
-        };
+        }
+        Occurrence::Prose(_) => return None,
+    };
 
     // Return every matching source occurrence in wiki order.
     highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
@@ -1324,6 +1323,16 @@ fn document_highlight_for_document(
             })
             .collect(),
     )
+}
+
+// Highlight a page's declaration along with every text link to it.
+fn page_highlights(wiki: &Wiki, page: &Page) -> Vec<(SourceRange, DocumentHighlightKind)> {
+    let mut highlights = text_link_source_ranges(wiki, &page.title)
+        .into_iter()
+        .map(|source_range| (source_range, DocumentHighlightKind::READ))
+        .collect::<Vec<_>>();
+    highlights.push((page.title_source_range, DocumentHighlightKind::WRITE));
+    highlights
 }
 
 // Collect every complete filesystem-link range with the same target.
@@ -1635,10 +1644,10 @@ fn renamable_filesystem_entry_at(
     supports_file_renames: bool,
 ) -> std::result::Result<Option<RenamableFilesystemEntry>, String> {
     // Resolve the filesystem link at the cursor and its target.
-    let Some(Link::Filesystem {
+    let Some(Occurrence::Link(Link::Filesystem {
         target: old_target,
         source_range,
-    }) = link_at(snapshot.wiki(), cursor_offset)
+    })) = occurrence_at(snapshot.wiki(), cursor_offset)
     else {
         return Ok(None);
     };
@@ -2132,47 +2141,70 @@ enum LinkExtent {
     Target,
 }
 
+// This is what a source offset within a page falls on.
+enum Occurrence<'a> {
+    // The page's title line, from the `#` through the end of the line, including trailing
+    // whitespace. Navigating to a page leaves the cursor before the `#`.
+    Title(&'a Page),
+
+    // A link of any kind in the page's content.
+    Link(&'a Link),
+
+    // Anything else in the page.
+    Prose(&'a Page),
+}
+
+// Find what a source offset falls on, if it's within a page. A page includes the offset just past
+// its end, so a cursor there still belongs to it.
+fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
+    // Find the page containing the offset. Its title line may extend past the rest of the page
+    // through trailing whitespace.
+    let page = wiki.pages.values().find(|page| {
+        page.source_range.start <= byte_offset
+            && byte_offset <= page.source_range.end.max(page.title_source_range.end)
+    })?;
+    if byte_offset <= page.title_source_range.end {
+        return Some(Occurrence::Title(page));
+    }
+
+    // Look for a link among the page's own links. Links never overlap, so at most one contains the
+    // offset.
+    Some(
+        page.links
+            .iter()
+            .find(|link| {
+                let source_range = link.source_range();
+                source_range.start <= byte_offset && byte_offset < source_range.end
+            })
+            .map_or(Occurrence::Prose(page), Occurrence::Link),
+    )
+}
+
 // Resolve the page denoted by a declaration or text link at a source offset.
 fn page_at(
     snapshot: &Snapshot,
     byte_offset: usize,
     link_extent: LinkExtent,
 ) -> Option<(&Page, SourceRange)> {
-    // Prefer a declaration, which spans its title line from the `#` through the end of the title's
-    // range, which extends through trailing whitespace to the end of the line. The title's range is
-    // the only one it contributes. Navigating to a page leaves the cursor before the `#`.
+    // A declaration contributes only its title's range. A reference reports whichever extent of
+    // the link the caller asked for.
     let wiki = snapshot.wiki();
-    if let Some(page) = wiki.pages.values().find(|page| {
-        page.source_range.start <= byte_offset && byte_offset <= page.title_source_range.end
-    }) {
-        return Some((page, page.title_source_range));
+    match occurrence_at(wiki, byte_offset)? {
+        Occurrence::Title(page) => Some((page, page.title_source_range)),
+        Occurrence::Link(Link::Text {
+            title,
+            source_range,
+        }) => Some((
+            wiki.pages.get(title)?,
+            match link_extent {
+                LinkExtent::Whole => *source_range,
+                LinkExtent::Target => {
+                    text_link_target_source_range(&snapshot.contents, *source_range)
+                }
+            },
+        )),
+        Occurrence::Link(Link::Filesystem { .. }) | Occurrence::Prose(_) => None,
     }
-
-    // Resolve a reference, reporting whichever extent of the link the caller asked for.
-    let Link::Text {
-        title,
-        source_range,
-    } = link_at(wiki, byte_offset)?
-    else {
-        return None;
-    };
-    let source_range = *source_range;
-    Some((
-        wiki.pages.get(title)?,
-        match link_extent {
-            LinkExtent::Whole => source_range,
-            LinkExtent::Target => text_link_target_source_range(&snapshot.contents, source_range),
-        },
-    ))
-}
-
-// Find the link of any kind at a source offset without resolving its destination. Links never
-// overlap, so at most one link can contain the offset.
-fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
-    wiki.links().find(|link| {
-        let source_range = link.source_range();
-        source_range.start <= byte_offset && byte_offset < source_range.end
-    })
 }
 
 // Exclude the delimiters from a source range known to represent a complete link.
@@ -3115,7 +3147,7 @@ mod tests {
     // Distinguish a known page with no references from a cursor that denotes no page.
     #[test]
     fn references_can_be_empty() {
-        let source = "# Home\n\nText";
+        let source = "# Home\n\nText [Missing] [/notes.txt]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -3125,8 +3157,42 @@ mod tests {
                 Some(Vec::new()),
             );
         }
+        for column in [7, 18] {
+            assert!(
+                references_for_document(&snapshot(&uri, source), Position::new(2, column), false)
+                    .is_none(),
+            );
+        }
+    }
+
+    // Find the links to the page containing the cursor when it isn't on a title or link, but not
+    // between pages. A link in the page still denotes the page it names.
+    #[test]
+    fn references_find_links_to_the_current_page() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello, [Home]!\n\nGoodbye.";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        for position in [Position::new(6, 2), Position::new(8, 8)] {
+            assert_eq!(
+                references_for_document(&snapshot(&uri, source), position, false)
+                    .unwrap()
+                    .iter()
+                    .map(|location| location.range)
+                    .collect::<Vec<_>>(),
+                vec![Range::new(Position::new(2, 0), Position::new(2, 10))],
+            );
+        }
+        assert_eq!(
+            references_for_document(&snapshot(&uri, source), Position::new(6, 9), false)
+                .unwrap()
+                .iter()
+                .map(|location| location.range)
+                .collect::<Vec<_>>(),
+            vec![Range::new(Position::new(6, 7), Position::new(6, 13))],
+        );
         assert!(
-            references_for_document(&snapshot(&uri, source), Position::new(2, 1), false).is_none(),
+            references_for_document(&snapshot(&uri, source), Position::new(3, 0), false).is_none(),
         );
     }
 
