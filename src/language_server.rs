@@ -11,7 +11,8 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki, title_line_text,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, TITLE_PREFIX, Wiki,
+        title_line_text,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -215,7 +216,7 @@ impl Snapshot {
                 .pages
                 .keys()
                 .map(|title| Title {
-                    title: title.clone(),
+                    title: title.as_str().to_owned(),
                     lowercase: title.to_lowercase(),
                 })
                 .collect::<Vec<_>>();
@@ -1429,7 +1430,7 @@ fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
             Link::Text {
                 title: link_title,
                 source_range,
-            } if link_title == title => Some(*source_range),
+            } if link_title.as_str() == title => Some(*source_range),
             Link::Text { .. } | Link::Filesystem { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -1540,7 +1541,7 @@ fn prepare_rename_for_document(
     // Select only the title text and seed the rename prompt with its decoded value.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
-        placeholder: page.title.clone(),
+        placeholder: page.title.as_str().to_owned(),
     }))
 }
 
@@ -1589,31 +1590,16 @@ fn rename_page_for_document(
         return Ok(None);
     };
 
-    // Normalize surrounding whitespace, then reject titles that the parser wouldn't accept: those
-    // that span multiple lines, are empty, start with a filesystem-link prefix, or already exist.
-    if new_name
-        .chars()
-        .any(|character| matches!(character, '\r' | '\n'))
-    {
-        return Err("A page title can't contain a line break.".to_owned());
-    }
-    let new_title = new_name.trim();
-    if new_title.is_empty() {
-        return Err("A page title can't be empty.".to_owned());
-    }
-    if new_title.starts_with(FILESYSTEM_LINK_PREFIX) {
-        return Err(format!(
-            "A page title can't start with {}.",
-            FILESYSTEM_LINK_PREFIX.code_str(),
-        ));
-    }
-    if new_title != page.title && snapshot.wiki().pages.contains_key(new_title) {
+    // Accept only a title which the parser would accept in a title line and which doesn't already
+    // exist.
+    let new_title = PageTitle::parse(new_name)?;
+    if new_title != page.title && snapshot.wiki().pages.contains_key(&new_title) {
         return Err(format!("Page {} already exists.", new_title.code_str()));
     }
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
-    let escaped_title = escape(new_title);
+    let escaped_title = escape(&new_title);
     let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
@@ -1623,7 +1609,7 @@ fn rename_page_for_document(
             )
         })
         .collect::<Vec<_>>();
-    edits.push((page.title_source_range, new_title));
+    edits.push((page.title_source_range, new_title.as_str()));
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
@@ -2061,7 +2047,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| DocumentSymbol {
-                    name: page.title.clone(),
+                    name: page.title.as_str().to_owned(),
                     detail: None,
                     kind: SymbolKind::OBJECT,
                     tags: None,
@@ -2077,7 +2063,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| SymbolInformation {
-                    name: page.title.clone(),
+                    name: page.title.as_str().to_owned(),
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,

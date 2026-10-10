@@ -1,8 +1,11 @@
 use crate::{error::SourceRange, escaping::escape, format::CodeStr, spelled_path::code_file_path};
 use colored::ColoredString;
+use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Borrow,
     collections::HashMap,
     fmt,
+    ops::Deref,
     path::{Component, Path, PathBuf},
 };
 
@@ -29,11 +32,88 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 // This title identifies the root of every wiki's text-link graph.
 pub const HOME_TITLE: &str = "Home";
 
+// This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
+// starting with `/`, which would make a link to it a filesystem link. It travels to the editor and
+// back as JSON in quick fixes, so it's checked again when it's read back.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PageTitle(String);
+
+impl PageTitle {
+    // Make a title from text such as a title line's or a rename's new name, trimming it and
+    // describing any rule it breaks.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if text.contains(['\r', '\n']) {
+            return Err("A page title can't contain a line break.".to_owned());
+        }
+        let title = text.trim();
+        if title.is_empty() {
+            Err("A page title can't be empty.".to_owned())
+        } else if title.starts_with(FILESYSTEM_LINK_PREFIX) {
+            Err(format!(
+                "A page title can't start with {}.",
+                FILESYSTEM_LINK_PREFIX.code_str(),
+            ))
+        } else {
+            Ok(Self(title.to_owned()))
+        }
+    }
+
+    // Name the root of every wiki's text-link graph.
+    pub fn home() -> Self {
+        Self(HOME_TITLE.to_owned())
+    }
+
+    // Expose the title's text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+// Read a title back from JSON, checking it as when it was first made.
+impl TryFrom<String> for PageTitle {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::parse(&text)
+    }
+}
+
+// Write a title to JSON as its text.
+impl From<PageTitle> for String {
+    fn from(title: PageTitle) -> Self {
+        title.0
+    }
+}
+
+// Let a title be used wherever its text is read, such as in messages.
+impl Deref for PageTitle {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+// Let pages be looked up by a title's text without making a title.
+impl Borrow<str> for PageTitle {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+// Write a title as its text.
+impl fmt::Display for PageTitle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
 #[derive(Clone, Debug)]
 pub struct Wiki {
-    pub pages: HashMap<String, Page>,
+    pub pages: HashMap<PageTitle, Page>,
     source: String,
 }
 
@@ -138,7 +218,7 @@ impl Wiki {
 // This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
 pub struct Page {
-    pub title: String, // Non-empty, one line, trimmed, and not starting with `/`
+    pub title: PageTitle,
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
@@ -149,7 +229,7 @@ pub struct Page {
 #[derive(Clone, Debug)]
 pub enum Link {
     Text {
-        title: String,
+        title: PageTitle,
         source_range: SourceRange,
     },
     Filesystem {
@@ -311,7 +391,7 @@ impl CodeStr for FilesystemTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilesystemTarget, Wiki, title_line_text};
+    use super::{FilesystemTarget, PageTitle, Wiki, title_line_text};
     use crate::{escaping::unescape, line_index::LineIndex, parser::parse};
 
     // Parse a wiki without syntax errors for rendering.
@@ -329,6 +409,39 @@ mod tests {
         assert_eq!(title_line_text("#Greeting"), None);
         assert_eq!(title_line_text("## Greeting"), None);
         assert_eq!(title_line_text(""), None);
+    }
+
+    // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.
+    #[test]
+    fn page_titles() {
+        assert_eq!(
+            PageTitle::parse("  Greeting  ").unwrap().as_str(),
+            "Greeting",
+        );
+        assert_eq!(
+            PageTitle::parse("  ").unwrap_err(),
+            "A page title can't be empty.",
+        );
+        assert_eq!(
+            PageTitle::parse("Two\nlines").unwrap_err(),
+            "A page title can't contain a line break.",
+        );
+        assert!(
+            PageTitle::parse("/notes")
+                .unwrap_err()
+                .starts_with("A page title can't start with"),
+        );
+    }
+
+    // Check a page title again when reading it back from JSON.
+    #[test]
+    fn page_title_json() {
+        let title = PageTitle::parse("Greeting").unwrap();
+        let json = serde_json::to_value(&title).unwrap();
+
+        assert_eq!(json, "Greeting");
+        assert_eq!(serde_json::from_value::<PageTitle>(json).unwrap(), title);
+        assert!(serde_json::from_value::<PageTitle>("/notes".into()).is_err());
     }
 
     // Establish a filesystem link's canonical text when parsing it, which parses back to itself.

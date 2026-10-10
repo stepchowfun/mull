@@ -1,4 +1,4 @@
-use crate::{format::CodeStr, line_index::LineIndex};
+use crate::{format::CodeStr, line_index::LineIndex, wiki::PageTitle};
 use colored::{Colorize, control::SHOULD_COLORIZE};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -21,7 +21,7 @@ pub struct SourceRange {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Fix {
     // Declare a page with this title.
-    CreatePage(String),
+    CreatePage(PageTitle),
 
     // Escape the backslash at this byte offset in the wiki's source.
     EscapeBackslash(usize),
