@@ -37,16 +37,16 @@ use tower_lsp_server::{
         DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
         DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
         DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
-        ExecuteCommandParams, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
-        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-        InitializeParams, InitializeResult, InitializedParams, LSPAny, Location, LocationLink,
-        MarkupContent, MarkupKind, MessageType, OneOf, OptionalVersionedTextDocumentIdentifier,
-        Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams,
-        Registration, RenameFile, RenameOptions, RenameParams, ResourceOp, ResourceOperationKind,
-        ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit,
-        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
+        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        InitializedParams, LSPAny, Location, LocationLink, MarkupContent, MarkupKind, MessageType,
+        OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
+        PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
+        RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
+        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentPositionParams,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
+        WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
@@ -78,9 +78,8 @@ enum RevealType {
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
-// This server command rechecks the open wiki named by its argument, or every open wiki without
-// one, as when the filesystem changed without the editor reporting it. The extension gives it a
-// title in [file:vscode-extension/package.json]. Keep this in sync with [group:check_wiki_command].
+// This server command rechecks the open wiki named by its argument, as when the filesystem changed
+// without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
@@ -354,12 +353,7 @@ impl Backend {
 
     // Recheck open documents after filesystem changes, which their filesystem links may reflect.
     // Documents whose own files changed are skipped, since editor synchronization covers them.
-    // Each check's snapshot is returned with the channel which reports its result.
-    fn recheck_open_documents(
-        &self,
-        changed_uris: &[&Uri],
-        delay: Duration,
-    ) -> Vec<(Arc<Snapshot>, oneshot::Receiver<PublishedCheck>)> {
+    fn recheck_open_documents(&self, changed_uris: &[&Uri]) {
         // Collect the snapshots before scheduling, without retaining the lock across that
         // operation.
         let snapshots = lock(&self.documents)
@@ -368,14 +362,10 @@ impl Backend {
             .map(|(_uri, document)| Arc::clone(&document.snapshot))
             .collect::<Vec<_>>();
 
-        // Schedule the checks after the given delay.
-        snapshots
-            .into_iter()
-            .map(|snapshot| {
-                let result = self.store_and_check_document(Arc::clone(&snapshot), delay);
-                (snapshot, result)
-            })
-            .collect()
+        // Debounce the checks, since a single operation can change many files in quick succession.
+        for snapshot in snapshots {
+            self.store_and_check_document(snapshot, CHECK_DELAY);
+        }
     }
 
     // Share the latest synchronized snapshot of an open document with a language feature request.
@@ -487,10 +477,6 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-                execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![CHECK_WIKI_COMMAND.to_owned()],
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -607,15 +593,13 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        // Recheck open documents against the changed filesystem. Debounce the checks, since a
-        // single operation can change many files in quick succession.
+        // Recheck open documents against the changed filesystem.
         self.recheck_open_documents(
             &params
                 .changes
                 .iter()
                 .map(|change| &change.uri)
                 .collect::<Vec<_>>(),
-            CHECK_DELAY,
         );
     }
 
@@ -628,62 +612,52 @@ impl LanguageServer for Backend {
             )));
         }
 
-        // Recheck the named wiki right away, or every open wiki if none is named.
-        let checks = if let Some(argument) = params.arguments.into_iter().next() {
-            let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
-                JsonRpcError::invalid_params(format!(
-                    "The argument must be a document URI: {error}.",
-                ))
-            })?;
-            let Some(snapshot) = self.snapshot(&uri) else {
-                self.client
-                    .show_message(
-                        MessageType::WARNING,
-                        format!(
-                            "Unable to check {}, since it isn't open.",
-                            uri.as_str().code_str(),
-                        ),
-                    )
-                    .await;
-                return Ok(None);
-            };
-            let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
-            vec![(snapshot, result)]
-        } else {
-            let checks = self.recheck_open_documents(&[], Duration::ZERO);
-            if checks.is_empty() {
-                self.client
-                    .show_message(MessageType::INFO, "There are no open wikis to check.")
-                    .await;
-            }
-            checks
+        // Recheck the named wiki right away.
+        let Some(argument) = params.arguments.into_iter().next() else {
+            return Err(JsonRpcError::invalid_params(
+                "The command requires the URI of a document to check.",
+            ));
         };
-
-        // Report each result once it's published, or that a newer check superseded it, without
-        // claiming a result which isn't shown in the editor.
-        for (snapshot, result) in checks {
-            let name = snapshot
-                .path
-                .as_deref()
-                .and_then(Path::file_name)
-                .map_or_else(
-                    || snapshot.uri.as_str().code_str(),
-                    |name| name.to_string_lossy().code_str(),
-                );
-            let (message_type, message) = match result.await.map(|check| check.diagnostic_count) {
-                Ok(0) => (MessageType::INFO, format!("{name} looks good.")),
-                Ok(1) => (MessageType::INFO, format!("{name} has 1 problem.")),
-                Ok(count) => (MessageType::INFO, format!("{name} has {count} problems.")),
-                Err(_) => (
+        let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
+            JsonRpcError::invalid_params(format!("The argument must be a document URI: {error}."))
+        })?;
+        let Some(snapshot) = self.snapshot(&uri) else {
+            self.client
+                .show_message(
                     MessageType::WARNING,
                     format!(
-                        "The check of {name} was interrupted by a newer change. Its diagnostics \
-                         will update when the newer check finishes.",
+                        "Unable to check {}, since it isn't open.",
+                        uri.as_str().code_str(),
                     ),
+                )
+                .await;
+            return Ok(None);
+        };
+        let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
+
+        // Report the result once it's published, or that a newer check superseded it, without
+        // claiming a result which isn't shown in the editor.
+        let name = snapshot
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(
+                || snapshot.uri.as_str().code_str(),
+                |name| name.to_string_lossy().code_str(),
+            );
+        let (message_type, message) = match result.await.map(|check| check.diagnostic_count) {
+            Ok(0) => (MessageType::INFO, format!("{name} looks good.")),
+            Ok(1) => (MessageType::INFO, format!("{name} has 1 problem.")),
+            Ok(count) => (MessageType::INFO, format!("{name} has {count} problems.")),
+            Err(_) => (
+                MessageType::WARNING,
+                format!(
+                    "The check of {name} was interrupted by a newer change. Its diagnostics will \
+                     update when the newer check finishes.",
                 ),
-            };
-            self.client.show_message(message_type, message).await;
-        }
+            ),
+        };
+        self.client.show_message(message_type, message).await;
         Ok(None)
     }
 
