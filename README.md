@@ -112,7 +112,7 @@ Options:
 
 To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension.
 
-### Installing on macOS or Linux (AArch64 or x86-64)
+### Installation on macOS or Linux (AArch64 or x86-64)
 
 If you're running macOS or Linux (AArch64 or x86-64), you can install Mull with this command:
 
