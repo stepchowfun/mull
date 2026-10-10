@@ -208,20 +208,12 @@ fn finish_page(
             end: source_end,
         },
     );
-    let (content, links, mut content_errors) = parse_content(
+    let (content, links, content_errors) = parse_content(
         source_path,
         source_contents,
         line_index,
         content_source_range,
     );
-
-    // Report the backslashes which don't escape anything after the content's other errors.
-    content_errors.extend(invalid_escape_errors(
-        source_path,
-        source_contents,
-        line_index,
-        content_source_range,
-    ));
 
     // Discard the content of a region without a valid title, whose title error was already
     // reported.
@@ -288,6 +280,10 @@ fn invalid_escape_errors(
 }
 
 // Parse link occurrences and produce the normalized content stored on a page.
+#[allow(
+    clippy::too_many_lines,
+    reason = "The function scans content once, tracking the state of the link being read."
+)]
 fn parse_content(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -412,6 +408,14 @@ fn parse_content(
         };
         errors.push(syntax_error("Unclosed link.", link_source_range));
     }
+
+    // Reject each backslash which doesn't escape anything.
+    errors.extend(invalid_escape_errors(
+        source_path,
+        source_contents,
+        line_index,
+        source_range,
+    ));
 
     // Retain the content following the final link, then normalize the finished content. Links
     // can't contain line breaks, and each ends with a delimiter, so normalizing never changes one.
