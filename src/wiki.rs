@@ -74,8 +74,8 @@ impl fmt::Display for Wiki {
 // This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
 pub struct Page {
-    pub title: String,   // Non-empty, one line, trimmed, and not starting with `/`
-    pub content: String, // As written, with no surrounding blank lines or whitespace at line ends
+    pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
+    pub content: ContentText, // No surrounding blank lines or whitespace at line ends
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
@@ -86,23 +86,22 @@ pub struct Page {
 impl fmt::Display for Page {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omit the content separator when there's no content.
-        if self.content.is_empty() {
+        if self.content.as_str().is_empty() {
             writeln!(formatter, "{TITLE_PREFIX}{}", self.title)
         } else {
             writeln!(
                 formatter,
                 "{TITLE_PREFIX}{}\n\n{}",
                 self.title,
-                self.content,
+                self.content.as_str(),
             )
         }
     }
 }
 
 // This is text as it appears in a page's content, where `[` and `]` delimit links and a backslash
-// escapes the character after it [ref:content_escapes]. Every backslash escapes something, so the
-// text always decodes to plain text. A heading isn't content: a page's title appears in its heading
-// as is.
+// escapes the character after it [ref:content_escapes]. A heading isn't content: a page's title
+// appears in its heading as is.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContentText(String);
 
@@ -118,27 +117,24 @@ impl ContentText {
         )
     }
 
-    // Accept text that's already written as content, such as part of a wiki's source, unless a
-    // backslash in it doesn't escape anything.
-    pub fn from_source(source: &str) -> Option<Self> {
-        Self::invalid_escapes(source)
-            .next()
-            .is_none()
-            .then(|| Self(source.to_owned()))
+    // Accept text that's already written as content, such as part of a wiki's source.
+    pub fn from_source(source: &str) -> Self {
+        Self(source.to_owned())
     }
 
-    // Decode escaped characters into plain text, as the parser does, by dropping each backslash
-    // and keeping the character it escapes.
-    pub fn unescape(&self) -> String {
-        let mut previous_was_escape = false;
-        self.0
-            .chars()
-            .filter(|&character| {
-                let is_escape = !previous_was_escape && character == '\\';
-                previous_was_escape = is_escape;
-                !is_escape
-            })
-            .collect()
+    // Decode escaped characters into plain text, as the parser does. There's no plain text if a
+    // backslash doesn't escape anything [ref:content_escapes].
+    pub fn unescape(&self) -> Option<String> {
+        let mut plain = String::new();
+        let mut characters = self.0.chars();
+        while let Some(character) = characters.next() {
+            plain.push(if character == '\\' {
+                characters.next().filter(|&next| Self::is_escapable(next))?
+            } else {
+                character
+            });
+        }
+        Some(plain)
     }
 
     // Expose the text as written, such as to scan it for delimiters.
@@ -375,7 +371,7 @@ mod tests {
     fn page_display() {
         let page = Page {
             title: "Greeting".to_owned(),
-            content: "Hello, world!".to_owned(),
+            content: ContentText::from_source("Hello, world!"),
             links: Vec::new(),
             traversal_index: None,
             source_range: SOURCE_RANGE,
@@ -390,7 +386,7 @@ mod tests {
     fn empty_page_display() {
         let page = Page {
             title: "Greeting".to_owned(),
-            content: String::new(),
+            content: ContentText::default(),
             links: Vec::new(),
             traversal_index: None,
             source_range: SOURCE_RANGE,
@@ -411,31 +407,29 @@ mod tests {
             ("/.", "/", true),
         ] {
             let target =
-                FilesystemTarget::parse(&ContentText::from_source(text).unwrap().unescape())
+                FilesystemTarget::parse(&ContentText::from_source(text).unescape().unwrap())
                     .unwrap();
             assert_eq!(target.text().as_str(), canonical);
             assert_eq!(target.is_directory(), is_directory);
             assert_eq!(
-                FilesystemTarget::parse(&target.text().unescape()).unwrap(),
+                FilesystemTarget::parse(&target.text().unescape().unwrap()).unwrap(),
                 target,
             );
         }
     }
 
-    // Escape delimiters and backslashes in plain text, decode escapes, and accept only text in
-    // which every backslash escapes something.
+    // Escape delimiters and backslashes in plain text, and decode escapes, but decode nothing when
+    // a backslash doesn't escape anything.
     #[test]
     fn content_text_escaping() {
         assert_eq!(ContentText::escape(r"a\[b]\c\").as_str(), r"a\\\[b\]\\c\\");
         assert_eq!(
-            ContentText::from_source(r"a\\\[b\]\\c\\")
-                .unwrap()
-                .unescape(),
-            r"a\[b]\c\",
+            ContentText::from_source(r"a\\\[b\]\\c\\").unescape(),
+            Some(r"a\[b]\c\".to_owned()),
         );
-        assert_eq!(ContentText::from_source(r"\a"), None);
-        assert_eq!(ContentText::from_source(r"\#"), None);
-        assert_eq!(ContentText::from_source(r"a\\\"), None);
+        assert_eq!(ContentText::from_source(r"\a").unescape(), None);
+        assert_eq!(ContentText::from_source(r"\#").unescape(), None);
+        assert_eq!(ContentText::from_source(r"a\\\").unescape(), None);
         assert_eq!(ContentText::escape(r"#\#").as_str(), r"#\\#");
     }
 
@@ -488,7 +482,7 @@ mod tests {
                 "Greeting".to_owned(),
                 Page {
                     title: "Greeting".to_owned(),
-                    content: String::new(),
+                    content: ContentText::default(),
                     links: Vec::new(),
                     traversal_index: None,
                     source_range: SOURCE_RANGE,
@@ -509,7 +503,7 @@ mod tests {
                     "Greeting".to_owned(),
                     Page {
                         title: "Greeting".to_owned(),
-                        content: "Hello, world!".to_owned(),
+                        content: ContentText::from_source("Hello, world!"),
                         links: Vec::new(),
                         traversal_index: Some(1),
                         source_range: SOURCE_RANGE,
@@ -520,7 +514,7 @@ mod tests {
                     "Home".to_owned(),
                     Page {
                         title: "Home".to_owned(),
-                        content: "Check out the [Greeting].".to_owned(),
+                        content: ContentText::from_source("Check out the [Greeting]."),
                         links: Vec::new(),
                         traversal_index: Some(0),
                         source_range: SOURCE_RANGE,
@@ -531,7 +525,7 @@ mod tests {
                     "Orphan".to_owned(),
                     Page {
                         title: "Orphan".to_owned(),
-                        content: String::new(),
+                        content: ContentText::default(),
                         links: Vec::new(),
                         traversal_index: None,
                         source_range: SOURCE_RANGE,

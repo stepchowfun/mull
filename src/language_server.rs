@@ -916,7 +916,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     // nothing while the typed text has a backslash which doesn't escape anything.
     Some(text_link_completions(
         snapshot,
-        &ContentText::from_source(typed_target)?.unescape(),
+        &ContentText::from_source(typed_target).unescape()?,
         SourceRange {
             start: delimiters.opening,
             end: delimiters
@@ -989,7 +989,7 @@ fn filesystem_link_completions(
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
     let mut directory = PathBuf::new();
     for component in
-        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/'))?.unescape())
+        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape()?)
             .components()
     {
         match component {
@@ -1532,8 +1532,8 @@ fn prepare_rename_for_document(
                 end: start + trimmed.len(),
             }),
             placeholder: ContentText::from_source(trimmed)
-                .expect("A link's escapes should have been checked.")
-                .unescape(),
+                .unescape()
+                .expect("A link's escapes should have been checked."),
         }));
     }
 
