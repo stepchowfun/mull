@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.3] - 2026-10-09
+
+### Changed
+- Finding references, such as with `Shift + F12` in VS Code, now works anywhere in a page, not just on its title or a link to it. Outside a title or link, it finds the backlinks of the page containing the cursor.
+
 ## [0.39.2] - 2026-10-09
 
 ### Changed

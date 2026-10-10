@@ -1237,19 +1237,28 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
     )
 }
 
-// Locate every text link to the page at an editor position.
+// Locate every text link to the page at an editor position. Outside a title or link, that's the
+// page containing the position.
 fn references_for_document(
     snapshot: &Snapshot,
     cursor: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
-    // from syntax errors so references can be found while they're fixed.
-    let (page, _source_range) =
-        page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    // from syntax errors so references can be found while they're fixed. A link to a missing page
+    // or a filesystem link denotes no page.
+    let byte_offset = snapshot.byte_offset(cursor)?;
+    let wiki = snapshot.wiki();
+    let page = match page_at(snapshot, byte_offset, LinkExtent::Whole) {
+        Some((page, _source_range)) => page,
+        None if link_at(wiki, byte_offset).is_none() => wiki.pages.values().find(|page| {
+            page.source_range.start <= byte_offset && byte_offset <= page.source_range.end
+        })?,
+        None => return None,
+    };
 
     // Include the declaration only when requested, then restore source order.
-    let mut source_ranges = text_link_source_ranges(snapshot.wiki(), &page.title);
+    let mut source_ranges = text_link_source_ranges(wiki, &page.title);
     if include_declaration {
         source_ranges.push(page.title_source_range);
     }
@@ -3115,7 +3124,7 @@ mod tests {
     // Distinguish a known page with no references from a cursor that denotes no page.
     #[test]
     fn references_can_be_empty() {
-        let source = "# Home\n\nText";
+        let source = "# Home\n\nText [Missing] [/notes.txt]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -3125,8 +3134,42 @@ mod tests {
                 Some(Vec::new()),
             );
         }
+        for column in [7, 18] {
+            assert!(
+                references_for_document(&snapshot(&uri, source), Position::new(2, column), false)
+                    .is_none(),
+            );
+        }
+    }
+
+    // Find the links to the page containing the cursor when it isn't on a title or link, but not
+    // between pages. A link in the page still denotes the page it names.
+    #[test]
+    fn references_find_links_to_the_current_page() {
+        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello, [Home]!\n\nGoodbye.";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        for position in [Position::new(6, 2), Position::new(8, 8)] {
+            assert_eq!(
+                references_for_document(&snapshot(&uri, source), position, false)
+                    .unwrap()
+                    .iter()
+                    .map(|location| location.range)
+                    .collect::<Vec<_>>(),
+                vec![Range::new(Position::new(2, 0), Position::new(2, 10))],
+            );
+        }
+        assert_eq!(
+            references_for_document(&snapshot(&uri, source), Position::new(6, 9), false)
+                .unwrap()
+                .iter()
+                .map(|location| location.range)
+                .collect::<Vec<_>>(),
+            vec![Range::new(Position::new(6, 7), Position::new(6, 13))],
+        );
         assert!(
-            references_for_document(&snapshot(&uri, source), Position::new(2, 1), false).is_none(),
+            references_for_document(&snapshot(&uri, source), Position::new(3, 0), false).is_none(),
         );
     }
 
