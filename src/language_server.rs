@@ -1185,7 +1185,7 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
         .map(str::len)
         .max()
         .expect("Splitting text should yield at least one piece.");
-    let fence = "`".repeat(longest_run.max(2) + 1);
+    let fence = "`".repeat((longest_run + 1).max(3));
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
