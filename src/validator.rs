@@ -133,7 +133,7 @@ fn validate_text_links(
                 .map(|page| {
                     Error::new(
                         &format!(
-                            "Page {} can't be reached by following links from {}.",
+                            "Page {} can't be reached by following links starting from {}.",
                             page.title.code_str(),
                             HOME_TITLE.code_str(),
                         ),
@@ -1156,7 +1156,7 @@ mod tests {
         assert_eq!(errors.len(), 4);
         for message in [
             "Page `Missing` not found.",
-            "Page `Orphan` can't be reached by following links from `Home`.",
+            "Page `Orphan` can't be reached by following links starting from `Home`.",
             "`/missing.txt` not found in `",
             "File `/unreferenced.txt` isn't linked to.",
         ] {
@@ -1199,11 +1199,11 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert!(contains_error(
             &errors,
-            "Page `Alpha` can't be reached by following links from `Home`.",
+            "Page `Alpha` can't be reached by following links starting from `Home`.",
         ));
         assert!(contains_error(
             &errors,
-            "Page `Zulu` can't be reached by following links from `Home`.",
+            "Page `Zulu` can't be reached by following links starting from `Home`.",
         ));
     }
 

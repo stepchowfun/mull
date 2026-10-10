@@ -1,6 +1,6 @@
 [package]
 name = "mull"
-version = "0.39.3"
+version = "0.39.4"
 authors = ["Stephan Boyer <stephan@stephanboyer.com>"]
 edition = "2024"
 description = "A tool for managing a wiki stored in a plain text file."
