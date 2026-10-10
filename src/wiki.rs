@@ -106,7 +106,11 @@ impl fmt::Display for Page {
 pub struct ContentText(String);
 
 impl ContentText {
-    // Escape plain text, such as a page title or a path, so it retains its meaning in content.
+    // Escape plain text, such as a page title or a path, so it retains its meaning within a line of
+    // content, as in a link. Unlike the other characters which can be escaped
+    // [ref:content_escapes], `#` is only special at the start of a line, where it would begin a
+    // title, so it's left as is. Text placed at the start of a line would also need a leading `#`
+    // escaped.
     pub fn escape(plain: &str) -> Self {
         Self(
             plain
