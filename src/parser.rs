@@ -259,7 +259,10 @@ fn invalid_escape_errors(
 ) -> Vec<Error> {
     invalid_escapes(&source_contents[content_source_range.start..content_source_range.end])
         .map(|index| {
+            // Locate the backslash in the source.
             let offset = content_source_range.start + index;
+
+            // List the characters which can be escaped [ref:content_escapes].
             Error::new(
                 "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
                  backslash itself.",
