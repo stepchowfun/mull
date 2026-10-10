@@ -11,7 +11,7 @@ use crate::{
     validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
-        rendering_order_key, title_line_text,
+        title_line_text,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -2132,14 +2132,16 @@ fn code_action_for_document(
                         .enumerate()
                         .map(|(index, title)| (title, index))
                         .collect::<HashMap<_, _>>();
-                    let new_key =
-                        rendering_order_key(traversal_indices.get(title.as_str()).copied(), &title);
+                    let new_key = Wiki::rendering_order_key(
+                        traversal_indices.get(title.as_str()).copied(),
+                        &title,
+                    );
                     let preceding_page = wiki
                         .pages
                         .values()
                         .map(|page| {
                             let index = traversal_indices.get(page.title.as_str()).copied();
-                            (rendering_order_key(index, &page.title), page)
+                            (Wiki::rendering_order_key(index, &page.title), page)
                         })
                         .filter(|(key, _page)| *key < new_key)
                         .max_by_key(|(key, _page)| *key);

@@ -40,6 +40,15 @@ impl Wiki {
     pub fn links(&self) -> impl Iterator<Item = &Link> {
         self.pages.values().flat_map(|page| &page.links)
     }
+
+    // Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
+    // unreachable pages in title order.
+    pub fn rendering_order_key(
+        traversal_index: Option<usize>,
+        title: &str,
+    ) -> (bool, Option<usize>, &str) {
+        (traversal_index.is_none(), traversal_index, title)
+    }
 }
 
 // Render pages deterministically in traversal order, with unreachable pages last in title order.
@@ -47,7 +56,7 @@ impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable pages by traversal order, followed by unreachable pages in title order.
         let mut pages = self.pages.iter().collect::<Vec<_>>();
-        pages.sort_by_key(|(title, page)| rendering_order_key(page.traversal_index, title));
+        pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
 
         // Add one line break between pages because each page already ends with one.
         for (index, (_title, page)) in pages.into_iter().enumerate() {
@@ -60,15 +69,6 @@ impl fmt::Display for Wiki {
         // Rendering succeeded.
         Ok(())
     }
-}
-
-// Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
-// unreachable pages in title order.
-pub fn rendering_order_key(
-    traversal_index: Option<usize>,
-    title: &str,
-) -> (bool, Option<usize>, &str) {
-    (traversal_index.is_none(), traversal_index, title)
 }
 
 // This struct represents a page in a wiki.
