@@ -112,7 +112,7 @@ Options:
 
 To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension.
 
-### Installing the binary on macOS or Linux (AArch64 or x86-64)
+### Installing on macOS or Linux (AArch64 or x86-64)
 
 If you're running macOS or Linux (AArch64 or x86-64), you can install Mull with this command:
 
@@ -137,7 +137,7 @@ curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | 
 
 Note that if you change the installation path, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
 
-If you prefer not to use this installation method, you can download the binary from the [releases page](https://github.com/stepchowfun/mull/releases), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`).
+If you prefer not to use this installation method, you can download the binary from the [releases page](https://github.com/stepchowfun/mull/releases), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installation-of-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
 
 ### Installing the binary on Windows (AArch64 or x86-64)
 
