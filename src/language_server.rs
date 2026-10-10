@@ -2191,6 +2191,7 @@ fn code_action_for_document(
                         Some(command),
                     )
                 }
+                Fix::EscapeBackslash(offset) => escape_backslash_action(snapshot, offset)?,
             };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title,
@@ -2209,6 +2210,27 @@ fn code_action_for_document(
 
     // Report the absence of fixes as no response.
     (!actions.is_empty()).then_some(actions)
+}
+
+// Describe the edit which escapes a backslash at a source offset, so it stands for itself. A stale
+// diagnostic's backslash which no longer needs escaping has no edit.
+fn escape_backslash_action(
+    snapshot: &Snapshot,
+    offset: usize,
+) -> Option<(String, TextEdit, Option<Command>)> {
+    let (_wiki, syntax_errors) = snapshot.parsed();
+    if !syntax_errors
+        .iter()
+        .any(|error| error.fix() == Some(&Fix::EscapeBackslash(offset)))
+    {
+        return None;
+    }
+    let position = snapshot.position(offset);
+    Some((
+        "Escape the backslash".to_owned(),
+        TextEdit::new(Range::new(position, position), "\\".to_owned()),
+        None,
+    ))
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
@@ -4476,6 +4498,41 @@ mod tests {
         assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
 
         assert!(code_action_for_document(&snapshot(&uri, source), &source_diagnostics).is_none());
+    }
+
+    // Offer to escape each backslash which doesn't escape anything, making the wiki valid, but not
+    // once a stale diagnostic's backslash is escaped.
+    #[test]
+    fn code_actions_escape_backslashes() {
+        let source = "# Home\n\nC:\\Users\\me";
+        let uri = untitled_uri();
+        let escape_diagnostics = diagnostics(&uri, source);
+        assert_eq!(escape_diagnostics.len(), 2);
+
+        // Apply the edits from the end of the source so the earlier ones stay where they are.
+        let actions =
+            code_action_for_document(&snapshot(&uri, source), &escape_diagnostics).unwrap();
+        assert_eq!(actions.len(), 2);
+        let mut applied = source.to_owned();
+        for action in actions.iter().rev() {
+            let CodeActionOrCommand::CodeAction(action) = action else {
+                panic!("A code action shouldn't be a bare command.");
+            };
+            assert_eq!(action.title, "Escape the backslash");
+            assert_eq!(action.command, None);
+            let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let [edit] = changes[&uri].as_slice() else {
+                panic!("A code action should make exactly one edit.");
+            };
+            assert_eq!(edit.range.start, edit.range.end);
+            applied.insert_str(
+                byte_offset(source, edit.range.start).unwrap(),
+                &edit.new_text,
+            );
+        }
+        assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
+        assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
+        assert!(code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics).is_none());
     }
 
     // Write the start of a PNG file with the given size, enough for its size to be read.
