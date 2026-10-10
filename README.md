@@ -91,9 +91,8 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | --- | --- | --- |
 | Find a page | `Command + Shift + O` | `Control + Shift + O` |
 | Rename a page | `F2` | `F2` |
-| Jump to a page from a link | `F12` | `F12` |
+| Jump to a page from a link | `F12` or `Command + click` | `F12` or `Control + click` |
 | Jump to links to a page | `Shift + F12` | `Shift + F12` |
-| Jump back | `Control + -` | `Alt + Left` |
 | Show completions | `Control + Space` | `Control + Space` |
 | Jump to the next error | `F8` | `F8` |
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
