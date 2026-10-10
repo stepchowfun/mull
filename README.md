@@ -129,7 +129,7 @@ The installation script supports the following optional environment variables:
 - `VERSION=x.y.z` (defaults to the latest version)
 - `PREFIX=/path/to/install` (defaults to `/usr/local/bin`)
 
-For example, the following will install Mull into the working directory:
+For example, the following will install the binary into the working directory:
 
 ```sh
 curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | PREFIX=. sh
