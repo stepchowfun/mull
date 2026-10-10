@@ -10,7 +10,7 @@
 
 A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other. Here's a small wiki with 3 pages:
 
-````md
+```md
 # Home
 
 Welcome to the example wiki!
@@ -33,13 +33,13 @@ This is the [Home] page, which is the starting point for every wiki.
 > If bees are few.
 
 —Emily Dickinson
-````
+```
 
-Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up until the next page or the end of the file.
+Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
 
-To link to a page, put the title in square brackets like `[My favorite art]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+To link to a page, use square brackets like `[My favorite art]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
-If the wiki is called `my_wiki.mull`, you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/mona_lisa.jpg]`.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/mona_lisa.jpg]`.
 
 ## Keyboard shortcuts
 
