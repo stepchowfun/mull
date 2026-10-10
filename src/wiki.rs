@@ -132,7 +132,7 @@ impl ContentText {
         while let Some(character) = characters.next() {
             plain.push(if character == '\\' {
                 characters
-                    .next_if(|&next| is_escapable(next))
+                    .next_if(|&next| Self::is_escapable(next))
                     .unwrap_or(character)
             } else {
                 character
@@ -150,41 +150,41 @@ impl ContentText {
     pub fn into_string(self) -> String {
         self.0
     }
-}
 
-// Scan content for the characters which aren't escaped [ref:content_escapes], such as unescaped
-// link delimiters.
-pub fn unescaped_characters(content: &str) -> impl Iterator<Item = (usize, char)> {
-    let mut previous_was_escape = false;
-    content.char_indices().filter(move |&(_, character)| {
-        let is_escaped = previous_was_escape && is_escapable(character);
-        previous_was_escape = character == '\\' && !is_escaped;
-        !is_escaped
-    })
-}
+    // Scan text written as content, such as part of a wiki's source, for the characters which
+    // aren't escaped [ref:content_escapes], such as unescaped link delimiters.
+    pub fn unescaped_characters(source: &str) -> impl Iterator<Item = (usize, char)> {
+        let mut previous_was_escape = false;
+        source.char_indices().filter(move |&(_, character)| {
+            let is_escaped = previous_was_escape && Self::is_escapable(character);
+            previous_was_escape = character == '\\' && !is_escaped;
+            !is_escaped
+        })
+    }
 
-// Find the backslashes in content which don't escape anything, because they aren't followed by a
-// character which can be escaped [ref:content_escapes]. Every other backslash escapes the next
-// character, so a backslash itself is written as `\\`.
-pub fn invalid_escapes(content: &str) -> impl Iterator<Item = usize> {
-    let mut characters = content.char_indices().peekable();
-    iter::from_fn(move || {
-        while let Some((index, character)) = characters.next() {
-            if character == '\\'
-                && characters
-                    .next_if(|&(_, next_character)| is_escapable(next_character))
-                    .is_none()
-            {
-                return Some(index);
+    // Find the backslashes in text written as content which don't escape anything, because they
+    // aren't followed by a character which can be escaped [ref:content_escapes]. Every other
+    // backslash escapes the next character, so a backslash itself is written as `\\`.
+    pub fn invalid_escapes(source: &str) -> impl Iterator<Item = usize> {
+        let mut characters = source.char_indices().peekable();
+        iter::from_fn(move || {
+            while let Some((index, character)) = characters.next() {
+                if character == '\\'
+                    && characters
+                        .next_if(|&(_, next_character)| Self::is_escapable(next_character))
+                        .is_none()
+                {
+                    return Some(index);
+                }
             }
-        }
-        None
-    })
-}
+            None
+        })
+    }
 
-// Determine whether a backslash escapes a character in content [tag:content_escapes].
-fn is_escapable(character: char) -> bool {
-    matches!(character, '\\' | '[' | ']' | '#')
+    // Determine whether a backslash escapes a character in content [tag:content_escapes].
+    fn is_escapable(character: char) -> bool {
+        matches!(character, '\\' | '[' | ']' | '#')
+    }
 }
 
 // These are the source occurrences through which a page can reference a target.

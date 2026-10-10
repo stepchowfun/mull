@@ -11,7 +11,7 @@ use crate::{
     validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
-        rendering_order_key, title_line_text, unescaped_characters,
+        rendering_order_key, title_line_text,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -953,7 +953,7 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     // delimiters as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
-    for (index, character) in unescaped_characters(line) {
+    for (index, character) in ContentText::unescaped_characters(line) {
         let offset = line_start + index;
         if offset < cursor {
             match character {

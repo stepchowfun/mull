@@ -4,8 +4,7 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, invalid_escapes,
-        title_line_text, unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text,
     },
 };
 use std::{iter, path::Path};
@@ -281,7 +280,7 @@ fn parse_content(
         )
     };
 
-    for (index, character) in unescaped_characters(original_content) {
+    for (index, character) in ContentText::unescaped_characters(original_content) {
         // Locate the current character for any delimiter error.
         let character_source_range = SourceRange {
             start: source_range.start + index,
@@ -382,7 +381,7 @@ fn parse_content(
     // Reject each backslash which doesn't escape anything, so it can't be mistaken for an escape,
     // and offer to escape it. The message lists the characters which can be escaped
     // [ref:content_escapes].
-    for index in invalid_escapes(original_content) {
+    for index in ContentText::invalid_escapes(original_content) {
         let offset = source_range.start + index;
         errors.push(Error::new(
             "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
