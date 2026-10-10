@@ -1597,7 +1597,8 @@ fn renamable_filesystem_entry_at(
     // root, resolving it from the file root as validation does.
     let file_root = FileRoot::new(wiki_path)?;
     if old_target.is_file_root() {
-        return Err(format!("{} can't be renamed.", file_root.path().code_str()));
+        let name = Path::new(file_root.path().file_name().unwrap_or_default());
+        return Err(format!("{} can't be renamed.", name.code_str()));
     }
     let kind = if is_directory { "Directory" } else { "File" };
     if !fs::metadata(file_root.path().join(old_path))
@@ -2148,7 +2149,7 @@ mod tests {
         rename_for_document, reveal_range_command_url,
     };
     use crate::{
-        cancellation::CancellationFlag, error::SourceRange, format::CodeStr, line_index::LineIndex,
+        cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
         lsp_position::LspPosition, parser,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -3618,10 +3619,7 @@ mod tests {
             "This editor doesn't support renaming files.",
         );
         assert_eq!(prepare(&uri, 14, true), "File `/missing.txt` not found.");
-        assert_eq!(
-            prepare(&uri, 29, true),
-            format!("{} can't be renamed.", wiki.directory().code_str()),
-        );
+        assert_eq!(prepare(&uri, 29, true), "`wiki_files` can't be renamed.");
     }
 
     // Rename a linked file and update each link to it in the style it was written.
@@ -3925,7 +3923,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),
-            format!("{} can't be renamed.", wiki.directory().code_str()),
+            "`wiki_files` can't be renamed.",
         );
 
         // Reject a link or a new path through an existing directory spelled differently than on
