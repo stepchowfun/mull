@@ -506,7 +506,7 @@ mod tests {
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
         );
-        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello,\nworld!",);
+        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello,\nworld!");
         assert_eq!(wiki.pages["Home"].title_source_range.start, 7);
         assert_eq!(wiki.pages["Home"].title_source_range.end, 13);
         assert_eq!(wiki.pages["Home"].source_range.start, 3);
@@ -720,7 +720,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     fn windows_line_endings() {
         let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello, world!",);
+        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello, world!");
     }
 
     // Reject non-whitespace content before the first title.
@@ -936,7 +936,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         );
         assert!(errors[5].to_string().contains("7 \u{2502} [Greeting] b]"));
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"],);
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
         assert_eq!(wiki.pages["Greeting"].traversal_index, None);
     }
 }
