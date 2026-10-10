@@ -347,21 +347,20 @@ fn parse_content(
 
                 // Parse the target unless the link has a syntax error, whose target is unreliable,
                 // including a backslash which doesn't escape anything.
-                let link = if link_has_line_break
-                    || link_has_nested_start
-                    || ContentText::invalid_escapes(&original_content[inner_start..index])
-                        .next()
-                        .is_some()
-                {
+                let link = if link_has_line_break || link_has_nested_start {
                     None
                 } else {
-                    Some(parse_link(
-                        trimmed_target,
-                        source_path,
-                        source_contents,
-                        line_index,
-                        link_source_range,
-                    ))
+                    ContentText::from_source(trimmed_target)
+                        .unescape()
+                        .map(|unescaped_target| {
+                            parse_link(
+                                &unescaped_target,
+                                source_path,
+                                source_contents,
+                                line_index,
+                                link_source_range,
+                            )
+                        })
                 };
 
                 // Write a filesystem link's target in its canonical form, and keep any other target
@@ -423,7 +422,7 @@ fn parse_content(
     (normalize_lines(&content), links, errors)
 }
 
-// Convert the contents of a closed delimiter pair into a typed link occurrence.
+// Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
     source_path: Option<&Path>,
@@ -431,11 +430,10 @@ fn parse_link(
     line_index: &LineIndex,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
-    // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
-    // The target is part of a page's content, as written, and has only valid escapes.
-    let target = ContentText::from_source(target);
-    if target.as_str().starts_with(FILESYSTEM_LINK_PREFIX) {
-        let target = FilesystemTarget::parse(&target).map_err(|message| {
+    // Parse a filesystem link's target, which starts with `/`, and take any other target as a
+    // link's title.
+    if target.starts_with(FILESYSTEM_LINK_PREFIX) {
+        let target = FilesystemTarget::parse(target).map_err(|message| {
             Error::new(
                 &message,
                 source_path,
@@ -450,9 +448,7 @@ fn parse_link(
         })
     } else {
         Ok(Link::Text {
-            title: target
-                .unescape()
-                .expect("The link's escapes should have been checked."),
+            title: target.to_owned(),
             source_range,
         })
     }

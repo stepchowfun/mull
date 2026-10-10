@@ -216,12 +216,9 @@ pub struct FilesystemTarget {
 }
 
 impl FilesystemTarget {
-    // Parse the text of a filesystem link between its delimiters, which starts with `/` and names a
-    // directory if it also ends with one. Describe any problem with a message.
-    pub fn parse(text: &ContentText) -> Result<Self, String> {
-        let text = text.unescape().ok_or_else(|| {
-            "A filesystem link can't contain a backslash which doesn't escape anything.".to_owned()
-        })?;
+    // Parse the unescaped text of a filesystem link between its delimiters, which starts with `/`
+    // and names a directory if it also ends with one. Describe any problem with a message.
+    pub fn parse(text: &str) -> Result<Self, String> {
         let Some(path) = text.strip_prefix(FILESYSTEM_LINK_PREFIX) else {
             return Err(format!(
                 "A filesystem link must start with {}.",
@@ -409,10 +406,15 @@ mod tests {
             ("/", "/", true),
             ("/.", "/", true),
         ] {
-            let target = FilesystemTarget::parse(&ContentText::from_source(text)).unwrap();
+            let target =
+                FilesystemTarget::parse(&ContentText::from_source(text).unescape().unwrap())
+                    .unwrap();
             assert_eq!(target.text().as_str(), canonical);
             assert_eq!(target.is_directory(), is_directory);
-            assert_eq!(FilesystemTarget::parse(&target.text()).unwrap(), target);
+            assert_eq!(
+                FilesystemTarget::parse(&target.text().unescape().unwrap()).unwrap(),
+                target,
+            );
         }
     }
 
@@ -434,8 +436,8 @@ mod tests {
     // Reject filesystem link paths which would escape the wiki's logical tree.
     #[test]
     fn filesystem_target_escaping_paths() {
-        assert!(FilesystemTarget::parse(&ContentText::from_source("/../notes.txt")).is_err());
-        assert!(FilesystemTarget::parse(&ContentText::from_source("notes.txt")).is_err());
+        assert!(FilesystemTarget::parse("/../notes.txt").is_err());
+        assert!(FilesystemTarget::parse("notes.txt").is_err());
     }
 
     // Write a name without link syntax in the canonical form for the given kind, escaping any link
@@ -456,11 +458,10 @@ mod tests {
     // Move a target along with a directory containing it, keeping its kind.
     #[test]
     fn filesystem_target_moved() {
-        let directory = FilesystemTarget::parse(&ContentText::from_source("/photos/")).unwrap();
-        let destination =
-            FilesystemTarget::parse(&ContentText::from_source("/archive/photos/")).unwrap();
+        let directory = FilesystemTarget::parse("/photos/").unwrap();
+        let destination = FilesystemTarget::parse("/archive/photos/").unwrap();
         let moved = |text| {
-            FilesystemTarget::parse(&ContentText::from_source(text))
+            FilesystemTarget::parse(text)
                 .unwrap()
                 .moved(&directory, &destination)
                 .map(|target| target.text().into_string())
