@@ -82,6 +82,13 @@ const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
+// These file extensions identify the images which hovering over a filesystem link previews.
+const IMAGE_EXTENSIONS: &[&str] = &["bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"];
+
+// Scale image previews down to fit within this many pixels, since hovers don't limit their size.
+const MAX_IMAGE_WIDTH: usize = 480;
+const MAX_IMAGE_HEIGHT: usize = 360;
+
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
@@ -1173,9 +1180,22 @@ fn page_start_range(snapshot: &Snapshot, page: &Page) -> Range {
 
 // Preview the destination of a text link at an editor position.
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering doesn't require filesystem validation, and
-    // recover from syntax errors so previews keep working while they're fixed.
-    let (page, source_range) = page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
+    // Parse only the wiki syntax because hovering over a text link or title doesn't require
+    // filesystem validation, and recover from syntax errors so previews keep working while they're
+    // fixed. A filesystem link may preview an image instead.
+    let wiki = snapshot.wiki();
+    let (page, source_range) = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
+        Occurrence::Title(page) => (page, page.title_source_range),
+        Occurrence::Link(Link::Text {
+            title,
+            source_range,
+        }) => (wiki.pages.get(title)?, *source_range),
+        Occurrence::Link(Link::Filesystem {
+            target,
+            source_range,
+        }) => return image_hover(snapshot, target, *source_range),
+        Occurrence::Prose(_) => return None,
+    };
 
     // Show the page as written, in a code block which the editor highlights as Mull and displays in
     // the editor's font. The fence is longer than every backtick run in the page.
@@ -1193,6 +1213,65 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
         }),
         range: Some(snapshot.range(source_range)),
     })
+}
+
+// Preview the image a filesystem link names, if it's a file with an image extension which exists as
+// spelled in a saved wiki's file root. Other filesystem links have no preview.
+fn image_hover(
+    snapshot: &Snapshot,
+    target: &FilesystemTarget,
+    source_range: SourceRange,
+) -> Option<Hover> {
+    // Recognize images by their extensions, ignoring case.
+    let extension = target.path().extension()?.to_str()?;
+    if target.is_directory()
+        || !IMAGE_EXTENSIONS
+            .iter()
+            .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
+    {
+        return None;
+    }
+
+    // Find the image as following the link would.
+    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
+    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
+
+    // Embed the image as HTML, which unlike Markdown can size it. Shrink it to fit within the
+    // maximum size, keeping its aspect ratio. An image whose size can't be read, such as an SVG,
+    // just gets the maximum width.
+    let dimensions = match imagesize::size(uri.to_file_path()?) {
+        Ok(size) => {
+            let (width, height) = image_preview_size(size.width, size.height);
+            format!("width=\"{width}\" height=\"{height}\"")
+        }
+        Err(_) => format!("width=\"{MAX_IMAGE_WIDTH}\""),
+    };
+    let source = uri.as_str().replace('&', "&amp;").replace('"', "&quot;");
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("<img src=\"{source}\" {dimensions}>"),
+        }),
+        range: Some(snapshot.range(source_range)),
+    })
+}
+
+// Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
+// Neither side shrinks below a pixel, and an image which already fits keeps its size.
+fn image_preview_size(width: usize, height: usize) -> (usize, usize) {
+    if width <= MAX_IMAGE_WIDTH && height <= MAX_IMAGE_HEIGHT {
+        (width, height)
+    } else if width.saturating_mul(MAX_IMAGE_HEIGHT) > height.saturating_mul(MAX_IMAGE_WIDTH) {
+        (
+            MAX_IMAGE_WIDTH,
+            (height.saturating_mul(MAX_IMAGE_WIDTH) / width).max(1),
+        )
+    } else {
+        (
+            (width.saturating_mul(MAX_IMAGE_HEIGHT) / height).max(1),
+            MAX_IMAGE_HEIGHT,
+        )
+    }
 }
 
 // Build an editor navigation command for a code action.
@@ -2234,12 +2313,12 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, MAX_TITLE_COMPLETIONS, RevealType, Snapshot, Title,
-        code_action_for_document, completion_for_document, diagnostic_from_error,
+        FileOperationSupport, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH, MAX_TITLE_COMPLETIONS, RevealType,
+        Snapshot, Title, code_action_for_document, completion_for_document, diagnostic_from_error,
         diagnostics_for_document, document_highlight_for_document, document_link_for_document,
         document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, is_subsequence, prepare_rename_for_document, references_for_document,
-        rename_for_document,
+        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4323,6 +4402,93 @@ mod tests {
         assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
 
         assert!(code_action_for_document(&snapshot(&uri, source), &source_diagnostics).is_none());
+    }
+
+    // Write the start of a PNG file with the given size, enough for its size to be read.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        header.extend(width.to_be_bytes());
+        header.extend(height.to_be_bytes());
+        header.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        header
+    }
+
+    // Preview images which filesystem links name, but not other files, directories, missing
+    // images, or images in an unsaved wiki.
+    #[test]
+    fn hovers_preview_images() {
+        let source = "# Home\n\n[/photo.PNG] [/notes.txt] [/images.png/] [/missing.png]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(directory.join("photo.PNG"), png_header(100, 50)).unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("images.png")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 3)).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("An image preview should use markup content.");
+        };
+        assert_eq!(contents.kind, MarkupKind::Markdown);
+        assert_eq!(
+            contents.value,
+            format!(
+                "<img src=\"{}\" width=\"100\" height=\"50\">",
+                Uri::from_file_path(directory.join("photo.PNG"))
+                    .unwrap()
+                    .as_str(),
+            ),
+        );
+        assert_eq!(
+            hover.range,
+            Some(Range::new(Position::new(2, 0), Position::new(2, 12))),
+        );
+        for column in [15, 30, 45] {
+            assert!(
+                hover_for_document(&snapshot(&uri, source), Position::new(2, column)).is_none(),
+            );
+        }
+        assert!(
+            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
+        );
+    }
+
+    // Give an image whose size can't be read the maximum preview width.
+    #[test]
+    fn hovers_preview_unreadable_images() {
+        let source = "# Home\n\n[/drawing.svg]";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.directory().join("drawing.svg"), "<svg/>").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 3))
+                .unwrap()
+                .contents
+        else {
+            panic!("An image preview should use markup content.");
+        };
+        assert!(
+            contents
+                .value
+                .ends_with(&format!(" width=\"{MAX_IMAGE_WIDTH}\">")),
+        );
+    }
+
+    // Shrink images to fit within the maximum preview size, keeping their aspect ratios, but leave
+    // smaller images as they are.
+    #[test]
+    fn image_preview_sizes() {
+        assert_eq!(image_preview_size(100, 50), (100, 50));
+        assert_eq!(
+            image_preview_size(MAX_IMAGE_WIDTH * 2, MAX_IMAGE_HEIGHT),
+            (MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT / 2),
+        );
+        assert_eq!(
+            image_preview_size(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT * 3),
+            (MAX_IMAGE_WIDTH / 3, MAX_IMAGE_HEIGHT),
+        );
+        assert_eq!(image_preview_size(100_000, 1), (MAX_IMAGE_WIDTH, 1));
     }
 
     // Leave filesystem links to ordinary editor and filesystem navigation.
