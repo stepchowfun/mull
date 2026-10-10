@@ -249,7 +249,7 @@ fn finish_page(
         title.clone(),
         Page {
             title,
-            content: ContentText::from_source(&content),
+            content,
             links,
             traversal_index: None,
             source_range,
@@ -350,17 +350,15 @@ fn parse_content(
                 let link = if link_has_line_break || link_has_nested_start {
                     None
                 } else {
-                    ContentText::from_source(trimmed_target)
-                        .unescape()
-                        .map(|unescaped_target| {
-                            parse_link(
-                                &unescaped_target,
-                                source_path,
-                                source_contents,
-                                line_index,
-                                link_source_range,
-                            )
-                        })
+                    ContentText::from_source(trimmed_target).map(|target| {
+                        parse_link(
+                            &target.unescape(),
+                            source_path,
+                            source_contents,
+                            line_index,
+                            link_source_range,
+                        )
+                    })
                 };
 
                 // Write a filesystem link's target in its canonical form, and keep any other target
