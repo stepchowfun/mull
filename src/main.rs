@@ -2,7 +2,7 @@ mod analyzer;
 mod assertions;
 mod cancellation;
 mod error;
-mod files_tree;
+mod file_tree;
 mod format;
 mod language_server;
 mod line_index;

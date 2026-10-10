@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.39.0] - 2026-10-09
 
 ### Changed
-- The attachments directory is now called the *files directory*, and its name ends with `_files` instead of `_attachments`. For example, `[/photo.jpg]` in `notes.mull` now refers to `notes_files/photo.jpg`. To migrate an existing wiki, rename its attachments directory accordingly.
+- The directory of files beside a wiki is now named with `_files` instead of `_attachments`. For example, `[/photo.jpg]` in `notes.mull` now refers to `notes_files/photo.jpg`. To migrate an existing wiki, rename its `_attachments` directory accordingly. Diagnostics also name this directory by its path instead of calling it the attachments directory.
 
 ## [0.38.0] - 2026-10-09
 

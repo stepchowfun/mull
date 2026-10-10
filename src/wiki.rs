@@ -6,11 +6,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-// These strings define the wiki format's extension, the suffix that names a wiki's files
-// directory, and structural markers. A link whose target starts with `/` is a filesystem link,
-// relative to the files directory, which names a directory if it ends with `/`.
+// These strings define the wiki format's extension, the suffix that names a wiki's file
+// root, and structural markers. A link whose target starts with `/` is a filesystem link,
+// relative to the file root, which names a directory if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
-pub const FILES_DIRECTORY_SUFFIX: &str = "_files";
+pub const FILE_ROOT_SUFFIX: &str = "_files";
 const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
@@ -281,23 +281,20 @@ impl FilesystemTarget {
     }
 
     // Parse a path written without link syntax or escapes, such as a rename's new name, for a
-    // target of the given kind. The path is relative to the files directory even if it starts
-    // with `/`, and it must stay inside the logical files tree.
+    // target of the given kind. The path is relative to the file root even if it starts
+    // with `/`, and it must stay inside the logical file tree.
     pub fn from_name(path: &str, is_directory: bool) -> Result<Self, String> {
-        // Reject components that escape the logical files tree
+        // Reject components that escape the logical file tree
         // [tag:filesystem_path_components]. A root or prefix makes the path absolute.
         let path = Path::new(path.trim_start_matches('/'));
         if path
             .components()
             .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
         {
-            return Err(format!(
-                "Path {} must be relative to the files directory.",
-                path.code_str(),
-            ));
+            return Err(format!("Path {} can't be absolute.", path.code_str()));
         }
 
-        // A parent component could lead outside the files directory.
+        // A parent component could lead outside the file root.
         if path
             .components()
             .any(|component| component == Component::ParentDir)
@@ -325,13 +322,13 @@ impl FilesystemTarget {
         ))
     }
 
-    // Target the files directory itself.
-    pub fn files_directory() -> Self {
+    // Target the file root itself.
+    pub fn file_root() -> Self {
         Self::new(PathBuf::new(), true)
     }
 
     // List the directories containing this target, from nearest to farthest, ending with the
-    // files directory.
+    // file root.
     pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
         self.path
             .ancestors()
@@ -370,14 +367,14 @@ impl FilesystemTarget {
         ContentText::escape(&text)
     }
 
-    // Expose the path relative to the files directory, without any root, prefix, `.`, or `..`
+    // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
     // components. It's spelled as written, which may differ from the names on disk.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    // Determine whether the target is the files directory itself.
-    pub fn is_files_directory(&self) -> bool {
+    // Determine whether the target is the file root itself.
+    pub fn is_file_root(&self) -> bool {
         self.path.as_os_str().is_empty()
     }
 
@@ -386,7 +383,7 @@ impl FilesystemTarget {
         self.is_directory
     }
 
-    // Create a target from a normalized path. The files directory is always a directory.
+    // Create a target from a normalized path. The file root is always a directory.
     fn new(path: PathBuf, is_directory: bool) -> Self {
         Self {
             is_directory: is_directory || path.as_os_str().is_empty(),

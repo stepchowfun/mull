@@ -1,6 +1,6 @@
 use crate::{
     format::CodeStr,
-    wiki::{FILES_DIRECTORY_SUFFIX, FilesystemTarget, WIKI_EXTENSION},
+    wiki::{FILE_ROOT_SUFFIX, FilesystemTarget, WIKI_EXTENSION},
 };
 use colored::ColoredString;
 use std::{
@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-// A path relative to the files directory whose components are spelled exactly as the names in
+// A path relative to the file root whose components are spelled exactly as the names in
 // their directories' listings. Comparing such paths as written then agrees with the filesystem,
 // whether or not it ignores case. Such a path describes the disk when it was spelled, so it
 // shouldn't outlive a check or request.
@@ -24,8 +24,8 @@ impl SpelledPath {
         &self.0
     }
 
-    // Determine whether this path is the files directory itself.
-    pub fn is_files_directory(&self) -> bool {
+    // Determine whether this path is the file root itself.
+    pub fn is_file_root(&self) -> bool {
         self.0.as_os_str().is_empty()
     }
 
@@ -50,7 +50,7 @@ impl SpelledPath {
     // filesystems and wouldn't match the names found when walking the directory. No attempt is made
     // to guess which name a misspelling refers to.
     fn spell(
-        files_directory: &Path,
+        file_root: &Path,
         target: &FilesystemTarget,
         listings: &mut DirectoryListings,
     ) -> Result<Self, SpellingError> {
@@ -59,7 +59,7 @@ impl SpelledPath {
             // Accept a name only if its directory lists it exactly as written. If the directory
             // can't be listed, the spelling can't be checked at all.
             let name = component.as_os_str();
-            let directory = files_directory.join(&spelled.0);
+            let directory = file_root.join(&spelled.0);
             let names = match listings.entry(directory.clone()).or_insert_with(|| {
                 fs::read_dir(&directory)
                     .map(|entries| {
@@ -75,8 +75,8 @@ impl SpelledPath {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to list {}, so the spelling of {} can't be checked.",
-                            if spelled.is_files_directory() {
-                                "the files directory".to_owned()
+                            if spelled.is_file_root() {
+                                file_root.code_str().to_string()
                             } else {
                                 spelled.code_str().to_string()
                             },
@@ -116,17 +116,17 @@ pub struct SpellingError {
     pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
-// This is a wiki's files directory, which sits beside the wiki and is named after it, as
+// This is a wiki's file root, which sits beside the wiki and is named after it, as
 // derived from the wiki's path as given. It contains every file the wiki can link
 // to, and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which
 // every other path is derived, and it's never compared with a path spelled independently of it.
 #[derive(Clone, Debug)]
-pub struct FilesDirectory {
+pub struct FileRoot {
     path: PathBuf,
 }
 
-impl FilesDirectory {
-    // Find a wiki's files directory by replacing the wiki's extension, if it's the usual one,
+impl FileRoot {
+    // Find a wiki's file root by replacing the wiki's extension, if it's the usual one,
     // with the files suffix, or else by appending the suffix to the wiki's name. The suffix
     // keeps the directory from ever being the wiki itself.
     pub fn new(wiki_path: &Path) -> Result<Self, String> {
@@ -144,7 +144,7 @@ impl FilesDirectory {
         } else {
             name.to_owned()
         };
-        directory_name.push(FILES_DIRECTORY_SUFFIX);
+        directory_name.push(FILE_ROOT_SUFFIX);
         Ok(Self {
             path: wiki_path.with_file_name(directory_name),
         })
@@ -160,14 +160,14 @@ impl FilesDirectory {
         self.path.join(&path.0)
     }
 
-    // Spell the path of an entry found by walking the files directory, whose components come
+    // Spell the path of an entry found by walking the file root, whose components come
     // from directory listings.
     pub fn entry_path(&self, entry: &ignore::DirEntry) -> SpelledPath {
         SpelledPath(
             entry
                 .path()
                 .strip_prefix(&self.path)
-                .expect("A walk of the files directory should only find entries within it.")
+                .expect("A walk of the file root should only find entries within it.")
                 .to_owned(),
         )
     }
@@ -181,8 +181,8 @@ impl FilesDirectory {
         SpelledPath::spell(&self.path, target, listings)
     }
 
-    // Spell the deepest proper ancestor of a target that exists, which may be the files
-    // directory itself, and return it with the rest of the target's path as written. None of the
+    // Spell the deepest proper ancestor of a target that exists, which may be the file
+    // root itself, and return it with the rest of the target's path as written. None of the
     // rest exists except possibly the final name, which is never spelled, so a rename can tell
     // whether it names the page being renamed. An ancestor whose existence can't be determined is
     // an error rather than a missing directory.
@@ -190,7 +190,7 @@ impl FilesDirectory {
         &self,
         target: &FilesystemTarget,
     ) -> Result<(SpelledPath, PathBuf), SpellingError> {
-        let mut ancestor = FilesystemTarget::files_directory();
+        let mut ancestor = FilesystemTarget::file_root();
         for candidate in target.ancestors() {
             match self.path.join(candidate.path()).try_exists() {
                 Ok(true) => {
@@ -202,8 +202,8 @@ impl FilesDirectory {
                     return Err(SpellingError {
                         message: format!(
                             "Unable to access {}.",
-                            if candidate.is_files_directory() {
-                                "the files directory".to_owned()
+                            if candidate.is_file_root() {
+                                self.path.code_str().to_string()
                             } else {
                                 candidate.code_str().to_string()
                             },
@@ -224,7 +224,7 @@ impl FilesDirectory {
     }
 }
 
-// Format a path relative to the files directory as a link would write it, starting with `/`
+// Format a path relative to the file root as a link would write it, starting with `/`
 // and separating components with `/`, so it isn't mistaken for a path relative to the current
 // directory.
 pub fn code_file_path(path: &Path) -> ColoredString {
@@ -259,11 +259,11 @@ pub fn entry_identity(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryListings, FilesDirectory, code_file_path};
+    use super::{DirectoryListings, FileRoot, code_file_path};
     use crate::wiki::{ContentText, FilesystemTarget};
     use std::{env, fs, path::Path, process};
 
-    // Root a path relative to the files directory at `/`, as a link would write it.
+    // Root a path relative to the file root at `/`, as a link would write it.
     #[test]
     fn code_file_path_display() {
         assert_eq!(format!("{}", code_file_path(Path::new(""))), "`/`");
@@ -284,9 +284,9 @@ mod tests {
         let locked = directory.join("wiki_files/locked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let files_directory = FilesDirectory::new(&directory.join("wiki.mull")).unwrap();
+        let file_root = FileRoot::new(&directory.join("wiki.mull")).unwrap();
 
-        let result = files_directory.spell_existing_ancestor(
+        let result = file_root.spell_existing_ancestor(
             &FilesystemTarget::parse(&ContentText::from_source("/locked/inner/file.txt")).unwrap(),
         );
         let accessible = locked.join("inner").try_exists().is_ok();
@@ -306,9 +306,9 @@ mod tests {
     fn missing_component() {
         let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
         fs::create_dir_all(directory.join("wiki_files")).unwrap();
-        let files_directory = FilesDirectory::new(&directory.join("wiki.mull")).unwrap();
+        let file_root = FileRoot::new(&directory.join("wiki.mull")).unwrap();
 
-        let error = files_directory
+        let error = file_root
             .spell(
                 &FilesystemTarget::parse(&ContentText::from_source("/missing/file.txt")).unwrap(),
                 &mut DirectoryListings::new(),

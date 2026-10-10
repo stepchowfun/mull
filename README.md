@@ -54,13 +54,13 @@ Mull verifies these structural properties:
 It also verifies these connectivity properties:
 
 - All pages are reachable by following links from the `Home` page, which must exist.
-- All files in the files directory are linked to from the wiki.
+- All files in `my_wiki_files` are linked to from the wiki.
 
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
 Mull formats the wiki for you. It chooses the ordering of the pages in the file, so you don't have to think about that. But when you create a new page, you must link to it from somewhere. If you remove all the links to a page, Mull will flag that the page isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every page must be linked to from the wiki, the same is true of files in the files directory. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to the files directory itself), all files are covered.
+Just as every page must be linked to from the wiki, the same is true of files in `my_wiki_files`. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to `my_wiki_files` itself), all files are covered.
 
 ## What does the IDE extension do?
 
