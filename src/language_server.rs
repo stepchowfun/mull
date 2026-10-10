@@ -1177,41 +1177,22 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // recover from syntax errors so previews keep working while they're fixed.
     let (page, source_range) = page_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
-    // Render the page as Markdown, linking its resolvable text links to the pages they name and,
-    // in a saved wiki, its filesystem links to their targets.
-    let file_root = snapshot
-        .path
-        .as_deref()
-        .and_then(|wiki_path| FileRoot::new(wiki_path).ok());
-    let mut listings = DirectoryListings::new();
+    // Show the page as written, in a code block which the editor highlights as Mull and displays in
+    // the editor's font. The fence is longer than every backtick run in the page.
+    let source = &snapshot.contents[page.source_range.start..page.source_range.end];
+    let longest_run = source
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .expect("Splitting text should yield at least one piece.");
+    let fence = "`".repeat(longest_run.max(2) + 1);
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: page
-                .to_markdown(|link| match link {
-                    Link::Text { title, .. } => Some(reveal_range_command_url(
-                        &snapshot.uri,
-                        page_start_range(snapshot, snapshot.wiki().pages.get(title)?),
-                        RevealType::AtTop,
-                    )),
-                    Link::Filesystem { target, .. } => Some(
-                        filesystem_link_target(file_root.as_ref()?, target, &mut listings)?
-                            .as_str()
-                            .to_owned(),
-                    ),
-                })
-                .into_string(),
+            value: format!("{fence}mull\n{source}\n{fence}"),
         }),
         range: Some(snapshot.range(source_range)),
     })
-}
-
-// Encode an editor navigation command as a Markdown-safe URI.
-fn reveal_range_command_url(uri: &Uri, range: Range, reveal_type: RevealType) -> String {
-    command_url(
-        REVEAL_RANGE_COMMAND,
-        &reveal_range_arguments(uri, range, reveal_type),
-    )
 }
 
 // Build an editor navigation command for a code action.
@@ -2226,7 +2207,7 @@ mod tests {
         diagnostics_for_document, document_highlight_for_document, document_link_for_document,
         document_symbol_for_document, formatting_for_document, goto_definition_for_document,
         hover_for_document, is_subsequence, prepare_rename_for_document, references_for_document,
-        rename_for_document, reveal_range_command_url,
+        rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -2311,24 +2292,6 @@ mod tests {
     // Convert an editor position in a test fixture into a byte offset.
     fn byte_offset(source: &str, position: Position) -> Option<usize> {
         LineIndex::new(source).byte_offset(source, position)
-    }
-
-    // Encode a document URI and UTF-16 title range for the trusted editor command.
-    #[test]
-    fn reveal_range_commands_encode_destinations() {
-        let url = reveal_range_command_url(
-            &untitled_uri(),
-            Range::new(Position::new(0, 2), Position::new(0, 6)),
-            RevealType::AtTop,
-        );
-
-        assert_eq!(
-            url,
-            concat!(
-                "command:mull.revealRange?",
-                "%5B%22untitled%3AUntitled%2D1%22%2C0%2C2%2C0%2C6%2C3%5D",
-            ),
-        );
     }
 
     // Keep the outline of a wiki with syntax errors.
@@ -3038,7 +3001,7 @@ mod tests {
         );
     }
 
-    // Preview the complete destination page while highlighting the source link.
+    // Preview the complete destination page as written while highlighting the source link.
     #[test]
     fn hovers_preview_pages() {
         let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nLiteral \\[brackets\\] and [Home].";
@@ -3050,17 +3013,9 @@ mod tests {
             panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        let home_url = reveal_range_command_url(
-            &uri,
-            Range::new(Position::new(0, 0), Position::new(0, 0)),
-            RevealType::AtTop,
-        );
         assert_eq!(
             contents.value,
-            format!(
-                "# Greeting\n\nLiteral [brackets] and \
-                    [&#91;Home&#93;]({home_url}).",
-            ),
+            "```mull\n# Greeting\n\nLiteral \\[brackets\\] and [Home].\n```",
         );
         assert_eq!(
             hover.range,
@@ -3068,47 +3023,20 @@ mod tests {
         );
     }
 
-    // Link filesystem links in previews to their targets, leaving missing targets as plain code.
+    // Fence a preview with more backticks than any run in the page, so the page can't end it.
     #[test]
-    fn hovers_link_filesystem_targets() {
-        let source = "# Home\n\n[Other]\n\n# Other\n\n[/notes.txt] [/images/] [/missing.txt]";
+    fn hovers_fence_backticks() {
+        let source = "# Home\n\n[Code]\n\n# Code\n\n````\nfn main() {}\n````";
         let wiki = TestWiki::new(source);
-        let directory = wiki.directory();
-        fs::write(directory.join("notes.txt"), "notes").unwrap();
-        fs::create_dir(directory.join("images")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 2)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
             panic!("A page preview should use markup content.");
         };
-        let file_uri = Uri::from_file_path(directory.join("notes.txt")).unwrap();
-        let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
-        let reveal_url = format!(
-            "command:mull.revealInExplorer?{}",
-            utf8_percent_encode(
-                &format!("[\"{}\"]", directory_uri.as_str()),
-                NON_ALPHANUMERIC,
-            ),
-        );
         assert_eq!(
             contents.value,
-            format!(
-                "# Other\n\n[`[/notes.txt]`](<{}>) [`[/images/]`](<{reveal_url}>) \
-                    `[/missing.txt]`",
-                file_uri.as_str(),
-            ),
-        );
-
-        // Leave filesystem links unlinked in an unsaved wiki.
-        let hover =
-            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2)).unwrap();
-        let HoverContents::Markup(contents) = hover.contents else {
-            panic!("A page preview should use markup content.");
-        };
-        assert_eq!(
-            contents.value,
-            "# Other\n\n`[/notes.txt]` `[/images/]` `[/missing.txt]`",
+            "`````mull\n# Code\n\n````\nfn main() {}\n````\n`````",
         );
     }
 
@@ -3124,7 +3052,7 @@ mod tests {
             panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        assert_eq!(contents.value, "# Greeting\n\nHello!");
+        assert_eq!(contents.value, "```mull\n# Greeting\n\nHello!\n```");
         assert_eq!(
             hover.range,
             Some(Range::new(Position::new(4, 2), Position::new(4, 10))),
@@ -4347,7 +4275,7 @@ mod tests {
         );
     }
 
-    // Keep navigating a wiki with syntax errors, previewing only the title of a page with them.
+    // Keep navigating a wiki with syntax errors, previewing a page with them as written.
     #[test]
     fn navigation_recovers_from_syntax_errors() {
         let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected] [Home]";
@@ -4376,7 +4304,10 @@ mod tests {
         else {
             panic!("A page preview should use markup content.");
         };
-        assert_eq!(contents.value, "# Greeting");
+        assert_eq!(
+            contents.value,
+            "```mull\n# Greeting\n\nUnexpected] [Home]\n```",
+        );
     }
 
     #[test]

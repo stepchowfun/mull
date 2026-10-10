@@ -80,75 +80,6 @@ pub struct Page {
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
-    pub has_syntax_errors: bool, // Whether the content has errors, so its links may not match it
-}
-
-impl Page {
-    // Render the page for a Markdown preview, linking each link to the destination the callback
-    // provides, if any. The prose around links becomes Markdown once Mull's escapes are removed.
-    pub fn to_markdown<F>(&self, mut link_url: F) -> Markdown
-    where
-        F: FnMut(&Link) -> Option<String>,
-    {
-        // Render only the title of a page with syntax errors, since its content may have delimiters
-        // which don't correspond to its links.
-        let title = render_markdown_literal(&self.title).0;
-        if self.has_syntax_errors {
-            return Markdown(format!("{TITLE_PREFIX}{title}"));
-        }
-
-        // Render each parsed link with its semantic destination while retaining surrounding prose.
-        let source = self.content.as_str();
-        let mut content = String::new();
-        let mut copied_through = 0;
-        let mut link_start = None;
-        let mut links = self.links.iter();
-        for (index, character) in unescaped_characters(source) {
-            // Track complete unescaped delimiter pairs, which are valid in a page without syntax
-            // errors.
-            match character {
-                '[' => link_start = Some(index),
-                ']' => {
-                    // Copy the prose before the link, then render the link the parser recorded for
-                    // this delimiter pair.
-                    let start = link_start
-                        .take()
-                        .expect("A page without syntax errors should have balanced delimiters.");
-                    content.push_str(
-                        &render_markdown_before_link(&ContentText::from_source(
-                            &source[copied_through..start],
-                        ))
-                        .0,
-                    );
-                    let link = links.next().expect(
-                        "A page without syntax errors should have a link per delimiter pair.",
-                    );
-                    let url = link_url(link);
-                    content.push_str(
-                        &match link {
-                            Link::Text { title, .. } => {
-                                render_markdown_text_link(title, url.as_deref())
-                            }
-                            Link::Filesystem { target, .. } => {
-                                render_markdown_filesystem_link(target, url.as_deref())
-                            }
-                        }
-                        .0,
-                    );
-                    copied_through = index + character.len_utf8();
-                }
-                _ => {}
-            }
-        }
-        content.push_str(&ContentText::from_source(&source[copied_through..]).unescape());
-
-        // Preserve the same title-and-content shape as the Mull rendering without a trailing line.
-        Markdown(if content.is_empty() {
-            format!("{TITLE_PREFIX}{title}")
-        } else {
-            format!("{TITLE_PREFIX}{title}\n\n{content}")
-        })
-    }
 }
 
 // Render pages in the wiki's heading-and-content format.
@@ -399,107 +330,9 @@ impl CodeStr for FilesystemTarget {
     }
 }
 
-// This is Markdown for display. Only the rendering code in this module produces it, since it
-// encodes whatever text it's given.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Markdown(String);
-
-impl Markdown {
-    // Release the Markdown for display.
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-// Render the prose before a link as Markdown which can't change the link, such as by escaping its
-// first character or making it an image, by writing such a trailing character as a reference.
-fn render_markdown_before_link(prose: &ContentText) -> Markdown {
-    // Determine whether text ends with a backslash which would escape what follows.
-    let ends_with_escape = |text: &str| {
-        text.chars()
-            .rev()
-            .take_while(|&character| character == '\\')
-            .count()
-            % 2
-            == 1
-    };
-
-    // Replace an escaping backslash or an unescaped `!` with the character it displays.
-    let mut markdown = prose.unescape();
-    if ends_with_escape(&markdown) {
-        markdown.pop();
-        markdown.push_str("&#92;");
-    } else if let Some(before) = markdown.strip_suffix('!')
-        && !ends_with_escape(before)
-    {
-        markdown.truncate(before.len());
-        markdown.push_str("&#33;");
-    }
-    Markdown(markdown)
-}
-
-// Render a text link to the page with the given title as ordinary bracketed text with an optional
-// Markdown destination.
-fn render_markdown_text_link(title: &str, url: Option<&str>) -> Markdown {
-    // Keep Markdown punctuation in page titles from changing the rendered label, and retain the
-    // visible Mull delimiters inside the clickable region.
-    let label = format!("&#91;{}&#93;", render_markdown_literal(title).0);
-    Markdown(match url {
-        Some(url) => format!("[{label}]({url})"),
-        None => label,
-    })
-}
-
-// Render a filesystem link as inline code without exposing Mull's escapes, linking it to an
-// optional destination.
-fn render_markdown_filesystem_link(target: &FilesystemTarget, url: Option<&str>) -> Markdown {
-    // Use a fence longer than every backtick run occurring in the link text.
-    let source = format!("[{}]", target.text().unescape());
-    let longest_run = source
-        .split(|character| character != '`')
-        .map(str::len)
-        .max()
-        .expect("Splitting text should yield at least one piece.");
-    let fence = "`".repeat(longest_run + 1);
-
-    // The surrounding brackets keep the content distinct from either side of the fence, and angle
-    // brackets let the destination contain characters such as parentheses.
-    let code = format!("{fence}{source}{fence}");
-    Markdown(match url {
-        Some(url) => format!("[{code}](<{url}>)"),
-        None => code,
-    })
-}
-
-// Render plain text literally in Markdown by replacing its syntax characters with entities. This
-// includes `#`, since a trailing sequence of them would otherwise close a heading.
-fn render_markdown_literal(text: &str) -> Markdown {
-    let mut rendered = String::new();
-    for character in text.chars() {
-        rendered.push_str(match character {
-            '&' => "&amp;",
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '\\' => "&#92;",
-            '`' => "&#96;",
-            '*' => "&#42;",
-            '_' => "&#95;",
-            '[' => "&#91;",
-            ']' => "&#93;",
-            '~' => "&#126;",
-            '#' => "&#35;",
-            _ => {
-                rendered.push(character);
-                continue;
-            }
-        });
-    }
-    Markdown(rendered)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ContentText, FilesystemTarget, Link, Page, Wiki, title_line_text};
+    use super::{ContentText, FilesystemTarget, Page, Wiki, title_line_text};
     use crate::error::SourceRange;
     use std::collections::HashMap;
 
@@ -526,7 +359,6 @@ mod tests {
             traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
         };
 
         assert_eq!(page.to_string(), "# Greeting\n\nHello, world!\n");
@@ -542,163 +374,9 @@ mod tests {
             traversal_index: None,
             source_range: SOURCE_RANGE,
             title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
         };
 
         assert_eq!(page.to_string(), "# Greeting\n");
-    }
-
-    // Remove Mull's escapes from prose in Markdown previews, leaving Markdown syntax such as a
-    // link, while rendering Mull links.
-    #[test]
-    fn page_markdown() {
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::from_source(r"\[Text\](url), \\, \#, and [Home]."),
-            links: vec![Link::Text {
-                title: "Home".to_owned(),
-                source_range: SOURCE_RANGE,
-            }],
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
-        };
-
-        assert_eq!(
-            page.to_markdown(|link| match link {
-                Link::Text { title, .. } if title == "Home" => {
-                    Some("command:mull.revealRange?destination".to_owned())
-                }
-                Link::Text { .. } | Link::Filesystem { .. } => None,
-            })
-            .into_string(),
-            concat!(
-                "# Greeting\n\n[Text](url), \\, #, and ",
-                "[&#91;Home&#93;](command:mull.revealRange?destination).",
-            ),
-        );
-    }
-
-    // Keep the prose before a link from escaping the link or making it an image, while leaving
-    // escaped characters as they are.
-    #[test]
-    fn page_markdown_link_boundaries() {
-        let home = Link::Text {
-            title: "Home".to_owned(),
-            source_range: SOURCE_RANGE,
-        };
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::from_source(r"\\[Home] ![Home] \![Home] \\\\[Home]"),
-            links: vec![home.clone(), home.clone(), home.clone(), home],
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
-        };
-
-        assert_eq!(
-            page.to_markdown(|_| Some("url".to_owned())).into_string(),
-            concat!(
-                "# Greeting\n\n&#92;[&#91;Home&#93;](url) &#33;[&#91;Home&#93;](url) ",
-                r"\![&#91;Home&#93;](url) \\[&#91;Home&#93;](url)",
-            ),
-        );
-    }
-
-    // Render only the title of a page with syntax errors, whose delimiters may not match its links.
-    #[test]
-    fn page_markdown_syntax_errors() {
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::from_source("Unexpected] [Gree[ting]"),
-            links: Vec::new(),
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: true,
-        };
-
-        assert_eq!(page.to_markdown(|_link| None).into_string(), "# Greeting");
-    }
-
-    // Render titles literally rather than as Markdown syntax.
-    #[test]
-    fn page_markdown_title() {
-        let page = Page {
-            title: "A*B* [C](d) <e> #".to_owned(),
-            content: ContentText::default(),
-            links: Vec::new(),
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
-        };
-
-        assert_eq!(
-            page.to_markdown(|_link| None).into_string(),
-            "# A&#42;B&#42; &#91;C&#93;(d) &lt;e&gt; &#35;",
-        );
-    }
-
-    // Keep unresolved text links visible but non-clickable in Markdown previews.
-    #[test]
-    fn unresolved_page_markdown_link() {
-        let page = Page {
-            title: "Greeting".to_owned(),
-            content: ContentText::from_source("See [Missing]."),
-            links: vec![Link::Text {
-                title: "Missing".to_owned(),
-                source_range: SOURCE_RANGE,
-            }],
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
-        };
-
-        assert_eq!(
-            page.to_markdown(|_link| None).into_string(),
-            "# Greeting\n\nSee &#91;Missing&#93;.",
-        );
-    }
-
-    // Distinguish file and directory links from prose with Markdown code styling, linking those
-    // with destinations.
-    #[test]
-    fn filesystem_link_markdown() {
-        let page = Page {
-            title: "Files".to_owned(),
-            content: ContentText::from_source("[/notes.txt] and [/odd`name/]"),
-            links: vec![
-                Link::Filesystem {
-                    target: FilesystemTarget::parse(&ContentText::from_source("/notes.txt"))
-                        .unwrap(),
-                    source_range: SOURCE_RANGE,
-                },
-                Link::Filesystem {
-                    target: FilesystemTarget::parse(&ContentText::from_source("/odd`name/"))
-                        .unwrap(),
-                    source_range: SOURCE_RANGE,
-                },
-            ],
-            traversal_index: None,
-            source_range: SOURCE_RANGE,
-            title_source_range: SOURCE_RANGE,
-            has_syntax_errors: false,
-        };
-
-        assert_eq!(
-            page.to_markdown(|link| match link {
-                Link::Filesystem { target, .. } if !target.is_directory() => {
-                    Some("file:///wiki/notes.txt".to_owned())
-                }
-                Link::Text { .. } | Link::Filesystem { .. } => None,
-            })
-            .into_string(),
-            "# Files\n\n[`[/notes.txt]`](<file:///wiki/notes.txt>) and ``[/odd`name/]``",
-        );
     }
 
     // Establish a filesystem link's canonical text when parsing it, which parses back to itself.
@@ -787,7 +465,6 @@ mod tests {
                     traversal_index: None,
                     source_range: SOURCE_RANGE,
                     title_source_range: SOURCE_RANGE,
-                    has_syntax_errors: false,
                 },
             )]),
         };
@@ -809,7 +486,6 @@ mod tests {
                         traversal_index: Some(1),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
-                        has_syntax_errors: false,
                     },
                 ),
                 (
@@ -821,7 +497,6 @@ mod tests {
                         traversal_index: Some(0),
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
-                        has_syntax_errors: false,
                     },
                 ),
                 (
@@ -833,7 +508,6 @@ mod tests {
                         traversal_index: None,
                         source_range: SOURCE_RANGE,
                         title_source_range: SOURCE_RANGE,
-                        has_syntax_errors: false,
                     },
                 ),
             ]),

@@ -708,11 +708,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       { scheme: 'file', language: 'mull' },
       { scheme: 'untitled', language: 'mull' },
     ],
-    markdown: {
-      isTrusted: {
-        enabledCommands: [REVEAL_RANGE_COMMAND, REVEAL_IN_EXPLORER_COMMAND],
-      },
-    },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
