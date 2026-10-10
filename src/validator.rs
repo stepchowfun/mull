@@ -5,7 +5,7 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     spelled_path::{AttachmentsDirectory, DirectoryListings, SpelledPath},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, TextNode, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, Wiki},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -20,17 +20,17 @@ pub fn validate(
     line_index: &LineIndex,
     cancellation: &CancellationFlag,
 ) -> Outcome<Result<(), Vec<Error>>> {
-    // Visit nodes in title order so diagnostics are deterministic.
-    let mut nodes = wiki.text_nodes.values().collect::<Vec<_>>();
-    nodes.sort_by_key(|node| &node.title);
+    // Visit pages in title order so diagnostics are deterministic.
+    let mut pages = wiki.pages.values().collect::<Vec<_>>();
+    pages.sort_by_key(|page| &page.title);
 
     // Preserve graph errors if resolving the wiki later fails.
-    let mut errors = validate_text_links(wiki, &nodes, source_path, source_contents, line_index);
+    let mut errors = validate_text_links(wiki, &pages, source_path, source_contents, line_index);
 
     // Report each filesystem link precisely when an editor buffer has no filesystem context.
     let Some(wiki_path) = source_path else {
         errors.extend(validate_untitled_filesystem_links(
-            &nodes,
+            &pages,
             source_contents,
             line_index,
         ));
@@ -51,7 +51,7 @@ pub fn validate(
         }
     };
     validate_filesystem_links(
-        &nodes,
+        &pages,
         &attachments_directory,
         wiki_path,
         source_contents,
@@ -64,11 +64,11 @@ pub fn validate(
     })
 }
 
-// Validate text-link targets and reachability from the home node, given the wiki's nodes in title
+// Validate text-link targets and reachability from the home page, given the wiki's pages in title
 // order.
 fn validate_text_links(
     wiki: &Wiki,
-    nodes: &[&TextNode],
+    pages: &[&Page],
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
@@ -76,30 +76,30 @@ fn validate_text_links(
     // Keep graph diagnostics deterministic.
     let mut errors = Vec::<Error>::new();
 
-    // Require the root node from which every other node must be reachable, which declaring it
+    // Require the root page from which every other page must be reachable, which declaring it
     // would fix.
-    let has_home = wiki.text_nodes.contains_key(HOME_TITLE);
+    let has_home = wiki.pages.contains_key(HOME_TITLE);
     if !has_home {
         errors.push(Error::new(
-            &format!("The wiki doesn't contain a {} node.", HOME_TITLE.code_str()),
+            &format!("The wiki doesn't contain a {} page.", HOME_TITLE.code_str()),
             source_path,
             None,
             None,
-            Some(Fix::CreateNode(HOME_TITLE.to_owned())),
+            Some(Fix::CreatePage(HOME_TITLE.to_owned())),
         ));
     }
 
     // Validate text-link targets.
-    for node in nodes {
+    for page in pages {
         // Report each missing target at the corresponding text-link occurrence, which declaring
         // the target would fix, unless it's empty, since no title can be. Filesystem links are
         // checked separately.
-        for link in &node.links {
+        for link in &page.links {
             match link {
                 Link::Text {
                     title,
                     source_range,
-                } if !wiki.text_nodes.contains_key(title) => {
+                } if !wiki.pages.contains_key(title) => {
                     let source_context = Some((source_contents, line_index, *source_range));
                     errors.push(if title.is_empty() {
                         Error::new(
@@ -111,11 +111,11 @@ fn validate_text_links(
                         )
                     } else {
                         Error::new(
-                            &format!("Node {} not found.", title.code_str()),
+                            &format!("Page {} not found.", title.code_str()),
                             source_path,
                             source_context,
                             None,
-                            Some(Fix::CreateNode(title.clone())),
+                            Some(Fix::CreatePage(title.clone())),
                         )
                     });
                 }
@@ -124,21 +124,21 @@ fn validate_text_links(
         }
     }
 
-    // Reject every node outside the graph rooted at the home node.
+    // Reject every page outside the graph rooted at the home page.
     if has_home {
         errors.extend(
-            nodes
+            pages
                 .iter()
-                .filter(|node| node.traversal_index.is_none())
-                .map(|node| {
+                .filter(|page| page.traversal_index.is_none())
+                .map(|page| {
                     Error::new(
                         &format!(
-                            "Node {} can't be reached by following links from {}.",
-                            node.title.code_str(),
+                            "Page {} can't be reached by following links from {}.",
+                            page.title.code_str(),
                             HOME_TITLE.code_str(),
                         ),
                         source_path,
-                        Some((source_contents, line_index, node.title_source_range)),
+                        Some((source_contents, line_index, page.title_source_range)),
                         None,
                         None,
                     )
@@ -150,15 +150,15 @@ fn validate_text_links(
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
-// its nodes in title order.
+// its pages in title order.
 fn validate_untitled_filesystem_links(
-    nodes: &[&TextNode],
+    pages: &[&Page],
     source_contents: &str,
     line_index: &LineIndex,
 ) -> Vec<Error> {
-    nodes
+    pages
         .iter()
-        .flat_map(|node| &node.links)
+        .flat_map(|page| &page.links)
         .filter_map(|link| match link {
             Link::Filesystem { source_range, .. } => Some(Error::new(
                 "Save the wiki to validate this filesystem link.",
@@ -172,9 +172,9 @@ fn validate_untitled_filesystem_links(
         .collect()
 }
 
-// Validate filesystem links and coverage, given the wiki's nodes in title order.
+// Validate filesystem links and coverage, given the wiki's pages in title order.
 fn validate_filesystem_links(
-    nodes: &[&TextNode],
+    pages: &[&Page],
     attachments_directory: &AttachmentsDirectory,
     wiki_path: &Path,
     source_contents: &str,
@@ -186,8 +186,8 @@ fn validate_filesystem_links(
     let mut referenced_directories = HashSet::<SpelledPath>::new();
     let mut listings = DirectoryListings::new();
     let mut errors = Vec::<Error>::new();
-    for node in nodes {
-        for link in &node.links {
+    for page in pages {
+        for link in &page.links {
             // Stop between links so a superseded check spends no more time probing the filesystem.
             if cancellation.is_cancelled() {
                 return Outcome::Cancelled;
@@ -515,7 +515,7 @@ mod tests {
     // something in it.
     struct TestDirectory(PathBuf);
 
-    // This fixture keeps parsed nodes together with the source their ranges address.
+    // This fixture keeps parsed pages together with the source their ranges address.
     struct TestWiki {
         wiki: Wiki,
         source_contents: String,
@@ -1122,7 +1122,7 @@ mod tests {
         }
     }
 
-    // Reject text links that don't correspond to any node in the wiki.
+    // Reject text links that don't correspond to any page in the wiki.
     #[test]
     fn missing_text_link() {
         let directory = TestDirectory::new();
@@ -1130,8 +1130,8 @@ mod tests {
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
-        assert!(contains_error(&errors, "Node `Zulu` not found."));
-        assert!(contains_error(&errors, "Node `Alpha` not found."));
+        assert!(contains_error(&errors, "Page `Zulu` not found."));
+        assert!(contains_error(&errors, "Page `Alpha` not found."));
     }
 
     // Report repeated invalid links at each distinct source occurrence.
@@ -1145,7 +1145,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .all(|error| error.to_string().contains("Node `Missing` not found.")),
+                .all(|error| error.to_string().contains("Page `Missing` not found.")),
         );
         assert_ne!(errors[0].to_string(), errors[1].to_string());
     }
@@ -1164,8 +1164,8 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 4);
         for message in [
-            "Node `Missing` not found.",
-            "Node `Orphan` can't be reached by following links from `Home`.",
+            "Page `Missing` not found.",
+            "Page `Orphan` can't be reached by following links from `Home`.",
             "`/missing.txt` not found in `",
             "File `/unreferenced.txt` isn't linked to.",
         ] {
@@ -1173,7 +1173,7 @@ mod tests {
         }
     }
 
-    // Reject an empty text link because node titles can't be empty.
+    // Reject an empty text link because page titles can't be empty.
     #[test]
     fn empty_text_link() {
         let directory = TestDirectory::new();
@@ -1184,7 +1184,7 @@ mod tests {
         assert!(contains_error(&errors, "This link is missing a target."));
     }
 
-    // Require every wiki to contain its special root node.
+    // Require every wiki to contain its special root page.
     #[test]
     fn missing_home() {
         let directory = TestDirectory::new();
@@ -1194,13 +1194,13 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "The wiki doesn't contain a `Home` node.",
+            "The wiki doesn't contain a `Home` page.",
         ));
     }
 
-    // Reject nodes that can't be reached transitively from Home.
+    // Reject pages that can't be reached transitively from Home.
     #[test]
-    fn unreachable_nodes() {
+    fn unreachable_pages() {
         let directory = TestDirectory::new();
         let wiki = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
 
@@ -1208,11 +1208,11 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert!(contains_error(
             &errors,
-            "Node `Alpha` can't be reached by following links from `Home`.",
+            "Page `Alpha` can't be reached by following links from `Home`.",
         ));
         assert!(contains_error(
             &errors,
-            "Node `Zulu` can't be reached by following links from `Home`.",
+            "Page `Zulu` can't be reached by following links from `Home`.",
         ));
     }
 

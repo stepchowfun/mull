@@ -21,15 +21,15 @@ This is my personal wiki. Everything I want to remember lives here. See [About t
 
 # About this wiki
 
-The whole wiki is one plain text file. Each node starts with a title, and links between nodes use square brackets. I try to keep each node about one thing and link generously, so I can find anything in a couple of hops from [Home].
+The whole wiki is one plain text file. Each page starts with a title, and links between pages use square brackets. I try to keep each page about one thing and link generously, so I can find anything in a couple of hops from [Home].
 
-Files live in the wiki's attachments directory, `example_attachments`, beside the wiki, and are linked like nodes, with a leading slash. For example, the photo from the Louvre on the [Paris 2024] trip is [/photos/paris/mona_lisa.jpg]. A link to a directory, like the 2025 tax documents in [Taxes], covers every file inside it.
+Files live in the wiki's attachments directory, `example_attachments`, beside the wiki, and are linked like pages, with a leading slash. For example, the photo from the Louvre on the [Paris 2024] trip is [/photos/paris/mona_lisa.jpg]. A link to a directory, like the 2025 tax documents in [Taxes], covers every file inside it.
 
 Conventions:
 
 - Recipes list ingredients first, then steps.
 - Book notes start with a one-line summary.
-- Anything unsorted goes in [Ideas] until it earns its own node.
+- Anything unsorted goes in [Ideas] until it earns its own page.
 
 # Paris 2024
 
@@ -204,7 +204,7 @@ What I did:
 
 Speeds went from about 40 Mbps in the bedroom to about 300 Mbps.
 
-The passphrase is on a card in the drawer by the door, not in this wiki. The [Apartment] node has the rest of the upkeep notes.
+The passphrase is on a card in the drawer by the door, not in this wiki. The [Apartment] page has the rest of the upkeep notes.
 
 # Houseplants
 
@@ -717,7 +717,7 @@ Skipping this is the fastest way to get hurt during [Half marathon] training.
 
 # Ideas
 
-An inbox for half-formed thoughts. Anything that grows gets its own node.
+An inbox for half-formed thoughts. Anything that grows gets its own page.
 
 - Try making [Miso] butter for roasted vegetables.
 - A garlic-and-herb oil from the [Balcony garden], for gifts.

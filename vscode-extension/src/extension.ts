@@ -141,9 +141,9 @@ function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vsco
   );
 }
 
-// List a wiki's nodes in source order, using the language server's document symbols, which are
-// named after the nodes' titles and whose ranges span entire nodes.
-async function wikiNodes(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
+// List a wiki's pages in source order, using the language server's document symbols, which are
+// named after the pages' titles and whose ranges span entire pages.
+async function wikiPages(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
   const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
     'vscode.executeDocumentSymbolProvider',
     document.uri,
@@ -151,114 +151,114 @@ async function wikiNodes(document: vscode.TextDocument): Promise<vscode.Document
   return (symbols ?? []).toSorted((a, b) => a.range.start.compareTo(b.range.start));
 }
 
-// Find the node containing a position, which is the last node starting at or before it, so a
-// position between nodes belongs to the one above. A position before the first node has none.
-function nodeAt(
-  nodes: readonly vscode.DocumentSymbol[],
+// Find the page containing a position, which is the last page starting at or before it, so a
+// position between pages belongs to the one above. A position before the first page has none.
+function pageAt(
+  pages: readonly vscode.DocumentSymbol[],
   position: vscode.Position,
 ): vscode.DocumentSymbol | undefined {
-  return nodes.findLast((node) => node.range.start.isBeforeOrEqual(position));
+  return pages.findLast((page) => page.range.start.isBeforeOrEqual(position));
 }
 
-// These commands move the cursor to the start or end of the node containing it, optionally
+// These commands move the cursor to the start or end of the page containing it, optionally
 // extending the selection.
-const GO_TO_NODE_START_COMMAND = 'mull.goToNodeStart';
-const GO_TO_NODE_END_COMMAND = 'mull.goToNodeEnd';
-const SELECT_TO_NODE_START_COMMAND = 'mull.selectToNodeStart';
-const SELECT_TO_NODE_END_COMMAND = 'mull.selectToNodeEnd';
+const GO_TO_PAGE_START_COMMAND = 'mull.goToPageStart';
+const GO_TO_PAGE_END_COMMAND = 'mull.goToPageEnd';
+const SELECT_TO_PAGE_START_COMMAND = 'mull.selectToPageStart';
+const SELECT_TO_PAGE_END_COMMAND = 'mull.selectToPageEnd';
 
-// Move each cursor to the start or end of the node containing it. A cursor before the first node
+// Move each cursor to the start or end of the page containing it. A cursor before the first page
 // stays put, and repeating the command changes nothing.
-async function moveToNodeBoundary(boundary: 'start' | 'end', select: boolean): Promise<void> {
-  // Find the nodes of the active wiki.
+async function moveToPageBoundary(boundary: 'start' | 'end', select: boolean): Promise<void> {
+  // Find the pages of the active wiki.
   const editor = vscode.window.activeTextEditor;
   if (editor === undefined) {
     return;
   }
-  const nodes = await wikiNodes(editor.document);
+  const pages = await wikiPages(editor.document);
 
   // Move the active end of each selection, keeping its anchor when extending it.
   editor.selections = editor.selections.map((selection) => {
-    const node = nodeAt(nodes, selection.active);
-    if (node === undefined) {
+    const page = pageAt(pages, selection.active);
+    if (page === undefined) {
       return selection;
     }
-    const position = boundary === 'start' ? node.range.start : node.range.end;
+    const position = boundary === 'start' ? page.range.start : page.range.end;
     return new vscode.Selection(select ? selection.anchor : position, position);
   });
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
-// Wait this long after the view stops moving before settling it onto the current node. Scrolling
+// Wait this long after the view stops moving before settling it onto the current page. Scrolling
 // with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
 // outlast the gaps between those changes, which would otherwise settle the view while it's still
 // being scrolled, yet short enough that settling feels like a response to the scrolling.
 const SETTLE_DELAY_MILLISECONDS = 150;
 
-// This keeps the node containing the cursor, the current node, in focus in each main editor showing
-// a wiki. It dims everything outside the current node, and once the view and the cursor stop
-// moving, it brings the current node back into view, like a rubber band, if it was scrolled away.
+// This keeps the page containing the cursor, the current page, in focus in each main editor showing
+// a wiki. It dims everything outside the current page, and once the view and the cursor stop
+// moving, it brings the current page back into view, like a rubber band, if it was scrolled away.
 //
 // Settling waits for the view to stop moving, since there's no way to limit or intercept scrolling,
-// only to observe it after the fact. It reveals only the node's nearer edge, since the editor
+// only to observe it after the fact. It reveals only the page's nearer edge, since the editor
 // reveals a range taller than the view by jumping to its start, which would make the rest of a long
-// node unreachable. Revealing a single line scrolls as little as possible, keeping the margin the
+// page unreachable. Revealing a single line scrolls as little as possible, keeping the margin the
 // editor keeps around the cursor, so it doesn't fight the editor's own scrolling.
-class NodeFocus implements vscode.Disposable {
-  // Dim other nodes enough for the current node to stand out, while keeping them readable.
+class PageFocus implements vscode.Disposable {
+  // Dim other pages enough for the current page to stand out, while keeping them readable.
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
     opacity: '0.5',
   });
 
-  // Remember each wiki's nodes, which are found again after every edit.
-  private readonly nodes = new Map<string, vscode.DocumentSymbol[]>();
+  // Remember each wiki's pages, which are found again after every edit.
+  private readonly pages = new Map<string, vscode.DocumentSymbol[]>();
 
   // Remember each editor's pending settling, which is postponed while its view keeps moving.
   private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
 
-  // Determine whether the user wants other nodes dimmed.
-  private static dimsOtherNodes(): boolean {
-    return setting('mull', 'dimOtherNodes', isBoolean);
+  // Determine whether the user wants other pages dimmed.
+  private static dimsOtherPages(): boolean {
+    return setting('mull', 'dimOtherPages', isBoolean);
   }
 
-  // Determine whether the user wants the view to settle back toward the current node.
-  private static snapsBackToCurrentNode(): boolean {
-    return setting('mull', 'snapBackToCurrentNode', isBoolean);
+  // Determine whether the user wants the view to settle back toward the current page.
+  private static snapsBackToCurrentPage(): boolean {
+    return setting('mull', 'snapBackToCurrentPage', isBoolean);
   }
 
-  // Dim around an editor's current node, using the nodes last found in its wiki. Blank lines at the
-  // end of the current node aren't dimmed, since they belong to it.
+  // Dim around an editor's current page, using the pages last found in its wiki. Blank lines at the
+  // end of the current page aren't dimmed, since they belong to it.
   public dim(editor: vscode.TextEditor): void {
-    // Find the current node and the node after it.
-    const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
+    // Find the current page and the page after it.
+    const pages = this.pages.get(editor.document.uri.toString()) ?? [];
     const cursor = editor.selection.active;
-    const node = NodeFocus.dimsOtherNodes() ? nodeAt(nodes, cursor) : undefined;
-    if (node === undefined) {
+    const page = PageFocus.dimsOtherPages() ? pageAt(pages, cursor) : undefined;
+    if (page === undefined) {
       editor.setDecorations(this.decorationType, []);
       return;
     }
-    const nextNode = nodes.find((other) => other.range.start.isAfter(cursor));
+    const nextPage = pages.find((other) => other.range.start.isAfter(cursor));
 
-    // Dim the lines before the current node, and those from the next node to the end of the wiki.
+    // Dim the lines before the current page, and those from the next page to the end of the wiki.
     const documentEnd = editor.document.lineAt(editor.document.lineCount - 1).range.end;
     editor.setDecorations(
       this.decorationType,
       [
-        new vscode.Range(new vscode.Position(0, 0), node.range.start),
-        ...(nextNode === undefined ? [] : [new vscode.Range(nextNode.range.start, documentEnd)]),
+        new vscode.Range(new vscode.Position(0, 0), page.range.start),
+        ...(nextPage === undefined ? [] : [new vscode.Range(nextPage.range.start, documentEnd)]),
       ].filter((range) => !range.isEmpty),
     );
   }
 
-  // Find a wiki's nodes again and dim its editors accordingly. A result is discarded if the wiki
+  // Find a wiki's pages again and dim its editors accordingly. A result is discarded if the wiki
   // changed while it was being found, since a later refresh will replace it.
   public async refresh(document: vscode.TextDocument): Promise<void> {
     const { version } = document;
-    const nodes = await wikiNodes(document);
+    const pages = await wikiPages(document);
     if (document.version !== version) {
       return;
     }
-    this.nodes.set(document.uri.toString(), nodes);
+    this.pages.set(document.uri.toString(), pages);
     for (const editor of vscode.window.visibleTextEditors) {
       if (isMainWikiEditor(editor) && editor.document === document) {
         this.dim(editor);
@@ -266,7 +266,7 @@ class NodeFocus implements vscode.Disposable {
     }
   }
 
-  // Find the nodes of every wiki shown in a main editor.
+  // Find the pages of every wiki shown in a main editor.
   public async refreshVisible(): Promise<void> {
     const documents = new Set(
       vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
@@ -275,8 +275,8 @@ class NodeFocus implements vscode.Disposable {
   }
 
   // Settle an editor's view once it and the cursor stop moving, postponing any pending settling.
-  // Settling after the cursor moves pulls the current node into view when the cursor moves to
-  // another node, as when clicking a dimmed node. Otherwise it finds nothing to do, since the view
+  // Settling after the cursor moves pulls the current page into view when the cursor moves to
+  // another page, as when clicking a dimmed page. Otherwise it finds nothing to do, since the view
   // already settled when it last moved.
   public scheduleSettle(editor: vscode.TextEditor): void {
     clearTimeout(this.settleTimers.get(editor));
@@ -289,42 +289,42 @@ class NodeFocus implements vscode.Disposable {
     );
   }
 
-  // Reveal the nearer edge of an editor's current node if the node is entirely out of view, without
-  // assuming the visible ranges are in order. The node includes the blank lines after its text,
-  // which belong to it, so it ends just before the next node, or at the end of the wiki.
+  // Reveal the nearer edge of an editor's current page if the page is entirely out of view, without
+  // assuming the visible ranges are in order. The page includes the blank lines after its text,
+  // which belong to it, so it ends just before the next page, or at the end of the wiki.
   private settle(editor: vscode.TextEditor): void {
-    // Find the current node and the lines in view.
-    const nodes = this.nodes.get(editor.document.uri.toString()) ?? [];
+    // Find the current page and the lines in view.
+    const pages = this.pages.get(editor.document.uri.toString()) ?? [];
     const cursor = editor.selection.active;
-    const node = nodeAt(nodes, cursor);
+    const page = pageAt(pages, cursor);
     let visibleRange: vscode.Range | undefined = undefined;
     for (const range of editor.visibleRanges) {
       visibleRange = visibleRange === undefined ? range : visibleRange.union(range);
     }
-    if (!NodeFocus.snapsBackToCurrentNode() || node === undefined || visibleRange === undefined) {
+    if (!PageFocus.snapsBackToCurrentPage() || page === undefined || visibleRange === undefined) {
       return;
     }
-    const nextNode = nodes.find((other) => other.range.start.isAfter(cursor));
+    const nextPage = pages.find((other) => other.range.start.isAfter(cursor));
     const lastLine =
-      nextNode === undefined ? editor.document.lineCount - 1 : nextNode.range.start.line - 1;
+      nextPage === undefined ? editor.document.lineCount - 1 : nextPage.range.start.line - 1;
 
-    // Reveal the node's first line if it's below the view, or its last line if it's above.
-    if (node.range.start.line > visibleRange.end.line) {
-      editor.revealRange(new vscode.Range(node.range.start, node.range.start));
+    // Reveal the page's first line if it's below the view, or its last line if it's above.
+    if (page.range.start.line > visibleRange.end.line) {
+      editor.revealRange(new vscode.Range(page.range.start, page.range.start));
     } else if (lastLine < visibleRange.start.line) {
       const end = editor.document.lineAt(lastLine).range.end;
       editor.revealRange(new vscode.Range(end, end));
     }
   }
 
-  // List the nodes last found in a wiki.
-  public nodesOf(document: vscode.TextDocument): readonly vscode.DocumentSymbol[] {
-    return this.nodes.get(document.uri.toString()) ?? [];
+  // List the pages last found in a wiki.
+  public pagesOf(document: vscode.TextDocument): readonly vscode.DocumentSymbol[] {
+    return this.pages.get(document.uri.toString()) ?? [];
   }
 
-  // Forget the nodes of a wiki that's no longer open.
+  // Forget the pages of a wiki that's no longer open.
   public forget(document: vscode.TextDocument): void {
-    this.nodes.delete(document.uri.toString());
+    this.pages.delete(document.uri.toString());
   }
 
   // Release the decoration type, which removes the dimming, and cancel any pending settling.
@@ -336,7 +336,7 @@ class NodeFocus implements vscode.Disposable {
   }
 }
 
-// These commands move through the nodes visited in a wiki, like a browser's back and forward
+// These commands move through the pages visited in a wiki, like a browser's back and forward
 // buttons.
 const GO_BACK_COMMAND = 'mull.goBack';
 const GO_FORWARD_COMMAND = 'mull.goForward';
@@ -347,7 +347,7 @@ const MAX_HISTORY_LENGTH = 100;
 // This caps how many of the latest visits the back link's tooltip lists.
 const MAX_TOOLTIP_VISITS = 10;
 
-// A visit to a node, with the cursor's position in it, relative to the node's start, for returning
+// A visit to a page, with the cursor's position in it, relative to the page's start, for returning
 // to where the cursor was.
 interface Visit {
   readonly title: string;
@@ -355,20 +355,20 @@ interface Visit {
   readonly character: number;
 }
 
-// A wiki's trail of visits, ending with the current node, and the visits that going back left
+// A wiki's trail of visits, ending with the current page, and the visits that going back left
 // ahead, the next one last.
 interface Trail {
   back: Visit[];
   forward: Visit[];
 }
 
-// This keeps a trail of the nodes visited in each wiki, and shows the previous node above the
-// current node's title, like a browser's back button.
+// This keeps a trail of the pages visited in each wiki, and shows the previous page above the
+// current page's title, like a browser's back button.
 //
-// Moving the cursor to another node, by any means, visits that node. Like a browser's history, the
-// trail is never pruned of loops, so going back always returns to the node visited just before,
-// and visiting a node discards the visits that going back left ahead.
-class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
+// Moving the cursor to another page, by any means, visits that page. Like a browser's history, the
+// trail is never pruned of loops, so going back always returns to the page visited just before,
+// and visiting a page discards the visits that going back left ahead.
+class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
   // Remember each wiki's trail.
   private readonly trails = new Map<string, Trail>();
 
@@ -377,26 +377,26 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
 
   public readonly onDidChangeCodeLenses = this.changeEmitter.event;
 
-  // Find the nodes the dimming last found, which are current enough for following the cursor.
-  private readonly nodeFocus: NodeFocus;
+  // Find the pages the dimming last found, which are current enough for following the cursor.
+  private readonly pageFocus: PageFocus;
 
-  public constructor(nodeFocus: NodeFocus) {
-    this.nodeFocus = nodeFocus;
+  public constructor(pageFocus: PageFocus) {
+    this.pageFocus = pageFocus;
   }
 
-  // Find a wiki's trail, dropping visits to nodes that no longer exist, as after renaming them.
-  private trailOf(document: vscode.TextDocument, nodes: readonly vscode.DocumentSymbol[]): Trail {
+  // Find a wiki's trail, dropping visits to pages that no longer exist, as after renaming them.
+  private trailOf(document: vscode.TextDocument, pages: readonly vscode.DocumentSymbol[]): Trail {
     const key = document.uri.toString();
-    const titles = new Set(nodes.map((node) => node.name));
+    const titles = new Set(pages.map((page) => page.name));
     const trail = this.trails.get(key) ?? { back: [], forward: [] };
-    trail.back = NodeHistory.existingVisits(trail.back, titles);
-    trail.forward = NodeHistory.existingVisits(trail.forward, titles);
+    trail.back = PageHistory.existingVisits(trail.back, titles);
+    trail.forward = PageHistory.existingVisits(trail.forward, titles);
     this.trails.set(key, trail);
     return trail;
   }
 
-  // Keep the visits to nodes that still exist, merging visits to the same node that become
-  // adjacent into the later one, so going back or forward always changes the node.
+  // Keep the visits to pages that still exist, merging visits to the same page that become
+  // adjacent into the later one, so going back or forward always changes the page.
   private static existingVisits(visits: readonly Visit[], titles: ReadonlySet<string>): Visit[] {
     const kept: Visit[] = [];
     for (const visit of visits) {
@@ -413,42 +413,42 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     return kept;
   }
 
-  // Find the active editor's wiki, its nodes, and its trail, if it's showing one.
+  // Find the active editor's wiki, its pages, and its trail, if it's showing one.
   private activeTrail():
-    | { editor: vscode.TextEditor; nodes: readonly vscode.DocumentSymbol[]; trail: Trail }
+    | { editor: vscode.TextEditor; pages: readonly vscode.DocumentSymbol[]; trail: Trail }
     | undefined {
     const editor = vscode.window.activeTextEditor;
     if (!isMainWikiEditor(editor)) {
       return undefined;
     }
-    const nodes = this.nodeFocus.nodesOf(editor.document);
-    return { editor, nodes, trail: this.trailOf(editor.document, nodes) };
+    const pages = this.pageFocus.pagesOf(editor.document);
+    return { editor, pages, trail: this.trailOf(editor.document, pages) };
   }
 
-  // Record where an editor's cursor is, visiting its node if it moved to another one.
+  // Record where an editor's cursor is, visiting its page if it moved to another one.
   public record(editor: vscode.TextEditor): void {
-    // Find the cursor's node and its position in it.
-    const nodes = this.nodeFocus.nodesOf(editor.document);
+    // Find the cursor's page and its position in it.
+    const pages = this.pageFocus.pagesOf(editor.document);
     const cursor = editor.selection.active;
-    const node = nodeAt(nodes, cursor);
-    if (node === undefined) {
+    const page = pageAt(pages, cursor);
+    if (page === undefined) {
       return;
     }
     const visit = {
-      title: node.name,
-      line: cursor.line - node.range.start.line,
+      title: page.name,
+      line: cursor.line - page.range.start.line,
       character: cursor.character,
     };
 
-    // Within the current node, only remember the cursor's position.
-    const trail = this.trailOf(editor.document, nodes);
+    // Within the current page, only remember the cursor's position.
+    const trail = this.trailOf(editor.document, pages);
     const current = trail.back.at(-1);
     if (current !== undefined && current.title === visit.title) {
       trail.back[trail.back.length - 1] = visit;
       return;
     }
 
-    // Visit the node, forgetting the oldest visit once there are too many.
+    // Visit the page, forgetting the oldest visit once there are too many.
     trail.back.push(visit);
     if (trail.back.length > MAX_HISTORY_LENGTH) {
       trail.back.shift();
@@ -457,7 +457,7 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     this.changeEmitter.fire();
   }
 
-  // Record where the active editor's cursor is once its wiki's nodes are found again. This also
+  // Record where the active editor's cursor is once its wiki's pages are found again. This also
   // starts the trail of a newly shown wiki.
   public recordActive(): void {
     const editor = vscode.window.activeTextEditor;
@@ -466,7 +466,7 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     }
   }
 
-  // Go back to the previous node in the active wiki's trail, keeping the current one for going
+  // Go back to the previous page in the active wiki's trail, keeping the current one for going
   // forward again.
   public goBack(): void {
     const active = this.activeTrail();
@@ -481,11 +481,11 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     }
     back.pop();
     forward.push(current);
-    NodeHistory.revisit(active.editor, active.nodes, previous);
+    PageHistory.revisit(active.editor, active.pages, previous);
     this.changeEmitter.fire();
   }
 
-  // Go forward to the node that going back left ahead in the active wiki.
+  // Go forward to the page that going back left ahead in the active wiki.
   public goForward(): void {
     const active = this.activeTrail();
     if (active === undefined) {
@@ -497,22 +497,22 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
       return;
     }
     back.push(next);
-    NodeHistory.revisit(active.editor, active.nodes, next);
+    PageHistory.revisit(active.editor, active.pages, next);
     this.changeEmitter.fire();
   }
 
-  // Move the cursor back to where it was in a visited node. The resulting selection change finds
-  // the cursor already in the trail's current node, so it doesn't count as a new visit.
+  // Move the cursor back to where it was in a visited page. The resulting selection change finds
+  // the cursor already in the trail's current page, so it doesn't count as a new visit.
   private static revisit(
     editor: vscode.TextEditor,
-    nodes: readonly vscode.DocumentSymbol[],
+    pages: readonly vscode.DocumentSymbol[],
     visit: Visit,
   ): void {
-    const node = nodes.find((other) => other.name === visit.title);
-    if (node === undefined) {
+    const page = pages.find((other) => other.name === visit.title);
+    if (page === undefined) {
       return;
     }
-    const line = Math.min(node.range.start.line + visit.line, node.range.end.line);
+    const line = Math.min(page.range.start.line + visit.line, page.range.end.line);
     const position = editor.document.validatePosition(new vscode.Position(line, visit.character));
     editor.selection = new vscode.Selection(position, position);
     editor.revealRange(
@@ -521,18 +521,18 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
     );
   }
 
-  // Show the previous node above the current node's title, as a link back to it, with the latest
+  // Show the previous page above the current page's title, as a link back to it, with the latest
   // visits in its tooltip.
   public async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-    // Find the current and previous nodes.
-    const nodes = await wikiNodes(document);
-    const { back } = this.trailOf(document, nodes);
+    // Find the current and previous pages.
+    const pages = await wikiPages(document);
+    const { back } = this.trailOf(document, pages);
     const currentVisit = back.at(-1);
     const previous = back.at(-2);
     const current =
       currentVisit === undefined
         ? undefined
-        : nodes.find((node) => node.name === currentVisit.title);
+        : pages.find((page) => page.name === currentVisit.title);
     if (current === undefined || previous === undefined) {
       return [];
     }
@@ -543,7 +543,7 @@ class NodeHistory implements vscode.CodeLensProvider, vscode.Disposable {
       titles.unshift('…');
     }
 
-    // Place the link above the current node's title. The command takes no arguments, since the
+    // Place the link above the current page's title. The command takes no arguments, since the
     // editor may keep showing a lens's command after the lens is replaced.
     return [
       new vscode.CodeLens(document.lineAt(current.range.start.line).range, {
@@ -576,74 +576,74 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand(REVEAL_IN_EXPLORER_COMMAND, revealInExplorer),
   );
 
-  // Expose the commands that move the cursor within the node containing it.
-  const nodeBoundaryCommands = [
-    [GO_TO_NODE_START_COMMAND, 'start', false],
-    [GO_TO_NODE_END_COMMAND, 'end', false],
-    [SELECT_TO_NODE_START_COMMAND, 'start', true],
-    [SELECT_TO_NODE_END_COMMAND, 'end', true],
+  // Expose the commands that move the cursor within the page containing it.
+  const pageBoundaryCommands = [
+    [GO_TO_PAGE_START_COMMAND, 'start', false],
+    [GO_TO_PAGE_END_COMMAND, 'end', false],
+    [SELECT_TO_PAGE_START_COMMAND, 'start', true],
+    [SELECT_TO_PAGE_END_COMMAND, 'end', true],
   ] as const;
-  for (const [command, boundary, select] of nodeBoundaryCommands) {
+  for (const [command, boundary, select] of pageBoundaryCommands) {
     context.subscriptions.push(
-      vscode.commands.registerCommand(command, async () => moveToNodeBoundary(boundary, select)),
+      vscode.commands.registerCommand(command, async () => moveToPageBoundary(boundary, select)),
     );
   }
 
-  // Keep the node containing the cursor in focus, following the cursor, edits, scrolling, the
+  // Keep the page containing the cursor in focus, following the cursor, edits, scrolling, the
   // visible editors, and the settings.
-  const nodeFocus = new NodeFocus();
-  const nodeHistory = new NodeHistory(nodeFocus);
+  const pageFocus = new PageFocus();
+  const pageHistory = new PageHistory(pageFocus);
   context.subscriptions.push(
-    nodeFocus,
+    pageFocus,
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
-        nodeFocus.dim(event.textEditor);
-        nodeFocus.scheduleSettle(event.textEditor);
+        pageFocus.dim(event.textEditor);
+        pageFocus.scheduleSettle(event.textEditor);
       }
     }),
     vscode.workspace.onDidChangeTextDocument(async (event) => {
       if (event.document.languageId === 'mull') {
-        await nodeFocus.refresh(event.document);
-        nodeHistory.recordActive();
+        await pageFocus.refresh(event.document);
+        pageHistory.recordActive();
       }
     }),
     vscode.window.onDidChangeVisibleTextEditors(async () => {
-      await nodeFocus.refreshVisible();
-      nodeHistory.recordActive();
+      await pageFocus.refreshVisible();
+      pageHistory.recordActive();
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
       if (isMainWikiEditor(event.textEditor)) {
-        nodeFocus.scheduleSettle(event.textEditor);
+        pageFocus.scheduleSettle(event.textEditor);
       }
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
-      nodeFocus.forget(document);
+      pageFocus.forget(document);
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
-      if (event.affectsConfiguration('mull.dimOtherNodes')) {
-        await nodeFocus.refreshVisible();
+      if (event.affectsConfiguration('mull.dimOtherPages')) {
+        await pageFocus.refreshVisible();
       }
     }),
   );
 
-  // Keep a trail of the nodes visited in each wiki, shown as a link back to the previous node, and
-  // expose the commands that move along it. The trail follows the nodes found above.
+  // Keep a trail of the pages visited in each wiki, shown as a link back to the previous page, and
+  // expose the commands that move along it. The trail follows the pages found above.
   context.subscriptions.push(
-    nodeHistory,
-    vscode.languages.registerCodeLensProvider({ language: 'mull' }, nodeHistory),
+    pageHistory,
+    vscode.languages.registerCodeLensProvider({ language: 'mull' }, pageHistory),
     vscode.commands.registerCommand(GO_BACK_COMMAND, () => {
-      nodeHistory.goBack();
+      pageHistory.goBack();
     }),
     vscode.commands.registerCommand(GO_FORWARD_COMMAND, () => {
-      nodeHistory.goForward();
+      pageHistory.goForward();
     }),
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
-        nodeHistory.record(event.textEditor);
+        pageHistory.record(event.textEditor);
       }
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
-      nodeHistory.forget(document);
+      pageHistory.forget(document);
     }),
   );
 
@@ -698,10 +698,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
 
-  // Find the nodes of the wikis already shown, which needs the language server, and start the
+  // Find the pages of the wikis already shown, which needs the language server, and start the
   // active wiki's trail.
-  await nodeFocus.refreshVisible();
-  nodeHistory.recordActive();
+  await pageFocus.refreshVisible();
+  pageHistory.recordActive();
 }
 
 // Shut down the language client and its server process with the extension.

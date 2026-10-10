@@ -4,23 +4,23 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, TextNode, Wiki,
-        title_line_text, unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text,
+        unescaped_characters,
     },
 };
 use std::{iter, path::Path};
 
 // This struct retains the source information needed to finish a region at its next boundary. A
-// region belongs to a node only if its title is valid.
-struct PendingNode {
+// region belongs to a page only if its title is valid.
+struct PendingPage {
     title: Option<(String, SourceRange)>,
     source_start: usize,
     content_start: usize,
 }
 
-// Parse source contents into a scored wiki, with source ranges for every node and link, along with
+// Parse source contents into a scored wiki, with source ranges for every page and link, along with
 // any syntax errors. The wiki retains as much of the source as possible so it can still be
-// validated and navigated, but it omits the content of duplicate nodes, invalid titles, and
+// validated and navigated, but it omits the content of duplicate pages, invalid titles, and
 // anything before the first title, so it mustn't be rendered if there are any syntax errors. The
 // line index locates syntax errors in their source listings.
 pub fn parse(
@@ -28,11 +28,11 @@ pub fn parse(
     source_contents: &str,
     line_index: &LineIndex,
 ) -> (Wiki, Vec<Error>) {
-    // Accumulate parsed nodes, errors, and the region currently being read, which starts as the
+    // Accumulate parsed pages, errors, and the region currently being read, which starts as the
     // untitled region before the first title.
     let mut wiki = Wiki::default();
     let mut errors = Vec::<Error>::new();
-    let mut pending_node = PendingNode {
+    let mut pending_page = PendingPage {
         title: None,
         source_start: 0,
         content_start: 0,
@@ -59,16 +59,16 @@ pub fn parse(
             has_seen_title_marker = true;
 
             // Finish the preceding region before starting the next one.
-            errors.extend(finish_node(
+            errors.extend(finish_page(
                 &mut wiki,
-                pending_node,
+                pending_page,
                 line_start,
                 source_path,
                 source_contents,
                 line_index,
             ));
 
-            // Start a region which belongs to a node if the title is valid.
+            // Start a region which belongs to a page if the title is valid.
             let title = match parse_title(
                 raw_title,
                 source_path,
@@ -82,7 +82,7 @@ pub fn parse(
                     None
                 }
             };
-            pending_node = PendingNode {
+            pending_page = PendingPage {
                 title,
                 source_start: line_start,
                 content_start: next_line_start,
@@ -91,9 +91,9 @@ pub fn parse(
             && !reported_content_before_title
             && !line.trim().is_empty()
         {
-            // Report only the first non-whitespace content outside a valid node.
+            // Report only the first non-whitespace content outside a valid page.
             errors.push(Error::new(
-                "This content isn't in any node.",
+                "This content isn't in any page.",
                 source_path,
                 Some((
                     source_contents,
@@ -110,16 +110,16 @@ pub fn parse(
     }
 
     // Finish the final region at the end of the wiki.
-    errors.extend(finish_node(
+    errors.extend(finish_page(
         &mut wiki,
-        pending_node,
+        pending_page,
         source_contents.len(),
         source_path,
         source_contents,
         line_index,
     ));
 
-    // Order the nodes and return the wiki with every error in source order.
+    // Order the pages and return the wiki with every error in source order.
     populate_traversal_order(&mut wiki);
     (wiki, errors)
 }
@@ -147,7 +147,7 @@ fn parse_title(
     // Report an empty title at the whole line, since the title has no text of its own.
     if title.is_empty() {
         Err(Error::new(
-            "A node title can't be empty.",
+            "A page title can't be empty.",
             source_path,
             Some((source_contents, line_index, line_source_range)),
             None,
@@ -166,7 +166,7 @@ fn parse_title(
     } else {
         Err(Error::new(
             &format!(
-                "A node title can't start with {}.",
+                "A page title can't start with {}.",
                 FILESYSTEM_LINK_PREFIX.code_str(),
             ),
             source_path,
@@ -177,23 +177,23 @@ fn parse_title(
     }
 }
 
-// Parse a completed region's content, reporting its errors, and add it as a node if it has a valid
-// title that hasn't already been used. A node with errors in its content retains the links which
+// Parse a completed region's content, reporting its errors, and add it as a page if it has a valid
+// title that hasn't already been used. A page with errors in its content retains the links which
 // parsed successfully.
-fn finish_node(
+fn finish_page(
     wiki: &mut Wiki,
-    pending_node: PendingNode,
+    pending_page: PendingPage,
     source_end: usize,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
 ) -> Vec<Error> {
     // Locate the trimmed region and its trimmed content in the original source.
-    let PendingNode {
+    let PendingPage {
         title,
         source_start,
         content_start,
-    } = pending_node;
+    } = pending_page;
     let source_range = trim_source_range(
         source_contents,
         SourceRange {
@@ -222,9 +222,9 @@ fn finish_node(
     };
 
     // Reject a title that has already been used, reporting it before the errors in its content.
-    if wiki.text_nodes.contains_key(&title) {
+    if wiki.pages.contains_key(&title) {
         return iter::once(Error::new(
-            &format!("Node {} already exists.", title.code_str()),
+            &format!("Page {} already exists.", title.code_str()),
             source_path,
             Some((source_contents, line_index, title_source_range)),
             None,
@@ -234,10 +234,10 @@ fn finish_node(
         .collect();
     }
 
-    // Insert the node, retaining the links in its content which parsed successfully.
-    wiki.text_nodes.insert(
+    // Insert the page, retaining the links in its content which parsed successfully.
+    wiki.pages.insert(
         title.clone(),
-        TextNode {
+        Page {
             title,
             content: ContentText::from_source(&content),
             links,
@@ -250,7 +250,7 @@ fn finish_node(
     content_errors
 }
 
-// Parse link occurrences and produce the normalized content stored on a text node.
+// Parse link occurrences and produce the normalized content stored on a page.
 fn parse_content(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -391,7 +391,7 @@ fn parse_link(
     source_range: SourceRange,
 ) -> Result<Link, Error> {
     // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
-    // The target is part of a node's content, as written.
+    // The target is part of a page's content, as written.
     let target = ContentText::from_source(target);
     if target.as_str().starts_with(FILESYSTEM_LINK_PREFIX) {
         let target = FilesystemTarget::parse(&target).map_err(|message| {
@@ -491,30 +491,27 @@ mod tests {
     // Parse titles and multiline content while retaining exact source ranges. A title's range
     // extends through trailing whitespace, which the title itself excludes.
     #[test]
-    fn nodes() {
+    fn pages() {
         let source =
             "  \n#   Home  \n\n Check out the [Greeting]. \n\n# Greeting\n Hello,\nworld! \n";
         let wiki = parse_test(source).unwrap();
 
-        assert_eq!(wiki.text_nodes.len(), 2);
-        assert_eq!(wiki.text_nodes["Home"].title, "Home");
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(wiki.pages["Home"].title, "Home");
         assert_eq!(
-            wiki.text_nodes["Home"].content.as_str(),
+            wiki.pages["Home"].content.as_str(),
             "Check out the [Greeting].",
         );
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
         );
-        assert_eq!(
-            wiki.text_nodes["Greeting"].content.as_str(),
-            "Hello,\nworld!",
-        );
-        assert_eq!(wiki.text_nodes["Home"].title_source_range.start, 7);
-        assert_eq!(wiki.text_nodes["Home"].title_source_range.end, 13);
-        assert_eq!(wiki.text_nodes["Home"].source_range.start, 3);
-        assert_eq!(wiki.text_nodes["Home"].source_range.end, 41);
-        let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
+        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello,\nworld!");
+        assert_eq!(wiki.pages["Home"].title_source_range.start, 7);
+        assert_eq!(wiki.pages["Home"].title_source_range.end, 13);
+        assert_eq!(wiki.pages["Home"].source_range.start, 3);
+        assert_eq!(wiki.pages["Home"].source_range.end, 41);
+        let Link::Text { source_range, .. } = &wiki.pages["Home"].links[0] else {
             panic!("The parsed link should be a text link.");
         };
         assert_eq!(&source[source_range.start..source_range.end], "[Greeting]");
@@ -530,11 +527,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting", "text:About", "text:Greeting"],
         );
         assert_eq!(
-            wiki.text_nodes["Home"].content.as_str(),
+            wiki.pages["Home"].content.as_str(),
             "See [Greeting], [About], and [Greeting].",
         );
     }
@@ -544,14 +541,14 @@ mod tests {
     fn unicode_source_ranges() {
         let source = "# Home\nSee [Grüße].\n# Grüße";
         let wiki = parse_test(source).unwrap();
-        let Link::Text { source_range, .. } = &wiki.text_nodes["Home"].links[0] else {
+        let Link::Text { source_range, .. } = &wiki.pages["Home"].links[0] else {
             panic!("The parsed link should be a text link.");
         };
 
         assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
         assert_eq!(
-            &source[wiki.text_nodes["Grüße"].title_source_range.start
-                ..wiki.text_nodes["Grüße"].title_source_range.end],
+            &source[wiki.pages["Grüße"].title_source_range.start
+                ..wiki.pages["Grüße"].title_source_range.end],
             "Grüße",
         );
     }
@@ -569,7 +566,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec!["text:One]Two", "text:[Three", "text:Four"],
         );
     }
@@ -588,7 +585,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec!["text:Four", "text:Five\\", "text:A\\B"],
         );
     }
@@ -603,7 +600,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec![
                 format!("file:{}", PathBuf::from("notes.txt").display()),
                 format!("dir:{}", PathBuf::from("images").display()),
@@ -626,7 +623,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].content.as_str(),
+            wiki.pages["Home"].content.as_str(),
             "[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]",
         );
     }
@@ -639,7 +636,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
                 .unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].content.as_str(),
+            wiki.pages["Home"].content.as_str(),
             "First\n\nSee [Home]\nand [Home] later.\nLast",
         );
     }
@@ -696,7 +693,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
 
         assert_eq!(
-            wiki.text_nodes["Home"].content.as_str(),
+            wiki.pages["Home"].content.as_str(),
             "## Subtitle\n#not a title",
         );
     }
@@ -704,14 +701,14 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     // Accept empty and whitespace-only wikis.
     #[test]
     fn empty_wiki() {
-        assert!(parse_test(" \n\t\n").unwrap().text_nodes.is_empty());
+        assert!(parse_test(" \n\t\n").unwrap().pages.is_empty());
     }
 
-    // Accept empty node content.
+    // Accept empty page content.
     #[test]
     fn empty_content() {
         assert_eq!(
-            parse_test("# Empty").unwrap().text_nodes["Empty"]
+            parse_test("# Empty").unwrap().pages["Empty"]
                 .content
                 .as_str(),
             "",
@@ -723,10 +720,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     fn windows_line_endings() {
         let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(
-            wiki.text_nodes["Greeting"].content.as_str(),
-            "Hello, world!",
-        );
+        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello, world!");
     }
 
     // Reject non-whitespace content before the first title.
@@ -734,7 +728,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
     fn content_before_title() {
         assert_fails!(
             parse_test("Introduction\n# Home"),
-            "This content isn't in any node.",
+            "This content isn't in any page.",
         );
     }
 
@@ -747,7 +741,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("A node title can't be empty."),
+                .contains("A page title can't be empty."),
         );
     }
 
@@ -761,7 +755,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
             assert!(
                 error
                     .to_string()
-                    .contains("A node title can't start with `/`."),
+                    .contains("A page title can't start with `/`."),
             );
         }
     }
@@ -775,7 +769,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("A node title can't be empty."),
+                .contains("A page title can't be empty."),
         );
     }
 
@@ -788,7 +782,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("A node title can't be empty."),
+                .contains("A page title can't be empty."),
         );
         assert!(errors[0].to_string().contains("1 │ #"));
     }
@@ -802,7 +796,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("This content isn't in any node."),
+                .contains("This content isn't in any page."),
         );
     }
 
@@ -815,14 +809,14 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("Node `Home` already exists."),
+                .contains("Page `Home` already exists."),
         );
         assert!(errors[0].to_string().contains("3 \u{2502} # Home"));
     }
 
-    // Report errors from every invalid node in source order.
+    // Report errors from every invalid page in source order.
     #[test]
-    fn multiple_node_errors() {
+    fn multiple_page_errors() {
         let errors = parse_test("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err();
 
         assert_eq!(errors.len(), 2);
@@ -834,9 +828,9 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(errors[1].to_string().contains("Unclosed link"));
     }
 
-    // Report every delimiter error within one node.
+    // Report every delimiter error within one page.
     #[test]
-    fn multiple_errors_in_node() {
+    fn multiple_errors_in_page() {
         let errors = parse_test("# Home\nUnexpected] and [nested[link.").unwrap_err();
 
         assert_eq!(errors.len(), 3);
@@ -853,7 +847,7 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(errors[2].to_string().contains("Unclosed link"));
     }
 
-    // Report structural and node errors together in source order.
+    // Report structural and page errors together in source order.
     #[test]
     fn multiple_error_types() {
         let errors = parse_test(concat!(
@@ -871,12 +865,12 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("This content isn't in any node"),
+                .contains("This content isn't in any page"),
         );
         assert!(
             errors[1]
                 .to_string()
-                .contains("A node title can't be empty"),
+                .contains("A page title can't be empty"),
         );
         assert!(
             errors[2]
@@ -886,17 +880,17 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(errors[3].to_string().contains("Unclosed link"));
     }
 
-    // Keep a node with a syntax error, along with the links in it which parsed successfully.
+    // Keep a page with a syntax error, along with the links in it which parsed successfully.
     #[test]
-    fn recovered_node_keeps_valid_links() {
+    fn recovered_page_keeps_valid_links() {
         let (wiki, errors) = parse_fixture(
             "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
         );
 
         assert_eq!(errors.len(), 5);
-        assert!(wiki.text_nodes["Home"].has_syntax_errors);
+        assert!(wiki.pages["Home"].has_syntax_errors);
         assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
+            link_targets(&wiki.pages["Home"].links),
             vec![
                 "text:Greeting".to_owned(),
                 format!("file:{}", PathBuf::from("notes.txt").display()),
@@ -910,11 +904,11 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         let (wiki, errors) = parse_fixture("# Home\nStray] [Greeting]\n# Greeting");
 
         assert_eq!(errors.len(), 1);
-        assert_eq!(wiki.text_nodes["Greeting"].traversal_index, Some(1));
-        assert!(!wiki.text_nodes["Greeting"].has_syntax_errors);
+        assert_eq!(wiki.pages["Greeting"].traversal_index, Some(1));
+        assert!(!wiki.pages["Greeting"].has_syntax_errors);
     }
 
-    // Omit duplicate nodes and regions without valid titles, but report the errors in their
+    // Omit duplicate pages and regions without valid titles, but report the errors in their
     // content.
     #[test]
     fn recovered_wiki_omits_untitled_regions() {
@@ -926,26 +920,23 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         assert!(
             errors[0]
                 .to_string()
-                .contains("This content isn't in any node."),
+                .contains("This content isn't in any page."),
         );
         assert!(errors[1].to_string().contains("1 \u{2502} Before]"));
         assert!(
             errors[2]
                 .to_string()
-                .contains("Node `Home` already exists."),
+                .contains("Page `Home` already exists."),
         );
         assert!(errors[3].to_string().contains("5 \u{2502} [Greeting] a]"));
         assert!(
             errors[4]
                 .to_string()
-                .contains("A node title can't be empty."),
+                .contains("A page title can't be empty."),
         );
         assert!(errors[5].to_string().contains("7 \u{2502} [Greeting] b]"));
-        assert_eq!(wiki.text_nodes.len(), 2);
-        assert_eq!(
-            link_targets(&wiki.text_nodes["Home"].links),
-            vec!["text:Home"],
-        );
-        assert_eq!(wiki.text_nodes["Greeting"].traversal_index, None);
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
+        assert_eq!(wiki.pages["Greeting"].traversal_index, None);
     }
 }

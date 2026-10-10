@@ -8,22 +8,22 @@
 
 ## An example wiki
 
-A *wiki* is a text file with a `.mull` extension. It contains *nodes* with *links* between them.
+A *wiki* is a text file with a `.mull` extension. It contains *pages* with *links* between them.
 
-Each node starts with a `# Title`. The content comes after the title and is written in Markdown.
+Each page starts with a `# Title`. The content comes after the title and is written in Markdown.
 
-To link to a node, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`. These paths start at the *attachments directory*, which sits beside the wiki and is named after it, with `_attachments` in place of the `.mull` extension. For example, if the wiki is `notes.mull`, then `[/mona_lisa.jpg]` refers to `notes_attachments/mona_lisa.jpg`. A wiki that doesn't link to any files doesn't need an attachments directory.
+To link to a page, put the title in square brackets like `[My favorite art]`. You can also link to local files and directories like `[/mona_lisa.jpg]`. These paths start at the *attachments directory*, which sits beside the wiki and is named after it, with `_attachments` in place of the `.mull` extension. For example, if the wiki is `notes.mull`, then `[/mona_lisa.jpg]` refers to `notes_attachments/mona_lisa.jpg`. A wiki that doesn't link to any files doesn't need an attachments directory.
 
-Here's an example wiki with 3 nodes:
+Here's an example wiki with 3 pages:
 
 ````md
 # Home
 
 Welcome to the example wiki!
 
-This is the [Home] node, which is the starting point for every wiki.
+This is the [Home] page, which is the starting point for every wiki.
 
-[My favorite art] is another node. It's easy to link to other nodes!
+[My favorite art] is another page. It's easy to link to other pages!
 
 # My favorite art
 
@@ -48,37 +48,37 @@ If bees are few.
 Mull verifies these structural properties:
 
 - The wiki has valid syntax (links are closed, etc.).
-- Nodes have unique titles.
-- Links have valid targets. A link can point to a `[node]`, `[/file]`, or `[/directory/]`.
+- Pages have unique titles.
+- Links have valid targets. A link can point to a `[page]`, `[/file]`, or `[/directory/]`.
 
 It also verifies these connectivity properties:
 
-- All nodes are reachable by following links from the `Home` node, which must exist.
+- All pages are reachable by following links from the `Home` page, which must exist.
 - All files nested in the attachments directory are linked to from the wiki.
 
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
-Mull formats the wiki for you. It chooses the ordering of the nodes in the file, so you don't have to think about that. But when you create a new node, you must link to it from somewhere. If you remove all the links to a node, Mull will flag that the node isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
+Mull formats the wiki for you. It chooses the ordering of the pages in the file, so you don't have to think about that. But when you create a new page, you must link to it from somewhere. If you remove all the links to a page, Mull will flag that the page isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every node must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
+Just as every page must be linked to from the wiki, the same is true of files nested in the attachments directory. Thus, the wiki serves as an index of those files. You can put files in subdirectories and link to the subdirectories to achieve coverage of the nested files. If the wiki contains `[/]` (a link to the attachments directory itself), all files are covered.
 
 ## What does the IDE extension do?
 
 The extension turns Visual Studio Code or Cursor into a powerful wiki editor! It comes with features such as:
 
 - Clickable links with hover previews
-- Completions for node titles and file paths
+- Completions for page titles and file paths
 - Diagnostics and quick fixes
-- Dimming of everything outside the current node
+- Dimming of everything outside the current page
 - Formatting (manual and on save)
-- History of visited nodes
+- History of visited pages
 - Link occurrence highlighting
-- Navigation to the start or end of a node
-- Node and file renaming
+- Navigation to the start or end of a page
+- Page and file renaming
 - Outline view
 - Prose-friendly word wrapping
 - Reference search (backlinks)
-- Scrolling that snaps back to the current node
+- Scrolling that snaps back to the current page
 - Syntax highlighting
 
 ![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completion.png)
@@ -89,20 +89,20 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
-| Find a node | `Command + Shift + O` | `Control + Shift + O` |
-| Rename a node | `F2` | `F2` |
-| Jump to a node from a link | `F12` | `F12` |
-| Jump to links to a node | `Shift + F12` | `Shift + F12` |
+| Find a page | `Command + Shift + O` | `Control + Shift + O` |
+| Rename a page | `F2` | `F2` |
+| Jump to a page from a link | `F12` | `F12` |
+| Jump to links to a page | `Shift + F12` | `Shift + F12` |
 | Jump back | `Control + -` | `Alt + Left` |
 | Show completions | `Control + Space` | `Control + Space` |
 | Jump to the next error | `F8` | `F8` |
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
-| Code actions (e.g., create a missing node) | `Command + .` | `Control + .` |
+| Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
-| Jump to the start of the current node | `Command + Up` | `Control + Home` |
-| Jump to the end of the current node | `Command + Down` | `Control + End` |
-| Go back to the previously visited node | `Command + [` | `Alt + Left` |
-| Go forward to the next visited node | `Command + ]` | `Alt + Right` |
+| Jump to the start of the current page | `Command + Up` | `Control + Home` |
+| Jump to the end of the current page | `Command + Down` | `Control + End` |
+| Go back to the previously visited page | `Command + [` | `Alt + Left` |
+| Go forward to the next visited page | `Command + ]` | `Alt + Right` |
 
 ## Usage
 

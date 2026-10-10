@@ -1,48 +1,48 @@
-use crate::wiki::{HOME_TITLE, Link, TextNode, Wiki};
+use crate::wiki::{HOME_TITLE, Link, Page, Wiki};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-// Populate the position of each text node in the traversal order, leaving unreachable nodes
+// Populate the position of each page in the traversal order, leaving unreachable pages
 // without one.
 pub fn populate_traversal_order(wiki: &mut Wiki) {
-    // Compute the order before updating the nodes it borrows from.
+    // Compute the order before updating the pages it borrows from.
     let order = traversal_order(wiki, None)
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
-    // Reset positions, then number the reachable nodes.
-    for node in wiki.text_nodes.values_mut() {
-        node.traversal_index = None;
+    // Reset positions, then number the reachable pages.
+    for page in wiki.pages.values_mut() {
+        page.traversal_index = None;
     }
     for (index, title) in order.into_iter().enumerate() {
-        wiki.text_nodes
+        wiki.pages
             .get_mut(&title)
-            .expect("Traversed titles should refer to existing nodes.")
+            .expect("Traversed titles should refer to existing pages.")
             .traversal_index = Some(index);
     }
 }
 
-// List the titles of the nodes reachable from the home node in the order of a depth-first
-// traversal which only follows links along shortest paths, visiting the targets of each node's
-// links in title order. Each node thus appears after the first of its closest-to-home parents,
-// keeping its minimum distance from the home node. The traversal can include an extra node without
+// List the titles of the pages reachable from the home page in the order of a depth-first
+// traversal which only follows links along shortest paths, visiting the targets of each page's
+// links in title order. Each page thus appears after the first of its closest-to-home parents,
+// keeping its minimum distance from the home page. The traversal can include an extra page without
 // links, as if it existed, which doesn't change the order of the others.
 pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<&'a str> {
-    // Treat the extra node as an existing node with no links.
-    let exists = |title: &str| wiki.text_nodes.contains_key(title) || extra_title == Some(title);
+    // Treat the extra page as an existing page with no links.
+    let exists = |title: &str| wiki.pages.contains_key(title) || extra_title == Some(title);
     let link_titles = |title: &str| {
-        wiki.text_nodes
+        wiki.pages
             .get(title)
             .map(text_link_titles)
             .unwrap_or_default()
     };
 
-    // Leave every node unreachable if there's no home node.
+    // Leave every page unreachable if there's no home page.
     if !exists(HOME_TITLE) {
         return Vec::new();
     }
 
-    // Compute minimum text-link distances from the home node using breadth-first traversal.
+    // Compute minimum text-link distances from the home page using breadth-first traversal.
     let mut depths = HashMap::<&str, usize>::from([(HOME_TITLE, 0)]);
     let mut queued_titles = VecDeque::from([HOME_TITLE]);
     while let Some(title) = queued_titles.pop_front() {
@@ -55,12 +55,12 @@ pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<
         }
     }
 
-    // List each node when it's first popped, so the order follows a depth-first preorder.
+    // List each page when it's first popped, so the order follows a depth-first preorder.
     let mut order = Vec::new();
     let mut visited_titles = HashSet::new();
     let mut pending_titles = vec![HOME_TITLE];
     while let Some(title) = pending_titles.pop() {
-        // Skip nodes which were already reached through another parent.
+        // Skip pages which were already reached through another parent.
         if !visited_titles.insert(title) {
             continue;
         }
@@ -78,9 +78,9 @@ pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<
     order
 }
 
-// Collect the distinct titles of a node's text links in title order.
-fn text_link_titles(node: &TextNode) -> BTreeSet<&str> {
-    node.links
+// Collect the distinct titles of a page's text links in title order.
+fn text_link_titles(page: &Page) -> BTreeSet<&str> {
+    page.links
         .iter()
         .filter_map(|link| match link {
             Link::Text { title, .. } => Some(title.as_str()),
@@ -104,16 +104,16 @@ mod tests {
         );
         assert!(errors.is_empty());
         populate_traversal_order(&mut wiki);
-        let mut nodes = wiki
-            .text_nodes
+        let mut pages = wiki
+            .pages
             .values()
-            .filter_map(|node| {
-                node.traversal_index
-                    .map(|index| (index, node.title.clone()))
+            .filter_map(|page| {
+                page.traversal_index
+                    .map(|index| (index, page.title.clone()))
             })
             .collect::<Vec<_>>();
-        nodes.sort();
-        let titles = nodes.into_iter().map(|(_, title)| title).collect();
+        pages.sort();
+        let titles = pages.into_iter().map(|(_, title)| title).collect();
         (wiki, titles)
     }
 
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(titles, vec!["Home", "Alpha", "Bravo", "Charlie"]);
     }
 
-    // Place a node directly after its closest-to-home parent rather than at the end of a longer
+    // Place a page directly after its closest-to-home parent rather than at the end of a longer
     // path that happens to be visited first.
     #[test]
     fn shortest_paths_only() {
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(titles, vec!["Home", "A", "B", "M", "Z"]);
     }
 
-    // Place a node after the first visited of its parents which are equally close to home.
+    // Place a page after the first visited of its parents which are equally close to home.
     #[test]
     fn first_parent_at_same_depth() {
         let (_, titles) = traversal_order(concat!(
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(titles, vec!["Home", "A", "X", "B"]);
     }
 
-    // Place a node reachable through multiple paths only once, even with cycles.
+    // Place a page reachable through multiple paths only once, even with cycles.
     #[test]
     fn multiple_paths_and_cycles() {
         let (_, titles) = traversal_order(concat!(
@@ -187,12 +187,12 @@ mod tests {
         assert_eq!(titles, vec!["Home", "Left", "Middle", "Target"]);
     }
 
-    // Leave nodes which can't be reached from the home node without a position.
+    // Leave pages which can't be reached from the home page without a position.
     #[test]
-    fn unreachable_nodes() {
+    fn unreachable_pages() {
         let (wiki, titles) = traversal_order("# Home\nSee [Greeting].\n# Greeting\n# Orphan\n");
 
         assert_eq!(titles, vec!["Home", "Greeting"]);
-        assert_eq!(wiki.text_nodes["Orphan"].traversal_index, None);
+        assert_eq!(wiki.pages["Orphan"].traversal_index, None);
     }
 }
