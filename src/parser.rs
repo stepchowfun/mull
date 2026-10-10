@@ -244,7 +244,6 @@ fn finish_page(
             traversal_index: None,
             source_range,
             title_source_range,
-            has_syntax_errors: !content_errors.is_empty(),
         },
     );
     content_errors
@@ -888,7 +887,6 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
         );
 
         assert_eq!(errors.len(), 5);
-        assert!(wiki.pages["Home"].has_syntax_errors);
         assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec![
@@ -905,7 +903,6 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
 
         assert_eq!(errors.len(), 1);
         assert_eq!(wiki.pages["Greeting"].traversal_index, Some(1));
-        assert!(!wiki.pages["Greeting"].has_syntax_errors);
     }
 
     // Omit duplicate pages and regions without valid titles, but report the errors in their
