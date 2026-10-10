@@ -2093,6 +2093,10 @@ fn document_symbol_for_document(
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Each kind of fix is described where the fixes are turned into code actions."
+)]
 fn code_action_for_document(
     snapshot: &Snapshot,
     diagnostics: &[Diagnostic],
@@ -2191,7 +2195,24 @@ fn code_action_for_document(
                         Some(command),
                     )
                 }
-                Fix::EscapeBackslash(offset) => escape_backslash_action(snapshot, offset)?,
+                Fix::EscapeBackslash(offset) => {
+                    // Skip a fix from a stale diagnostic whose backslash no longer needs escaping.
+                    let (_wiki, syntax_errors) = snapshot.parsed();
+                    if !syntax_errors
+                        .iter()
+                        .any(|error| error.fix() == Some(&Fix::EscapeBackslash(offset)))
+                    {
+                        return None;
+                    }
+
+                    // Double the backslash so it stands for itself.
+                    let position = snapshot.position(offset);
+                    (
+                        "Escape the backslash".to_owned(),
+                        TextEdit::new(Range::new(position, position), "\\".to_owned()),
+                        None,
+                    )
+                }
             };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title,
@@ -2210,27 +2231,6 @@ fn code_action_for_document(
 
     // Report the absence of fixes as no response.
     (!actions.is_empty()).then_some(actions)
-}
-
-// Describe the edit which escapes a backslash at a source offset, so it stands for itself. A stale
-// diagnostic's backslash which no longer needs escaping has no edit.
-fn escape_backslash_action(
-    snapshot: &Snapshot,
-    offset: usize,
-) -> Option<(String, TextEdit, Option<Command>)> {
-    let (_wiki, syntax_errors) = snapshot.parsed();
-    if !syntax_errors
-        .iter()
-        .any(|error| error.fix() == Some(&Fix::EscapeBackslash(offset)))
-    {
-        return None;
-    }
-    let position = snapshot.position(offset);
-    Some((
-        "Escape the backslash".to_owned(),
-        TextEdit::new(Range::new(position, position), "\\".to_owned()),
-        None,
-    ))
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
