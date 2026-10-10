@@ -8,9 +8,7 @@
 
 ## An example wiki
 
-A *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other.
-
-Here's a small wiki with 3 pages:
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other. Here's a small wiki with 3 pages:
 
 ````md
 # Home
@@ -37,7 +35,7 @@ This is the [Home] page, which is the starting point for every wiki.
 —Emily Dickinson
 ````
 
-Each page starts with a `# Title`, followed by the contents of the page on subsequent lines.
+Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up until the next page or the end of the file.
 
 To link to a page, put the title in square brackets like `[My favorite art]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
