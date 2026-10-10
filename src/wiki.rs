@@ -75,7 +75,7 @@ impl fmt::Display for Wiki {
 #[derive(Clone, Debug)]
 pub struct Page {
     pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
-    pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
+    pub content: ContentText, // No surrounding blank lines or whitespace at line ends
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace

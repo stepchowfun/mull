@@ -187,7 +187,7 @@ fn finish_page(
     source_contents: &str,
     line_index: &LineIndex,
 ) -> Vec<Error> {
-    // Locate the trimmed region and its trimmed content in the original source.
+    // Locate the trimmed region and its content in the original source.
     let PendingPage {
         title,
         source_start,
@@ -216,6 +216,8 @@ fn finish_page(
             .map_or(0, |index| index + '\n'.len_utf8())
             .max(content_start);
     }
+
+    // Parse the content's links and normalize it.
     let (content, links, content_errors) = parse_content(
         source_path,
         source_contents,
