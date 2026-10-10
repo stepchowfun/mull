@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0] - 2026-10-10
+
+### Changed
+- The `mull fix` command is now called `mull format`, since it only formats a wiki, and only once the wiki is free of errors. It's still the default command. It now reports "Formatted `wiki.mull`." when it rewrites a wiki, and `mull check` suggests running `mull format` when a wiki isn't formatted correctly.
+
 ## [0.39.5] - 2026-10-10
 
 ### Added
