@@ -345,8 +345,14 @@ fn parse_content(
                     end: source_range.start + index + character.len_utf8(),
                 };
 
-                // Parse the target unless the link has a syntax error, whose target is unreliable.
-                let link = if link_has_line_break || link_has_nested_start {
+                // Parse the target unless the link has a syntax error, whose target is unreliable,
+                // including a backslash which doesn't escape anything.
+                let link = if link_has_line_break
+                    || link_has_nested_start
+                    || ContentText::invalid_escapes(&original_content[inner_start..index])
+                        .next()
+                        .is_some()
+                {
                     None
                 } else {
                     Some(parse_link(
@@ -426,7 +432,7 @@ fn parse_link(
     source_range: SourceRange,
 ) -> Result<Link, Error> {
     // Parse a filesystem link's target, which starts with `/`, and unescape any other link's title.
-    // The target is part of a page's content, as written.
+    // The target is part of a page's content, as written, and has only valid escapes.
     let target = ContentText::from_source(target);
     if target.as_str().starts_with(FILESYSTEM_LINK_PREFIX) {
         let target = FilesystemTarget::parse(&target).map_err(|message| {
@@ -444,7 +450,9 @@ fn parse_link(
         })
     } else {
         Ok(Link::Text {
-            title: target.unescape(),
+            title: target
+                .unescape()
+                .expect("The link's escapes should have been checked."),
             source_range,
         })
     }
@@ -646,6 +654,22 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .to_string()
                 .contains("A backslash must be followed by")
         }));
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+    }
+
+    // Leave out a link with a backslash which doesn't escape anything, whose target is unreliable,
+    // reporting only the backslash.
+    #[test]
+    fn links_with_invalid_escapes() {
+        let (wiki, errors) = parse_fixture("# Home\n[A\\B] [/c\\d.txt] [Other]\n# Other");
+
+        assert_eq!(
+            errors.iter().map(Error::fix).collect::<Vec<_>>(),
+            vec![
+                Some(&Fix::EscapeBackslash(9)),
+                Some(&Fix::EscapeBackslash(16)),
+            ],
+        );
         assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
     }
 

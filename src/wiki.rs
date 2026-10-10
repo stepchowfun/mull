@@ -122,20 +122,19 @@ impl ContentText {
         Self(source.to_owned())
     }
 
-    // Decode escaped characters into plain text, as the parser does.
-    pub fn unescape(&self) -> String {
+    // Decode escaped characters into plain text, as the parser does. There's no plain text if a
+    // backslash doesn't escape anything [ref:content_escapes].
+    pub fn unescape(&self) -> Option<String> {
         let mut plain = String::new();
-        let mut characters = self.0.chars().peekable();
+        let mut characters = self.0.chars();
         while let Some(character) = characters.next() {
             plain.push(if character == '\\' {
-                characters
-                    .next_if(|&next| Self::is_escapable(next))
-                    .unwrap_or(character)
+                characters.next().filter(|&next| Self::is_escapable(next))?
             } else {
                 character
             });
         }
-        plain
+        Some(plain)
     }
 
     // Expose the text as written, such as to scan it for delimiters.
@@ -220,7 +219,9 @@ impl FilesystemTarget {
     // Parse the text of a filesystem link between its delimiters, which starts with `/` and names a
     // directory if it also ends with one. Describe any problem with a message.
     pub fn parse(text: &ContentText) -> Result<Self, String> {
-        let text = text.unescape();
+        let text = text.unescape().ok_or_else(|| {
+            "A filesystem link can't contain a backslash which doesn't escape anything.".to_owned()
+        })?;
         let Some(path) = text.strip_prefix(FILESYSTEM_LINK_PREFIX) else {
             return Err(format!(
                 "A filesystem link must start with {}.",
@@ -415,17 +416,18 @@ mod tests {
         }
     }
 
-    // Escape delimiters and backslashes in plain text, and decode only Mull's escapes, leaving any
-    // other backslash as is.
+    // Escape delimiters and backslashes in plain text, and decode escapes, but decode nothing when
+    // a backslash doesn't escape anything.
     #[test]
     fn content_text_escaping() {
         assert_eq!(ContentText::escape(r"a\[b]\c\").as_str(), r"a\\\[b\]\\c\\");
         assert_eq!(
             ContentText::from_source(r"a\\\[b\]\\c\\").unescape(),
-            r"a\[b]\c\",
+            Some(r"a\[b]\c\".to_owned()),
         );
-        assert_eq!(ContentText::from_source(r"\a\\\").unescape(), r"\a\\");
-        assert_eq!(ContentText::from_source(r"\#a\\#").unescape(), r"\#a\#");
+        assert_eq!(ContentText::from_source(r"\a").unescape(), None);
+        assert_eq!(ContentText::from_source(r"\#").unescape(), None);
+        assert_eq!(ContentText::from_source(r"a\\\").unescape(), None);
         assert_eq!(ContentText::escape(r"#\#").as_str(), r"#\\#");
     }
 
