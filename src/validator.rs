@@ -569,7 +569,7 @@ mod tests {
             .any(|error| error.to_string().contains(message))
     }
 
-    // Create an isolated directory containing a wiki without an files directory.
+    // Create an isolated directory containing a wiki without a files directory.
     impl TestDirectory {
         fn new() -> Self {
             let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
@@ -648,7 +648,7 @@ mod tests {
         );
     }
 
-    // Accept a wiki without an files directory, which contains no files, even when other
+    // Accept a wiki without a files directory, which contains no files, even when other
     // files sit beside the wiki.
     #[test]
     fn missing_files_directory() {
@@ -661,7 +661,7 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Report filesystem links in a wiki without an files directory, since their targets are
+    // Report filesystem links in a wiki without a files directory, since their targets are
     // missing.
     #[test]
     fn links_without_files_directory() {
@@ -691,7 +691,7 @@ mod tests {
         ));
     }
 
-    // Reject an files directory which is a file.
+    // Reject a files directory which is a file.
     #[test]
     fn files_directory_is_a_file() {
         let directory = TestDirectory::new();
