@@ -1297,27 +1297,20 @@ fn document_highlight_for_document(
     let wiki = snapshot.wiki();
     let byte_offset = snapshot.byte_offset(cursor)?;
 
-    // Distinguish a page declaration from its references.
-    let mut highlights =
-        if let Some((page, _source_range)) = page_at(snapshot, byte_offset, LinkExtent::Whole) {
-            let mut highlights = text_link_source_ranges(wiki, &page.title)
-                .into_iter()
-                .map(|source_range| (source_range, DocumentHighlightKind::READ))
-                .collect::<Vec<_>>();
-            highlights.push((page.title_source_range, DocumentHighlightKind::WRITE));
-            highlights
-        } else {
-            // Filesystem links have no declaration in the wiki, so every matching link is a
-            // reference. A text link reaches this branch only when its target doesn't exist, so it
-            // has nothing to highlight.
-            let Some(Link::Filesystem { target, .. }) = link_at(wiki, byte_offset) else {
-                return None;
-            };
+    // Distinguish a page declaration from its references. Filesystem links have no declaration in
+    // the wiki, so every matching link is a reference. A link to a missing page and other text in a
+    // page have nothing to highlight.
+    let mut highlights = match occurrence_at(wiki, byte_offset)? {
+        Occurrence::Title(page) => page_highlights(wiki, page),
+        Occurrence::Link(Link::Text { title, .. }) => page_highlights(wiki, wiki.pages.get(title)?),
+        Occurrence::Link(Link::Filesystem { target, .. }) => {
             filesystem_link_source_ranges(wiki, target)
                 .into_iter()
                 .map(|source_range| (source_range, DocumentHighlightKind::READ))
                 .collect()
-        };
+        }
+        Occurrence::Prose(_) => return None,
+    };
 
     // Return every matching source occurrence in wiki order.
     highlights.sort_by_key(|(source_range, _kind)| (source_range.start, source_range.end));
@@ -1330,6 +1323,16 @@ fn document_highlight_for_document(
             })
             .collect(),
     )
+}
+
+// Highlight a page's declaration along with every text link to it.
+fn page_highlights(wiki: &Wiki, page: &Page) -> Vec<(SourceRange, DocumentHighlightKind)> {
+    let mut highlights = text_link_source_ranges(wiki, &page.title)
+        .into_iter()
+        .map(|source_range| (source_range, DocumentHighlightKind::READ))
+        .collect::<Vec<_>>();
+    highlights.push((page.title_source_range, DocumentHighlightKind::WRITE));
+    highlights
 }
 
 // Collect every complete filesystem-link range with the same target.
@@ -1641,10 +1644,10 @@ fn renamable_filesystem_entry_at(
     supports_file_renames: bool,
 ) -> std::result::Result<Option<RenamableFilesystemEntry>, String> {
     // Resolve the filesystem link at the cursor and its target.
-    let Some(Link::Filesystem {
+    let Some(Occurrence::Link(Link::Filesystem {
         target: old_target,
         source_range,
-    }) = link_at(snapshot.wiki(), cursor_offset)
+    })) = occurrence_at(snapshot.wiki(), cursor_offset)
     else {
         return Ok(None);
     };
@@ -2201,14 +2204,6 @@ fn page_at(
             },
         )),
         Occurrence::Link(Link::Filesystem { .. }) | Occurrence::Prose(_) => None,
-    }
-}
-
-// Find the link of any kind at a source offset without resolving its destination.
-fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
-    match occurrence_at(wiki, byte_offset)? {
-        Occurrence::Link(link) => Some(link),
-        Occurrence::Title(_) | Occurrence::Prose(_) => None,
     }
 }
 
