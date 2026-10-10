@@ -89,20 +89,19 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
-| Find a page | `Command + Shift + O` | `Control + Shift + O` |
-| Rename a page | `F2` | `F2` |
-| Jump to a page from a link | `F12` | `F12` |
+| Jump to a page from a link | `F12` or `Command + click` | `F12` or `Control + click` |
 | Jump to links to a page | `Shift + F12` | `Shift + F12` |
-| Jump back | `Control + -` | `Alt + Left` |
-| Show completions | `Control + Space` | `Control + Space` |
-| Jump to the next error | `F8` | `F8` |
-| Jump to the previous error | `Shift + F8` | `Shift + F8` |
-| Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
-| Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
+| Jump back to the previously visited page | `Command + [` | `Alt + Left` |
+| Jump forward to the next visited page | `Command + ]` | `Alt + Right` |
 | Jump to the start of the current page | `Command + Up` | `Control + Home` |
 | Jump to the end of the current page | `Command + Down` | `Control + End` |
-| Go back to the previously visited page | `Command + [` | `Alt + Left` |
-| Go forward to the next visited page | `Command + ]` | `Alt + Right` |
+| Jump to the next error | `F8` | `F8` |
+| Jump to the previous error | `Shift + F8` | `Shift + F8` |
+| Find a page | `Command + Shift + O` | `Control + Shift + O` |
+| Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
+| Show completions | `Control + Space` | `Control + Space` |
+| Rename a page | `F2` | `F2` |
+| Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
 ## Usage
 
