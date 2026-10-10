@@ -100,9 +100,8 @@ impl fmt::Display for Page {
 }
 
 // This is text as it appears in a page's content, where `[` and `]` delimit links and a backslash
-// escapes a following `[`, `]`, `#`, or backslash [ref:content_escapes]. Once the escapes are
-// removed, the text around links is Markdown. A heading isn't content: a page's title appears in
-// its heading as is.
+// escapes a following `[`, `]`, `#`, or backslash [ref:content_escapes]. A heading isn't content:
+// a page's title appears in its heading as is.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContentText(String);
 
