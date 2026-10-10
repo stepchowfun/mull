@@ -135,7 +135,7 @@ curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | 
 
 Note that if you change the installation path, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
 
-If you prefer not to use this installation method, you can download the binary from the [releases page](https://github.com/stepchowfun/mull/releases), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installation-of-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
+If you prefer not to use this installation method, you can download the binary from the [releases page](https://github.com/stepchowfun/mull/releases), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installing-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
 
 ### Installing the binary on Windows (AArch64 or x86-64)
 
@@ -153,9 +153,9 @@ cargo install mull
 
 You can run that command with `--force` to update an existing installation.
 
-### Installation of the Visual Studio Code / Cursor extension
+### Installing the Visual Studio Code / Cursor extension
 
-To install the Visual Studio Code / Cursor extension, download the `mull.vsix` file from the latest [release](https://github.com/stepchowfun/mull/releases) and install it via the "Install from VSIX..." option in the `...` menu at the top of the Extensions view of the Primary Side Bar.
+Download the `mull.vsix` file from the latest [release](https://github.com/stepchowfun/mull/releases) and install it via the "Install from VSIX..." option in the `...` menu at the top of the Extensions view of the Primary Side Bar.
 
 Note that the macOS / Linux installation script will install the extension automatically, so you can skip this section if you use that installation method.
 
