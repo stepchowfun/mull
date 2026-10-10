@@ -87,7 +87,7 @@ Once Mull is [installed](#installation-instructions) for Visual Studio Code or C
 You can also run Mull from the command line (e.g., in a CI job) as follows:
 
 ```sh
-mull
+mull check --path wiki.mull
 ```
 
 Here are the supported command-line options:
@@ -97,7 +97,7 @@ Usage: mull [COMMAND]
 
 Commands:
   check            Check a wiki
-  fix              Fix a wiki (default)
+  format           Format a wiki (default)
   language-server  Start the language server (editors use this)
   help             Print this message or the help of the given subcommand(s)
 

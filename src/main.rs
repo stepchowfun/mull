@@ -58,8 +58,8 @@ enum Subcommand {
     #[command(about = "Check a wiki")]
     Check(WikiArgs),
 
-    #[command(about = "Fix a wiki (default)")]
-    Fix(WikiArgs),
+    #[command(about = "Format a wiki (default)")]
+    Format(WikiArgs),
 
     #[command(about = "Start the language server (editors use this)")]
     LanguageServer,
@@ -88,15 +88,17 @@ async fn entry() -> Result<(), Vec<Error>> {
     let cli = Cli::parse();
 
     // Start the language server without requiring a wiki, or select the requested wiki operation.
-    let (should_fix, WikiArgs { path }) =
-        match cli.command.unwrap_or(Subcommand::Fix(WikiArgs::default())) {
-            Subcommand::Check(wiki_args) => (false, wiki_args),
-            Subcommand::Fix(wiki_args) => (true, wiki_args),
-            Subcommand::LanguageServer => {
-                language_server::run().await;
-                return Ok(());
-            }
-        };
+    let (should_format, WikiArgs { path }) = match cli
+        .command
+        .unwrap_or(Subcommand::Format(WikiArgs::default()))
+    {
+        Subcommand::Check(wiki_args) => (false, wiki_args),
+        Subcommand::Format(wiki_args) => (true, wiki_args),
+        Subcommand::LanguageServer => {
+            language_server::run().await;
+            return Ok(());
+        }
+    };
 
     // Select the wiki and make its path relative when it's contained in the current directory.
     let current_directory = env::current_dir().map_err(|error| {
@@ -146,10 +148,10 @@ async fn entry() -> Result<(), Vec<Error>> {
     .assume_completed()?
     .to_string();
 
-    // Accept a canonical wiki, then either fix a noncanonical one or reject it with a diff.
+    // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff.
     if wiki_contents == rendered_wiki {
         println!("Wiki {} looks good.", wiki_path.code_str());
-    } else if should_fix {
+    } else if should_format {
         fs::write(&wiki_path, rendered_wiki).map_err(|error| {
             vec![Error::new(
                 "Unable to write the wiki.",
@@ -160,13 +162,13 @@ async fn entry() -> Result<(), Vec<Error>> {
             )]
         })?;
 
-        // Report that the wiki was fixed.
-        println!("Fixed {}.", wiki_path.code_str());
+        // Report that the wiki was formatted.
+        println!("Formatted {}.", wiki_path.code_str());
     } else {
         return Err(vec![Error::new(
             &format!(
-                "The wiki isn't formatted correctly. {} can fix it.\n\n{}",
-                "mull fix".code_str(),
+                "The wiki isn't formatted correctly. Run {} to format it.\n\n{}",
+                "mull format".code_str(),
                 TextDiff::from_lines(&wiki_contents, &rendered_wiki)
                     .unified_diff()
                     .header("wiki", "rendered"),
@@ -294,8 +296,8 @@ mod tests {
             Some(Subcommand::Check(_)),
         ));
         assert!(matches!(
-            Cli::try_parse_from(["mull", "fix"]).unwrap().command,
-            Some(Subcommand::Fix(_)),
+            Cli::try_parse_from(["mull", "format"]).unwrap().command,
+            Some(Subcommand::Format(_)),
         ));
         assert!(matches!(
             Cli::try_parse_from(["mull", "language-server"])
@@ -308,8 +310,8 @@ mod tests {
     // Accept an explicit wiki path after the subcommand that acts on the wiki.
     #[test]
     fn parse_path() {
-        for subcommand in ["check", "fix"] {
-            let Some(Subcommand::Check(WikiArgs { path }) | Subcommand::Fix(WikiArgs { path })) =
+        for subcommand in ["check", "format"] {
+            let Some(Subcommand::Check(WikiArgs { path }) | Subcommand::Format(WikiArgs { path })) =
                 Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull"])
                     .unwrap()
                     .command
