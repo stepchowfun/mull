@@ -708,6 +708,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       { scheme: 'file', language: 'mull' },
       { scheme: 'untitled', language: 'mull' },
     ],
+    // Let hovers use HTML, which sizes image previews.
+    markdown: { supportHtml: true },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
