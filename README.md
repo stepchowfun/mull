@@ -90,7 +90,7 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Action | macOS | Windows |
 | --- | --- | --- |
 | Jump to a page from a link | `F12` or `Command + click` | `F12` or `Control + click` |
-| Jump to links to a page | `Shift + F12` | `Shift + F12` |
+| Jump to links to a page (i.e., backlinks) | `Shift + F12` | `Shift + F12` |
 | Jump back to the previously visited page | `Command + [` | `Alt + Left` |
 | Jump forward to the next visited page | `Command + ]` | `Alt + Right` |
 | Jump to the start of the current page | `Command + Up` | `Control + Home` |
