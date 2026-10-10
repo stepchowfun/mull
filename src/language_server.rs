@@ -1247,14 +1247,11 @@ fn references_for_document(
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
     // from syntax errors so references can be found while they're fixed. A link to a missing page
     // or a filesystem link denotes no page.
-    let byte_offset = snapshot.byte_offset(cursor)?;
     let wiki = snapshot.wiki();
-    let page = match page_at(snapshot, byte_offset, LinkExtent::Whole) {
-        Some((page, _source_range)) => page,
-        None if link_at(wiki, byte_offset).is_none() => wiki.pages.values().find(|page| {
-            page.source_range.start <= byte_offset && byte_offset <= page.source_range.end
-        })?,
-        None => return None,
+    let page = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
+        Occurrence::Title(page) | Occurrence::Prose(page) => page,
+        Occurrence::Link(Link::Text { title, .. }) => wiki.pages.get(title)?,
+        Occurrence::Link(Link::Filesystem { .. }) => return None,
     };
 
     // Include the declaration only when requested, then restore source order.
@@ -2141,47 +2138,78 @@ enum LinkExtent {
     Target,
 }
 
+// This is what a source offset within a page falls on.
+enum Occurrence<'a> {
+    // The page's title line, from the `#` through the end of the line, including trailing
+    // whitespace. Navigating to a page leaves the cursor before the `#`.
+    Title(&'a Page),
+
+    // A link of any kind in the page's content.
+    Link(&'a Link),
+
+    // Anything else in the page.
+    Prose(&'a Page),
+}
+
+// Find what a source offset falls on, if it's within a page. A page includes the offset just past
+// its end, so a cursor there still belongs to it.
+fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
+    // Find the page containing the offset. Its title line may extend past the rest of the page
+    // through trailing whitespace.
+    let page = wiki.pages.values().find(|page| {
+        page.source_range.start <= byte_offset
+            && byte_offset <= page.source_range.end.max(page.title_source_range.end)
+    })?;
+    if byte_offset <= page.title_source_range.end {
+        return Some(Occurrence::Title(page));
+    }
+
+    // Look for a link among the page's own links. Links never overlap, so at most one contains the
+    // offset.
+    Some(
+        page.links
+            .iter()
+            .find(|link| {
+                let source_range = link.source_range();
+                source_range.start <= byte_offset && byte_offset < source_range.end
+            })
+            .map_or(Occurrence::Prose(page), Occurrence::Link),
+    )
+}
+
 // Resolve the page denoted by a declaration or text link at a source offset.
 fn page_at(
     snapshot: &Snapshot,
     byte_offset: usize,
     link_extent: LinkExtent,
 ) -> Option<(&Page, SourceRange)> {
-    // Prefer a declaration, which spans its title line from the `#` through the end of the title's
-    // range, which extends through trailing whitespace to the end of the line. The title's range is
-    // the only one it contributes. Navigating to a page leaves the cursor before the `#`.
+    // A declaration contributes only its title's range. A reference reports whichever extent of
+    // the link the caller asked for.
     let wiki = snapshot.wiki();
-    if let Some(page) = wiki.pages.values().find(|page| {
-        page.source_range.start <= byte_offset && byte_offset <= page.title_source_range.end
-    }) {
-        return Some((page, page.title_source_range));
+    match occurrence_at(wiki, byte_offset)? {
+        Occurrence::Title(page) => Some((page, page.title_source_range)),
+        Occurrence::Link(Link::Text {
+            title,
+            source_range,
+        }) => Some((
+            wiki.pages.get(title)?,
+            match link_extent {
+                LinkExtent::Whole => *source_range,
+                LinkExtent::Target => {
+                    text_link_target_source_range(&snapshot.contents, *source_range)
+                }
+            },
+        )),
+        Occurrence::Link(Link::Filesystem { .. }) | Occurrence::Prose(_) => None,
     }
-
-    // Resolve a reference, reporting whichever extent of the link the caller asked for.
-    let Link::Text {
-        title,
-        source_range,
-    } = link_at(wiki, byte_offset)?
-    else {
-        return None;
-    };
-    let source_range = *source_range;
-    Some((
-        wiki.pages.get(title)?,
-        match link_extent {
-            LinkExtent::Whole => source_range,
-            LinkExtent::Target => text_link_target_source_range(&snapshot.contents, source_range),
-        },
-    ))
 }
 
-// Find the link of any kind at a source offset without resolving its destination. Links never
-// overlap, so at most one link can contain the offset.
+// Find the link of any kind at a source offset without resolving its destination.
 fn link_at(wiki: &Wiki, byte_offset: usize) -> Option<&Link> {
-    wiki.links().find(|link| {
-        let source_range = link.source_range();
-        source_range.start <= byte_offset && byte_offset < source_range.end
-    })
+    match occurrence_at(wiki, byte_offset)? {
+        Occurrence::Link(link) => Some(link),
+        Occurrence::Title(_) | Occurrence::Prose(_) => None,
+    }
 }
 
 // Exclude the delimiters from a source range known to represent a complete link.
