@@ -11,7 +11,7 @@ use crate::{
     validator,
     wiki::{
         ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, TITLE_PREFIX, Wiki,
-        rendering_order_key, title_line_text, unescaped_characters,
+        title_line_text,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -953,7 +953,7 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     // delimiters as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
-    for (index, character) in unescaped_characters(line) {
+    for (index, character) in ContentText::unescaped_characters(line) {
         let offset = line_start + index;
         if offset < cursor {
             match character {
@@ -2093,6 +2093,10 @@ fn document_symbol_for_document(
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Each kind of fix is described where the fixes are turned into code actions."
+)]
 fn code_action_for_document(
     snapshot: &Snapshot,
     diagnostics: &[Diagnostic],
@@ -2128,14 +2132,16 @@ fn code_action_for_document(
                         .enumerate()
                         .map(|(index, title)| (title, index))
                         .collect::<HashMap<_, _>>();
-                    let new_key =
-                        rendering_order_key(traversal_indices.get(title.as_str()).copied(), &title);
+                    let new_key = Wiki::rendering_order_key(
+                        traversal_indices.get(title.as_str()).copied(),
+                        &title,
+                    );
                     let preceding_page = wiki
                         .pages
                         .values()
                         .map(|page| {
                             let index = traversal_indices.get(page.title.as_str()).copied();
-                            (rendering_order_key(index, &page.title), page)
+                            (Wiki::rendering_order_key(index, &page.title), page)
                         })
                         .filter(|(key, _page)| *key < new_key)
                         .max_by_key(|(key, _page)| *key);
@@ -2189,6 +2195,24 @@ fn code_action_for_document(
                         format!("Create page {}", title.code_str()),
                         edit,
                         Some(command),
+                    )
+                }
+                Fix::EscapeBackslash(offset) => {
+                    // Skip a fix from a stale diagnostic whose backslash no longer needs escaping.
+                    let (_wiki, syntax_errors) = snapshot.parsed();
+                    if !syntax_errors
+                        .iter()
+                        .any(|error| error.fix() == Some(&Fix::EscapeBackslash(offset)))
+                    {
+                        return None;
+                    }
+
+                    // Double the backslash so it stands for itself.
+                    let position = snapshot.position(offset);
+                    (
+                        "Escape the backslash".to_owned(),
+                        TextEdit::new(Range::new(position, position), "\\".to_owned()),
+                        None,
                     )
                 }
             };
@@ -4476,6 +4500,41 @@ mod tests {
         assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
 
         assert!(code_action_for_document(&snapshot(&uri, source), &source_diagnostics).is_none());
+    }
+
+    // Offer to escape each backslash which doesn't escape anything, making the wiki valid, but not
+    // once a stale diagnostic's backslash is escaped.
+    #[test]
+    fn code_actions_escape_backslashes() {
+        let source = "# Home\n\nC:\\Users\\me";
+        let uri = untitled_uri();
+        let escape_diagnostics = diagnostics(&uri, source);
+        assert_eq!(escape_diagnostics.len(), 2);
+
+        // Apply the edits from the end of the source so the earlier ones stay where they are.
+        let actions =
+            code_action_for_document(&snapshot(&uri, source), &escape_diagnostics).unwrap();
+        assert_eq!(actions.len(), 2);
+        let mut applied = source.to_owned();
+        for action in actions.iter().rev() {
+            let CodeActionOrCommand::CodeAction(action) = action else {
+                panic!("A code action shouldn't be a bare command.");
+            };
+            assert_eq!(action.title, "Escape the backslash");
+            assert_eq!(action.command, None);
+            let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let [edit] = changes[&uri].as_slice() else {
+                panic!("A code action should make exactly one edit.");
+            };
+            assert_eq!(edit.range.start, edit.range.end);
+            applied.insert_str(
+                byte_offset(source, edit.range.start).unwrap(),
+                &edit.new_text,
+            );
+        }
+        assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
+        assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
+        assert!(code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics).is_none());
     }
 
     // Write the start of a PNG file with the given size, enough for its size to be read.

@@ -2,7 +2,7 @@ use crate::{error::SourceRange, format::CodeStr, spelled_path::code_file_path};
 use colored::ColoredString;
 use std::{
     collections::HashMap,
-    fmt,
+    fmt, iter,
     path::{Component, Path, PathBuf},
 };
 
@@ -40,6 +40,15 @@ impl Wiki {
     pub fn links(&self) -> impl Iterator<Item = &Link> {
         self.pages.values().flat_map(|page| &page.links)
     }
+
+    // Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
+    // unreachable pages in title order.
+    pub fn rendering_order_key(
+        traversal_index: Option<usize>,
+        title: &str,
+    ) -> (bool, Option<usize>, &str) {
+        (traversal_index.is_none(), traversal_index, title)
+    }
 }
 
 // Render pages deterministically in traversal order, with unreachable pages last in title order.
@@ -47,7 +56,7 @@ impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable pages by traversal order, followed by unreachable pages in title order.
         let mut pages = self.pages.iter().collect::<Vec<_>>();
-        pages.sort_by_key(|(title, page)| rendering_order_key(page.traversal_index, title));
+        pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
 
         // Add one line break between pages because each page already ends with one.
         for (index, (_title, page)) in pages.into_iter().enumerate() {
@@ -62,20 +71,11 @@ impl fmt::Display for Wiki {
     }
 }
 
-// Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
-// unreachable pages in title order.
-pub fn rendering_order_key(
-    traversal_index: Option<usize>,
-    title: &str,
-) -> (bool, Option<usize>, &str) {
-    (traversal_index.is_none(), traversal_index, title)
-}
-
 // This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
 pub struct Page {
     pub title: String,        // Non-empty, one line, trimmed, and not starting with `/`
-    pub content: ContentText, // No leading or trailing whitespace, and lines are trimmed at the end
+    pub content: ContentText, // No surrounding blank lines or whitespace at line ends
     pub links: Vec<Link>,
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
@@ -100,13 +100,14 @@ impl fmt::Display for Page {
 }
 
 // This is text as it appears in a page's content, where `[` and `]` delimit links and a backslash
-// escapes a following `[`, `]`, `#`, or backslash [ref:content_escapes]. A heading isn't content:
-// a page's title appears in its heading as is.
+// escapes the character after it [ref:content_escapes]. A heading isn't content: a page's title
+// appears in its heading as is.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContentText(String);
 
 impl ContentText {
-    // Escape plain text, such as a page title or a path, so it retains its meaning in content.
+    // Escape plain text, such as a page title or a path, so it retains its meaning in content
+    // [ref:content_escapes].
     pub fn escape(plain: &str) -> Self {
         Self(
             plain
@@ -128,7 +129,7 @@ impl ContentText {
         while let Some(character) = characters.next() {
             plain.push(if character == '\\' {
                 characters
-                    .next_if(|&next| is_escapable(next))
+                    .next_if(|&next| Self::is_escapable(next))
                     .unwrap_or(character)
             } else {
                 character
@@ -146,22 +147,41 @@ impl ContentText {
     pub fn into_string(self) -> String {
         self.0
     }
-}
 
-// Scan content for the characters which aren't escaped, such as unescaped link delimiters. A
-// backslash escapes a following `[`, `]`, `#`, or backslash [tag:content_escapes].
-pub fn unescaped_characters(content: &str) -> impl Iterator<Item = (usize, char)> {
-    let mut previous_was_escape = false;
-    content.char_indices().filter(move |&(_, character)| {
-        let is_escaped = previous_was_escape && is_escapable(character);
-        previous_was_escape = character == '\\' && !is_escaped;
-        !is_escaped
-    })
-}
+    // Scan text written as content, such as part of a wiki's source, for the characters which
+    // aren't escaped [ref:content_escapes], such as unescaped link delimiters.
+    pub fn unescaped_characters(source: &str) -> impl Iterator<Item = (usize, char)> {
+        let mut previous_was_escape = false;
+        source.char_indices().filter(move |&(_, character)| {
+            let is_escaped = previous_was_escape && Self::is_escapable(character);
+            previous_was_escape = character == '\\' && !is_escaped;
+            !is_escaped
+        })
+    }
 
-// Determine whether a backslash escapes a character in content.
-fn is_escapable(character: char) -> bool {
-    matches!(character, '\\' | '[' | ']' | '#')
+    // Find the backslashes in text written as content which don't escape anything, because they
+    // aren't followed by a character which can be escaped [ref:content_escapes]. Every other
+    // backslash escapes the next character, so a backslash itself is written as `\\`.
+    pub fn invalid_escapes(source: &str) -> impl Iterator<Item = usize> {
+        let mut characters = source.char_indices().peekable();
+        iter::from_fn(move || {
+            while let Some((index, character)) = characters.next() {
+                if character == '\\'
+                    && characters
+                        .next_if(|&(_, next_character)| Self::is_escapable(next_character))
+                        .is_none()
+                {
+                    return Some(index);
+                }
+            }
+            None
+        })
+    }
+
+    // Determine whether a backslash escapes a character in content [tag:content_escapes].
+    fn is_escapable(character: char) -> bool {
+        matches!(character, '\\' | '[' | ']')
+    }
 }
 
 // These are the source occurrences through which a page can reference a target.
@@ -405,8 +425,8 @@ mod tests {
             r"a\[b]\c\",
         );
         assert_eq!(ContentText::from_source(r"\a\\\").unescape(), r"\a\\");
-        assert_eq!(ContentText::from_source(r"\#a\\#").unescape(), r"#a\#");
-        assert_eq!(ContentText::escape(r"\#").unescape(), r"\#");
+        assert_eq!(ContentText::from_source(r"\#a\\#").unescape(), r"\#a\#");
+        assert_eq!(ContentText::escape(r"#\#").as_str(), r"#\\#");
     }
 
     // Reject filesystem link paths which would escape the wiki's logical tree.

@@ -22,6 +22,9 @@ pub struct SourceRange {
 pub enum Fix {
     // Declare a page with this title.
     CreatePage(String),
+
+    // Escape the backslash at this byte offset in the wiki's source.
+    EscapeBackslash(usize),
 }
 
 // This is the primary error type we'll be using everywhere. Its parts are exposed through accessors

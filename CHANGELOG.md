@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0] - 2026-10-10
+
+### Changed
+- A backslash in a page's content must now be followed by `[`, `]`, or another backslash, so a backslash itself is written as `\\`. Any other backslash, including one at the end of a line, is now a syntax error rather than a literal backslash, so it's never mistaken for an escape, and new escapes can be added later without changing the meaning of existing wikis. Titles are still taken as written. In the VS Code extension, such a backslash is highlighted as invalid, and a quick fix escapes it.
+- `\#` is no longer an escape, since `#` is only special as a title marker at the start of a line, so a line of a page's content can't start with `# `. An indented line can.
+
+### Fixed
+- Formatting no longer removes the indentation of the first line of a page's content. Before, it could turn an indented line starting with `# ` into a title.
+
 ## [0.40.0] - 2026-10-10
 
 ### Changed
