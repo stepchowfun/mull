@@ -81,8 +81,16 @@
       ]
     },
     "escapes": {
-      "name": "constant.character.escape.mull",
-      "match": "\\\\[\\\\\\[\\]#]"
+      "patterns": [
+        {
+          "name": "constant.character.escape.mull",
+          "match": "\\\\[\\\\\\[\\]#]"
+        },
+        {
+          "name": "invalid.illegal.escape.mull",
+          "match": "\\\\"
+        }
+      ]
     },
     "links": {
       "patterns": [

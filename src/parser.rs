@@ -1,11 +1,11 @@
 use crate::{
-    error::{Error, SourceRange},
+    error::{Error, Fix, SourceRange},
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text,
-        unescaped_characters,
+        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, invalid_escapes,
+        title_line_text, unescaped_characters,
     },
 };
 use std::{iter, path::Path};
@@ -208,12 +208,20 @@ fn finish_page(
             end: source_end,
         },
     );
-    let (content, links, content_errors) = parse_content(
+    let (content, links, mut content_errors) = parse_content(
         source_path,
         source_contents,
         line_index,
         content_source_range,
     );
+
+    // Report the backslashes which don't escape anything after the content's other errors.
+    content_errors.extend(invalid_escape_errors(
+        source_path,
+        source_contents,
+        line_index,
+        content_source_range,
+    ));
 
     // Discard the content of a region without a valid title, whose title error was already
     // reported.
@@ -247,6 +255,36 @@ fn finish_page(
         },
     );
     content_errors
+}
+
+// Reject each backslash in a page's content which doesn't escape anything, so it can't be mistaken
+// for an escape, and offer to escape it.
+fn invalid_escape_errors(
+    source_path: Option<&Path>,
+    source_contents: &str,
+    line_index: &LineIndex,
+    content_source_range: SourceRange,
+) -> Vec<Error> {
+    invalid_escapes(&source_contents[content_source_range.start..content_source_range.end])
+        .map(|index| {
+            let offset = content_source_range.start + index;
+            Error::new(
+                "A backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` for a \
+                 backslash itself.",
+                source_path,
+                Some((
+                    source_contents,
+                    line_index,
+                    SourceRange {
+                        start: offset,
+                        end: offset + '\\'.len_utf8(),
+                    },
+                )),
+                None,
+                Some(Fix::EscapeBackslash(offset)),
+            )
+        })
+        .collect()
 }
 
 // Parse link occurrences and produce the normalized content stored on a page.
@@ -443,7 +481,7 @@ mod tests {
     use super::parse;
     use crate::{
         assert_fails,
-        error::Error,
+        error::{Error, Fix},
         line_index::LineIndex,
         wiki::{Link, Wiki},
     };
@@ -570,13 +608,13 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         );
     }
 
-    // Treat an escaped backslash as a literal character which doesn't escape what follows, and
-    // leave other backslashes as is.
+    // Treat an escaped backslash as a literal character which doesn't escape what follows. A title
+    // is taken as written, so its backslashes need no escaping.
     #[test]
     fn escaped_backslashes() {
         let wiki = parse_test(
             r"# Home
-See \\[Four], [Five\\], [A\B], and \\\[ignored\].
+See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
 # Four
 # Five\
 # A\B",
@@ -587,6 +625,29 @@ See \\[Four], [Five\\], [A\B], and \\\[ignored\].
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Four", "text:Five\\", "text:A\\B"],
         );
+    }
+
+    // Reject each backslash which doesn't escape anything, including one at the end of a line or a
+    // page, offering to escape it, while keeping the page's links.
+    #[test]
+    fn invalid_escapes() {
+        let (wiki, errors) = parse_fixture("# Home\nC:\\Users \\\\ [Other] \\a\\\nend\\\n# Other");
+
+        assert_eq!(
+            errors.iter().map(Error::fix).collect::<Vec<_>>(),
+            vec![
+                Some(&Fix::EscapeBackslash(9)),
+                Some(&Fix::EscapeBackslash(27)),
+                Some(&Fix::EscapeBackslash(29)),
+                Some(&Fix::EscapeBackslash(34)),
+            ],
+        );
+        assert!(errors.iter().all(|error| {
+            error
+                .to_string()
+                .contains("A backslash must be followed by")
+        }));
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
     }
 
     // Parse file and directory links separately from text links.

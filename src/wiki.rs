@@ -2,7 +2,7 @@ use crate::{error::SourceRange, format::CodeStr, spelled_path::code_file_path};
 use colored::ColoredString;
 use std::{
     collections::HashMap,
-    fmt,
+    fmt, iter,
     path::{Component, Path, PathBuf},
 };
 
@@ -156,6 +156,25 @@ pub fn unescaped_characters(content: &str) -> impl Iterator<Item = (usize, char)
         let is_escaped = previous_was_escape && is_escapable(character);
         previous_was_escape = character == '\\' && !is_escaped;
         !is_escaped
+    })
+}
+
+// Find the backslashes in content which don't escape anything, because they aren't followed by a
+// character which can be escaped [ref:content_escapes]. Every other backslash escapes the next
+// character, so a backslash itself is written as `\\`.
+pub fn invalid_escapes(content: &str) -> impl Iterator<Item = usize> {
+    let mut characters = content.char_indices().peekable();
+    iter::from_fn(move || {
+        while let Some((index, character)) = characters.next() {
+            if character == '\\'
+                && characters
+                    .next_if(|&(_, next_character)| is_escapable(next_character))
+                    .is_none()
+            {
+                return Some(index);
+            }
+        }
+        None
     })
 }
 
