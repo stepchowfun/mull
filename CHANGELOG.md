@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.2] - 2026-10-10
+
+### Changed
+- Formatting now renders each page from the wiki's source, rather than from a normalized copy of the page's content that parsing made in advance, so all of the formatting rules live in one place. Escaping is done by plain functions rather than a dedicated type for text as it appears in content, since nothing kept values of that type. There's no change in behavior.
+
 ## [0.41.1] - 2026-10-10
 
 ### Fixed

@@ -1,11 +1,10 @@
 use crate::{
     error::{Error, Fix, SourceRange},
+    escaping::{invalid_escapes, unescape, unescaped_characters},
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
-    wiki::{
-        ContentText, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text,
-    },
+    wiki::{FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text},
 };
 use std::{iter, path::Path};
 
@@ -29,7 +28,7 @@ pub fn parse(
 ) -> (Wiki, Vec<Error>) {
     // Accumulate parsed pages, errors, and the region currently being read, which starts as the
     // untitled region before the first title.
-    let mut wiki = Wiki::default();
+    let mut wiki = Wiki::new(source_contents);
     let mut errors = Vec::<Error>::new();
     let mut pending_page = PendingPage {
         title: None,
@@ -200,7 +199,7 @@ fn finish_page(
             end: source_end,
         },
     );
-    let mut content_source_range = trim_source_range(
+    let content_source_range = trim_source_range(
         source_contents,
         SourceRange {
             start: content_start,
@@ -208,17 +207,8 @@ fn finish_page(
         },
     );
 
-    // Keep the indentation of the content's first line, trimming only the blank lines before it,
-    // so an indented line which starts with a title marker doesn't become a title once rendered.
-    if content_source_range.start < content_source_range.end {
-        content_source_range.start = source_contents[..content_source_range.start]
-            .rfind('\n')
-            .map_or(0, |index| index + '\n'.len_utf8())
-            .max(content_start);
-    }
-
-    // Parse the content's links and normalize it.
-    let (content, links, content_errors) = parse_content(
+    // Parse the content's links.
+    let (links, content_errors) = parse_content(
         source_path,
         source_contents,
         line_index,
@@ -249,7 +239,6 @@ fn finish_page(
         title.clone(),
         Page {
             title,
-            content: ContentText::from_source(&content),
             links,
             traversal_index: None,
             source_range,
@@ -259,7 +248,7 @@ fn finish_page(
     content_errors
 }
 
-// Parse link occurrences and produce the normalized content stored on a page.
+// Parse the link occurrences in a page's content, reporting any syntax errors.
 #[allow(
     clippy::too_many_lines,
     reason = "The function scans content once, tracking the state of the link being read."
@@ -269,11 +258,9 @@ fn parse_content(
     source_contents: &str,
     line_index: &LineIndex,
     source_range: SourceRange,
-) -> (String, Vec<Link>, Vec<Error>) {
-    // Traverse the original content while retaining indices for copying and diagnostics.
+) -> (Vec<Link>, Vec<Error>) {
+    // Traverse the original content while retaining indices for diagnostics.
     let original_content = &source_contents[source_range.start..source_range.end];
-    let mut content = String::new();
-    let mut copied_through = 0;
     let mut links = Vec::<Link>::new();
     let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
@@ -291,7 +278,7 @@ fn parse_content(
         )
     };
 
-    for (index, character) in ContentText::unescaped_characters(original_content) {
+    for (index, character) in unescaped_characters(original_content) {
         // Locate the current character for any delimiter error.
         let character_source_range = SourceRange {
             start: source_range.start + index,
@@ -350,36 +337,23 @@ fn parse_content(
                 let link = if link_has_line_break || link_has_nested_start {
                     None
                 } else {
-                    ContentText::from_source(trimmed_target)
-                        .unescape()
-                        .map(|unescaped_target| {
-                            parse_link(
-                                &unescaped_target,
-                                source_path,
-                                source_contents,
-                                line_index,
-                                link_source_range,
-                            )
-                        })
+                    unescape(trimmed_target).map(|unescaped_target| {
+                        parse_link(
+                            &unescaped_target,
+                            source_path,
+                            source_contents,
+                            line_index,
+                            link_source_range,
+                        )
+                    })
                 };
 
-                // Write a filesystem link's target in its canonical form, and keep any other target
-                // as written.
-                let formatted_target = match &link {
-                    Some(Ok(Link::Filesystem { target, .. })) => target.text().into_string(),
-                    Some(Ok(Link::Text { .. }) | Err(_)) | None => trimmed_target.to_owned(),
-                };
+                // Keep the link if it parsed, and report it otherwise.
                 match link {
                     Some(Ok(link)) => links.push(link),
                     Some(Err(error)) => errors.push(error),
                     None => {}
                 }
-
-                // Copy the prose before the link, then the link in its formatted form.
-                content.push_str(&original_content[copied_through..inner_start]);
-                content.push_str(&formatted_target);
-                content.push(']');
-                copied_through = index + character.len_utf8();
             }
             _ => {}
         }
@@ -397,7 +371,7 @@ fn parse_content(
     // Reject each backslash which doesn't escape anything, so it can't be mistaken for an escape,
     // and offer to escape it. The message lists the characters which can be escaped
     // [ref:content_escapes].
-    for index in ContentText::invalid_escapes(original_content) {
+    for index in invalid_escapes(original_content) {
         let offset = source_range.start + index;
         errors.push(Error::new(
             "A backslash must be followed by `[`, `]`, or `\\`, so write `\\\\` for a backslash \
@@ -416,10 +390,8 @@ fn parse_content(
         ));
     }
 
-    // Retain the content following the final link, then normalize the finished content. Links
-    // can't contain line breaks, and each ends with a delimiter, so normalizing never changes one.
-    content.push_str(&original_content[copied_through..]);
-    (normalize_lines(&content), links, errors)
+    // Return the links which parsed, along with the errors.
+    (links, errors)
 }
 
 // Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
@@ -452,15 +424,6 @@ fn parse_link(
             source_range,
         })
     }
-}
-
-// Write text in the wiki's canonical form, with Unix line endings and no whitespace at the end of a
-// line.
-fn normalize_lines(text: &str) -> String {
-    text.lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
@@ -528,8 +491,8 @@ mod tests {
     }
 
     // Parse titles and multiline content while retaining exact source ranges. A title's range
-    // extends through trailing whitespace, which the title itself excludes. Content keeps the
-    // indentation of its first line.
+    // extends through trailing whitespace, which the title itself excludes. Rendered content keeps
+    // the indentation of its first line.
     #[test]
     fn pages() {
         let source =
@@ -539,14 +502,13 @@ mod tests {
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(wiki.pages["Home"].title, "Home");
         assert_eq!(
-            wiki.pages["Home"].content.as_str(),
-            " Check out the [Greeting].",
-        );
-        assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
         );
-        assert_eq!(wiki.pages["Greeting"].content.as_str(), " Hello,\nworld!");
+        assert_eq!(
+            wiki.to_string(),
+            "# Home\n\n Check out the [Greeting].\n\n# Greeting\n\n Hello,\nworld!\n",
+        );
         assert_eq!(wiki.pages["Home"].title_source_range.start, 7);
         assert_eq!(wiki.pages["Home"].title_source_range.end, 13);
         assert_eq!(wiki.pages["Home"].source_range.start, 3);
@@ -571,8 +533,8 @@ mod tests {
             vec!["text:Greeting", "text:About", "text:Greeting"],
         );
         assert_eq!(
-            wiki.pages["Home"].content.as_str(),
-            "See [Greeting], [About], and [Greeting].",
+            wiki.to_string(),
+            "# Home\n\nSee [Greeting], [About], and [Greeting].\n\n# About\n\n# Greeting\n",
         );
     }
 
@@ -692,7 +654,6 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 1);
-        assert_eq!(wiki.pages["Home"].content.as_str(), "  # Not a title");
         assert_eq!(wiki.to_string(), source);
     }
 
@@ -729,8 +690,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            wiki.pages["Home"].content.as_str(),
-            "[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]",
+            wiki.to_string(),
+            "# Home\n\n[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]\n",
         );
     }
 
@@ -742,8 +703,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .unwrap();
 
         assert_eq!(
-            wiki.pages["Home"].content.as_str(),
-            "First\n\nSee [Home]\nand [Home] later.\nLast",
+            wiki.to_string(),
+            "# Home\n\nFirst\n\nSee [Home]\nand [Home] later.\nLast\n",
         );
     }
 
@@ -798,10 +759,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     fn non_title_hashes() {
         let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
 
-        assert_eq!(
-            wiki.pages["Home"].content.as_str(),
-            "## Subtitle\n#not a title",
-        );
+        assert_eq!(wiki.to_string(), "# Home\n\n## Subtitle\n#not a title\n");
     }
 
     // Accept empty and whitespace-only wikis.
@@ -813,12 +771,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Accept empty page content.
     #[test]
     fn empty_content() {
-        assert_eq!(
-            parse_test("# Empty").unwrap().pages["Empty"]
-                .content
-                .as_str(),
-            "",
-        );
+        assert_eq!(parse_test("# Empty").unwrap().to_string(), "# Empty\n");
     }
 
     // Parse Windows line endings without retaining carriage returns.
@@ -826,7 +779,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     fn windows_line_endings() {
         let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
 
-        assert_eq!(wiki.pages["Greeting"].content.as_str(), "Hello, world!");
+        assert_eq!(wiki.to_string(), "# Greeting\n\nHello, world!\n");
     }
 
     // Reject non-whitespace content before the first title.
