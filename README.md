@@ -28,11 +28,11 @@ This is the [Home] page, which is the starting point for every wiki.
 
 # To make a prairie
 
-To make a prairie it takes a clover and one bee,
-One clover, and a bee,
-And revery.
-The revery alone will do,
-If bees are few.
+> To make a prairie it takes a clover and one bee,
+> One clover, and a bee,
+> And revery.
+> The revery alone will do,
+> If bees are few.
 
 —Emily Dickinson
 ````
@@ -80,13 +80,13 @@ It also verifies these connectivity properties:
 
 Mull formats the wiki for you. It chooses the ordering of the pages in the file, so you don't have to think about that. But when you create a new page, you must link to it from somewhere. If you remove all the links to a page, Mull will flag that the page isn't reachable. This promotes a basic form of organization that makes Mull different from other wiki software.
 
-Just as every page must be linked to from the wiki, the same is true of files in `<wiki>_files`. Thus, the wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of nested files. If the wiki contains `[/]` (a link to `<wiki>_files` itself), all files are covered.
+Just as every page must be linked to from the wiki, the same is true of files in the `<wiki>_files` directory (if it exists). The wiki serves as an index of those files. You can also link to subdirectories to achieve coverage of any nested files. If the wiki contains `[/]` (a link to the `<wiki>_files` directory itself), all files are covered.
 
 ## Usage
 
 Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor.
 
-You can also run Mull from the command line as follows:
+You can also run Mull from the command line (e.g., in a CI job) as follows:
 
 ```sh
 mull
