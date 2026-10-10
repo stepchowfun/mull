@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.1] - 2026-10-10
+
+### Fixed
+- A link containing a backslash which doesn't escape anything is no longer treated as a link. Before, `[A\B]` still linked to a page named `A\B` even though the backslash was reported as an error.
+- In the VS Code extension, completion no longer offers titles while the text typed into a link ends in a backslash that doesn't escape anything yet. Titles are offered again once the escape is complete.
+
 ## [0.41.0] - 2026-10-10
 
 ### Changed

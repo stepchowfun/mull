@@ -260,7 +260,7 @@ pub fn entry_identity(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{DirectoryListings, FileRoot, code_file_path};
-    use crate::wiki::{ContentText, FilesystemTarget};
+    use crate::wiki::FilesystemTarget;
     use std::{env, fs, path::Path, process};
 
     // Root a path relative to the file root at `/`, as a link would write it.
@@ -286,9 +286,8 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
         let file_root = FileRoot::new(&directory.join("wiki.mull")).unwrap();
 
-        let result = file_root.spell_existing_ancestor(
-            &FilesystemTarget::parse(&ContentText::from_source("/locked/inner/file.txt")).unwrap(),
-        );
+        let result = file_root
+            .spell_existing_ancestor(&FilesystemTarget::parse("/locked/inner/file.txt").unwrap());
         let accessible = locked.join("inner").try_exists().is_ok();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&directory).unwrap();
@@ -310,7 +309,7 @@ mod tests {
 
         let error = file_root
             .spell(
-                &FilesystemTarget::parse(&ContentText::from_source("/missing/file.txt")).unwrap(),
+                &FilesystemTarget::parse("/missing/file.txt").unwrap(),
                 &mut DirectoryListings::new(),
             )
             .unwrap_err();

@@ -912,10 +912,11 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     }
 
     // Complete a text link with the titles of the pages in the wiki which match the typed text,
-    // replacing a closed link in its entirety and an unfinished link through the cursor.
+    // replacing a closed link in its entirety and an unfinished link through the cursor. Offer
+    // nothing while the typed text has a backslash which doesn't escape anything.
     Some(text_link_completions(
         snapshot,
-        &ContentText::from_source(typed_target).unescape(),
+        &ContentText::from_source(typed_target).unescape()?,
         SourceRange {
             start: delimiters.opening,
             end: delimiters
@@ -983,12 +984,12 @@ fn filesystem_link_completions(
     closing_delimiter: Option<usize>,
 ) -> Option<Vec<CompletionItem>> {
     // Resolve the typed directory, declining paths which escape the file tree
-    // [ref:filesystem_path_components].
+    // [ref:filesystem_path_components] or have a backslash which doesn't escape anything.
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
     let mut directory = PathBuf::new();
     for component in
-        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape())
+        Path::new(&ContentText::from_source(typed_directory.trim_start_matches('/')).unescape()?)
             .components()
     {
         match component {
@@ -1530,7 +1531,9 @@ fn prepare_rename_for_document(
                 start,
                 end: start + trimmed.len(),
             }),
-            placeholder: ContentText::from_source(trimmed).unescape(),
+            placeholder: ContentText::from_source(trimmed)
+                .unescape()
+                .expect("A link's escapes should have been checked."),
         }));
     }
 
@@ -2941,6 +2944,26 @@ mod tests {
 
         assert_eq!(bracketed.filter_text.as_deref(), Some("[A\\[B\\]"));
         assert_eq!(edit.new_text, "[A\\[B\\]]");
+    }
+
+    // Offer no completions while the typed text has a backslash which doesn't escape anything, as
+    // right after typing a backslash, but offer them again once the escape is complete.
+    #[test]
+    fn completions_wait_for_complete_escapes() {
+        let incomplete = "# Home\n\n[A\\\n\n# A[B]";
+        let complete = "# Home\n\n[A\\[\n\n# A[B]";
+
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), incomplete), Position::new(2, 3))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), complete), Position::new(2, 4))
+                .unwrap()
+                .items
+                .iter()
+                .any(|completion| completion.label == "A[B]"),
+        );
     }
 
     // Offer page completions only while the cursor is inside a text link target.
