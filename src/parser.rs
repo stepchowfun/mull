@@ -5,14 +5,13 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, LinkDelimiters, Page, PageTitle, Wiki,
-        title_line_text,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, Wiki, title_line_text,
     },
 };
 use std::{collections::HashSet, path::Path};
 
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
-// a valid one which hasn't been used, where it starts, and the links in its content which parsed.
+// a valid one which hasn't been used, where it starts, and the links in its content.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
@@ -71,15 +70,16 @@ pub fn parse(
         )
     };
 
-    // Report a link which isn't closed by the end of its line at its opening delimiter, and record
-    // its delimiters for completion.
+    // Report a link which isn't closed by the end of its line at its opening delimiter, and keep it
+    // as a malformed link through the end of its line.
     let close_unclosed_link =
-        |wiki: &mut Wiki, errors: &mut Vec<Error>, link: OpenLink, end: usize| {
-            wiki.link_delimiters.push(LinkDelimiters {
-                opening: link.start,
-                closing: None,
-                end,
-                has_nested_start: link.has_nested_start,
+        |links: &mut Vec<Link>, errors: &mut Vec<Error>, link: OpenLink, end: usize| {
+            links.push(Link::Malformed {
+                source_range: SourceRange {
+                    start: link.start,
+                    end,
+                },
+                is_closed: false,
             });
             errors.push(syntax_error(
                 "Unclosed link.",
@@ -191,7 +191,7 @@ pub fn parse(
                     } else {
                         position
                     };
-                    close_unclosed_link(&mut wiki, &mut errors, link, end);
+                    close_unclosed_link(&mut pending_page.links, &mut errors, link, end);
                 }
                 is_at_line_start = true;
             }
@@ -217,34 +217,39 @@ pub fn parse(
             ']' => {
                 // Close the open link, or reject a closing delimiter outside one.
                 if let Some(link) = open_link.take() {
-                    wiki.link_delimiters.push(LinkDelimiters {
-                        opening: link.start,
-                        closing: Some(position),
-                        end: position,
-                        has_nested_start: link.has_nested_start,
-                    });
-
                     // Parse the target unless the link has a syntax error, whose target is
-                    // unreliable, including a backslash which doesn't escape anything.
+                    // unreliable, including a backslash which doesn't escape anything. Keep a
+                    // link whose target doesn't parse as a malformed link.
                     let link_source_range = SourceRange {
                         start: link.start,
                         end: position + ']'.len_utf8(),
                     };
                     let target = source_contents[link.start + '['.len_utf8()..position].trim();
-                    if !link.has_nested_start
-                        && let Some(target) = unescape(target, Context::Link)
-                    {
-                        match parse_link(
-                            &target,
-                            source_path,
-                            source_contents,
-                            line_index,
-                            link_source_range,
-                        ) {
-                            Ok(link) => pending_page.links.push(link),
-                            Err(error) => errors.push(error),
-                        }
-                    }
+                    let malformed_link = Link::Malformed {
+                        source_range: link_source_range,
+                        is_closed: true,
+                    };
+                    pending_page.links.push(
+                        match (!link.has_nested_start)
+                            .then(|| unescape(target, Context::Link))
+                            .flatten()
+                        {
+                            Some(target) => match parse_link(
+                                &target,
+                                source_path,
+                                source_contents,
+                                line_index,
+                                link_source_range,
+                            ) {
+                                Ok(link) => link,
+                                Err(error) => {
+                                    errors.push(error);
+                                    malformed_link
+                                }
+                            },
+                            None => malformed_link,
+                        },
+                    );
                 } else {
                     errors.push(syntax_error(
                         "Unexpected closing link delimiter.",
@@ -290,7 +295,12 @@ pub fn parse(
 
     // Reject a link that's still open at the end of the wiki, and finish the final region.
     if let Some(link) = open_link.take() {
-        close_unclosed_link(&mut wiki, &mut errors, link, source_contents.len());
+        close_unclosed_link(
+            &mut pending_page.links,
+            &mut errors,
+            link,
+            source_contents.len(),
+        );
     }
     finish_page(
         &mut wiki,
@@ -307,7 +317,7 @@ pub fn parse(
 }
 
 // Add a completed region as a page if it has a valid title which hasn't already been used, with
-// the links in its content which parsed.
+// the links in its content.
 fn finish_page(
     wiki: &mut Wiki,
     pending_page: PendingPage,
@@ -500,17 +510,19 @@ mod tests {
         }
     }
 
-    // Describe link targets without coupling semantic assertions to their source ranges.
+    // Describe the targets of the links which parsed without coupling semantic assertions to their
+    // source ranges. Malformed links have no targets.
     fn link_targets(links: &[Link]) -> Vec<String> {
         links
             .iter()
-            .map(|link| match link {
-                Link::Text { title, .. } => format!("text:{}", title.text(Context::Verbatim)),
-                Link::Filesystem { target, .. } => format!(
+            .filter_map(|link| match link {
+                Link::Text { title, .. } => Some(format!("text:{}", title.text(Context::Verbatim))),
+                Link::Filesystem { target, .. } => Some(format!(
                     "{}:{}",
                     if target.is_directory() { "dir" } else { "file" },
                     target.path().display(),
-                ),
+                )),
+                Link::Malformed { .. } => None,
             })
             .collect()
     }
@@ -1166,19 +1178,34 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(wiki.page("Greeting").traversal_index, None);
     }
 
-    // Locate links for an editor, including a link which isn't closed, but not what looks like a
-    // link in code. A link contains an offset after its opening delimiter through its closing
-    // delimiter or the end of its line.
+    // Keep each link whose target doesn't parse as a malformed link, for an editor to complete:
+    // an empty link, one with an invalid escape, one with an unexpected opening delimiter, and one
+    // which isn't closed, which extends to the end of its line. What looks like a link in code
+    // isn't one.
     #[test]
-    fn links_at_offsets() {
-        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [c] [d");
+    fn malformed_links() {
+        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [] [c\\`] [d [e] [f");
+        let links = &wiki.page("Home").links;
 
-        assert!(wiki.link_at(11).is_none());
-        assert!(wiki.link_at(15).is_none());
-        assert_eq!(wiki.link_at(16).unwrap().closing, Some(17));
-        assert_eq!(wiki.link_at(17).unwrap().closing, Some(17));
-        assert!(wiki.link_at(18).is_none());
-        assert_eq!(wiki.link_at(20).unwrap().opening, 19);
-        assert_eq!(wiki.link_at(21).unwrap().closing, None);
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| match link {
+                    Link::Malformed {
+                        source_range,
+                        is_closed,
+                    } => (source_range.start, source_range.end, *is_closed),
+                    Link::Text { .. } | Link::Filesystem { .. } => panic!("The link is malformed."),
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (15, 17, true),
+                (18, 23, true),
+                (24, 30, true),
+                (31, 33, false),
+            ],
+        );
+        assert_eq!(links[0].closing_delimiter(), Some(16));
+        assert_eq!(links[3].closing_delimiter(), None);
     }
 }

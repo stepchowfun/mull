@@ -92,7 +92,8 @@ fn validate_text_links(
     // Validate text-link targets.
     for page in pages {
         // Report each missing target at the corresponding text-link occurrence, which declaring
-        // the target would fix. Filesystem links are checked separately.
+        // the target would fix. Filesystem links are checked separately, and malformed links have
+        // no target.
         for link in &page.links {
             match link {
                 Link::Text {
@@ -107,7 +108,7 @@ fn validate_text_links(
                         Some(Fix::CreatePage(title.clone())),
                     ));
                 }
-                Link::Text { .. } | Link::Filesystem { .. } => {}
+                Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => {}
             }
         }
     }
@@ -155,7 +156,7 @@ fn validate_untitled_filesystem_links(
                 None,
                 None,
             )),
-            Link::Text { .. } => None,
+            Link::Text { .. } | Link::Malformed { .. } => None,
         })
         .collect()
 }
@@ -181,10 +182,10 @@ fn validate_filesystem_links(
                 return Outcome::Cancelled;
             }
 
-            // Skip text links, which have no filesystem targets.
+            // Skip text and malformed links, which have no filesystem targets.
             let target = match link {
                 Link::Filesystem { target, .. } => target,
-                Link::Text { .. } => continue,
+                Link::Text { .. } | Link::Malformed { .. } => continue,
             };
             let source_range = link.source_range();
 

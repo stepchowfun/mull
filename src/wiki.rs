@@ -30,12 +30,10 @@ pub fn title_line_text(line: &str) -> Option<&str> {
 }
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
-// source ranges address and which it's rendered from. It also records where links are in the
-// source, including links which didn't parse, so an editor can tell whether a position is in one.
+// source ranges address and which it's rendered from.
 #[derive(Clone, Debug)]
 pub struct Wiki {
     pub pages: HashMap<PageTitle, Page>,
-    pub link_delimiters: Vec<LinkDelimiters>, // Every link, closed or not, in order
     source: String,
 }
 
@@ -44,20 +42,8 @@ impl Wiki {
     pub fn new(source: &str) -> Self {
         Self {
             pages: HashMap::new(),
-            link_delimiters: Vec::new(),
             source: source.to_owned(),
         }
-    }
-
-    // Find the link whose text contains a source offset, which is after its opening delimiter and
-    // no later than its closing delimiter or, if it isn't closed, the end of its line.
-    pub fn link_at(&self, offset: usize) -> Option<&LinkDelimiters> {
-        let index = self
-            .link_delimiters
-            .partition_point(|link| link.end < offset);
-        self.link_delimiters
-            .get(index)
-            .filter(|link| link.opening < offset)
     }
 
     // Iterate over the links of every page, in no particular order.
@@ -98,7 +84,8 @@ impl Wiki {
                 .map_or(0, |index| index + '\n'.len_utf8());
 
         // Copy the content, replacing each link with its canonical form: a text link's title
-        // escaped, and a filesystem link's normalized target.
+        // escaped, and a filesystem link's normalized target. A malformed link, which a wiki
+        // without syntax errors doesn't have, is copied as written.
         let mut links = page.links.iter().collect::<Vec<_>>();
         links.sort_by_key(|link| link.source_range().start);
         let mut content = String::new();
@@ -106,11 +93,17 @@ impl Wiki {
         for link in links {
             let source_range = link.source_range();
             content.push_str(&self.source[copied_through..source_range.start]);
-            content.push('[');
-            content.push_str(&match link {
+            let target = match link {
                 Link::Text { title, .. } => title.text(Context::Link),
                 Link::Filesystem { target, .. } => target.text(Context::Link),
-            });
+                Link::Malformed { .. } => {
+                    content.push_str(&self.source[source_range.start..source_range.end]);
+                    copied_through = source_range.end;
+                    continue;
+                }
+            };
+            content.push('[');
+            content.push_str(&target);
             content.push(']');
             copied_through = source_range.end;
         }
@@ -162,16 +155,6 @@ pub struct Page {
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
-}
-
-// This struct locates a link's delimiters in the source, whether or not the link is closed or its
-// target parsed.
-#[derive(Clone, Debug)]
-pub struct LinkDelimiters {
-    pub opening: usize,         // The offset of the `[`
-    pub closing: Option<usize>, // The offset of the `]`, if the link is closed
-    pub end: usize,             // The offset of the `]`, or of the end of the line if there's none
-    pub has_nested_start: bool, // Whether an unexpected `[` appears in the link
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -236,7 +219,9 @@ impl CodeStr for PageTitle {
     }
 }
 
-// These are the source occurrences through which a page can reference a target.
+// These are the source occurrences through which a page can reference a target. A malformed link
+// has a syntax error, such as a missing closing delimiter, so it references nothing, but an editor
+// can still complete it. A link which isn't closed extends to the end of its line.
 #[derive(Clone, Debug)]
 pub enum Link {
     Text {
@@ -247,16 +232,29 @@ pub enum Link {
         target: FilesystemTarget,
         source_range: SourceRange,
     },
+    Malformed {
+        source_range: SourceRange,
+        is_closed: bool,
+    },
 }
 
 impl Link {
     // Locate the link's source occurrence, whatever its kind.
     pub fn source_range(&self) -> SourceRange {
         match self {
-            Link::Text { source_range, .. } | Link::Filesystem { source_range, .. } => {
-                *source_range
-            }
+            Link::Text { source_range, .. }
+            | Link::Filesystem { source_range, .. }
+            | Link::Malformed { source_range, .. } => *source_range,
         }
+    }
+
+    // Locate the link's closing delimiter, if it has one.
+    pub fn closing_delimiter(&self) -> Option<usize> {
+        let is_closed = match self {
+            Link::Text { .. } | Link::Filesystem { .. } => true,
+            Link::Malformed { is_closed, .. } => *is_closed,
+        };
+        is_closed.then(|| self.source_range().end - ']'.len_utf8())
     }
 }
 
