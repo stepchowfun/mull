@@ -36,6 +36,8 @@ Each page starts with a `# Title`, followed by the contents of the page on subse
 
 To link to a page, use square brackets like `[Recipes]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
+![Autocomplete](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
+
 If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/lemonade.jpg]`.
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown.
