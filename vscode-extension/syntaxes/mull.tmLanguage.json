@@ -99,13 +99,16 @@
         },
         {
           "include": "#text-links"
+        },
+        {
+          "include": "#unclosed-links"
         }
       ]
     },
     "filesystem-links": {
       "name": "meta.link.filesystem.mull",
       "contentName": "string.other.link.title.path.mull",
-      "begin": "\\[(?=[ \\t]*/)",
+      "begin": "\\[(?=[ \\t]*/(?:[^\\\\\\]]|\\\\.)*\\])",
       "beginCaptures": {
         "0": {
           "name": "punctuation.definition.link.begin.mull"
@@ -126,7 +129,7 @@
     "text-links": {
       "name": "meta.link.text.mull",
       "contentName": "string.other.link.title.mull",
-      "begin": "\\[",
+      "begin": "\\[(?=(?:[^\\\\\\]]|\\\\.)*\\])",
       "beginCaptures": {
         "0": {
           "name": "punctuation.definition.link.begin.mull"
@@ -143,6 +146,10 @@
           "include": "#link-contents"
         }
       ]
+    },
+    "unclosed-links": {
+      "name": "invalid.illegal.unclosed-link.mull",
+      "match": "\\["
     },
     "link-contents": {
       "patterns": [
