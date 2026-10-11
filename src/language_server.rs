@@ -1083,38 +1083,34 @@ fn filesystem_hover(
     let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
     let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
 
-    // Identify images by their extensions, ignoring case.
-    let is_image = target
-        .path()
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            IMAGE_EXTENSIONS
-                .iter()
-                .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
-        });
+    // Use the first kind of preview which applies. Directories come first, since a directory's name
+    // may have an image's extension, like `[/images.png/]`. Images come before text files, since
+    // some images, like SVGs, are also valid text.
+    let value = directory_preview(&file_root, target)
+        .or_else(|| image_preview(target, &uri))
+        .or_else(|| text_preview(&uri.to_file_path()?))?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: if target.is_directory() {
-                directory_preview(&file_root, target)
-            } else if is_image {
-                image_preview(&uri)?
-            } else {
-                text_preview(&uri.to_file_path()?)?
-            },
+            value,
         }),
         range: Some(snapshot.range(source_range)),
     })
 }
 
 // List a directory's entries as the links which would name them, in a code block like a page
-// preview, with directories first. Only so many are listed, followed by a count of the rest.
-fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String {
+// preview, with directories first. Only so many are listed, followed by a count of the rest. Files
+// have no directory preview.
+fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> Option<String> {
+    // Skip files.
+    if !target.is_directory() {
+        return None;
+    }
+
     // Describe a directory with nothing to list.
     let mut children = visible_children(file_root, target.path());
     if children.is_empty() {
-        return "This directory contains no files.".to_owned();
+        return Some("This directory contains no files.".to_owned());
     }
 
     // List the first entries, keeping each group in name order.
@@ -1134,13 +1130,23 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
     {
         lines.push(format!("…and {remaining} more"));
     }
-    code_block("mull", &lines.join("\n"))
+    Some(code_block("mull", &lines.join("\n")))
 }
 
 // Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
 // size, keeping its aspect ratio. An image whose size can't be read, such as an SVG, just gets the
-// maximum width.
-fn image_preview(uri: &Uri) -> Option<String> {
+// maximum width. Images are recognized by their extensions, and other files have no image preview.
+fn image_preview(target: &FilesystemTarget, uri: &Uri) -> Option<String> {
+    // Skip files which aren't images, ignoring the case of their extensions.
+    let extension = target.path().extension()?.to_str()?;
+    if !IMAGE_EXTENSIONS
+        .iter()
+        .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
+    {
+        return None;
+    }
+
+    // Size the image to fit.
     let dimensions = match imagesize::size(uri.to_file_path()?) {
         Ok(size) => {
             let (width, height) = image_preview_size(size.width, size.height);
@@ -1153,8 +1159,8 @@ fn image_preview(uri: &Uri) -> Option<String> {
 }
 
 // Show the first lines of a text file in a code block. A file is text if it's UTF-8 without control
-// characters other than line breaks and tabs. Only the start of a large file is read, so it may end
-// partway through a character.
+// characters other than line breaks and tabs, and other files have no text preview. Only the start
+// of a large file is read, so it may end partway through a character.
 fn text_preview(path: &Path) -> Option<String> {
     // Read one byte past the limit to learn whether the file is longer.
     let mut bytes = Vec::new();
