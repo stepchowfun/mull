@@ -64,6 +64,8 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 ## What does Mull check?
 
+Mull validates the wiki as you edit it, and it's fairly strict.
+
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
 Mull verifies these structural properties:
