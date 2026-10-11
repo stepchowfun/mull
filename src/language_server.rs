@@ -20,7 +20,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
@@ -934,7 +934,8 @@ struct LinkDelimiters {
 }
 
 // Find the delimiters of a link containing the cursor, even if the link is unfinished, by scanning
-// only the cursor's line.
+// only the cursor's line. This reimplements the parser's reading of links, so completion doesn't
+// wait for the wiki to be parsed. Keep this in sync with [group:link_delimiters].
 fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimiters> {
     // Confine the search to the cursor's line, since links can't contain line breaks.
     let line_start = source_contents[..cursor]
@@ -984,18 +985,11 @@ fn filesystem_link_completions(
     cursor: usize,
     closing_delimiter: Option<usize>,
 ) -> Option<Vec<CompletionItem>> {
-    // Resolve the typed directory, declining paths which escape the file tree
-    // [ref:filesystem_path_components] or have a backslash which doesn't escape anything.
+    // Resolve the typed directory as a link to it would be, declining paths which escape the file
+    // tree or have a backslash which doesn't escape anything.
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
-    let mut directory = PathBuf::new();
-    for component in Path::new(&unescape(typed_directory.trim_start_matches('/'))?).components() {
-        match component {
-            Component::Normal(component) => directory.push(component),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
+    let directory = FilesystemTarget::from_name(&unescape(typed_directory)?, true).ok()?;
 
     // Derive every filesystem path from the file root, as validation does.
     let Ok(file_root) = FileRoot::new(wiki_path) else {
@@ -1004,7 +998,7 @@ fn filesystem_link_completions(
 
     // Offer each child of the typed directory which a link could name.
     let mut completions = Vec::new();
-    for child in visible_children(&file_root, &directory) {
+    for child in visible_children(&file_root, directory.path()) {
         // Leave a directory's link open for its children, and close a file's link.
         let name = child.name.as_str();
         let escaped_name = escape(name);
