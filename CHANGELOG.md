@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-10-11
+
+### Added
+
+- In the VS Code extension, hovering over a filesystem link to a text file now previews the start of the file. A file counts as text if it's valid UTF-8 without control characters other than line breaks and tabs.
+
 ## [0.43.2] - 2026-10-11
 
 ### Changed
