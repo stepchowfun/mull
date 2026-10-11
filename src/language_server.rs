@@ -66,6 +66,62 @@ const MAX_DIRECTORY_PREVIEW_ENTRIES: usize = 50;
 const MAX_IMAGE_WIDTH: usize = 480;
 const MAX_IMAGE_HEIGHT: usize = 360;
 
+// These file extensions have languages which editors don't recognize by the extensions themselves,
+// so a code block names the language instead. Editors recognize most other extensions.
+const CODE_BLOCK_LANGUAGES: &[(&str, &str)] = &[
+    ("bib", "bibtex"),
+    ("cc", "cpp"),
+    ("cfg", "properties"),
+    ("cjs", "javascript"),
+    ("clj", "clojure"),
+    ("cljc", "clojure"),
+    ("cljs", "clojure"),
+    ("cmd", "bat"),
+    ("conf", "properties"),
+    ("cs", "csharp"),
+    ("csx", "csharp"),
+    ("cts", "typescript"),
+    ("cu", "cuda-cpp"),
+    ("cuh", "cuda-cpp"),
+    ("cxx", "cpp"),
+    ("edn", "clojure"),
+    ("env", "dotenv"),
+    ("erb", "ruby"),
+    ("fs", "fsharp"),
+    ("fsi", "fsharp"),
+    ("fsx", "fsharp"),
+    ("gemspec", "ruby"),
+    ("gradle", "groovy"),
+    ("h", "cpp"),
+    ("hh", "cpp"),
+    ("hpp", "cpp"),
+    ("hxx", "cpp"),
+    ("jl", "julia"),
+    ("m", "objective-c"),
+    ("mak", "makefile"),
+    ("md", "markdown"),
+    ("mjs", "javascript"),
+    ("mk", "makefile"),
+    ("mm", "objective-cpp"),
+    ("mts", "typescript"),
+    ("ndjson", "jsonl"),
+    ("patch", "diff"),
+    ("pl", "perl"),
+    ("pm", "perl"),
+    ("psd1", "powershell"),
+    ("psm1", "powershell"),
+    ("pyi", "python"),
+    ("pyw", "python"),
+    ("rake", "ruby"),
+    ("rs", "rust"),
+    ("rst", "restructuredtext"),
+    ("vbs", "vb"),
+    ("xaml", "xml"),
+    ("xsd", "xml"),
+    ("xslt", "xsl"),
+    ("yml", "yaml"),
+];
+
 // Read at most this many bytes of a text file and show at most this many of its lines when
 // previewing it, so a large file doesn't slow down or flood the hover.
 const MAX_TEXT_PREVIEW_BYTES: usize = 64 * 1024;
@@ -1213,11 +1269,14 @@ fn text_preview(path: &Path) -> Option<String> {
 }
 
 // Name the language of a file for a code block. Editors recognize many languages by their usual
-// file extensions, like `js`, and highlight names they don't recognize as plain text. A file
-// without an extension which can be a name gets plain text explicitly, since editors highlight a
-// code block without a language like the document containing it.
+// file extensions, like `js`, and others by the names which the table gives for their extensions,
+// like `rust` for `rs`. They highlight names they don't recognize as plain text. A file without an
+// extension which can be a name gets plain text explicitly, since editors highlight a code block
+// without a language like the document containing it.
 fn code_block_language(path: &Path) -> String {
-    path.extension()
+    // Use plain text for a file without an extension which can be a name.
+    let Some(extension) = path
+        .extension()
         .and_then(|extension| extension.to_str())
         .filter(|extension| {
             !extension.is_empty()
@@ -1225,7 +1284,16 @@ fn code_block_language(path: &Path) -> String {
                     character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '_')
                 })
         })
-        .map_or_else(|| "text".to_owned(), str::to_ascii_lowercase)
+    else {
+        return "text".to_owned();
+    };
+
+    // Look up the extension's language, ignoring case, or else use the extension itself.
+    let extension = extension.to_ascii_lowercase();
+    CODE_BLOCK_LANGUAGES
+        .iter()
+        .find(|(table_extension, _)| *table_extension == extension)
+        .map_or(extension, |(_, language)| (*language).to_owned())
 }
 
 // Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
@@ -3322,12 +3390,14 @@ mod tests {
         );
     }
 
-    // Name a file's language by its extension, ignoring case, or as plain text if it has no
-    // extension which can be a name.
+    // Name a file's language by its extension or the language which the table gives for it,
+    // ignoring case, or as plain text if it has no extension which can be a name.
     #[test]
     fn code_block_languages() {
         for (path, language) in [
             ("script.JS", "js"),
+            ("main.RS", "rust"),
+            ("notes.md", "markdown"),
             ("archive.tar.gz", "gz"),
             ("program.c++", "c++"),
             ("Makefile", "text"),
