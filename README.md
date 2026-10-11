@@ -6,44 +6,39 @@
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
-## An example wiki
+Since Mull runs in Visual Studio Code or Cursor, you can use it with your favorite settings and extensions. For example, the screenshot above shows the [Berkeley Mono](https://usgraphics.com/products/berkeley-mono) typeface with the [Monokai Pro (Filter Spectrum)](https://monokai.pro/) color theme.
 
-A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other. Here's a small wiki with 3 pages:
+## A quick tour
+
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 4 pages:
 
 ```md
 # Home
 
-Welcome to the example wiki!
+Welcome to my wiki! Start with my [Recipes].
 
-This is the [Home] page, which is the starting point for every wiki.
+# Recipes
 
-[My favorite art] is another page. It's easy to link to other pages!
+- [Pancakes]
+- [Guacamole]
+- Grandma's lemonade, from a photo of her card: [/lemonade.jpg]
 
-# My favorite art
+# Pancakes
 
-- My favorite poem is [To make a prairie].
-- My favorite painting is [/mona_lisa.jpg] by Leonardo da Vinci.
+Whisk 1 cup of flour, 1 cup of milk, and 1 egg. Cook on a hot, buttered pan.
 
-# To make a prairie
+# Guacamole
 
-> To make a prairie it takes a clover and one bee,
-> One clover, and a bee,
-> And revery.
-> The revery alone will do,
-> If bees are few.
-
-—Emily Dickinson
+Mash 2 avocados with lime juice, salt, and chopped onion.
 ```
 
 Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
 
-To link to a page, use square brackets like `[My favorite art]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+To link to a page, use square brackets like `[Recipes]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/mona_lisa.jpg]`.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/lemonade.jpg]`.
 
-To use `[`, `]`, or a backtick literally, put a backslash before it, like `\[`. A backslash must always be followed by one of those characters or another backslash, so a backslash itself is written as `\\`. Backticks are plain characters in a link, so they can't be escaped there.
-
-Code starts with a run of backticks and ends with the next run of exactly as many backticks, like ``` `ls -a` ``` or ```` ``a ` b`` ````. Code written with one or two backticks must end on the same line, but code written with three or more can span lines, so it can hold a block of code. Anything right after the opening backticks, such as the name of a language, is part of the code. The text of code is taken as written: a line starting with `# ` isn't a title, square brackets don't make a link, and backslashes don't escape anything. Backticks are plain characters in a title and between the brackets of a link, and a run of backticks which isn't closed is reported as an error.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown.
 
 ## Keyboard shortcuts
 
