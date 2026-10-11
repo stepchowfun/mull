@@ -1,147 +1,315 @@
 use crate::{
-    code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
-    escaping::{Context, invalid_escape_message, invalid_escapes, unescape, unescaped_characters},
+    escaping::{Context, invalid_escape_message, is_escapable, unescape},
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, Wiki, title_line_text,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, LinkDelimiters, Page, PageTitle, Wiki,
+        title_line_text,
     },
 };
-use std::{iter, path::Path};
+use std::{collections::HashSet, path::Path};
 
-// This struct retains the source information needed to finish a region at its next boundary. A
-// region belongs to a page only if its title is valid.
+// This struct retains what's needed to finish a region at its next boundary: its title, if it has
+// a valid one which hasn't been used, where it starts, and the links in its content which parsed.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
-    content_start: usize,
+    links: Vec<Link>,
+}
+
+// This struct tracks a link which has been opened but not yet closed.
+struct OpenLink {
+    start: usize,           // The offset of its opening delimiter
+    has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
 }
 
 // Parse source contents into a scored wiki, with source ranges for every page and link, along with
-// any syntax errors. The wiki retains as much of the source as possible so it can still be
-// validated and navigated, but it omits the content of duplicate pages, invalid titles, and
-// anything before the first title, so it mustn't be rendered if there are any syntax errors. The
-// line index locates syntax errors in their source listings.
+// any syntax errors in source order. The wiki retains as much of the source as possible so it can
+// still be validated and navigated, but it omits the content of duplicate pages, invalid titles,
+// and anything before the first title, so it mustn't be rendered if there are any syntax errors.
+// The line index locates syntax errors in their source listings.
+//
+// The source is read in a single pass. A title line starts a region, which is a page if its title
+// is valid. In the content, code starts with a run of backticks and ends at the next run of
+// exactly as many backticks, on the same line for a run of one or two, and its text is taken as
+// written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
+// characters in it. Outside code, a backslash escapes the next character, as allowed by whether
+// it's in a link [ref:content_escapes].
+#[allow(
+    clippy::too_many_lines,
+    reason = "The function reads the source in one pass, tracking the state of the region, link, \
+              and line being read."
+)]
 pub fn parse(
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
 ) -> (Wiki, Vec<Error>) {
-    // Accumulate parsed pages, errors, and the region currently being read, which starts as the
-    // untitled region before the first title.
+    // Accumulate parsed pages, errors, and the state of the scan. The region being read starts as
+    // the untitled region before the first title.
     let mut wiki = Wiki::new(source_contents);
     let mut errors = Vec::<Error>::new();
     let mut pending_page = PendingPage {
         title: None,
         source_start: 0,
-        content_start: 0,
+        links: Vec::new(),
     };
     let mut has_seen_title_marker = false;
     let mut reported_content_before_title = false;
-    let mut line_start = 0;
+    let mut open_link = None::<OpenLink>;
+    let mut unclosable_lengths = HashSet::new();
+    let mut is_at_line_start = true;
+    let mut position = 0;
 
-    // Find the code spans, whose lines can't be titles, and report each run of backticks which
-    // isn't closed when its line is reached, so errors stay in source order.
-    let code_spans = CodeSpans::new(source_contents);
-    let mut unclosed_runs = code_spans.unclosed().iter().peekable();
+    // Report a syntax error at a range of the source.
+    let syntax_error = |message: &str, error_source_range, fix| {
+        Error::new(
+            message,
+            source_path,
+            Some((source_contents, line_index, error_source_range)),
+            None,
+            fix,
+        )
+    };
 
-    // Process ranged source lines as boundaries while retaining their original byte offsets.
-    for raw_line in source_contents.split_inclusive('\n') {
-        let next_line_start = line_start + raw_line.len();
-        let line_with_possible_carriage_return = raw_line.strip_suffix('\n').unwrap_or(raw_line);
-        let line = line_with_possible_carriage_return
-            .strip_suffix('\r')
-            .unwrap_or(line_with_possible_carriage_return);
-        let line_source_range = SourceRange {
-            start: line_start,
-            end: line_start + line.len(),
+    // Report a link which isn't closed by the end of its line at its opening delimiter, and record
+    // its delimiters for completion.
+    let close_unclosed_link =
+        |wiki: &mut Wiki, errors: &mut Vec<Error>, link: OpenLink, end: usize| {
+            wiki.link_delimiters.push(LinkDelimiters {
+                opening: link.start,
+                closing: None,
+                end,
+                has_nested_start: link.has_nested_start,
+            });
+            errors.push(syntax_error(
+                "Unclosed link.",
+                SourceRange {
+                    start: link.start,
+                    end: link.start + '['.len_utf8(),
+                },
+                None,
+            ));
         };
 
-        // Report each run of backticks on the line which isn't closed.
-        while let Some(run_source_range) = unclosed_runs.next_if(|run| run.start < next_line_start)
-        {
-            errors.push(Error::new(
-                "Unclosed code.",
-                source_path,
-                Some((source_contents, line_index, *run_source_range)),
-                None,
-                None,
-            ));
-        }
-
-        // Start a new region at each title line outside a code span.
-        if let Some(raw_title) = title_line_text(line).filter(|_| !code_spans.contains(line_start))
-        {
-            // Treat invalid titles as structural boundaries for subsequent content.
-            has_seen_title_marker = true;
-
-            // Finish the preceding region before starting the next one.
-            errors.extend(finish_page(
-                &mut wiki,
-                pending_page,
-                line_start,
-                source_path,
-                source_contents,
-                line_index,
-                &code_spans,
-            ));
-
-            // Start a region which belongs to a page if the title is valid.
-            let title = match parse_title(
-                raw_title,
-                source_path,
-                source_contents,
-                line_index,
-                line_source_range,
-            ) {
-                Ok(title) => Some(title),
-                Err(error) => {
-                    errors.push(error);
-                    None
-                }
+    while let Some(character) = source_contents[position..].chars().next() {
+        // At the start of a line, which is never within code or a link, read a title line, which
+        // starts a new region.
+        if is_at_line_start {
+            is_at_line_start = false;
+            let line_end = source_contents[position..]
+                .find('\n')
+                .map_or(source_contents.len(), |index| position + index);
+            let line = &source_contents[position..line_end];
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let line_source_range = SourceRange {
+                start: position,
+                end: position + line.len(),
             };
-            pending_page = PendingPage {
-                title,
-                source_start: line_start,
-                content_start: next_line_start,
-            };
-        } else if !has_seen_title_marker
-            && !reported_content_before_title
-            && !line.trim().is_empty()
-        {
-            // Report only the first non-whitespace content outside a valid page.
-            errors.push(Error::new(
-                "This content isn't in any page.",
-                source_path,
-                Some((
+            if let Some(raw_title) = title_line_text(line) {
+                // Finish the preceding region, then start one which belongs to a page if its
+                // title is valid and hasn't been used.
+                has_seen_title_marker = true;
+                finish_page(&mut wiki, pending_page, position, source_contents);
+                let title = match parse_title(
+                    raw_title,
+                    source_path,
                     source_contents,
                     line_index,
+                    line_source_range,
+                ) {
+                    Ok((title, title_source_range)) if wiki.pages.contains_key(&title) => {
+                        errors.push(syntax_error(
+                            &format!("Page {} already exists.", title.code_str()),
+                            title_source_range,
+                            None,
+                        ));
+                        None
+                    }
+                    Ok(title) => Some(title),
+                    Err(error) => {
+                        errors.push(error);
+                        None
+                    }
+                };
+                pending_page = PendingPage {
+                    title,
+                    source_start: position,
+                    links: Vec::new(),
+                };
+                position = line_end;
+                continue;
+            }
+
+            // Report only the first non-whitespace content outside a valid page.
+            if !has_seen_title_marker && !reported_content_before_title && !line.trim().is_empty() {
+                errors.push(syntax_error(
+                    "This content isn't in any page.",
                     trim_source_range(source_contents, line_source_range),
-                )),
-                None,
-                None,
-            ));
-            reported_content_before_title = true;
+                    None,
+                ));
+                reported_content_before_title = true;
+            }
         }
 
-        line_start = next_line_start;
+        // Read escapes, link delimiters, line breaks, and code.
+        match character {
+            '\\' => {
+                // Skip an escape, or reject a backslash which doesn't escape anything where it
+                // is, so it can't be mistaken for an escape, and offer to escape it. The message
+                // lists the characters which can be escaped there [ref:content_escapes].
+                let context = if open_link.is_some() {
+                    Context::Link
+                } else {
+                    Context::Text
+                };
+                position += '\\'.len_utf8();
+                if let Some(escaped) = source_contents[position..]
+                    .chars()
+                    .next()
+                    .filter(|&escaped| is_escapable(escaped, context))
+                {
+                    position += escaped.len_utf8();
+                } else {
+                    let offset = position - '\\'.len_utf8();
+                    errors.push(syntax_error(
+                        invalid_escape_message(context),
+                        SourceRange {
+                            start: offset,
+                            end: position,
+                        },
+                        Some(Fix::EscapeBackslash(offset)),
+                    ));
+                }
+                continue;
+            }
+            '\n' => {
+                // End an unclosed link at the end of its line, since links can't contain line
+                // breaks, so the following lines are read as usual.
+                if let Some(link) = open_link.take() {
+                    let end = if source_contents[..position].ends_with('\r') {
+                        position - '\r'.len_utf8()
+                    } else {
+                        position
+                    };
+                    close_unclosed_link(&mut wiki, &mut errors, link, end);
+                }
+                is_at_line_start = true;
+            }
+            '[' => {
+                // Open a link, or reject an opening delimiter within one.
+                if let Some(link) = &mut open_link {
+                    errors.push(syntax_error(
+                        "Unexpected opening link delimiter.",
+                        SourceRange {
+                            start: position,
+                            end: position + '['.len_utf8(),
+                        },
+                        None,
+                    ));
+                    link.has_nested_start = true;
+                } else {
+                    open_link = Some(OpenLink {
+                        start: position,
+                        has_nested_start: false,
+                    });
+                }
+            }
+            ']' => {
+                // Close the open link, or reject a closing delimiter outside one.
+                if let Some(link) = open_link.take() {
+                    wiki.link_delimiters.push(LinkDelimiters {
+                        opening: link.start,
+                        closing: Some(position),
+                        end: position,
+                        has_nested_start: link.has_nested_start,
+                    });
+
+                    // Parse the target unless the link has a syntax error, whose target is
+                    // unreliable, including a backslash which doesn't escape anything.
+                    let link_source_range = SourceRange {
+                        start: link.start,
+                        end: position + ']'.len_utf8(),
+                    };
+                    let target = source_contents[link.start + '['.len_utf8()..position].trim();
+                    if !link.has_nested_start
+                        && let Some(target) = unescape(target, Context::Link)
+                    {
+                        match parse_link(
+                            &target,
+                            source_path,
+                            source_contents,
+                            line_index,
+                            link_source_range,
+                        ) {
+                            Ok(link) => pending_page.links.push(link),
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                } else {
+                    errors.push(syntax_error(
+                        "Unexpected closing link delimiter.",
+                        SourceRange {
+                            start: position,
+                            end: position + ']'.len_utf8(),
+                        },
+                        None,
+                    ));
+                }
+            }
+            '`' if open_link.is_none() => {
+                // Take code as written, skipping to the end of its closing run. A run which isn't
+                // closed is reported and otherwise ignored, so it can't hide the rest of the wiki.
+                // Once a long run can't be closed, a later run of the same length can't be either,
+                // since the text after it was already searched.
+                let length = backtick_run_length(&source_contents[position..]);
+                let closing_end = (length < 3 || !unclosable_lengths.contains(&length))
+                    .then(|| closing_run_end(source_contents, position + length, length))
+                    .flatten();
+                if let Some(end) = closing_end {
+                    wiki.code_spans.push(SourceRange {
+                        start: position,
+                        end,
+                    });
+                    position = end;
+                } else {
+                    if length >= 3 {
+                        unclosable_lengths.insert(length);
+                    }
+                    errors.push(syntax_error(
+                        "Unclosed code.",
+                        SourceRange {
+                            start: position,
+                            end: position + length,
+                        },
+                        None,
+                    ));
+                    position += length;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        position += character.len_utf8();
     }
 
-    // Finish the final region at the end of the wiki.
-    errors.extend(finish_page(
+    // Reject a link that's still open at the end of the wiki, and finish the final region.
+    if let Some(link) = open_link.take() {
+        close_unclosed_link(&mut wiki, &mut errors, link, source_contents.len());
+    }
+    finish_page(
         &mut wiki,
         pending_page,
         source_contents.len(),
-        source_path,
         source_contents,
-        line_index,
-        &code_spans,
-    ));
+    );
 
-    // Order the pages and return the wiki with every error in source order.
+    // Order the pages and return the wiki with every error in source order. An unclosed link is
+    // only known at the end of its line, after any errors within it.
     populate_traversal_order(&mut wiki);
+    errors.sort_by_key(|error| error.source_range().map(|source_range| source_range.start));
     (wiki, errors)
 }
 
@@ -192,263 +360,65 @@ fn parse_title(
     }
 }
 
-// Parse a completed region's content, reporting its errors, and add it as a page if it has a valid
-// title that hasn't already been used. A page with errors in its content retains the links which
-// parsed successfully.
+// Add a completed region as a page if it has a valid title which hasn't already been used, with
+// the links in its content which parsed.
 fn finish_page(
     wiki: &mut Wiki,
     pending_page: PendingPage,
     source_end: usize,
-    source_path: Option<&Path>,
     source_contents: &str,
-    line_index: &LineIndex,
-    code_spans: &CodeSpans,
-) -> Vec<Error> {
-    // Locate the trimmed region and its content in the original source.
+) {
     let PendingPage {
         title,
         source_start,
-        content_start,
+        links,
     } = pending_page;
-    let source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: source_start,
-            end: source_end,
-        },
-    );
-    let content_source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: content_start,
-            end: source_end,
-        },
-    );
-
-    // Parse the content's links.
-    let (links, content_errors) = parse_content(
-        source_path,
-        source_contents,
-        line_index,
-        content_source_range,
-        code_spans,
-    );
-
-    // Discard the content of a region without a valid title, whose title error was already
-    // reported.
-    let Some((title, title_source_range)) = title else {
-        return content_errors;
-    };
-
-    // Reject a title that has already been used, reporting it before the errors in its content.
-    if wiki.pages.contains_key(&title) {
-        return iter::once(Error::new(
-            &format!("Page {} already exists.", title.code_str()),
-            source_path,
-            Some((source_contents, line_index, title_source_range)),
-            None,
-            None,
-        ))
-        .chain(content_errors)
-        .collect();
+    if let Some((title, title_source_range)) = title {
+        wiki.pages.insert(
+            title.clone(),
+            Page {
+                title,
+                links,
+                traversal_index: None,
+                source_range: trim_source_range(
+                    source_contents,
+                    SourceRange {
+                        start: source_start,
+                        end: source_end,
+                    },
+                ),
+                title_source_range,
+            },
+        );
     }
-
-    // Insert the page, retaining the links in its content which parsed successfully.
-    wiki.pages.insert(
-        title.clone(),
-        Page {
-            title,
-            links,
-            traversal_index: None,
-            source_range,
-            title_source_range,
-        },
-    );
-    content_errors
 }
 
-// Parse the link occurrences in a page's content, reporting any syntax errors. Completion finds the
-// link containing the cursor on its own. Keep this in sync with [group:link_delimiters].
-#[allow(
-    clippy::too_many_lines,
-    reason = "The function scans content once, tracking the state of the link being read."
-)]
-fn parse_content(
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_index: &LineIndex,
-    source_range: SourceRange,
-    code_spans: &CodeSpans,
-) -> (Vec<Link>, Vec<Error>) {
-    // Traverse the original content while retaining indices for diagnostics.
-    let original_content = &source_contents[source_range.start..source_range.end];
-    let mut links = Vec::<Link>::new();
-    let mut errors = Vec::<Error>::new();
-    let mut link_start = None::<usize>;
-    let mut link_has_nested_start = false;
-    let mut link_targets = Vec::<SourceRange>::new(); // Relative to the content, in order
+// Count the backticks at the start of some text.
+fn backtick_run_length(text: &str) -> usize {
+    text.len() - text.trim_start_matches('`').len()
+}
 
-    // Report a syntax error at a range of the source.
-    let syntax_error = |message: &str, error_source_range| {
-        Error::new(
-            message,
-            source_path,
-            Some((source_contents, line_index, error_source_range)),
-            None,
-            None,
-        )
+// Find the end of the run of exactly the given number of backticks which closes code whose text
+// starts at an offset, searching only the rest of the line for a run of one or two backticks.
+fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
+    let end = if length < 3 {
+        source[start..]
+            .find('\n')
+            .map_or(source.len(), |index| start + index)
+    } else {
+        source.len()
     };
-
-    // Report a link that isn't closed by the end of its line at its opening delimiter.
-    let unclosed_link = |start: usize| {
-        syntax_error(
-            "Unclosed link.",
-            SourceRange {
-                start: source_range.start + start,
-                end: source_range.start + start + '['.len_utf8(),
-            },
-        )
-    };
-
-    for (index, character) in unescaped_characters(original_content) {
-        // Take the text of code spans as written, so their brackets don't delimit links. A span
-        // can't start within a link, so skipping one never skips a link's closing delimiter.
-        if code_spans.contains(source_range.start + index) {
-            continue;
+    let text = &source[start..end];
+    let mut index = 0;
+    while let Some(found) = text[index..].find('`') {
+        let run_start = index + found;
+        let run_length = backtick_run_length(&text[run_start..]);
+        if run_length == length {
+            return Some(start + run_start + run_length);
         }
-
-        // Locate the current character for any delimiter error.
-        let character_source_range = SourceRange {
-            start: source_range.start + index,
-            end: source_range.start + index + character.len_utf8(),
-        };
-
-        // Interpret unescaped square brackets as link delimiters, and line breaks as the ends of
-        // links.
-        match character {
-            '[' if link_start.is_some() => {
-                errors.push(syntax_error(
-                    "Unexpected opening link delimiter.",
-                    character_source_range,
-                ));
-                link_has_nested_start = true;
-            }
-            '[' => {
-                link_start = Some(index);
-                link_has_nested_start = false;
-            }
-            ']' if link_start.is_none() => {
-                // Reject a closing delimiter without an opening delimiter [tag:missing_link_start].
-                errors.push(syntax_error(
-                    "Unexpected closing link delimiter.",
-                    character_source_range,
-                ));
-            }
-            ']' => {
-                // The preceding arm rejected a missing link start [ref:missing_link_start].
-                let start = link_start.take().expect("The link start was checked.");
-                let inner_start = start + '['.len_utf8();
-                link_targets.push(SourceRange {
-                    start: inner_start,
-                    end: index,
-                });
-                let trimmed_target = original_content[inner_start..index].trim();
-                let link_source_range = SourceRange {
-                    start: source_range.start + start,
-                    end: source_range.start + index + character.len_utf8(),
-                };
-
-                // Parse the target unless the link has a syntax error, whose target is unreliable,
-                // including a backslash which doesn't escape anything.
-                let link = if link_has_nested_start {
-                    None
-                } else {
-                    unescape(trimmed_target, Context::Link).map(|unescaped_target| {
-                        parse_link(
-                            &unescaped_target,
-                            source_path,
-                            source_contents,
-                            line_index,
-                            link_source_range,
-                        )
-                    })
-                };
-
-                // Keep the link if it parsed, and report it otherwise.
-                match link {
-                    Some(Ok(link)) => links.push(link),
-                    Some(Err(error)) => errors.push(error),
-                    None => {}
-                }
-            }
-            '\n' => {
-                // End an unclosed link at the end of its line, since links can't contain line
-                // breaks, so the following lines are read as usual.
-                if let Some(start) = link_start.take() {
-                    link_targets.push(SourceRange {
-                        start: start + '['.len_utf8(),
-                        end: index,
-                    });
-                    errors.push(unclosed_link(start));
-                }
-            }
-            _ => {}
-        }
+        index = run_start + run_length;
     }
-
-    // Reject a link that's still open at the end of the content.
-    if let Some(start) = link_start {
-        link_targets.push(SourceRange {
-            start: start + '['.len_utf8(),
-            end: original_content.len(),
-        });
-        errors.push(unclosed_link(start));
-    }
-
-    // Find each backslash which doesn't escape anything in its context: within a link's target, or
-    // in the text around links outside code spans. An escape can't straddle a link's delimiters,
-    // since they aren't escaped.
-    let mut invalid_escape_offsets = link_targets
-        .iter()
-        .flat_map(|target| {
-            invalid_escapes(&original_content[target.start..target.end], Context::Link)
-                .map(|index| (target.start + index, Context::Link))
-        })
-        .chain(
-            invalid_escapes(original_content, Context::Text)
-                .filter(|&index| {
-                    !code_spans.contains(source_range.start + index)
-                        && !link_targets
-                            .iter()
-                            .any(|target| target.start <= index && index < target.end)
-                })
-                .map(|index| (index, Context::Text)),
-        )
-        .collect::<Vec<_>>();
-    invalid_escape_offsets.sort_unstable_by_key(|&(index, _)| index);
-
-    // Reject each such backslash, so it can't be mistaken for an escape, and offer to escape it.
-    // The message lists the characters which can be escaped there [ref:content_escapes].
-    for (index, context) in invalid_escape_offsets {
-        let offset = source_range.start + index;
-        errors.push(Error::new(
-            invalid_escape_message(context),
-            source_path,
-            Some((
-                source_contents,
-                line_index,
-                SourceRange {
-                    start: offset,
-                    end: offset + '\\'.len_utf8(),
-                },
-            )),
-            None,
-            Some(Fix::EscapeBackslash(offset)),
-        ));
-    }
-
-    // Return the links which parsed, along with the errors.
-    (links, errors)
+    None
 }
 
 // Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
@@ -507,7 +477,7 @@ mod tests {
     use super::parse;
     use crate::{
         assert_fails,
-        error::{Error, Fix},
+        error::{Error, Fix, SourceRange},
         escaping::Context,
         line_index::LineIndex,
         wiki::{Link, Wiki},
@@ -851,6 +821,81 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
+    // Record code from its opening run through a closing run of exactly as many backticks, letting
+    // code of three or more backticks cross lines, including title lines, and keeping any language
+    // name as part of the code.
+    #[test]
+    fn code_span_source_ranges() {
+        let source = "# Home\na `b` c ``d ` e`` f\n```sh\n# x\n`` ```` \n```\n";
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(
+            wiki.code_spans
+                .iter()
+                .map(|span| &source[span.start..span.end])
+                .collect::<Vec<_>>(),
+            vec!["`b`", "``d ` e``", "```sh\n# x\n`` ```` \n```"],
+        );
+        assert_eq!(wiki.pages.len(), 1);
+    }
+
+    // Report each run of backticks which isn't closed, including a short run whose closing run is
+    // on a later line, at the run itself.
+    #[test]
+    fn unclosed_code_source_ranges() {
+        let (wiki, errors) = parse_fixture("# Home\na `b\nc` ``` d");
+
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error.source_range().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                SourceRange { start: 9, end: 10 },
+                SourceRange { start: 13, end: 14 },
+                SourceRange { start: 15, end: 18 },
+            ],
+        );
+        assert_eq!(wiki.code_spans, Vec::new());
+    }
+
+    // Treat backticks as plain characters in a title line, in a link's target, and when escaped.
+    #[test]
+    fn backticks_outside_code() {
+        let source = "# A `title\n[A `title] \\`b\\` `c`";
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(
+            wiki.code_spans
+                .iter()
+                .map(|span| &source[span.start..span.end])
+                .collect::<Vec<_>>(),
+            vec!["`c`"],
+        );
+        assert_eq!(
+            link_targets(&wiki.page("A `title").links),
+            vec!["text:A `title"],
+        );
+    }
+
+    // Locate code and links for an editor, including a link which isn't closed. A link contains an
+    // offset after its opening delimiter through its closing delimiter or the end of its line.
+    #[test]
+    fn code_and_links_at_offsets() {
+        let (wiki, _errors) = parse_fixture("# Home\na `b` [c] [d");
+
+        assert!(!wiki.is_in_code(8));
+        assert!(wiki.is_in_code(9));
+        assert!(wiki.is_in_code(11));
+        assert!(!wiki.is_in_code(12));
+        assert!(wiki.link_at(13).is_none());
+        assert_eq!(wiki.link_at(14).unwrap().closing, Some(15));
+        assert_eq!(wiki.link_at(15).unwrap().closing, Some(15));
+        assert!(wiki.link_at(16).is_none());
+        assert_eq!(wiki.link_at(18).unwrap().opening, 17);
+        assert_eq!(wiki.link_at(19).unwrap().closing, None);
+    }
+
     // Reject filesystem links whose paths contain parent components.
     #[test]
     fn invalid_filesystem_link_paths() {
@@ -1041,7 +1086,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert!(errors[1].to_string().contains("Unclosed link"));
     }
 
-    // Report every delimiter error within one page.
+    // Report every delimiter error within one page in source order, including an unclosed link
+    // before the errors within it.
     #[test]
     fn multiple_errors_in_page() {
         let errors = parse_test("# Home\nUnexpected] and [nested[link.").unwrap_err();
@@ -1052,12 +1098,12 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .to_string()
                 .contains("Unexpected closing link delimiter"),
         );
+        assert!(errors[1].to_string().contains("Unclosed link"));
         assert!(
-            errors[1]
+            errors[2]
                 .to_string()
                 .contains("Unexpected opening link delimiter"),
         );
-        assert!(errors[2].to_string().contains("Unclosed link"));
     }
 
     // Report structural and page errors together in source order.
