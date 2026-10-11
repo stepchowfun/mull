@@ -43,7 +43,7 @@ To link to a page, use square brackets like `[My favorite art]`. When you type t
 
 If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/mona_lisa.jpg]`.
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote spans of verbatim text like `` `this` ``, as in Markdown.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown.
 
 ## Keyboard shortcuts
 
