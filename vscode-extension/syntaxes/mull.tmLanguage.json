@@ -6,32 +6,39 @@
       "include": "#titles"
     },
     {
-      "include": "#code"
-    },
-    {
       "include": "#secondary-headings"
     },
     {
-      "include": "#escapes"
-    },
-    {
-      "include": "#links"
-    },
-    {
-      "include": "#unexpected-closing-delimiters"
+      "include": "#text"
     }
   ],
   "repository": {
+    "text": {
+      "patterns": [
+        {
+          "include": "#code"
+        },
+        {
+          "include": "#escapes"
+        },
+        {
+          "include": "#links"
+        },
+        {
+          "include": "#unexpected-closing-delimiters"
+        }
+      ]
+    },
     "code": {
       "patterns": [
         {
           "name": "markup.inline.raw.mull",
-          "match": "(?<!(?<!\\\\)`)(`{1,2})(?!`).*?(?<!`)\\1(?!`)"
+          "match": "(`{1,2})(?!`).*?(?<!`)\\1(?!`)"
         },
         {
           "name": "markup.fenced_code.block.mull",
           "contentName": "markup.raw.block.mull",
-          "begin": "(?<!(?<!\\\\)`)(`{3,})(?!`)",
+          "begin": "(`{3,})",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.fenced_code.begin.mull"
@@ -43,6 +50,10 @@
               "name": "punctuation.definition.fenced_code.end.mull"
             }
           }
+        },
+        {
+          "name": "invalid.illegal.unclosed-code.mull",
+          "match": "`+"
         }
       ]
     },
@@ -59,51 +70,17 @@
       }
     },
     "secondary-headings": {
+      "name": "markup.italic.heading.mull",
+      "begin": "^(#{2,6})(?= |$)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.heading.mull"
+        }
+      },
+      "end": "$",
       "patterns": [
         {
-          "name": "markup.italic.heading.2.mull",
-          "match": "^(##)(?: .*)?$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.3.mull",
-          "match": "^(###)(?: .*)?$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.4.mull",
-          "match": "^(####)(?: .*)?$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.5.mull",
-          "match": "^(#####)(?: .*)?$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.6.mull",
-          "match": "^(######)(?: .*)?$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
+          "include": "#text"
         }
       ]
     },
@@ -187,8 +164,19 @@
       ]
     },
     "unclosed-links": {
-      "name": "invalid.illegal.unclosed-link.mull",
-      "match": "\\["
+      "name": "meta.link.unclosed.mull",
+      "begin": "\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "invalid.illegal.unclosed-link.mull"
+        }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "include": "#link-contents"
+        }
+      ]
     },
     "link-contents": {
       "patterns": [
