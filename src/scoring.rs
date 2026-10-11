@@ -201,6 +201,6 @@ mod tests {
         let (wiki, titles) = traversal_order("# Home\nSee [Greeting].\n# Greeting\n# Orphan\n");
 
         assert_eq!(titles, vec!["Home", "Greeting"]);
-        assert_eq!(wiki.pages["Orphan"].traversal_index, None);
+        assert_eq!(wiki.page("Orphan").traversal_index, None);
     }
 }

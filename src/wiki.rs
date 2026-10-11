@@ -5,9 +5,8 @@ use crate::{
     spelled_path::code_file_path,
 };
 use colored::ColoredString;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::{
-    borrow::Borrow,
     collections::HashMap,
     fmt,
     path::{Component, Path, PathBuf},
@@ -34,8 +33,8 @@ pub const HOME_TITLE: &str = "Home";
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
 // starting with `/`, which would make a link to it a filesystem link. It travels to the editor and
 // back as JSON in quick fixes, so it's checked again when it's read back.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(try_from = "String")]
 pub struct PageTitle(String);
 
 impl PageTitle {
@@ -79,17 +78,10 @@ impl TryFrom<String> for PageTitle {
     }
 }
 
-// Write a title to JSON as its text.
-impl From<PageTitle> for String {
-    fn from(title: PageTitle) -> Self {
-        title.0
-    }
-}
-
-// Let pages be looked up by a title's text without making a title.
-impl Borrow<str> for PageTitle {
-    fn borrow(&self) -> &str {
-        &self.0
+// Write a title to JSON as written in its title line.
+impl Serialize for PageTitle {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
     }
 }
 
@@ -120,6 +112,12 @@ impl Wiki {
     // Iterate over the links of every page, in no particular order.
     pub fn links(&self) -> impl Iterator<Item = &Link> {
         self.pages.values().flat_map(|page| &page.links)
+    }
+
+    // Look up a page by its title as written in its title line, for tests.
+    #[cfg(test)]
+    pub fn page(&self, title: &str) -> &Page {
+        &self.pages[&PageTitle::parse(title).expect("The title should be valid.")]
     }
 
     // Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
