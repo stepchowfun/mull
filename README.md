@@ -15,30 +15,28 @@ A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which
 ```md
 # Home
 
-Welcome to my wiki! Start with my [Recipes].
+Welcome to my wiki! Two of my favorite recipes are [Pancakes] and [Lemonade].
 
-# Recipes
+# Lemonade
 
-- [Pancakes]
-- [Guacamole]
-- Grandma's lemonade, from a photo of her card: [/lemonade.jpg]
+Stir 1 cup of sugar into 1 cup of hot water, then add the juice of 6 [Lemons] and 4 cups of cold water.
+
+# Lemons
+
+Roll them on the counter before cutting them to get more juice. I use them for [Lemonade] and on [Pancakes].
 
 # Pancakes
 
-Whisk 1 cup of flour, 1 cup of milk, and 1 egg. Cook on a hot, buttered pan.
-
-# Guacamole
-
-Mash 2 avocados with lime juice, salt, and chopped onion.
+Whisk 1 cup of flour, 1 cup of milk, and 1 egg. Cook on a hot, buttered pan, and serve with a squeeze of [Lemons].
 ```
 
 Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
 
-To link to a page, use square brackets like `[Recipes]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
 ![Autocomplete](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/lemonade.jpg]`.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too.
 
@@ -80,6 +78,8 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Show completions | `Control + Space` | `Control + Space` |
 | Rename a page | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
+
+Most of these keyboard shortcuts are built into Visual Studio Code and Cursor, so they may be familiar to you already. You can remap them.
 
 ## Usage
 
