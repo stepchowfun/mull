@@ -10,24 +10,23 @@ Since Mull runs in Visual Studio Code or Cursor, you can use it with your favori
 
 ## A quick tour
 
-A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 4 pages:
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 3 pages:
 
 ```md
 # Home
 
-Welcome to my wiki! Two of my favorite recipes are [Pancakes] and [Lemonade].
-
-# Lemonade
-
-Stir 1 cup of sugar into 1 cup of hot water, then add the juice of 6 [Lemons] and 4 cups of cold water.
+Try my [Pancakes] with fresh [Lemons].
 
 # Lemons
 
-Roll them on the counter before cutting them to get more juice. I use them for [Lemonade] and on [Pancakes].
+Great on [Pancakes].
 
 # Pancakes
 
-Whisk 1 cup of flour, 1 cup of milk, and 1 egg. Cook on a hot, buttered pan, and serve with a squeeze of [Lemons].
+- 1 cup of flour
+- 1 cup of milk
+- 1 egg
+- A squeeze of [Lemons]
 ```
 
 Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
@@ -109,7 +108,7 @@ Options:
 
 ## Installation instructions
 
-To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension.
+To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension. The binary does all the work and can be used by itself from the command line. The IDE extensions use the binary to provide a rich wiki editing experience.
 
 ### Installation on macOS or Linux (AArch64 or x86-64)
 
@@ -156,7 +155,9 @@ You can run that command with `--force` to update an existing installation.
 
 ### Installing the Visual Studio Code / Cursor extension
 
-Download the `mull.vsix` file from the latest [release](https://github.com/stepchowfun/mull/releases) and install it via the "Install from VSIX..." option in the `...` menu at the top of the Extensions view of the Primary Side Bar.
+First, make sure you have [Visual Studio Code](https://code.visualstudio.com/) or [Cursor](https://cursor.com/) installed.
+
+To install the Mull extension, download the `mull.vsix` file from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and install it via the "Install from VSIX..." option in the `...` menu at the top of the Extensions view of the Primary Side Bar.
 
 Note that the macOS / Linux installation script will install the extension automatically, so you can skip this section if you use that installation method.
 
