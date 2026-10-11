@@ -1549,7 +1549,7 @@ fn prepare_rename_for_document(
         return Ok(None);
     };
 
-    // Select only the title text and seed the rename prompt with its decoded value.
+    // Select only the title text and seed the rename prompt with the title as written there.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
         placeholder: page.title.text(Context::Verbatim).into_owned(),

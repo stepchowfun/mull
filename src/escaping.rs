@@ -6,7 +6,7 @@ use std::{borrow::Cow, iter};
 // escape depends on the context, since backticks are plain characters in a link's target, and
 // title lines and code are taken as written.
 
-// This is where escaped text appears in a wiki's source.
+// This is where text appears in a wiki's source, which determines how it's escaped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Context {
     Text,     // Content outside links and code
@@ -51,9 +51,9 @@ pub fn unescape(source: &str, context: Context) -> Option<String> {
 }
 
 // Scan text written as content, such as part of a wiki's source, for the characters which aren't
-// escaped, such as unescaped link delimiters. This recognizes the escapes of every context, which
-// finds the same delimiters as recognizing only a link's escapes would, since a backtick isn't a
-// link delimiter.
+// escaped, such as unescaped link delimiters. This recognizes the escapes of text, which include
+// those of a link, and finds the same delimiters as recognizing only a link's escapes would, since
+// a backtick isn't a link delimiter.
 pub fn unescaped_characters(source: &str) -> impl Iterator<Item = (usize, char)> {
     let mut previous_was_escape = false;
     source.char_indices().filter(move |&(_, character)| {
