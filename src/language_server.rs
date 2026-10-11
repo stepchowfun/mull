@@ -638,7 +638,7 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        // Preview the text-link target from the latest synchronized editor snapshot.
+        // Preview what's at the position, using the latest synchronized editor snapshot.
         let position = params.text_document_position_params.position;
         self.respond(
             &params.text_document_position_params.text_document.uri,
@@ -1027,7 +1027,7 @@ fn goto_definition_for_document(
     }]))
 }
 
-// Preview the destination of a text link at an editor position.
+// Preview the page or filesystem entry which a title or link at an editor position names.
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering over a text link or title doesn't require
     // filesystem validation, and recover from syntax errors so previews keep working while they're
@@ -1081,40 +1081,36 @@ fn filesystem_hover(
 ) -> Option<Hover> {
     // Find the entry as following the link would.
     let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
-    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
+    let path = filesystem_link_path(&file_root, target, &mut DirectoryListings::new())?;
 
-    // Identify images by their extensions, ignoring case.
-    let is_image = target
-        .path()
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            IMAGE_EXTENSIONS
-                .iter()
-                .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
-        });
+    // Use the first kind of preview which applies. Directories come first, since a directory's name
+    // may have an image's extension, like `[/images.png/]`. Images come before text files, since
+    // some images, like SVGs, are also valid text.
+    let value = directory_preview(&file_root, target)
+        .or_else(|| image_preview(&path))
+        .or_else(|| text_preview(&path))?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: if target.is_directory() {
-                directory_preview(&file_root, target)
-            } else if is_image {
-                image_preview(&uri)?
-            } else {
-                text_preview(&uri.to_file_path()?)?
-            },
+            value,
         }),
         range: Some(snapshot.range(source_range)),
     })
 }
 
 // List a directory's entries as the links which would name them, in a code block like a page
-// preview, with directories first. Only so many are listed, followed by a count of the rest.
-fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String {
+// preview, with directories first. Only so many are listed, followed by a count of the rest. Files
+// have no directory preview.
+fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> Option<String> {
+    // Skip files.
+    if !target.is_directory() {
+        return None;
+    }
+
     // Describe a directory with nothing to list.
     let mut children = visible_children(file_root, target.path());
     if children.is_empty() {
-        return "This directory contains no files.".to_owned();
+        return Some("This directory contains no files.".to_owned());
     }
 
     // List the first entries, keeping each group in name order.
@@ -1134,27 +1130,40 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
     {
         lines.push(format!("…and {remaining} more"));
     }
-    code_block("mull", &lines.join("\n"))
+    Some(code_block("mull", &lines.join("\n")))
 }
 
 // Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
 // size, keeping its aspect ratio. An image whose size can't be read, such as an SVG, just gets the
-// maximum width.
-fn image_preview(uri: &Uri) -> Option<String> {
-    let dimensions = match imagesize::size(uri.to_file_path()?) {
+// maximum width. Images are recognized by their extensions, and other files have no image preview.
+fn image_preview(path: &Path) -> Option<String> {
+    // Skip files which aren't images, ignoring the case of their extensions.
+    let extension = path.extension()?.to_str()?;
+    if !IMAGE_EXTENSIONS
+        .iter()
+        .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
+    {
+        return None;
+    }
+
+    // Embed the image, sized to fit.
+    let dimensions = match imagesize::size(path) {
         Ok(size) => {
             let (width, height) = image_preview_size(size.width, size.height);
             format!("width=\"{width}\" height=\"{height}\"")
         }
         Err(_) => format!("width=\"{MAX_IMAGE_WIDTH}\""),
     };
-    let source = uri.as_str().replace('&', "&amp;").replace('"', "&quot;");
+    let source = file_uri(path)
+        .as_str()
+        .replace('&', "&amp;")
+        .replace('"', "&quot;");
     Some(format!("<img src=\"{source}\" {dimensions}>"))
 }
 
 // Show the first lines of a text file in a code block. A file is text if it's UTF-8 without control
-// characters other than line breaks and tabs. Only the start of a large file is read, so it may end
-// partway through a character.
+// characters other than line breaks and tabs, and other files have no text preview. Only the start
+// of a large file is read, so it may end partway through a character.
 fn text_preview(path: &Path) -> Option<String> {
     // Read one byte past the limit to learn whether the file is longer.
     let mut bytes = Vec::new();
@@ -2301,24 +2310,29 @@ fn filesystem_link_target(
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
 ) -> Option<Uri> {
-    // Require the target to be spelled as it is on disk and to exist as the kind of entry the link
-    // names.
-    let is_directory = target.is_directory();
-    let target_path = file_root.resolve(&file_root.spell(target, listings).ok()?);
-    if !fs::metadata(&target_path).is_ok_and(|metadata| metadata.is_dir() == is_directory) {
-        return None;
-    }
-
     // Open a file directly, and reveal a directory through the extension by passing its URI as
     // the command's only positional argument.
-    let target_uri = file_uri(&target_path);
-    Some(if is_directory {
+    let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
+    Some(if target.is_directory() {
         command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
             .parse()
             .expect("A command URL should be a valid URI.")
     } else {
         target_uri
     })
+}
+
+// Find the entry a filesystem link names, if it's spelled as it is on disk and exists as the kind
+// of entry the link names.
+fn filesystem_link_path(
+    file_root: &FileRoot,
+    target: &FilesystemTarget,
+    listings: &mut DirectoryListings,
+) -> Option<PathBuf> {
+    let path = file_root.resolve(&file_root.spell(target, listings).ok()?);
+    fs::metadata(&path)
+        .is_ok_and(|metadata| metadata.is_dir() == target.is_directory())
+        .then_some(path)
 }
 
 // Encode a command and its positional arguments as a Markdown-safe URI.
