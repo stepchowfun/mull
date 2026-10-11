@@ -1,4 +1,4 @@
-use crate::wiki::{HOME_TITLE, Link, Page, Wiki};
+use crate::wiki::{HOME_TITLE, Link, Page, PageTitle, Wiki};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 // Populate the position of each page in the traversal order, leaving unreachable pages
@@ -7,7 +7,7 @@ pub fn populate_traversal_order(wiki: &mut Wiki) {
     // Compute the order before updating the pages it borrows from.
     let order = traversal_order(wiki, None)
         .into_iter()
-        .map(str::to_owned)
+        .cloned()
         .collect::<Vec<_>>();
 
     // Reset positions, then number the reachable pages.
@@ -16,7 +16,7 @@ pub fn populate_traversal_order(wiki: &mut Wiki) {
     }
     for (index, title) in order.into_iter().enumerate() {
         wiki.pages
-            .get_mut(title.as_str())
+            .get_mut(&title)
             .expect("Traversed titles should refer to existing pages.")
             .traversal_index = Some(index);
     }
@@ -27,24 +27,32 @@ pub fn populate_traversal_order(wiki: &mut Wiki) {
 // links in title order. Each page thus appears after the first of its closest-to-home parents,
 // keeping its minimum distance from the home page. The traversal can include an extra page without
 // links, as if it existed, which doesn't change the order of the others.
-pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<&'a str> {
+pub fn traversal_order<'a>(
+    wiki: &'a Wiki,
+    extra_title: Option<&'a PageTitle>,
+) -> Vec<&'a PageTitle> {
     // Treat the extra page as an existing page with no links.
-    let exists = |title: &str| wiki.pages.contains_key(title) || extra_title == Some(title);
-    let link_titles = |title: &str| {
+    let exists = |title: &PageTitle| wiki.pages.contains_key(title) || extra_title == Some(title);
+    let link_titles = |title: &PageTitle| {
         wiki.pages
             .get(title)
             .map(text_link_titles)
             .unwrap_or_default()
     };
 
-    // Leave every page unreachable if there's no home page.
-    if !exists(HOME_TITLE) {
+    // Start from the home page, leaving every page unreachable if there's none.
+    let Some(home_title) = wiki
+        .pages
+        .get_key_value(HOME_TITLE)
+        .map(|(title, _page)| title)
+        .or_else(|| extra_title.filter(|title| title.is_home()))
+    else {
         return Vec::new();
-    }
+    };
 
     // Compute minimum text-link distances from the home page using breadth-first traversal.
-    let mut depths = HashMap::<&str, usize>::from([(HOME_TITLE, 0)]);
-    let mut queued_titles = VecDeque::from([HOME_TITLE]);
+    let mut depths = HashMap::<&PageTitle, usize>::from([(home_title, 0)]);
+    let mut queued_titles = VecDeque::from([home_title]);
     while let Some(title) = queued_titles.pop_front() {
         let depth = depths[title];
         for target in link_titles(title) {
@@ -58,7 +66,7 @@ pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<
     // List each page when it's first popped, so the order follows a depth-first preorder.
     let mut order = Vec::new();
     let mut visited_titles = HashSet::new();
-    let mut pending_titles = vec![HOME_TITLE];
+    let mut pending_titles = vec![home_title];
     while let Some(title) = pending_titles.pop() {
         // Skip pages which were already reached through another parent.
         if !visited_titles.insert(title) {
@@ -79,11 +87,11 @@ pub fn traversal_order<'a>(wiki: &'a Wiki, extra_title: Option<&'a str>) -> Vec<
 }
 
 // Collect the distinct titles of a page's text links in title order.
-fn text_link_titles(page: &Page) -> BTreeSet<&str> {
+fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
     page.links
         .iter()
         .filter_map(|link| match link {
-            Link::Text { title, .. } => Some(title.as_str()),
+            Link::Text { title, .. } => Some(title),
             Link::Filesystem { .. } => None,
         })
         .collect()
@@ -92,7 +100,7 @@ fn text_link_titles(page: &Page) -> BTreeSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::populate_traversal_order;
-    use crate::{line_index::LineIndex, parser::parse, wiki::Wiki};
+    use crate::{escaping::Context, line_index::LineIndex, parser::parse, wiki::Wiki};
     use std::path::Path;
 
     // Parse a wiki and return its reachable titles in traversal order.
@@ -109,7 +117,7 @@ mod tests {
             .values()
             .filter_map(|page| {
                 page.traversal_index
-                    .map(|index| (index, page.title.as_str().to_owned()))
+                    .map(|index| (index, page.title.text(Context::Verbatim).into_owned()))
             })
             .collect::<Vec<_>>();
         pages.sort();

@@ -217,8 +217,8 @@ impl Snapshot {
                 .pages
                 .keys()
                 .map(|title| Title {
-                    title: title.as_str().to_owned(),
-                    lowercase: title.to_lowercase(),
+                    title: title.clone(),
+                    lowercase: title.text(Context::Verbatim).to_lowercase(),
                 })
                 .collect::<Vec<_>>();
             titles.sort_by(|a, b| a.title.cmp(&b.title));
@@ -241,7 +241,7 @@ impl Snapshot {
 // regardless of case.
 #[derive(Debug)]
 struct Title {
-    title: String,
+    title: PageTitle,
     lowercase: String,
 }
 
@@ -1044,7 +1044,7 @@ fn filesystem_link_completions(
         completions.push(CompletionItem {
             label,
             kind: Some(kind),
-            filter_text: Some(escaped_name),
+            filter_text: Some(escaped_name.into_owned()),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                 snapshot.range(SourceRange {
                     start: segment_start,
@@ -1158,9 +1158,9 @@ fn text_link_completions(
             .chain(other_matches)
             .take(MAX_TITLE_COMPLETIONS)
             .map(|title| {
-                let escaped_title = escape(title, Context::Link);
+                let escaped_title = title.text(Context::Link);
                 CompletionItem {
-                    label: title.clone(),
+                    label: title.text(Context::Verbatim).into_owned(),
                     kind: Some(CompletionItemKind::REFERENCE),
                     filter_text: Some(format!("[{escaped_title}")),
                     text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
@@ -1432,7 +1432,7 @@ fn references_for_document(
 }
 
 // Collect every complete text-link range that resolves to a title.
-fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
+fn text_link_source_ranges(wiki: &Wiki, title: &PageTitle) -> Vec<SourceRange> {
     // Links live on pages in an unordered map, so sort their ranges into source order.
     let mut source_ranges = wiki
         .links()
@@ -1440,7 +1440,7 @@ fn text_link_source_ranges(wiki: &Wiki, title: &str) -> Vec<SourceRange> {
             Link::Text {
                 title: link_title,
                 source_range,
-            } if link_title.as_str() == title => Some(*source_range),
+            } if link_title == title => Some(*source_range),
             Link::Text { .. } | Link::Filesystem { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -1552,7 +1552,7 @@ fn prepare_rename_for_document(
     // Select only the title text and seed the rename prompt with its decoded value.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
-        placeholder: page.title.as_str().to_owned(),
+        placeholder: page.title.text(Context::Verbatim).into_owned(),
     }))
 }
 
@@ -1608,19 +1608,19 @@ fn rename_page_for_document(
         return Err(format!("Page {} already exists.", new_title.code_str()));
     }
 
-    // Replace the declaration literally, since a heading isn't content, and escape the title inside
-    // every matching text link.
-    let escaped_title = escape(&new_title, Context::Link);
+    // Write the title verbatim in its title line, and escaped inside every matching text link.
+    let escaped_title = new_title.text(Context::Link);
+    let verbatim_title = new_title.text(Context::Verbatim);
     let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
             (
                 text_link_target_source_range(&snapshot.contents, source_range),
-                escaped_title.as_str(),
+                escaped_title.as_ref(),
             )
         })
         .collect::<Vec<_>>();
-    edits.push((page.title_source_range, new_title.as_str()));
+    edits.push((page.title_source_range, verbatim_title.as_ref()));
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
@@ -2058,7 +2058,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| DocumentSymbol {
-                    name: page.title.as_str().to_owned(),
+                    name: page.title.text(Context::Verbatim).into_owned(),
                     detail: None,
                     kind: SymbolKind::OBJECT,
                     tags: None,
@@ -2074,7 +2074,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| SymbolInformation {
-                    name: page.title.as_str().to_owned(),
+                    name: page.title.text(Context::Verbatim).into_owned(),
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
@@ -2127,15 +2127,13 @@ fn code_action_for_document(
                         .enumerate()
                         .map(|(index, title)| (title, index))
                         .collect::<HashMap<_, _>>();
-                    let new_key = Wiki::rendering_order_key(
-                        traversal_indices.get(title.as_str()).copied(),
-                        &title,
-                    );
+                    let new_key =
+                        Wiki::rendering_order_key(traversal_indices.get(&title).copied(), &title);
                     let preceding_page = wiki
                         .pages
                         .values()
                         .map(|page| {
-                            let index = traversal_indices.get(page.title.as_str()).copied();
+                            let index = traversal_indices.get(&page.title).copied();
                             (Wiki::rendering_order_key(index, &page.title), page)
                         })
                         .filter(|(key, _page)| *key < new_key)
@@ -2163,7 +2161,10 @@ fn code_action_for_document(
                     let insertion = snapshot.position(offset);
                     let edit = TextEdit::new(
                         Range::new(insertion, insertion),
-                        format!("{before_title}{TITLE_PREFIX}{title}{after_title}"),
+                        format!(
+                            "{before_title}{TITLE_PREFIX}{}{after_title}",
+                            title.text(Context::Verbatim),
+                        ),
                     );
 
                     // Place the cursor right before the new title's `#` once the edit is applied.
@@ -2414,8 +2415,8 @@ mod tests {
         rename_for_document,
     };
     use crate::{
-        cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
-        lsp_position::LspPosition, parser,
+        cancellation::CancellationFlag, error::SourceRange, escaping::Context,
+        line_index::LineIndex, lsp_position::LspPosition, parser,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
@@ -2834,8 +2835,11 @@ mod tests {
     }
 
     // Describe a list of titles by the titles alone.
-    fn title_names(titles: &[Title]) -> Vec<&str> {
-        titles.iter().map(|title| title.title.as_str()).collect()
+    fn title_names(titles: &[Title]) -> Vec<String> {
+        titles
+            .iter()
+            .map(|title| title.title.text(Context::Verbatim).into_owned())
+            .collect()
     }
 
     // Offer the titles of an earlier version until a version has been parsed itself.

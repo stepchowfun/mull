@@ -7,10 +7,9 @@ use crate::{
 use colored::ColoredString;
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::Borrow,
+    borrow::{Borrow, Cow},
     collections::HashMap,
     fmt,
-    ops::Deref,
     path::{Component, Path, PathBuf},
 };
 
@@ -64,9 +63,15 @@ impl PageTitle {
         Self(HOME_TITLE.to_owned())
     }
 
-    // Expose the title's text.
-    pub fn as_str(&self) -> &str {
-        &self.0
+    // Determine whether this is the title of the root of every wiki's text-link graph.
+    pub fn is_home(&self) -> bool {
+        self.0 == HOME_TITLE
+    }
+
+    // Write the title as it appears in a context, such as escaped in a link or as written in a
+    // title line.
+    pub fn text(&self, context: Context) -> Cow<'_, str> {
+        escape(&self.0, context)
     }
 }
 
@@ -86,15 +91,6 @@ impl From<PageTitle> for String {
     }
 }
 
-// Let a title be used wherever its text is read, such as in messages.
-impl Deref for PageTitle {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
 // Let pages be looked up by a title's text without making a title.
 impl Borrow<str> for PageTitle {
     fn borrow(&self) -> &str {
@@ -102,10 +98,10 @@ impl Borrow<str> for PageTitle {
     }
 }
 
-// Write a title as its text.
-impl fmt::Display for PageTitle {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+// Format a title for a message, as written in its title line.
+impl CodeStr for PageTitle {
+    fn code_str(&self) -> ColoredString {
+        self.0.code_str()
     }
 }
 
@@ -135,8 +131,8 @@ impl Wiki {
     // unreachable pages in title order.
     pub fn rendering_order_key(
         traversal_index: Option<usize>,
-        title: &str,
-    ) -> (bool, Option<usize>, &str) {
+        title: &PageTitle,
+    ) -> (bool, Option<usize>, &PageTitle) {
         (traversal_index.is_none(), traversal_index, title)
     }
 }
@@ -155,11 +151,12 @@ impl fmt::Display for Wiki {
             if index > 0 {
                 writeln!(formatter)?;
             }
+            let title = page.title.text(Context::Verbatim);
             let content = self.rendered_content(page);
             if content.is_empty() {
-                writeln!(formatter, "{TITLE_PREFIX}{}", page.title)?;
+                writeln!(formatter, "{TITLE_PREFIX}{title}")?;
             } else {
-                writeln!(formatter, "{TITLE_PREFIX}{}\n\n{content}", page.title)?;
+                writeln!(formatter, "{TITLE_PREFIX}{title}\n\n{content}")?;
             }
         }
 
@@ -197,8 +194,8 @@ impl Wiki {
             content.push_str(&self.source[copied_through..source_range.start]);
             content.push('[');
             content.push_str(&match link {
-                Link::Text { title, .. } => escape(title, Context::Link),
-                Link::Filesystem { target, .. } => target.text(Context::Link),
+                Link::Text { title, .. } => title.text(Context::Link),
+                Link::Filesystem { target, .. } => target.text(Context::Link).into(),
             });
             content.push(']');
             copied_through = source_range.end;
@@ -354,7 +351,7 @@ impl FilesystemTarget {
         }
 
         // Escape the finished text once, as it will appear in the source.
-        escape(&text, context)
+        escape(&text, context).into_owned()
     }
 
     // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
@@ -421,7 +418,9 @@ mod tests {
     #[test]
     fn page_titles() {
         assert_eq!(
-            PageTitle::parse("  Greeting  ").unwrap().as_str(),
+            PageTitle::parse("  Greeting  ")
+                .unwrap()
+                .text(Context::Verbatim),
             "Greeting",
         );
         assert_eq!(
