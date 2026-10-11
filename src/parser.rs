@@ -25,18 +25,16 @@ struct OpenLink {
     has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
 }
 
-// Parse source contents into a scored wiki, with source ranges for every page and link, along with
-// any syntax errors in source order. The wiki retains as much of the source as possible so it can
-// still be validated and navigated, but it omits the content of duplicate pages, invalid titles,
-// and anything before the first title, so it mustn't be rendered if there are any syntax errors.
-// The line index locates syntax errors in their source listings.
-//
-// The source is read in a single pass. A title line starts a region, which is a page if its title
-// is valid. In the content, code starts with a run of backticks and ends at the next run of
-// exactly as many backticks, on the same line for a run of one or two, and its text is taken as
-// written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
-// characters in it. Outside code, a backslash escapes the next character, as allowed by whether
-// it's in a link [ref:content_escapes].
+// Parse source contents into a scored wiki in a single pass, with source ranges for every page and
+// link, along with any syntax errors in source order. A title line starts a region, which is a page
+// if its title is valid. In the content, code starts with a run of backticks and ends at the next
+// run of exactly as many backticks, on the same line for a run of one or two, and its text is
+// taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
+// plain characters in it. Outside code and title lines, a backslash escapes the next character, as
+// allowed by whether it's in a link [ref:content_escapes]. The wiki retains as much of the source
+// as possible so it can still be validated and navigated, but it omits the content of duplicate
+// pages, invalid titles, and anything before the first title, so it mustn't be rendered if there
+// are any syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
