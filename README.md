@@ -120,7 +120,7 @@ curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | 
 
 The same command can be used again to update to the latest version.
 
-If Visual Studio Code or Cursor is installed, the installation script also installs the Mull extension in each editor it finds.
+If Visual Studio Code or Cursor is installed, that command also installs the Mull extension in each editor it finds.
 
 The installation script supports the following optional environment variables:
 
@@ -159,6 +159,6 @@ First, make sure you have [Visual Studio Code](https://code.visualstudio.com/) o
 
 To install the Mull extension, download the `mull.vsix` file from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and install it via the "Install from VSIX..." option in the `...` menu at the top of the Extensions view of the Primary Side Bar.
 
-Note that the macOS / Linux installation script will install the extension automatically, so you can skip this section if you use that installation method.
+Note that the macOS / Linux installation command will install the extension automatically, so you can skip this section if you use that installation method.
 
 To update an existing installation, simply re-install it.

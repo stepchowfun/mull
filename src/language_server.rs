@@ -16,7 +16,8 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
-    fs,
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
@@ -64,6 +65,11 @@ const MAX_DIRECTORY_PREVIEW_ENTRIES: usize = 50;
 // Scale image previews down to fit within this many pixels, since hovers don't limit their size.
 const MAX_IMAGE_WIDTH: usize = 480;
 const MAX_IMAGE_HEIGHT: usize = 360;
+
+// Read at most this many bytes of a text file and show at most this many of its lines when
+// previewing it, so a large file doesn't slow down or flood the hover.
+const MAX_TEXT_PREVIEW_BYTES: usize = 64 * 1024;
+const MAX_TEXT_PREVIEW_LINES: usize = 50;
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -1025,7 +1031,7 @@ fn goto_definition_for_document(
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering over a text link or title doesn't require
     // filesystem validation, and recover from syntax errors so previews keep working while they're
-    // fixed. A filesystem link may preview a directory or an image instead.
+    // fixed. A filesystem link may preview a directory or a file instead.
     let wiki = snapshot.wiki();
     let (page, source_range) = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
         Occurrence::Title(page) => (page, page.title_source_range),
@@ -1044,7 +1050,8 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: mull_code_block(
+            value: code_block(
+                "mull",
                 &snapshot.contents[page.source_range.start..page.source_range.end],
             ),
         }),
@@ -1052,26 +1059,31 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     })
 }
 
-// Put Mull source in a Markdown code block, which the editor highlights as Mull and displays in
-// the editor's font. The fence is longer than every backtick run in the source.
-fn mull_code_block(source: &str) -> String {
+// Put source in a Markdown code block, which the editor highlights as the given language, if any,
+// and displays in the editor's font. The fence is longer than every backtick run in the source.
+fn code_block(language: &str, source: &str) -> String {
     let longest_run = source
         .split(|character| character != '`')
         .map(str::len)
         .max()
         .expect("Splitting text should yield at least one piece.");
     let fence = "`".repeat((longest_run + 1).max(3));
-    format!("{fence}mull\n{source}\n{fence}")
+    format!("{fence}{language}\n{source}\n{fence}")
 }
 
-// Preview the directory or image a filesystem link names, if it exists as spelled in a saved wiki's
-// file root. Images are recognized by their extensions, and other files have no preview.
+// Preview the directory or file a filesystem link names, if it exists as spelled in a saved wiki's
+// file root. Images are recognized by their extensions, and text files by their contents. Other
+// files have no preview.
 fn filesystem_hover(
     snapshot: &Snapshot,
     target: &FilesystemTarget,
     source_range: SourceRange,
 ) -> Option<Hover> {
-    // Skip files which aren't images, ignoring the case of their extensions.
+    // Find the entry as following the link would.
+    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
+    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
+
+    // Identify images by their extensions, ignoring case.
     let is_image = target
         .path()
         .extension()
@@ -1081,20 +1093,15 @@ fn filesystem_hover(
                 .iter()
                 .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
         });
-    if !target.is_directory() && !is_image {
-        return None;
-    }
-
-    // Find the entry as following the link would.
-    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
-    let uri = filesystem_link_target(&file_root, target, &mut DirectoryListings::new())?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
             value: if target.is_directory() {
                 directory_preview(&file_root, target)
-            } else {
+            } else if is_image {
                 image_preview(&uri)?
+            } else {
+                text_preview(&uri.to_file_path()?)?
             },
         }),
         range: Some(snapshot.range(source_range)),
@@ -1127,7 +1134,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
     {
         lines.push(format!("…and {remaining} more"));
     }
-    mull_code_block(&lines.join("\n"))
+    code_block("mull", &lines.join("\n"))
 }
 
 // Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
@@ -1143,6 +1150,57 @@ fn image_preview(uri: &Uri) -> Option<String> {
     };
     let source = uri.as_str().replace('&', "&amp;").replace('"', "&quot;");
     Some(format!("<img src=\"{source}\" {dimensions}>"))
+}
+
+// Show the first lines of a text file in a code block. A file is text if it's UTF-8 without control
+// characters other than line breaks and tabs. Only the start of a large file is read, so it may end
+// partway through a character.
+fn text_preview(path: &Path) -> Option<String> {
+    // Read one byte past the limit to learn whether the file is longer.
+    let mut bytes = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(MAX_TEXT_PREVIEW_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let is_truncated = bytes.len() > MAX_TEXT_PREVIEW_BYTES;
+    bytes.truncate(MAX_TEXT_PREVIEW_BYTES);
+
+    // Decode the text, dropping a character which the limit cut off.
+    let text = match str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(error) if is_truncated && error.error_len().is_none() => {
+            str::from_utf8(&bytes[..error.valid_up_to()]).ok()?
+        }
+        Err(_) => return None,
+    };
+    if text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return None;
+    }
+
+    // Describe a file with nothing to show.
+    if text.is_empty() {
+        return Some("This file is empty.".to_owned());
+    }
+
+    // Show the first lines, followed by an ellipsis if there are more.
+    let mut lines = text.lines();
+    let block = code_block(
+        "",
+        &lines
+            .by_ref()
+            .take(MAX_TEXT_PREVIEW_LINES)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    Some(if is_truncated || lines.next().is_some() {
+        format!("{block}\n\n…")
+    } else {
+        block
+    })
 }
 
 // Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
@@ -2283,12 +2341,12 @@ fn file_uri(path: &Path) -> Uri {
 mod tests {
     use super::{
         FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
-        MAX_TITLE_COMPLETIONS, RevealType, Snapshot, code_action_for_document,
-        completion_for_document, diagnostic_from_error, diagnostics_for_document,
-        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
-        formatting_for_document, goto_definition_for_document, hover_for_document,
-        image_preview_size, is_subsequence, prepare_rename_for_document, references_for_document,
-        rename_for_document,
+        MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS, RevealType,
+        Snapshot, code_action_for_document, completion_for_document, diagnostic_from_error,
+        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
+        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
+        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -3121,15 +3179,15 @@ mod tests {
         header
     }
 
-    // Preview images which filesystem links name, but not other files, missing images, or images in
-    // an unsaved wiki. A directory with an image's extension is previewed as a directory.
+    // Preview images which filesystem links name, but not binary files, missing images, or images
+    // in an unsaved wiki. A directory with an image's extension is previewed as a directory.
     #[test]
     fn hovers_preview_images() {
-        let source = "# Home\n\n[/photo.PNG] [/notes.txt] [/images.png/] [/missing.png]";
+        let source = "# Home\n\n[/photo.PNG] [/data.bin] [/images.png/] [/missing.png]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("photo.PNG"), png_header(100, 50)).unwrap();
-        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::write(directory.join("data.bin"), [0, 1, 2]).unwrap();
         fs::create_dir(directory.join("images.png")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -3166,6 +3224,71 @@ mod tests {
         assert_eq!(contents.value, "This directory contains no files.");
         assert!(
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
+        );
+    }
+
+    // Show text files in code blocks, but not files which are invalid UTF-8 or contain control
+    // characters other than line breaks and tabs.
+    #[test]
+    fn hovers_preview_text_files() {
+        let source = "# Home\n\n[/notes.txt] [/empty.txt] [/control.txt] [/latin1.txt]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(directory.join("notes.txt"), "a\tb\r\n```\nc").unwrap();
+        fs::write(directory.join("empty.txt"), "").unwrap();
+        fs::write(directory.join("control.txt"), "a\u{7}b").unwrap();
+        fs::write(directory.join("latin1.txt"), b"caf\xe9").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 3)).unwrap(),
+            "````\na\tb\n```\nc\n````",
+        );
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 16)).unwrap(),
+            "This file is empty.",
+        );
+        for column in [28, 43] {
+            assert!(hover_markdown(&uri, source, Position::new(2, column)).is_none());
+        }
+    }
+
+    // Show only the first lines of a long text file, and only the start of a large one, even if it
+    // cuts off a character, followed by an ellipsis.
+    #[test]
+    fn hovers_preview_large_text_files() {
+        let source = "# Home\n\n[/long.txt] [/large.txt]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(
+            directory.join("long.txt"),
+            (0..=MAX_TEXT_PREVIEW_LINES)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("large.txt"),
+            format!("a{}", "é".repeat(MAX_TEXT_PREVIEW_BYTES / 2)),
+        )
+        .unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let markdown = hover_markdown(&uri, source, Position::new(2, 3)).unwrap();
+        let lines = markdown.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), MAX_TEXT_PREVIEW_LINES + 4);
+        assert_eq!(
+            lines[MAX_TEXT_PREVIEW_LINES],
+            format!("{}", MAX_TEXT_PREVIEW_LINES - 1),
+        );
+        assert_eq!(lines[MAX_TEXT_PREVIEW_LINES + 3], "…");
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 15)).unwrap(),
+            format!(
+                "```\na{}\n```\n\n…",
+                "é".repeat(MAX_TEXT_PREVIEW_BYTES / 2 - 1),
+            ),
         );
     }
 
