@@ -64,11 +64,11 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 ## What does Mull check?
 
-Mull validates the wiki as you edit it, and it's fairly strict.
+Mull validates the wiki as you edit it, which looks like this:
 
 ![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
 
-Mull verifies these structural properties:
+It verifies these structural properties:
 
 - The wiki has valid syntax (links are closed, etc.).
 - Pages have unique titles.
@@ -77,7 +77,7 @@ Mull verifies these structural properties:
 It also verifies these connectivity properties:
 
 - All pages are reachable by following links from the `Home` page, which must exist.
-- All files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
+- Any files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
 
 Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable by following links starting from the `Home` page. This promotes a basic form of organization that makes Mull different from other wiki software.
 
