@@ -638,7 +638,7 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        // Preview the text-link target from the latest synchronized editor snapshot.
+        // Preview what's at the position, using the latest synchronized editor snapshot.
         let position = params.text_document_position_params.position;
         self.respond(
             &params.text_document_position_params.text_document.uri,
@@ -1027,7 +1027,7 @@ fn goto_definition_for_document(
     }]))
 }
 
-// Preview the destination of a text link at an editor position.
+// Preview the page or filesystem entry which a title or link at an editor position names.
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     // Parse only the wiki syntax because hovering over a text link or title doesn't require
     // filesystem validation, and recover from syntax errors so previews keep working while they're
@@ -1146,7 +1146,7 @@ fn image_preview(path: &Path) -> Option<String> {
         return None;
     }
 
-    // Size the image to fit.
+    // Embed the image, sized to fit.
     let dimensions = match imagesize::size(path) {
         Ok(size) => {
             let (width, height) = image_preview_size(size.width, size.height);
