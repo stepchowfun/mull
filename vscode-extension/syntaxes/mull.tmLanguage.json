@@ -22,10 +22,14 @@
           "include": "#escapes"
         },
         {
-          "include": "#links"
+          "include": "#closed-links"
         },
         {
-          "include": "#unexpected-closing-delimiters"
+          "include": "#unclosed-links"
+        },
+        {
+          "name": "invalid.illegal.unexpected-closing-delimiter.mull",
+          "match": "\\]"
         }
       ]
     },
@@ -108,42 +112,8 @@
         }
       ]
     },
-    "links": {
-      "patterns": [
-        {
-          "include": "#filesystem-links"
-        },
-        {
-          "include": "#text-links"
-        },
-        {
-          "include": "#unclosed-links"
-        }
-      ]
-    },
-    "filesystem-links": {
-      "name": "meta.link.filesystem.mull",
-      "contentName": "string.other.link.title.path.mull",
-      "begin": "\\[(?=[ \\t]*/(?:[^\\\\\\]]|\\\\.)*\\])",
-      "beginCaptures": {
-        "0": {
-          "name": "punctuation.definition.link.begin.mull"
-        }
-      },
-      "end": "\\]|$",
-      "endCaptures": {
-        "0": {
-          "name": "punctuation.definition.link.end.mull"
-        }
-      },
-      "patterns": [
-        {
-          "include": "#link-contents"
-        }
-      ]
-    },
-    "text-links": {
-      "name": "meta.link.text.mull",
+    "closed-links": {
+      "name": "meta.link.closed.mull",
       "contentName": "string.other.link.title.mull",
       "begin": "\\[(?=(?:[^\\\\\\]]|\\\\.)*\\])",
       "beginCaptures": {
@@ -151,7 +121,7 @@
           "name": "punctuation.definition.link.begin.mull"
         }
       },
-      "end": "\\]|$",
+      "end": "\\]",
       "endCaptures": {
         "0": {
           "name": "punctuation.definition.link.end.mull"
@@ -188,10 +158,6 @@
           "match": "\\["
         }
       ]
-    },
-    "unexpected-closing-delimiters": {
-      "name": "invalid.illegal.unexpected-closing-delimiter.mull",
-      "match": "\\]"
     }
   },
   "scopeName": "source.mull"
