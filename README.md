@@ -81,6 +81,8 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Rename a page | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
+Most of these keyboard shortcuts are built into Visual Studio Code and Cursor, so they may be familiar to you already. You can remap them.
+
 ## Usage
 
 Once Mull is [installed](#installation-instructions) for Visual Studio Code or Cursor, you can run it by opening a `.mull` file in the editor.
