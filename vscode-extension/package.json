@@ -49,7 +49,16 @@
           "constant.character.escape.mull": "string",
           "invalid.illegal": "string",
           "markup.inline.raw.mull": "string",
-          "markup.raw.block.mull": "string"
+          "markup.raw.block.mull - meta.embedded": "string"
+        },
+        "embeddedLanguages": {
+          "meta.embedded.block.yaml.mull": "yaml",
+          "meta.embedded.block.json.mull": "json",
+          "meta.embedded.block.javascript.mull": "javascript",
+          "meta.embedded.block.typescript.mull": "typescript",
+          "meta.embedded.block.python.mull": "python",
+          "meta.embedded.block.shellscript.mull": "shellscript",
+          "meta.embedded.block.rust.mull": "rust"
         }
       }
     ],

@@ -53,11 +53,90 @@
             "0": {
               "name": "punctuation.definition.fenced_code.end.mull"
             }
-          }
+          },
+          "patterns": [
+            {
+              "include": "#embedded-code"
+            }
+          ]
         },
         {
           "name": "invalid.illegal.unclosed-code.mull",
           "match": "`+"
+        }
+      ]
+    },
+    "embedded-code": {
+      "patterns": [
+        {
+          "contentName": "meta.embedded.block.yaml.mull",
+          "begin": "\\G(?i:yaml|yml)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.yaml"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.json.mull",
+          "begin": "\\G(?i:json)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.json"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.javascript.mull",
+          "begin": "\\G(?i:javascript|js)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.js"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.typescript.mull",
+          "begin": "\\G(?i:typescript|ts)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.ts"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.python.mull",
+          "begin": "\\G(?i:python|py)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.python"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.shellscript.mull",
+          "begin": "\\G(?i:shell|sh|bash|zsh)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.shell"
+            }
+          ]
+        },
+        {
+          "contentName": "meta.embedded.block.rust.mull",
+          "begin": "\\G(?i:rust|rs)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "source.rust"
+            }
+          ]
         }
       ]
     },
