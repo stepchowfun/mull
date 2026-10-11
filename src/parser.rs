@@ -1120,7 +1120,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert!(errors[3].to_string().contains("Unclosed link"));
     }
 
-    // Keep a page with a syntax error, along with the links in it which parsed successfully.
+    // Keep a page with a syntax error, along with the targets of the links in it which parsed.
     #[test]
     fn recovered_page_keeps_valid_links() {
         let (wiki, errors) = parse_fixture(

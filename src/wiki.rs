@@ -120,7 +120,7 @@ impl Wiki {
 }
 
 // Render pages deterministically in traversal order, with unreachable pages last in title order.
-// Rendering assumes the wiki has no syntax errors, so every link in a page's content was parsed.
+// Rendering assumes the wiki has no syntax errors, so none of a page's links are malformed.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable pages by traversal order, followed by unreachable pages in title order.
