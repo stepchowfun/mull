@@ -37,7 +37,7 @@ To link to a page, use square brackets like `[Lemons]`. When you type the openin
 
 If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
 ## What does Mull check?
 

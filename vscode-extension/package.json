@@ -94,7 +94,8 @@
           "meta.embedded.block.latex.mull": "latex",
           "meta.embedded.block.bat.mull": "bat",
           "meta.embedded.block.dotenv.mull": "dotenv",
-          "meta.embedded.block.toml.mull": "toml"
+          "meta.embedded.block.toml.mull": "toml",
+          "meta.embedded.block.mull.mull": "mull"
         }
       }
     ],

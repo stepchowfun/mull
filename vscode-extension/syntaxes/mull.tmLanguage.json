@@ -497,6 +497,16 @@
               "include": "source.toml"
             }
           ]
+        },
+        {
+          "contentName": "meta.embedded.block.mull.mull",
+          "begin": "\\G(?i:mull)[ \\t]*$",
+          "while": "^(?!.*`{3})",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
         }
       ]
     },
