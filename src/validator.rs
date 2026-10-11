@@ -494,6 +494,53 @@ mod tests {
     // something in it.
     struct TestDirectory(PathBuf);
 
+    // Create an isolated directory containing a wiki without a file root.
+    impl TestDirectory {
+        fn new() -> Self {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("mull-validation-{}-{sequence}", process::id()));
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("wiki.mull"), "# Home\n").unwrap();
+            Self(path)
+        }
+
+        // Expose the directory containing the wiki, which the wiki doesn't manage.
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        // Expose the wiki's path.
+        fn wiki_path(&self) -> PathBuf {
+            self.0.join("wiki.mull")
+        }
+
+        // Locate a path within the file root, creating the directory and the path's
+        // other ancestors.
+        fn join(&self, path: &str) -> PathBuf {
+            let path = self.0.join("wiki_files").join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            path
+        }
+
+        // Write a file within the file root.
+        fn write(&self, path: &str, contents: &str) {
+            fs::write(self.join(path), contents).unwrap();
+        }
+
+        // Create a directory, and any missing ancestors, within the file root.
+        fn create_dir(&self, path: &str) {
+            fs::create_dir_all(self.join(path)).unwrap();
+        }
+    }
+
+    // Clean up files created by a validation test.
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
     // This fixture keeps parsed pages together with the source their ranges address.
     struct TestWiki {
         wiki: Wiki,
@@ -548,51 +595,64 @@ mod tests {
             .any(|error| error.to_string().contains(message))
     }
 
-    // Create an isolated directory containing a wiki without a file root.
-    impl TestDirectory {
-        fn new() -> Self {
-            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("mull-validation-{}-{sequence}", process::id()));
-            fs::create_dir(&path).unwrap();
-            fs::write(path.join("wiki.mull"), "# Home\n").unwrap();
-            Self(path)
-        }
+    // Reject text links that don't correspond to any page in the wiki.
+    #[test]
+    fn missing_text_link() {
+        let directory = TestDirectory::new();
+        let wiki = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
 
-        // Expose the directory containing the wiki, which the wiki doesn't manage.
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        // Expose the wiki's path.
-        fn wiki_path(&self) -> PathBuf {
-            self.0.join("wiki.mull")
-        }
-
-        // Locate a path within the file root, creating the directory and the path's
-        // other ancestors.
-        fn join(&self, path: &str) -> PathBuf {
-            let path = self.0.join("wiki_files").join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            path
-        }
-
-        // Write a file within the file root.
-        fn write(&self, path: &str, contents: &str) {
-            fs::write(self.join(path), contents).unwrap();
-        }
-
-        // Create a directory, and any missing ancestors, within the file root.
-        fn create_dir(&self, path: &str) {
-            fs::create_dir_all(self.join(path)).unwrap();
-        }
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(&errors, "Page `Zulu` not found."));
+        assert!(contains_error(&errors, "Page `Alpha` not found."));
     }
 
-    // Clean up files created by a validation test.
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
-        }
+    // Report repeated invalid links at each distinct source occurrence.
+    #[test]
+    fn repeated_missing_text_link() {
+        let directory = TestDirectory::new();
+        let wiki = parse("# Home\nSee [Missing] and [Missing].").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("Page `Missing` not found.")),
+        );
+        assert_ne!(errors[0].to_string(), errors[1].to_string());
+    }
+
+    // Require every wiki to contain its special root page.
+    #[test]
+    fn missing_home() {
+        let directory = TestDirectory::new();
+        let wiki = parse("# Elsewhere").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "The wiki doesn't contain a `Home` page.",
+        ));
+    }
+
+    // Reject pages that can't be reached transitively from Home.
+    #[test]
+    fn unreachable_pages() {
+        let directory = TestDirectory::new();
+        let wiki = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "Page `Alpha` can't be reached by following links starting from `Home`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Page `Zulu` can't be reached by following links starting from `Home`.",
+        ));
     }
 
     // Validate syntax and graph structure without requiring an untitled wiki to be saved.
@@ -1101,34 +1161,6 @@ mod tests {
         }
     }
 
-    // Reject text links that don't correspond to any page in the wiki.
-    #[test]
-    fn missing_text_link() {
-        let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(contains_error(&errors, "Page `Zulu` not found."));
-        assert!(contains_error(&errors, "Page `Alpha` not found."));
-    }
-
-    // Report repeated invalid links at each distinct source occurrence.
-    #[test]
-    fn repeated_missing_text_link() {
-        let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Missing] and [Missing].").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(
-            errors
-                .iter()
-                .all(|error| error.to_string().contains("Page `Missing` not found.")),
-        );
-        assert_ne!(errors[0].to_string(), errors[1].to_string());
-    }
-
     // Report independent graph, filesystem-link, and unreferenced-entry errors together.
     #[test]
     fn multiple_validation_errors() {
@@ -1150,38 +1182,6 @@ mod tests {
         ] {
             assert!(contains_error(&errors, message));
         }
-    }
-
-    // Require every wiki to contain its special root page.
-    #[test]
-    fn missing_home() {
-        let directory = TestDirectory::new();
-        let wiki = parse("# Elsewhere").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(contains_error(
-            &errors,
-            "The wiki doesn't contain a `Home` page.",
-        ));
-    }
-
-    // Reject pages that can't be reached transitively from Home.
-    #[test]
-    fn unreachable_pages() {
-        let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(contains_error(
-            &errors,
-            "Page `Alpha` can't be reached by following links starting from `Home`.",
-        ));
-        assert!(contains_error(
-            &errors,
-            "Page `Zulu` can't be reached by following links starting from `Home`.",
-        ));
     }
 
     // Report nothing once cancellation is requested, rather than reporting a partial walk.

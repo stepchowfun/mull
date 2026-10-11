@@ -154,16 +154,6 @@ impl fmt::Display for Wiki {
     }
 }
 
-// This struct locates a link's delimiters in the source, whether or not the link is closed or its
-// target parsed.
-#[derive(Clone, Debug)]
-pub struct LinkDelimiters {
-    pub opening: usize,         // The offset of the `[`
-    pub closing: Option<usize>, // The offset of the `]`, if the link is closed
-    pub end: usize,             // The offset of the `]`, or of the end of the line if there's none
-    pub has_nested_start: bool, // Whether an unexpected `[` appears in the link
-}
-
 // This struct represents a page in a wiki.
 #[derive(Clone, Debug)]
 pub struct Page {
@@ -172,6 +162,16 @@ pub struct Page {
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
+}
+
+// This struct locates a link's delimiters in the source, whether or not the link is closed or its
+// target parsed.
+#[derive(Clone, Debug)]
+pub struct LinkDelimiters {
+    pub opening: usize,         // The offset of the `[`
+    pub closing: Option<usize>, // The offset of the `]`, if the link is closed
+    pub end: usize,             // The offset of the `]`, or of the end of the line if there's none
+    pub has_nested_start: bool, // Whether an unexpected `[` appears in the link
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not

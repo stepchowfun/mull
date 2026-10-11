@@ -306,6 +306,39 @@ pub fn parse(
     (wiki, errors)
 }
 
+// Add a completed region as a page if it has a valid title which hasn't already been used, with
+// the links in its content which parsed.
+fn finish_page(
+    wiki: &mut Wiki,
+    pending_page: PendingPage,
+    source_end: usize,
+    source_contents: &str,
+) {
+    let PendingPage {
+        title,
+        source_start,
+        links,
+    } = pending_page;
+    if let Some((title, title_source_range)) = title {
+        wiki.pages.insert(
+            title.clone(),
+            Page {
+                title,
+                links,
+                traversal_index: None,
+                source_range: trim_source_range(
+                    source_contents,
+                    SourceRange {
+                        start: source_start,
+                        end: source_end,
+                    },
+                ),
+                title_source_range,
+            },
+        );
+    }
+}
+
 // Locate the title that follows a title marker, rejecting a title which breaks the rules for
 // titles, such as one which is empty once surrounding whitespace is stripped.
 fn parse_title(
@@ -353,67 +386,6 @@ fn parse_title(
     }
 }
 
-// Add a completed region as a page if it has a valid title which hasn't already been used, with
-// the links in its content which parsed.
-fn finish_page(
-    wiki: &mut Wiki,
-    pending_page: PendingPage,
-    source_end: usize,
-    source_contents: &str,
-) {
-    let PendingPage {
-        title,
-        source_start,
-        links,
-    } = pending_page;
-    if let Some((title, title_source_range)) = title {
-        wiki.pages.insert(
-            title.clone(),
-            Page {
-                title,
-                links,
-                traversal_index: None,
-                source_range: trim_source_range(
-                    source_contents,
-                    SourceRange {
-                        start: source_start,
-                        end: source_end,
-                    },
-                ),
-                title_source_range,
-            },
-        );
-    }
-}
-
-// Count the backticks at the start of some text.
-fn backtick_run_length(text: &str) -> usize {
-    text.len() - text.trim_start_matches('`').len()
-}
-
-// Find the end of the run of exactly the given number of backticks which closes code whose text
-// starts at an offset, searching only the rest of the line for a run of one or two backticks.
-fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
-    let end = if length < 3 {
-        source[start..]
-            .find('\n')
-            .map_or(source.len(), |index| start + index)
-    } else {
-        source.len()
-    };
-    let text = &source[start..end];
-    let mut index = 0;
-    while let Some(found) = text[index..].find('`') {
-        let run_start = index + found;
-        let run_length = backtick_run_length(&text[run_start..]);
-        if run_length == length {
-            return Some(start + run_start + run_length);
-        }
-        index = run_start + run_length;
-    }
-    None
-}
-
 // Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
 fn parse_link(
     target: &str,
@@ -448,6 +420,34 @@ fn parse_link(
             source_range,
         })
     }
+}
+
+// Count the backticks at the start of some text.
+fn backtick_run_length(text: &str) -> usize {
+    text.len() - text.trim_start_matches('`').len()
+}
+
+// Find the end of the run of exactly the given number of backticks which closes code whose text
+// starts at an offset, searching only the rest of the line for a run of one or two backticks.
+fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
+    let end = if length < 3 {
+        source[start..]
+            .find('\n')
+            .map_or(source.len(), |index| start + index)
+    } else {
+        source.len()
+    };
+    let text = &source[start..end];
+    let mut index = 0;
+    while let Some(found) = text[index..].find('`') {
+        let run_start = index + found;
+        let run_length = backtick_run_length(&text[run_start..]);
+        if run_length == length {
+            return Some(start + run_start + run_length);
+        }
+        index = run_start + run_length;
+    }
+    None
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
@@ -544,6 +544,165 @@ mod tests {
         assert_eq!(&source[source_range.start..source_range.end], "[Greeting]");
     }
 
+    // Keep source ranges on UTF-8 boundaries when titles and links contain multibyte characters.
+    #[test]
+    fn unicode_source_ranges() {
+        let source = "# Home\nSee [Grüße].\n# Grüße";
+        let wiki = parse_test(source).unwrap();
+        let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
+            panic!("The parsed link should be a text link.");
+        };
+
+        assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
+        assert_eq!(
+            &source[wiki.page("Grüße").title_source_range.start
+                ..wiki.page("Grüße").title_source_range.end],
+            "Grüße",
+        );
+    }
+
+    // Parse Windows line endings without retaining carriage returns.
+    #[test]
+    fn windows_line_endings() {
+        let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
+
+        assert_eq!(wiki.to_string(), "# Greeting\n\nHello, world!\n");
+    }
+
+    // Accept empty and whitespace-only wikis.
+    #[test]
+    fn empty_wiki() {
+        assert!(parse_test(" \n\t\n").unwrap().pages.is_empty());
+    }
+
+    // Accept empty page content.
+    #[test]
+    fn empty_content() {
+        assert_eq!(parse_test("# Empty").unwrap().to_string(), "# Empty\n");
+    }
+
+    // Remove whitespace at the end of each line, including after a link and on blank lines.
+    #[test]
+    fn trailing_whitespace() {
+        let wiki =
+            parse_test("# Home\r\nFirst  \t\r\n   \nSee [Home]  \nand [Home] later.\t\nLast")
+                .unwrap();
+
+        assert_eq!(
+            wiki.to_string(),
+            "# Home\n\nFirst\n\nSee [Home]\nand [Home] later.\nLast\n",
+        );
+    }
+
+    // Keep an indented line which starts with a title marker as content, even as the first line of
+    // a page's content, so rendering the wiki doesn't turn it into a title.
+    #[test]
+    fn indented_title_markers() {
+        let source = "# Home\n\n  # Not a title\n";
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(wiki.pages.len(), 1);
+        assert_eq!(wiki.to_string(), source);
+    }
+
+    // Treat non-title hash prefixes as ordinary content.
+    #[test]
+    fn non_title_hashes() {
+        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
+
+        assert_eq!(wiki.to_string(), "# Home\n\n## Subtitle\n#not a title\n");
+    }
+
+    // Treat a bare title marker as content, even once formatting removes whitespace after it, so
+    // formatting can't turn it into a title.
+    #[test]
+    fn bare_title_markers() {
+        let wiki = parse_test("# Home\n\n#\n#\t\n# \tx").unwrap();
+
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(wiki.page("Home").links.len(), 0);
+        let formatted = wiki.to_string();
+        assert!(formatted.starts_with("# Home\n\n#\n#\n"));
+        assert_eq!(parse_test(&formatted).unwrap().pages.len(), 2);
+    }
+
+    // Reject titles that are empty after whitespace is stripped.
+    #[test]
+    fn empty_title() {
+        let errors = parse_test("#   \nContent").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A page title can't be empty."),
+        );
+    }
+
+    // Reject titles that text links would interpret as filesystem links.
+    #[test]
+    fn filesystem_link_titles() {
+        let errors = parse_test("# Home\n\n# /notes.txt\n\n# /\n\n# notes: /draft").unwrap_err();
+
+        assert_eq!(errors.len(), 2);
+        for error in &errors {
+            assert!(
+                error
+                    .to_string()
+                    .contains("A page title can't start with `/`."),
+            );
+        }
+    }
+
+    // Reject duplicate titles and identify the later declaration.
+    #[test]
+    fn duplicate_title() {
+        let errors = parse_test("# Home\nFirst\n# Home\nSecond").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Page `Home` already exists."),
+        );
+        assert!(errors[0].to_string().contains("3 \u{2502} # Home"));
+    }
+
+    // Reject non-whitespace content before the first title.
+    #[test]
+    fn content_before_title() {
+        assert_fails!(
+            parse_test("Introduction\n# Home"),
+            "This content isn't in any page.",
+        );
+    }
+
+    // Report only the first occurrence of content before a valid title.
+    #[test]
+    fn repeated_content_before_title() {
+        let errors = parse_test("First\nSecond\n# Home").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("This content isn't in any page."),
+        );
+    }
+
+    // Don't reinterpret content after an invalid title as content before the first title.
+    #[test]
+    fn content_after_empty_title() {
+        let errors = parse_test("# Home\n\nfoo\n\n# \n\nbar").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A page title can't be empty."),
+        );
+    }
+
     // Preserve duplicate links as distinct source occurrences while normalizing their text.
     #[test]
     fn links() {
@@ -563,21 +722,115 @@ mod tests {
         );
     }
 
-    // Keep source ranges on UTF-8 boundaries when titles and links contain multibyte characters.
+    // Parse file and directory links separately from text links.
     #[test]
-    fn unicode_source_ranges() {
-        let source = "# Home\nSee [Grüße].\n# Grüße";
-        let wiki = parse_test(source).unwrap();
-        let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
-            panic!("The parsed link should be a text link.");
-        };
+    fn filesystem_links() {
+        let wiki = parse_test(
+            "# Home\nSee [/notes.txt], [/images/], [/images/./raw/], [/], [//docs/], and \
+                [/ spaced.txt].",
+        )
+        .unwrap();
 
-        assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
         assert_eq!(
-            &source[wiki.page("Grüße").title_source_range.start
-                ..wiki.page("Grüße").title_source_range.end],
-            "Grüße",
+            link_targets(&wiki.page("Home").links),
+            vec![
+                format!("file:{}", PathBuf::from("notes.txt").display()),
+                format!("dir:{}", PathBuf::from("images").display()),
+                format!("dir:{}", PathBuf::from("images").join("raw").display()),
+                "dir:".to_owned(),
+                format!("dir:{}", PathBuf::from("docs").display()),
+                format!("file:{}", PathBuf::from(" spaced.txt").display()),
+            ],
         );
+    }
+
+    // Format links by trimming their targets and normalizing filesystem paths, writing a directory
+    // with a trailing `/` and the file root as `/`.
+    #[test]
+    fn formatted_links() {
+        let wiki = parse_test(
+            "# Home\n[ Home ] [ /a//b/./c\\[1\\].txt ] [/images/] [/images/./raw//] [/] [/./] \
+                [///]",
+        )
+        .unwrap();
+
+        assert_eq!(
+            wiki.to_string(),
+            "# Home\n\n[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]\n",
+        );
+    }
+
+    // Reject an empty text link, since no page title can be empty, leaving it out of the page's
+    // links.
+    #[test]
+    fn empty_text_links() {
+        let (wiki, errors) = parse_fixture("# Home\nSee [] and [  ] and [Home].");
+
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("This link is missing a target.")),
+        );
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
+    }
+
+    // Reject filesystem links whose paths contain parent components.
+    #[test]
+    fn invalid_filesystem_link_paths() {
+        let result = parse_test("# Home\n[/../notes.txt] [/notes/../notes.txt]");
+
+        assert_fails!(result.clone(), "Path `../notes.txt` must not contain `..`.");
+        assert_fails!(result, "Path `notes/../notes.txt` must not contain `..`.");
+    }
+
+    // Reject opening link delimiters that aren't closed.
+    #[test]
+    fn unclosed_link() {
+        assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
+    }
+
+    // End an unclosed link at the end of its line, reading the following lines as usual, so a later
+    // closing delimiter is unexpected and the links after it are kept.
+    #[test]
+    fn unclosed_links_end_at_line_breaks() {
+        let (wiki, errors) =
+            parse_fixture("# Home\nSee [Greeting\ncontinued]. [Home] and [Other]\n# Other");
+
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].to_string().contains("Unclosed link."));
+        assert!(errors[0].to_string().contains("2 \u{2502} See [Greeting"));
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("Unexpected closing link delimiter."),
+        );
+        assert_eq!(
+            link_targets(&wiki.page("Home").links),
+            vec!["text:Home", "text:Other"],
+        );
+    }
+
+    // Reject unescaped opening delimiters inside links.
+    #[test]
+    fn unexpected_opening_delimiter() {
+        assert_fails!(
+            parse_test("# Home\nSee [nested[Greeting]."),
+            "Unexpected opening link delimiter.",
+        );
+    }
+
+    // Reject unescaped closing delimiters outside links.
+    #[test]
+    fn unexpected_closing_delimiter() {
+        let errors = parse_test("# Home\nSee Greeting].").unwrap_err();
+
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("Unexpected closing link delimiter"),
+        );
+        assert!(errors[0].to_string().contains("2 \u{2502} See Greeting]."));
     }
 
     // Treat escaped square brackets as literal link-title characters.
@@ -671,80 +924,20 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Keep an indented line which starts with a title marker as content, even as the first line of
-    // a page's content, so rendering the wiki doesn't turn it into a title.
+    // Reject an escaped backtick in a link's target, where backticks are plain characters, with a
+    // message listing what can be escaped there, and leave out the link. Outside the link, the same
+    // escape is accepted.
     #[test]
-    fn indented_title_markers() {
-        let source = "# Home\n\n  # Not a title\n";
-        let wiki = parse_test(source).unwrap();
+    fn escaped_backticks_in_links() {
+        let (wiki, errors) = parse_fixture("# Home\n\\` [a\\`b] \\` [Home]");
 
-        assert_eq!(wiki.pages.len(), 1);
-        assert_eq!(wiki.to_string(), source);
-    }
-
-    // Parse file and directory links separately from text links.
-    #[test]
-    fn filesystem_links() {
-        let wiki = parse_test(
-            "# Home\nSee [/notes.txt], [/images/], [/images/./raw/], [/], [//docs/], and \
-                [/ spaced.txt].",
-        )
-        .unwrap();
-
-        assert_eq!(
-            link_targets(&wiki.page("Home").links),
-            vec![
-                format!("file:{}", PathBuf::from("notes.txt").display()),
-                format!("dir:{}", PathBuf::from("images").display()),
-                format!("dir:{}", PathBuf::from("images").join("raw").display()),
-                "dir:".to_owned(),
-                format!("dir:{}", PathBuf::from("docs").display()),
-                format!("file:{}", PathBuf::from(" spaced.txt").display()),
-            ],
-        );
-    }
-
-    // Format links by trimming their targets and normalizing filesystem paths, writing a directory
-    // with a trailing `/` and the file root as `/`.
-    #[test]
-    fn formatted_links() {
-        let wiki = parse_test(
-            "# Home\n[ Home ] [ /a//b/./c\\[1\\].txt ] [/images/] [/images/./raw//] [/] [/./] \
-                [///]",
-        )
-        .unwrap();
-
-        assert_eq!(
-            wiki.to_string(),
-            "# Home\n\n[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]\n",
-        );
-    }
-
-    // Remove whitespace at the end of each line, including after a link and on blank lines.
-    #[test]
-    fn trailing_whitespace() {
-        let wiki =
-            parse_test("# Home\r\nFirst  \t\r\n   \nSee [Home]  \nand [Home] later.\t\nLast")
-                .unwrap();
-
-        assert_eq!(
-            wiki.to_string(),
-            "# Home\n\nFirst\n\nSee [Home]\nand [Home] later.\nLast\n",
-        );
-    }
-
-    // Reject an empty text link, since no page title can be empty, leaving it out of the page's
-    // links.
-    #[test]
-    fn empty_text_links() {
-        let (wiki, errors) = parse_fixture("# Home\nSee [] and [  ] and [Home].");
-
-        assert_eq!(errors.len(), 2);
+        assert_eq!(errors.len(), 1);
         assert!(
-            errors
-                .iter()
-                .all(|error| error.to_string().contains("This link is missing a target.")),
+            errors[0]
+                .to_string()
+                .contains("In a link, a backslash must be followed by"),
         );
+        assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(12)));
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
@@ -764,54 +957,6 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
         assert_eq!(wiki.to_string(), source);
-    }
-
-    // Treat backticks as plain characters in a title and in a link's target, where formatting
-    // leaves them as written, and accept an escaped backtick outside links.
-    #[test]
-    fn plain_backticks() {
-        let source = "# The `ls` command\n\n[The `ls` command] and \\`.\n";
-        let wiki = parse_test(source).unwrap();
-
-        assert_eq!(
-            link_targets(&wiki.page("The `ls` command").links),
-            vec!["text:The `ls` command"],
-        );
-        assert_eq!(wiki.to_string(), source);
-    }
-
-    // Reject an escaped backtick in a link's target, where backticks are plain characters, with a
-    // message listing what can be escaped there, and leave out the link. Outside the link, the same
-    // escape is accepted.
-    #[test]
-    fn escaped_backticks_in_links() {
-        let (wiki, errors) = parse_fixture("# Home\n\\` [a\\`b] \\` [Home]");
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("In a link, a backslash must be followed by"),
-        );
-        assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(12)));
-        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
-    }
-
-    // Report a run of backticks which isn't closed, including a short run whose closing run is on
-    // a later line, and parse the text after it as usual, so it can't hide the rest of the wiki.
-    #[test]
-    fn unclosed_code() {
-        let (wiki, errors) = parse_fixture("# Home\n```\n[Home] `a\nb`\n# Other");
-
-        assert_eq!(errors.len(), 3);
-        assert!(
-            errors
-                .iter()
-                .all(|error| error.to_string().contains("Unclosed code.")),
-        );
-        assert!(errors[0].to_string().contains("2 \u{2502} ```"));
-        assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
     // End code at a closing run of exactly as many backticks, letting code of three or more
@@ -834,6 +979,49 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
+    // Treat backticks as plain characters in a title and in a link's target, where formatting
+    // leaves them as written, and accept an escaped backtick outside links.
+    #[test]
+    fn plain_backticks() {
+        let source = "# The `ls` command\n\n[The `ls` command] and \\`.\n";
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(
+            link_targets(&wiki.page("The `ls` command").links),
+            vec!["text:The `ls` command"],
+        );
+        assert_eq!(wiki.to_string(), source);
+    }
+
+    // Treat backticks as plain characters in a title line, in a link's target, and when escaped,
+    // but not elsewhere.
+    #[test]
+    fn backticks_outside_code() {
+        let wiki = parse_test("# A `title\n[A `title] \\`b\\` `[c]`").unwrap();
+
+        assert_eq!(
+            link_targets(&wiki.page("A `title").links),
+            vec!["text:A `title"],
+        );
+    }
+
+    // Report a run of backticks which isn't closed, including a short run whose closing run is on
+    // a later line, and parse the text after it as usual, so it can't hide the rest of the wiki.
+    #[test]
+    fn unclosed_code() {
+        let (wiki, errors) = parse_fixture("# Home\n```\n[Home] `a\nb`\n# Other");
+
+        assert_eq!(errors.len(), 3);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("Unclosed code.")),
+        );
+        assert!(errors[0].to_string().contains("2 \u{2502} ```"));
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
+    }
+
     // Report each run of backticks which isn't closed, including a short run whose closing run is
     // on a later line, at the run itself.
     #[test]
@@ -851,210 +1039,6 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 SourceRange { start: 15, end: 18 },
             ],
         );
-    }
-
-    // Treat backticks as plain characters in a title line, in a link's target, and when escaped,
-    // but not elsewhere.
-    #[test]
-    fn backticks_outside_code() {
-        let wiki = parse_test("# A `title\n[A `title] \\`b\\` `[c]`").unwrap();
-
-        assert_eq!(
-            link_targets(&wiki.page("A `title").links),
-            vec!["text:A `title"],
-        );
-    }
-
-    // Locate links for an editor, including a link which isn't closed, but not what looks like a
-    // link in code. A link contains an offset after its opening delimiter through its closing
-    // delimiter or the end of its line.
-    #[test]
-    fn links_at_offsets() {
-        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [c] [d");
-
-        assert!(wiki.link_at(11).is_none());
-        assert!(wiki.link_at(15).is_none());
-        assert_eq!(wiki.link_at(16).unwrap().closing, Some(17));
-        assert_eq!(wiki.link_at(17).unwrap().closing, Some(17));
-        assert!(wiki.link_at(18).is_none());
-        assert_eq!(wiki.link_at(20).unwrap().opening, 19);
-        assert_eq!(wiki.link_at(21).unwrap().closing, None);
-    }
-
-    // Reject filesystem links whose paths contain parent components.
-    #[test]
-    fn invalid_filesystem_link_paths() {
-        let result = parse_test("# Home\n[/../notes.txt] [/notes/../notes.txt]");
-
-        assert_fails!(result.clone(), "Path `../notes.txt` must not contain `..`.");
-        assert_fails!(result, "Path `notes/../notes.txt` must not contain `..`.");
-    }
-
-    // Reject opening link delimiters that aren't closed.
-    #[test]
-    fn unclosed_link() {
-        assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
-    }
-
-    // End an unclosed link at the end of its line, reading the following lines as usual, so a later
-    // closing delimiter is unexpected and the links after it are kept.
-    #[test]
-    fn unclosed_links_end_at_line_breaks() {
-        let (wiki, errors) =
-            parse_fixture("# Home\nSee [Greeting\ncontinued]. [Home] and [Other]\n# Other");
-
-        assert_eq!(errors.len(), 2);
-        assert!(errors[0].to_string().contains("Unclosed link."));
-        assert!(errors[0].to_string().contains("2 \u{2502} See [Greeting"));
-        assert!(
-            errors[1]
-                .to_string()
-                .contains("Unexpected closing link delimiter."),
-        );
-        assert_eq!(
-            link_targets(&wiki.page("Home").links),
-            vec!["text:Home", "text:Other"],
-        );
-    }
-
-    // Reject unescaped opening delimiters inside links.
-    #[test]
-    fn unexpected_opening_delimiter() {
-        assert_fails!(
-            parse_test("# Home\nSee [nested[Greeting]."),
-            "Unexpected opening link delimiter.",
-        );
-    }
-
-    // Reject unescaped closing delimiters outside links.
-    #[test]
-    fn unexpected_closing_delimiter() {
-        let errors = parse_test("# Home\nSee Greeting].").unwrap_err();
-
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("Unexpected closing link delimiter"),
-        );
-        assert!(errors[0].to_string().contains("2 \u{2502} See Greeting]."));
-    }
-
-    // Treat non-title hash prefixes as ordinary content.
-    #[test]
-    fn non_title_hashes() {
-        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
-
-        assert_eq!(wiki.to_string(), "# Home\n\n## Subtitle\n#not a title\n");
-    }
-
-    // Accept empty and whitespace-only wikis.
-    #[test]
-    fn empty_wiki() {
-        assert!(parse_test(" \n\t\n").unwrap().pages.is_empty());
-    }
-
-    // Accept empty page content.
-    #[test]
-    fn empty_content() {
-        assert_eq!(parse_test("# Empty").unwrap().to_string(), "# Empty\n");
-    }
-
-    // Parse Windows line endings without retaining carriage returns.
-    #[test]
-    fn windows_line_endings() {
-        let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
-
-        assert_eq!(wiki.to_string(), "# Greeting\n\nHello, world!\n");
-    }
-
-    // Reject non-whitespace content before the first title.
-    #[test]
-    fn content_before_title() {
-        assert_fails!(
-            parse_test("Introduction\n# Home"),
-            "This content isn't in any page.",
-        );
-    }
-
-    // Reject titles that are empty after whitespace is stripped.
-    #[test]
-    fn empty_title() {
-        let errors = parse_test("#   \nContent").unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("A page title can't be empty."),
-        );
-    }
-
-    // Reject titles that text links would interpret as filesystem links.
-    #[test]
-    fn filesystem_link_titles() {
-        let errors = parse_test("# Home\n\n# /notes.txt\n\n# /\n\n# notes: /draft").unwrap_err();
-
-        assert_eq!(errors.len(), 2);
-        for error in &errors {
-            assert!(
-                error
-                    .to_string()
-                    .contains("A page title can't start with `/`."),
-            );
-        }
-    }
-
-    // Don't reinterpret content after an invalid title as content before the first title.
-    #[test]
-    fn content_after_empty_title() {
-        let errors = parse_test("# Home\n\nfoo\n\n# \n\nbar").unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("A page title can't be empty."),
-        );
-    }
-
-    // Treat a bare title marker as content, even once formatting removes whitespace after it, so
-    // formatting can't turn it into a title.
-    #[test]
-    fn bare_title_markers() {
-        let wiki = parse_test("# Home\n\n#\n#\t\n# \tx").unwrap();
-
-        assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(wiki.page("Home").links.len(), 0);
-        let formatted = wiki.to_string();
-        assert!(formatted.starts_with("# Home\n\n#\n#\n"));
-        assert_eq!(parse_test(&formatted).unwrap().pages.len(), 2);
-    }
-
-    // Report only the first occurrence of content before a valid title.
-    #[test]
-    fn repeated_content_before_title() {
-        let errors = parse_test("First\nSecond\n# Home").unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("This content isn't in any page."),
-        );
-    }
-
-    // Reject duplicate titles and identify the later declaration.
-    #[test]
-    fn duplicate_title() {
-        let errors = parse_test("# Home\nFirst\n# Home\nSecond").unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("Page `Home` already exists."),
-        );
-        assert!(errors[0].to_string().contains("3 \u{2502} # Home"));
     }
 
     // Report errors from every invalid page in source order.
@@ -1180,5 +1164,21 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
         assert_eq!(wiki.page("Greeting").traversal_index, None);
+    }
+
+    // Locate links for an editor, including a link which isn't closed, but not what looks like a
+    // link in code. A link contains an offset after its opening delimiter through its closing
+    // delimiter or the end of its line.
+    #[test]
+    fn links_at_offsets() {
+        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [c] [d");
+
+        assert!(wiki.link_at(11).is_none());
+        assert!(wiki.link_at(15).is_none());
+        assert_eq!(wiki.link_at(16).unwrap().closing, Some(17));
+        assert_eq!(wiki.link_at(17).unwrap().closing, Some(17));
+        assert!(wiki.link_at(18).is_none());
+        assert_eq!(wiki.link_at(20).unwrap().opening, 19);
+        assert_eq!(wiki.link_at(21).unwrap().closing, None);
     }
 }
