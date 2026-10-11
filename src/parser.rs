@@ -1,7 +1,7 @@
 use crate::{
     code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
-    escaping::{invalid_escapes, unescape, unescaped_characters},
+    escaping::{Context, invalid_escape_message, invalid_escapes, unescape, unescaped_characters},
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
@@ -286,6 +286,7 @@ fn parse_content(
     let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
     let mut link_has_nested_start = false;
+    let mut link_targets = Vec::<SourceRange>::new(); // Relative to the content, in order
 
     // Report a syntax error at a range of the source.
     let syntax_error = |message: &str, error_source_range| {
@@ -347,6 +348,10 @@ fn parse_content(
                 // The preceding arm rejected a missing link start [ref:missing_link_start].
                 let start = link_start.take().expect("The link start was checked.");
                 let inner_start = start + '['.len_utf8();
+                link_targets.push(SourceRange {
+                    start: inner_start,
+                    end: index,
+                });
                 let trimmed_target = original_content[inner_start..index].trim();
                 let link_source_range = SourceRange {
                     start: source_range.start + start,
@@ -358,7 +363,7 @@ fn parse_content(
                 let link = if link_has_nested_start {
                     None
                 } else {
-                    unescape(trimmed_target).map(|unescaped_target| {
+                    unescape(trimmed_target, Context::Link).map(|unescaped_target| {
                         parse_link(
                             &unescaped_target,
                             source_path,
@@ -380,6 +385,10 @@ fn parse_content(
                 // End an unclosed link at the end of its line, since links can't contain line
                 // breaks, so the following lines are read as usual.
                 if let Some(start) = link_start.take() {
+                    link_targets.push(SourceRange {
+                        start: start + '['.len_utf8(),
+                        end: index,
+                    });
                     errors.push(unclosed_link(start));
                 }
             }
@@ -389,19 +398,41 @@ fn parse_content(
 
     // Reject a link that's still open at the end of the content.
     if let Some(start) = link_start {
+        link_targets.push(SourceRange {
+            start: start + '['.len_utf8(),
+            end: original_content.len(),
+        });
         errors.push(unclosed_link(start));
     }
 
-    // Reject each backslash outside code spans which doesn't escape anything, so it can't be
-    // mistaken for an escape, and offer to escape it. The message lists the characters which can be
-    // escaped [ref:content_escapes].
-    for index in invalid_escapes(original_content)
-        .filter(|&index| !code_spans.contains(source_range.start + index))
-    {
+    // Find each backslash which doesn't escape anything in its context: within a link's target, or
+    // in the text around links outside code spans. An escape can't straddle a link's delimiters,
+    // since they aren't escaped.
+    let mut invalid_escape_offsets = link_targets
+        .iter()
+        .flat_map(|target| {
+            invalid_escapes(&original_content[target.start..target.end], Context::Link)
+                .map(|index| (target.start + index, Context::Link))
+        })
+        .chain(
+            invalid_escapes(original_content, Context::Text)
+                .filter(|&index| {
+                    !code_spans.contains(source_range.start + index)
+                        && !link_targets
+                            .iter()
+                            .any(|target| target.start <= index && index < target.end)
+                })
+                .map(|index| (index, Context::Text)),
+        )
+        .collect::<Vec<_>>();
+    invalid_escape_offsets.sort_unstable_by_key(|&(index, _)| index);
+
+    // Reject each such backslash, so it can't be mistaken for an escape, and offer to escape it.
+    // The message lists the characters which can be escaped there [ref:content_escapes].
+    for (index, context) in invalid_escape_offsets {
         let offset = source_range.start + index;
         errors.push(Error::new(
-            "A backslash must be followed by `[`, `]`, or `\\`, so write `\\\\` for a backslash \
-             itself.",
+            invalid_escape_message(context),
             source_path,
             Some((
                 source_contents,
@@ -771,21 +802,35 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(wiki.to_string(), source);
     }
 
-    // Treat backticks as plain characters in a title and in a link's target, and accept an escaped
-    // backtick anywhere else. Formatting escapes backticks in a link's target, like other
-    // escapable characters.
+    // Treat backticks as plain characters in a title and in a link's target, where formatting
+    // leaves them as written, and accept an escaped backtick outside links.
     #[test]
     fn plain_backticks() {
-        let wiki = parse_test("# The `ls` command\n\n[The `ls` command] and \\`.").unwrap();
+        let source = "# The `ls` command\n\n[The `ls` command] and \\`.\n";
+        let wiki = parse_test(source).unwrap();
 
         assert_eq!(
             link_targets(&wiki.pages["The `ls` command"].links),
             vec!["text:The `ls` command"],
         );
-        assert_eq!(
-            wiki.to_string(),
-            "# The `ls` command\n\n[The \\`ls\\` command] and \\`.\n",
+        assert_eq!(wiki.to_string(), source);
+    }
+
+    // Reject an escaped backtick in a link's target, where backticks are plain characters, with a
+    // message listing what can be escaped there, and leave out the link. Outside the link, the same
+    // escape is accepted.
+    #[test]
+    fn escaped_backticks_in_links() {
+        let (wiki, errors) = parse_fixture("# Home\n\\` [a\\`b] \\` [Home]");
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("In a link, a backslash must be followed by"),
         );
+        assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(12)));
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
     }
 
     // Report a run of backticks which isn't closed, including a short run whose closing run is on

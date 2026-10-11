@@ -1,4 +1,9 @@
-use crate::{error::SourceRange, escaping::escape, format::CodeStr, spelled_path::code_file_path};
+use crate::{
+    error::SourceRange,
+    escaping::{Context, escape},
+    format::CodeStr,
+    spelled_path::code_file_path,
+};
 use colored::ColoredString;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -192,7 +197,7 @@ impl Wiki {
             content.push_str(&self.source[copied_through..source_range.start]);
             content.push('[');
             content.push_str(&match link {
-                Link::Text { title, .. } => escape(title),
+                Link::Text { title, .. } => escape(title, Context::Link),
                 Link::Filesystem { target, .. } => target.text(),
             });
             content.push(']');
@@ -349,7 +354,7 @@ impl FilesystemTarget {
         }
 
         // Escape the finished text once, as it will appear in the source.
-        escape(&text)
+        escape(&text, Context::Link)
     }
 
     // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
@@ -387,7 +392,11 @@ impl CodeStr for FilesystemTarget {
 #[cfg(test)]
 mod tests {
     use super::{FilesystemTarget, PageTitle, Wiki, title_line_text};
-    use crate::{escaping::unescape, line_index::LineIndex, parser::parse};
+    use crate::{
+        escaping::{Context, unescape},
+        line_index::LineIndex,
+        parser::parse,
+    };
 
     // Parse a wiki without syntax errors for rendering.
     fn parse_wiki(source: &str) -> Wiki {
@@ -451,11 +460,11 @@ mod tests {
             ("/", "/", true),
             ("/.", "/", true),
         ] {
-            let target = FilesystemTarget::parse(&unescape(text).unwrap()).unwrap();
+            let target = FilesystemTarget::parse(&unescape(text, Context::Link).unwrap()).unwrap();
             assert_eq!(target.text(), canonical);
             assert_eq!(target.is_directory(), is_directory);
             assert_eq!(
-                FilesystemTarget::parse(&unescape(&target.text()).unwrap()).unwrap(),
+                FilesystemTarget::parse(&unescape(&target.text(), Context::Link).unwrap()).unwrap(),
                 target,
             );
         }

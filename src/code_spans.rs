@@ -1,4 +1,8 @@
-use crate::{error::SourceRange, escaping::is_escapable, wiki::title_line_text};
+use crate::{
+    error::SourceRange,
+    escaping::{Context, is_escapable},
+    wiki::title_line_text,
+};
 use std::collections::HashSet;
 
 // These are the code spans in a wiki's source. A span starts with a run of backticks and ends at
@@ -46,7 +50,7 @@ impl CodeSpans {
                     if let Some(escaped) = source[position..]
                         .chars()
                         .next()
-                        .filter(|&escaped| is_escapable(escaped))
+                        .filter(|&escaped| is_escapable(escaped, Context::Text))
                     {
                         position += escaped.len_utf8();
                     }

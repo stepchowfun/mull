@@ -2,7 +2,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
-    escaping::{escape, unescape, unescaped_characters},
+    escaping::{Context, escape, unescape, unescaped_characters},
     file_tree::{Visibility, file_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
@@ -925,7 +925,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     // nothing while the typed text has a backslash which doesn't escape anything.
     Some(text_link_completions(
         snapshot,
-        &unescape(typed_target)?,
+        &unescape(typed_target, Context::Link)?,
         SourceRange {
             start: delimiters.opening,
             end: delimiters
@@ -1004,7 +1004,8 @@ fn filesystem_link_completions(
     // tree or have a backslash which doesn't escape anything.
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
-    let directory = FilesystemTarget::from_name(&unescape(typed_directory)?, true).ok()?;
+    let directory =
+        FilesystemTarget::from_name(&unescape(typed_directory, Context::Link)?, true).ok()?;
 
     // Derive every filesystem path from the file root, as validation does.
     let Ok(file_root) = FileRoot::new(wiki_path) else {
@@ -1016,7 +1017,7 @@ fn filesystem_link_completions(
     for child in visible_children(&file_root, directory.path()) {
         // Leave a directory's link open for its children, and close a file's link.
         let name = child.name.as_str();
-        let escaped_name = escape(name);
+        let escaped_name = escape(name, Context::Link);
         let (label, kind, new_text, replacement_end, command) = if child.is_directory {
             (
                 format!("{name}/"),
@@ -1157,7 +1158,7 @@ fn text_link_completions(
             .chain(other_matches)
             .take(MAX_TITLE_COMPLETIONS)
             .map(|title| {
-                let escaped_title = escape(title);
+                let escaped_title = escape(title, Context::Link);
                 CompletionItem {
                     label: title.clone(),
                     kind: Some(CompletionItemKind::REFERENCE),
@@ -1538,7 +1539,8 @@ fn prepare_rename_for_document(
                 start,
                 end: start + trimmed.len(),
             }),
-            placeholder: unescape(trimmed).expect("A link's escapes should have been checked."),
+            placeholder: unescape(trimmed, Context::Link)
+                .expect("A link's escapes should have been checked."),
         }));
     }
 
@@ -1608,7 +1610,7 @@ fn rename_page_for_document(
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
-    let escaped_title = escape(&new_title);
+    let escaped_title = escape(&new_title, Context::Link);
     let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
