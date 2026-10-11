@@ -261,7 +261,6 @@ fn parse_content(
     let mut links = Vec::<Link>::new();
     let mut errors = Vec::<Error>::new();
     let mut link_start = None::<usize>;
-    let mut link_has_line_break = false;
     let mut link_has_nested_start = false;
 
     // Report a syntax error at a range of the source.
@@ -275,6 +274,17 @@ fn parse_content(
         )
     };
 
+    // Report a link that isn't closed by the end of its line at its opening delimiter.
+    let unclosed_link = |start: usize| {
+        syntax_error(
+            "Unclosed link.",
+            SourceRange {
+                start: source_range.start + start,
+                end: source_range.start + start + '['.len_utf8(),
+            },
+        )
+    };
+
     for (index, character) in unescaped_characters(original_content) {
         // Locate the current character for any delimiter error.
         let character_source_range = SourceRange {
@@ -282,23 +292,8 @@ fn parse_content(
             end: source_range.start + index + character.len_utf8(),
         };
 
-        // Report the first line break within each link.
-        if character == '\n'
-            && let Some(start) = link_start
-            && !link_has_line_break
-        {
-            let link_source_range = SourceRange {
-                start: source_range.start + start,
-                end: source_range.start + index + character.len_utf8(),
-            };
-            errors.push(syntax_error(
-                "A link can't contain a line break.",
-                link_source_range,
-            ));
-            link_has_line_break = true;
-        }
-
-        // Interpret unescaped square brackets as link delimiters.
+        // Interpret unescaped square brackets as link delimiters, and line breaks as the ends of
+        // links.
         match character {
             '[' if link_start.is_some() => {
                 errors.push(syntax_error(
@@ -309,7 +304,6 @@ fn parse_content(
             }
             '[' => {
                 link_start = Some(index);
-                link_has_line_break = false;
                 link_has_nested_start = false;
             }
             ']' if link_start.is_none() => {
@@ -331,7 +325,7 @@ fn parse_content(
 
                 // Parse the target unless the link has a syntax error, whose target is unreliable,
                 // including a backslash which doesn't escape anything.
-                let link = if link_has_line_break || link_has_nested_start {
+                let link = if link_has_nested_start {
                     None
                 } else {
                     unescape(trimmed_target).map(|unescaped_target| {
@@ -352,17 +346,20 @@ fn parse_content(
                     None => {}
                 }
             }
+            '\n' => {
+                // End an unclosed link at the end of its line, since links can't contain line
+                // breaks, so the following lines are read as usual.
+                if let Some(start) = link_start.take() {
+                    errors.push(unclosed_link(start));
+                }
+            }
             _ => {}
         }
     }
 
-    // Reject an opening delimiter that has no closing delimiter.
+    // Reject a link that's still open at the end of the content.
     if let Some(start) = link_start {
-        let link_source_range = SourceRange {
-            start: source_range.start + start,
-            end: source_range.start + start + '['.len_utf8(),
-        };
-        errors.push(syntax_error("Unclosed link.", link_source_range));
+        errors.push(unclosed_link(start));
     }
 
     // Reject each backslash which doesn't escape anything, so it can't be mistaken for an escape,
@@ -739,12 +736,24 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
     }
 
-    // Reject links that span multiple lines.
+    // End an unclosed link at the end of its line, reading the following lines as usual, so a later
+    // closing delimiter is unexpected and the links after it are kept.
     #[test]
-    fn link_with_line_break() {
-        assert_fails!(
-            parse_test("# Home\nSee [Greeting\ncontinued]."),
-            "A link can't contain a line break.",
+    fn unclosed_links_end_at_line_breaks() {
+        let (wiki, errors) =
+            parse_fixture("# Home\nSee [Greeting\ncontinued]. [Home] and [Other]\n# Other");
+
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].to_string().contains("Unclosed link."));
+        assert!(errors[0].to_string().contains("2 \u{2502} See [Greeting"));
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("Unexpected closing link delimiter."),
+        );
+        assert_eq!(
+            link_targets(&wiki.pages["Home"].links),
+            vec!["text:Home", "text:Other"],
         );
     }
 
@@ -961,7 +970,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
         );
 
-        assert_eq!(errors.len(), 5);
+        assert_eq!(errors.len(), 6);
         assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec![

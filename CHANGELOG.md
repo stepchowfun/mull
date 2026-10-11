@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.1] - 2026-10-10
+
+### Fixed
+- An unclosed link now ends at the end of its line, so the lines after it are read as usual. Before, the link stayed open until a later `]`, possibly several lines down, and the links in between were lost. Such a link is now reported as unclosed rather than as containing a line break.
+- In the VS Code extension, an escaped bracket like `\[` is no longer colored as a bracket, and an unclosed `[` is highlighted as invalid, like an unexpected `]`.
+
 ## [0.42.0] - 2026-10-10
 
 ### Changed
