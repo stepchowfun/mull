@@ -5,13 +5,16 @@ use std::iter;
 // character after it [ref:content_escapes]. A heading isn't content: a page's title appears in its
 // heading as is.
 
-// Escape plain text, such as a page title or a path, so it retains its meaning as a link's target.
-// Backticks are plain characters there, so they're left as written.
+// Escape plain text, such as a page title or a path, so it retains its meaning anywhere in content.
 pub fn escape(plain: &str) -> String {
-    plain
-        .replace('\\', "\\\\")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
+    let mut escaped = String::new();
+    for character in plain.chars() {
+        if is_escapable(character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 // Decode text written as content into plain text, as the parser does. There's no plain text if a
@@ -72,7 +75,7 @@ mod tests {
     // a backslash doesn't escape anything.
     #[test]
     fn escaping() {
-        assert_eq!(escape(r"a\[b]\c`"), r"a\\\[b\]\\c`");
+        assert_eq!(escape(r"a\[b]\c`"), r"a\\\[b\]\\c\`");
         assert_eq!(
             unescape(r"a\\\[b\]\\c\\\``"),
             Some(r"a\[b]\c\``".to_owned()),

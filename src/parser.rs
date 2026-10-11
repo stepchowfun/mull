@@ -772,7 +772,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     }
 
     // Treat backticks as plain characters in a title and in a link's target, and accept an escaped
-    // backtick anywhere else.
+    // backtick anywhere else. Formatting escapes backticks in a link's target, like other
+    // escapable characters.
     #[test]
     fn plain_backticks() {
         let wiki = parse_test("# The `ls` command\n\n[The `ls` command] and \\`.").unwrap();
@@ -780,6 +781,10 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(
             link_targets(&wiki.pages["The `ls` command"].links),
             vec!["text:The `ls` command"],
+        );
+        assert_eq!(
+            wiki.to_string(),
+            "# The `ls` command\n\n[The \\`ls\\` command] and \\`.\n",
         );
     }
 
