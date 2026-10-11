@@ -136,19 +136,12 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, replacing each embed which isn't within another with a fresh copy of
-        // the embedded page's content. An embed of a missing page, or one which would complete a
-        // cycle, is copied as written.
-        let mut embeds = page
-            .embeds
-            .iter()
-            .filter(|embed| !embed.is_nested)
-            .collect::<Vec<_>>();
-        embeds.sort_by_key(|embed| embed.source_range.start);
+        // Copy the content, replacing each embed with a fresh copy of the embedded page's content.
+        // An embed of a missing page, or one which would complete a cycle, is copied as written.
         let mut content = String::new();
         let mut copied_through = content_start;
         embedding_pages.push(page.title.clone());
-        for embed in embeds {
+        for embed in &page.embeds {
             let Some(embedded_page) = self
                 .pages
                 .get(&embed.title)
@@ -260,21 +253,19 @@ impl fmt::Display for Wiki {
 pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
-    pub embeds: Vec<Embed>,
+    pub embeds: Vec<Embed>, // In source order, excluding embeds within the copies made by others
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
-    pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
+    pub source_range: SourceRange, // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
 }
 
 // This struct represents a page embedded in another page's content. The embedding page shows a copy
-// of the embedded page's content, which formatting refreshes. An embed within the copy of another
-// embed's content is nested, and it's refreshed along with that copy.
+// of the embedded page's content, which formatting refreshes along with any embeds within it.
 #[derive(Clone, Debug)]
 pub struct Embed {
     pub title: PageTitle,
     pub source_range: SourceRange, // From the opening fence through the end of the closing fence
     pub link_source_range: SourceRange, // The link in the opening fence which names the page
-    pub is_nested: bool,
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not

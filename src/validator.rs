@@ -116,7 +116,7 @@ fn validate_text_links(
     // Reject each embed of a page which embeds the embedding page in turn, directly or through
     // other pages, since there's no finite copy of either page's content.
     for page in pages {
-        for embed in page.embeds.iter().filter(|embed| !embed.is_nested) {
+        for embed in &page.embeds {
             if embeds_transitively(wiki, &embed.title, &page.title) {
                 errors.push(Error::new(
                     &format!(
@@ -168,12 +168,7 @@ fn embeds_transitively(wiki: &Wiki, from: &PageTitle, to: &PageTitle) -> bool {
         if visited.insert(title)
             && let Some(page) = wiki.pages.get(title)
         {
-            pending.extend(
-                page.embeds
-                    .iter()
-                    .filter(|embed| !embed.is_nested)
-                    .map(|embed| &embed.title),
-            );
+            pending.extend(page.embeds.iter().map(|embed| &embed.title));
         }
     }
     false

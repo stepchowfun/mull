@@ -268,7 +268,9 @@ pub fn parse(
                             let mut inner_embeds = open_embeds.split_off(index);
                             let open_embed = inner_embeds.remove(0);
                             report_unclosed_embeds(&mut inner_embeds, &mut errors);
-                            if let Some((title, link_source_range)) = open_embed.link {
+                            if let Some((title, link_source_range)) = open_embed.link
+                                && index == 0
+                            {
                                 pending_page.embeds.push(Embed {
                                     title,
                                     source_range: SourceRange {
@@ -276,7 +278,6 @@ pub fn parse(
                                         end: line_source_range.end,
                                     },
                                     link_source_range,
-                                    is_nested: index > 0,
                                 });
                             }
                         } else {
@@ -1374,7 +1375,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     }
 
     // Read an embed from its opening fence through its closing fence, with the link in its opening
-    // fence among the page's links, and the embeds within it nested.
+    // fence among the page's links. The embeds within it aren't kept, since they're part of its
+    // copy of the embedded page's content.
     #[test]
     fn embeds() {
         let source = concat!(
@@ -1396,19 +1398,14 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                         embed.title.text(Context::Verbatim),
                         &source[embed.source_range.start..embed.source_range.end],
                         &source[embed.link_source_range.start..embed.link_source_range.end],
-                        embed.is_nested,
                     )
                 })
                 .collect::<Vec<_>>(),
-            vec![
-                ("Last".to_owned(), "::: embed [Last]\n:::", "[Last]", true),
-                (
-                    "Other".to_owned(),
-                    ":::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::",
-                    "[ Other ]",
-                    false,
-                ),
-            ],
+            vec![(
+                "Other".to_owned(),
+                ":::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::",
+                "[ Other ]",
+            )],
         );
     }
 
