@@ -1059,8 +1059,8 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     })
 }
 
-// Put source in a Markdown code block, which the editor highlights as the given language, if any,
-// and displays in the editor's font. The fence is longer than every backtick run in the source.
+// Put source in a Markdown code block, which the editor highlights as the given language and
+// displays in the editor's font. The fence is longer than every backtick run in the source.
 fn code_block(language: &str, source: &str) -> String {
     let longest_run = source
         .split(|character| character != '`')
@@ -1198,7 +1198,7 @@ fn text_preview(path: &Path) -> Option<String> {
     // Show the first lines, followed by an ellipsis if there are more.
     let mut lines = text.lines();
     let block = code_block(
-        "",
+        &code_block_language(path),
         &lines
             .by_ref()
             .take(MAX_TEXT_PREVIEW_LINES)
@@ -1210,6 +1210,22 @@ fn text_preview(path: &Path) -> Option<String> {
     } else {
         block
     })
+}
+
+// Name the language of a file for a code block. Editors recognize many languages by their usual
+// file extensions, like `js`, and highlight names they don't recognize as plain text. A file
+// without an extension which can be a name gets plain text explicitly, since editors highlight a
+// code block without a language like the document containing it.
+fn code_block_language(path: &Path) -> String {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| {
+            !extension.is_empty()
+                && extension.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '_')
+                })
+        })
+        .map_or_else(|| "text".to_owned(), str::to_ascii_lowercase)
 }
 
 // Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
@@ -2356,11 +2372,11 @@ mod tests {
     use super::{
         FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
         MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS, RevealType,
-        Snapshot, code_action_for_document, completion_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
-        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        Snapshot, code_action_for_document, code_block_language, completion_for_document,
+        diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
+        document_link_for_document, document_symbol_for_document, formatting_for_document,
+        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
+        prepare_rename_for_document, references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -3256,7 +3272,7 @@ mod tests {
 
         assert_eq!(
             hover_markdown(&uri, source, Position::new(2, 3)).unwrap(),
-            "````\na\tb\n```\nc\n````",
+            "````txt\na\tb\n```\nc\n````",
         );
         assert_eq!(
             hover_markdown(&uri, source, Position::new(2, 16)).unwrap(),
@@ -3300,10 +3316,28 @@ mod tests {
         assert_eq!(
             hover_markdown(&uri, source, Position::new(2, 15)).unwrap(),
             format!(
-                "```\na{}\n```\n\n…",
+                "```txt\na{}\n```\n\n…",
                 "é".repeat(MAX_TEXT_PREVIEW_BYTES / 2 - 1),
             ),
         );
+    }
+
+    // Name a file's language by its extension, ignoring case, or as plain text if it has no
+    // extension which can be a name.
+    #[test]
+    fn code_block_languages() {
+        for (path, language) in [
+            ("script.JS", "js"),
+            ("archive.tar.gz", "gz"),
+            ("program.c++", "c++"),
+            ("Makefile", "text"),
+            (".gitignore", "text"),
+            ("notes.", "text"),
+            ("odd.a`b", "text"),
+            ("odd.a b", "text"),
+        ] {
+            assert_eq!(code_block_language(Path::new(path)), language);
+        }
     }
 
     // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
