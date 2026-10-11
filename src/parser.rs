@@ -311,8 +311,8 @@ fn parse_content(
     };
 
     for (index, character) in unescaped_characters(original_content) {
-        // Take the text of code spans as written. A span can't start within a link, so it can't
-        // contain a link's delimiters.
+        // Take the text of code spans as written, so their brackets don't delimit links. A span
+        // can't start within a link, so skipping one never skips a link's closing delimiter.
         if code_spans.contains(source_range.start + index) {
             continue;
         }

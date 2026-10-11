@@ -42,8 +42,10 @@ impl CodeSpans {
             }
 
             // Skip escapes, track links, and pair each run of backticks outside a link with the run
-            // which closes it. Once a long run can't be closed, a later run of the same length
-            // can't be either, since the text after it was already searched.
+            // which closes it. Escapes are recognized as in text even within a link, which makes
+            // no difference there, since backticks in a link are plain either way. Once a long run
+            // can't be closed, a later run of the same length can't be either, since the text after
+            // it was already searched.
             match character {
                 '\\' => {
                     position += '\\'.len_utf8();
