@@ -1,4 +1,4 @@
-use crate::wiki::{HOME_TITLE, Link, Page, PageTitle, Wiki};
+use crate::wiki::{Link, Page, PageTitle, Wiki};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 // Populate the position of each page in the traversal order, leaving unreachable pages
@@ -31,8 +31,13 @@ pub fn traversal_order<'a>(
     wiki: &'a Wiki,
     extra_title: Option<&'a PageTitle>,
 ) -> Vec<&'a PageTitle> {
-    // Treat the extra page as an existing page with no links.
-    let exists = |title: &PageTitle| wiki.pages.contains_key(title) || extra_title == Some(title);
+    // Find an existing page's title, treating the extra page as an existing page with no links.
+    let find = |title: &PageTitle| {
+        wiki.pages
+            .get_key_value(title)
+            .map(|(existing_title, _page)| existing_title)
+            .or_else(|| extra_title.filter(|&extra_title| extra_title == title))
+    };
     let link_titles = |title: &PageTitle| {
         wiki.pages
             .get(title)
@@ -41,12 +46,7 @@ pub fn traversal_order<'a>(
     };
 
     // Start from the home page, leaving every page unreachable if there's none.
-    let Some(home_title) = wiki
-        .pages
-        .get_key_value(HOME_TITLE)
-        .map(|(title, _page)| title)
-        .or_else(|| extra_title.filter(|title| title.is_home()))
-    else {
+    let Some(home_title) = find(&PageTitle::home()) else {
         return Vec::new();
     };
 
@@ -56,7 +56,7 @@ pub fn traversal_order<'a>(
     while let Some(title) = queued_titles.pop_front() {
         let depth = depths[title];
         for target in link_titles(title) {
-            if exists(target) && !depths.contains_key(target) {
+            if find(target).is_some() && !depths.contains_key(target) {
                 depths.insert(target, depth + 1);
                 queued_titles.push_back(target);
             }

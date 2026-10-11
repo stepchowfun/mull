@@ -63,11 +63,6 @@ impl PageTitle {
         Self(HOME_TITLE.to_owned())
     }
 
-    // Determine whether this is the title of the root of every wiki's text-link graph.
-    pub fn is_home(&self) -> bool {
-        self.0 == HOME_TITLE
-    }
-
     // Write the title as it appears in a context, such as escaped in a link or as written in a
     // title line.
     pub fn text(&self, context: Context) -> String {
