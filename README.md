@@ -10,38 +10,23 @@ Since Mull runs in Visual Studio Code or Cursor, you can use it with your favori
 
 ## A quick tour
 
-A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 4 pages:
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 3 pages:
 
 ```md
 # Home
 
-Welcome to my wiki! My favorite recipes:
-
-- [Pancakes]
-- [Lemonade]
-
-# Lemonade
-
-- 1 cup of sugar
-- 1 cup of hot water
-- The juice of 6 [Lemons]
-- 4 cups of cold water
+Try my [Pancakes] with fresh [Lemons].
 
 # Lemons
 
-Roll them on the counter before cutting.
-
-I use them in:
-
-- [Lemonade]
-- [Pancakes]
+Great on [Pancakes].
 
 # Pancakes
 
 - 1 cup of flour
 - 1 cup of milk
 - 1 egg
-- A squeeze of [Lemons] on top
+- A squeeze of [Lemons]
 ```
 
 Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
