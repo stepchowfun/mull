@@ -42,14 +42,17 @@ struct OpenLink {
 // run of exactly as many backticks, on the same line for a run of one or two, and its text is
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
-// allowed by whether it's in a link [ref:content_escapes]. The wiki retains as much of the source
+// allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
+// run of colons is a fence: an opening fence names a verb, and the only verb embeds the page named
+// by the link after it, while a closing fence consists of colons alone and closes the innermost
+// open embed with a fence of the same length. The wiki retains as much of the source
 // as possible so it can still be validated and navigated, but it omits the content of duplicate
 // pages, invalid titles, and anything before the first title, so it mustn't be rendered if there
 // are any syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
-              and line being read."
+              embeds, and line being read."
 )]
 pub fn parse(
     source_path: Option<&Path>,
@@ -164,7 +167,7 @@ pub fn parse(
 
     while let Some(character) = source_contents[position..].chars().next() {
         // At the start of a line, which is never within code or a link, read a title line, which
-        // starts a new region.
+        // starts a new region, or a fence line.
         if is_at_line_start {
             is_at_line_start = false;
             let line_end = source_contents[position..]

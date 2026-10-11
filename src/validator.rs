@@ -12,7 +12,7 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 // Limit diagnostics for unreferenced files so pathological directories remain manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
-// Check text links, reachability, filesystem links, and filesystem coverage.
+// Check text links, embeds, reachability, filesystem links, and filesystem coverage.
 pub fn validate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -64,8 +64,8 @@ pub fn validate(
     })
 }
 
-// Validate text-link targets and reachability from the home page, given the wiki's pages in title
-// order.
+// Validate text-link targets, the absence of cycles of embeds, and reachability from the home page,
+// given the wiki's pages in title order.
 fn validate_text_links(
     wiki: &Wiki,
     pages: &[&Page],
