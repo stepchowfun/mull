@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.1] - 2026-10-11
+
+### Changed
+
+- Errors are now reported strictly in source order. An unclosed link is reported before any errors within it, since it starts before them.
+- In the VS Code extension, completion is no longer offered in a link containing an unexpected `[`, like `[a [b`, whose target is unreliable. Before, it completed as if the link started at the second `[`.
+- The wiki is now parsed in a single pass, which is faster. Completion now waits for the wiki to be parsed, which can make it slower in very large wikis.
+
 ## [0.43.0] - 2026-10-10
 
 ### Added
