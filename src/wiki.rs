@@ -30,10 +30,12 @@ pub fn title_line_text(line: &str) -> Option<&str> {
 }
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
-// source ranges address and which it's rendered from.
+// source ranges address and which it's rendered from. It also records where links are in the
+// source, including links which didn't parse, so an editor can tell whether a position is in one.
 #[derive(Clone, Debug)]
 pub struct Wiki {
     pub pages: HashMap<PageTitle, Page>,
+    pub link_delimiters: Vec<LinkDelimiters>, // Every link, closed or not, in order
     source: String,
 }
 
@@ -42,8 +44,20 @@ impl Wiki {
     pub fn new(source: &str) -> Self {
         Self {
             pages: HashMap::new(),
+            link_delimiters: Vec::new(),
             source: source.to_owned(),
         }
+    }
+
+    // Find the link whose text contains a source offset, which is after its opening delimiter and
+    // no later than its closing delimiter or, if it isn't closed, the end of its line.
+    pub fn link_at(&self, offset: usize) -> Option<&LinkDelimiters> {
+        let index = self
+            .link_delimiters
+            .partition_point(|link| link.end < offset);
+        self.link_delimiters
+            .get(index)
+            .filter(|link| link.opening < offset)
     }
 
     // Iterate over the links of every page, in no particular order.
@@ -138,6 +152,16 @@ impl fmt::Display for Wiki {
         // Rendering succeeded.
         Ok(())
     }
+}
+
+// This struct locates a link's delimiters in the source, whether or not the link is closed or its
+// target parsed.
+#[derive(Clone, Debug)]
+pub struct LinkDelimiters {
+    pub opening: usize,         // The offset of the `[`
+    pub closing: Option<usize>, // The offset of the `]`, if the link is closed
+    pub end: usize,             // The offset of the `]`, or of the end of the line if there's none
+    pub has_nested_start: bool, // Whether an unexpected `[` appears in the link
 }
 
 // This struct represents a page in a wiki.
