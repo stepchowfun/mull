@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.1] - 2026-10-11
+
+### Fixed
+
+- In the VS Code extension, previews of text files are now highlighted according to their file extensions, like `js`, or as plain text if the editor doesn't recognize the extension. Before, they were highlighted as Mull.
+
 ## [0.44.0] - 2026-10-11
 
 ### Added
