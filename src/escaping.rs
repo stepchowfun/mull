@@ -1,4 +1,4 @@
-use std::{borrow::Cow, iter};
+use std::iter;
 
 // These functions convert between plain text, such as a page title or a path, and text as it
 // appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, and a
@@ -14,15 +14,8 @@ pub enum Context {
     Verbatim, // A title line or code, where a backslash is a plain character
 }
 
-// Escape plain text, such as a page title or a path, so it retains its meaning in a context,
-// borrowing it if nothing needs escaping.
-pub fn escape(plain: &str, context: Context) -> Cow<'_, str> {
-    if !plain
-        .chars()
-        .any(|character| is_escapable(character, context))
-    {
-        return Cow::Borrowed(plain);
-    }
+// Escape plain text, such as a page title or a path, so it retains its meaning in a context.
+pub fn escape(plain: &str, context: Context) -> String {
     let mut escaped = String::new();
     for character in plain.chars() {
         if is_escapable(character, context) {
@@ -30,7 +23,7 @@ pub fn escape(plain: &str, context: Context) -> Cow<'_, str> {
         }
         escaped.push(character);
     }
-    Cow::Owned(escaped)
+    escaped
 }
 
 // Decode text written in a context into plain text, as the parser does. There's no plain text if a

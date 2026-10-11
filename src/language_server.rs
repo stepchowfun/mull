@@ -1044,7 +1044,7 @@ fn filesystem_link_completions(
         completions.push(CompletionItem {
             label,
             kind: Some(kind),
-            filter_text: Some(escaped_name.into_owned()),
+            filter_text: Some(escaped_name),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                 snapshot.range(SourceRange {
                     start: segment_start,
@@ -1160,7 +1160,7 @@ fn text_link_completions(
             .map(|title| {
                 let escaped_title = title.text(Context::Link);
                 CompletionItem {
-                    label: title.text(Context::Verbatim).into_owned(),
+                    label: title.text(Context::Verbatim),
                     kind: Some(CompletionItemKind::REFERENCE),
                     filter_text: Some(format!("[{escaped_title}")),
                     text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
@@ -1552,7 +1552,7 @@ fn prepare_rename_for_document(
     // Select only the title text and seed the rename prompt with the title as written there.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
-        placeholder: page.title.text(Context::Verbatim).into_owned(),
+        placeholder: page.title.text(Context::Verbatim),
     }))
 }
 
@@ -1616,11 +1616,11 @@ fn rename_page_for_document(
         .map(|source_range| {
             (
                 text_link_target_source_range(&snapshot.contents, source_range),
-                escaped_title.as_ref(),
+                escaped_title.as_str(),
             )
         })
         .collect::<Vec<_>>();
-    edits.push((page.title_source_range, verbatim_title.as_ref()));
+    edits.push((page.title_source_range, verbatim_title.as_str()));
     edits.sort_by_key(|(source_range, _new_text)| (source_range.start, source_range.end));
 
     // Return one non-overlapping edit for each occurrence in the current document.
@@ -2058,7 +2058,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| DocumentSymbol {
-                    name: page.title.text(Context::Verbatim).into_owned(),
+                    name: page.title.text(Context::Verbatim),
                     detail: None,
                     kind: SymbolKind::OBJECT,
                     tags: None,
@@ -2074,7 +2074,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| SymbolInformation {
-                    name: page.title.text(Context::Verbatim).into_owned(),
+                    name: page.title.text(Context::Verbatim),
                     kind: SymbolKind::OBJECT,
                     tags: None,
                     deprecated: None,
@@ -2838,7 +2838,7 @@ mod tests {
     fn title_names(titles: &[Title]) -> Vec<String> {
         titles
             .iter()
-            .map(|title| title.title.text(Context::Verbatim).into_owned())
+            .map(|title| title.title.text(Context::Verbatim))
             .collect()
     }
 

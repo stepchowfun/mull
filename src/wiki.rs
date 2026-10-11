@@ -7,7 +7,7 @@ use crate::{
 use colored::ColoredString;
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::{Borrow, Cow},
+    borrow::Borrow,
     collections::HashMap,
     fmt,
     path::{Component, Path, PathBuf},
@@ -70,7 +70,7 @@ impl PageTitle {
 
     // Write the title as it appears in a context, such as escaped in a link or as written in a
     // title line.
-    pub fn text(&self, context: Context) -> Cow<'_, str> {
+    pub fn text(&self, context: Context) -> String {
         escape(&self.0, context)
     }
 }
@@ -195,7 +195,7 @@ impl Wiki {
             content.push('[');
             content.push_str(&match link {
                 Link::Text { title, .. } => title.text(Context::Link),
-                Link::Filesystem { target, .. } => target.text(Context::Link).into(),
+                Link::Filesystem { target, .. } => target.text(Context::Link),
             });
             content.push(']');
             copied_through = source_range.end;
@@ -351,7 +351,7 @@ impl FilesystemTarget {
         }
 
         // Escape the finished text once, as it will appear in the source.
-        escape(&text, context).into_owned()
+        escape(&text, context)
     }
 
     // Expose the path relative to the file root, without any root, prefix, `.`, or `..`

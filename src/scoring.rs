@@ -117,7 +117,7 @@ mod tests {
             .values()
             .filter_map(|page| {
                 page.traversal_index
-                    .map(|index| (index, page.title.text(Context::Verbatim).into_owned()))
+                    .map(|index| (index, page.title.text(Context::Verbatim)))
             })
             .collect::<Vec<_>>();
         pages.sort();
