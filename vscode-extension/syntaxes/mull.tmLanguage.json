@@ -21,7 +21,7 @@
   "repository": {
     "titles": {
       "name": "markup.heading.1.mull",
-      "match": "^(#)(?: (.*))?$",
+      "match": "^(#) (.*)$",
       "captures": {
         "1": {
           "name": "punctuation.definition.heading.mull"

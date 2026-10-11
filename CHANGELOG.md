@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-10-10
+
+### Changed
+- A title line now always starts with `# `. A line which is just `#` is no longer an empty title, but ordinary content, like `##` or `#hashtag`. A title line with nothing after `# ` is still an empty title.
+
+### Fixed
+- Formatting no longer turns a line of content which is `#` followed by a tab or other whitespace into a title, which made the formatted wiki invalid.
+
 ## [0.41.3] - 2026-10-10
 
 ### Changed
