@@ -113,6 +113,25 @@ fn validate_text_links(
         }
     }
 
+    // Reject each embed of a page which embeds the embedding page in turn, directly or through
+    // other pages, since there's no finite copy of either page's content.
+    for page in pages {
+        for embed in page.embeds.iter().filter(|embed| !embed.is_nested) {
+            if embeds_transitively(wiki, &embed.title, &page.title) {
+                errors.push(Error::new(
+                    &format!(
+                        "Embedding page {} here creates a cycle of embeds.",
+                        embed.title.code_str(),
+                    ),
+                    source_path,
+                    Some((source_contents, line_index, embed.link_source_range)),
+                    None,
+                    None,
+                ));
+            }
+        }
+    }
+
     // Reject every page outside the graph rooted at the home page.
     if has_home {
         errors.extend(
@@ -136,6 +155,28 @@ fn validate_text_links(
     }
 
     errors
+}
+
+// Determine whether a page is or embeds another page, directly or through other pages.
+fn embeds_transitively(wiki: &Wiki, from: &PageTitle, to: &PageTitle) -> bool {
+    let mut visited = HashSet::new();
+    let mut pending = vec![from];
+    while let Some(title) = pending.pop() {
+        if title == to {
+            return true;
+        }
+        if visited.insert(title)
+            && let Some(page) = wiki.pages.get(title)
+        {
+            pending.extend(
+                page.embeds
+                    .iter()
+                    .filter(|embed| !embed.is_nested)
+                    .map(|embed| &embed.title),
+            );
+        }
+    }
+    false
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
@@ -654,6 +695,29 @@ mod tests {
             &errors,
             "Page `Zulu` can't be reached by following links starting from `Home`.",
         ));
+    }
+
+    // Reject embeds which complete a cycle of embeds, including a page embedding itself, at the
+    // links in their opening fences.
+    #[test]
+    fn embed_cycles() {
+        let directory = TestDirectory::new();
+        let wiki = parse(concat!(
+            "# Home\n[Middle] [Self]\n",
+            "# Middle\n::: embed [Last]\n:::\n",
+            "# Last\n::: embed [Middle]\n:::\n",
+            "# Self\n::: embed [Self]\n:::\n",
+        ))
+        .unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 3);
+        for title in ["Last", "Middle", "Self"] {
+            assert!(contains_error(
+                &errors,
+                &format!("Embedding page `{title}` here creates a cycle of embeds."),
+            ));
+        }
     }
 
     // Validate syntax and graph structure without requiring an untitled wiki to be saved.
