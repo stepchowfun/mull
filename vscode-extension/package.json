@@ -45,6 +45,7 @@
         "scopeName": "source.mull",
         "path": "./syntaxes/mull.tmLanguage.json",
         "tokenTypes": {
+          "string.other.link.title": "other",
           "constant.character.escape.mull": "string",
           "invalid.illegal": "string",
           "markup.inline.raw.mull": "string",
