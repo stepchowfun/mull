@@ -508,6 +508,7 @@ mod tests {
     use crate::{
         assert_fails,
         error::{Error, Fix},
+        escaping::Context,
         line_index::LineIndex,
         wiki::{Link, Wiki},
     };
@@ -541,7 +542,7 @@ mod tests {
         links
             .iter()
             .map(|link| match link {
-                Link::Text { title, .. } => format!("text:{title}"),
+                Link::Text { title, .. } => format!("text:{}", title.text(Context::Verbatim)),
                 Link::Filesystem { target, .. } => format!(
                     "{}:{}",
                     if target.is_directory() { "dir" } else { "file" },
@@ -561,7 +562,7 @@ mod tests {
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(wiki.pages["Home"].title.as_str(), "Home");
+        assert_eq!(wiki.pages["Home"].title.text(Context::Verbatim), "Home");
         assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
