@@ -30,12 +30,11 @@ pub fn title_line_text(line: &str) -> Option<&str> {
 }
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
-// source ranges address and which it's rendered from. It also records where code and links are in
-// the source, including links which didn't parse, so an editor can tell what's at a position.
+// source ranges address and which it's rendered from. It also records where links are in the
+// source, including links which didn't parse, so an editor can tell whether a position is in one.
 #[derive(Clone, Debug)]
 pub struct Wiki {
     pub pages: HashMap<PageTitle, Page>,
-    pub code_spans: Vec<SourceRange>, // Each from its opening run through its closing run, in order
     pub link_delimiters: Vec<LinkDelimiters>, // Every link, closed or not, in order
     source: String,
 }
@@ -45,18 +44,9 @@ impl Wiki {
     pub fn new(source: &str) -> Self {
         Self {
             pages: HashMap::new(),
-            code_spans: Vec::new(),
             link_delimiters: Vec::new(),
             source: source.to_owned(),
         }
-    }
-
-    // Determine whether a source offset is within code, including its backticks.
-    pub fn is_in_code(&self, offset: usize) -> bool {
-        let index = self.code_spans.partition_point(|span| span.end <= offset);
-        self.code_spans
-            .get(index)
-            .is_some_and(|span| span.start <= offset)
     }
 
     // Find the link whose text contains a source offset, which is after its opening delimiter and

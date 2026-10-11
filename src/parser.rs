@@ -267,10 +267,6 @@ pub fn parse(
                     .then(|| closing_run_end(source_contents, position + length, length))
                     .flatten();
                 if let Some(end) = closing_end {
-                    wiki.code_spans.push(SourceRange {
-                        start: position,
-                        end,
-                    });
                     position = end;
                 } else {
                     if length >= 3 {
@@ -819,29 +815,31 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
-    // Record code from its opening run through a closing run of exactly as many backticks, letting
-    // code of three or more backticks cross lines, including title lines, and keeping any language
-    // name as part of the code.
+    // End code at a closing run of exactly as many backticks, letting code of three or more
+    // backticks cross lines, including title lines, and keeping any language name as part of the
+    // code. The text after code is read as usual.
     #[test]
-    fn code_span_source_ranges() {
-        let source = "# Home\na `b` c ``d ` e`` f\n```sh\n# x\n`` ```` \n```\n";
-        let wiki = parse_test(source).unwrap();
+    fn code_closing_runs() {
+        let wiki = parse_test(concat!(
+            "# Home\n",
+            "a `[x]` [Home] ``d ` [x]`` [Home]\n",
+            "```sh\n# x\n[x] `` ```` \n```\n",
+            "[Home]\n",
+        ))
+        .unwrap();
 
-        assert_eq!(
-            wiki.code_spans
-                .iter()
-                .map(|span| &source[span.start..span.end])
-                .collect::<Vec<_>>(),
-            vec!["`b`", "``d ` e``", "```sh\n# x\n`` ```` \n```"],
-        );
         assert_eq!(wiki.pages.len(), 1);
+        assert_eq!(
+            link_targets(&wiki.page("Home").links),
+            vec!["text:Home", "text:Home", "text:Home"],
+        );
     }
 
     // Report each run of backticks which isn't closed, including a short run whose closing run is
     // on a later line, at the run itself.
     #[test]
     fn unclosed_code_source_ranges() {
-        let (wiki, errors) = parse_fixture("# Home\na `b\nc` ``` d");
+        let errors = parse_test("# Home\na `b\nc` ``` d").unwrap_err();
 
         assert_eq!(
             errors
@@ -854,44 +852,34 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 SourceRange { start: 15, end: 18 },
             ],
         );
-        assert_eq!(wiki.code_spans, Vec::new());
     }
 
-    // Treat backticks as plain characters in a title line, in a link's target, and when escaped.
+    // Treat backticks as plain characters in a title line, in a link's target, and when escaped,
+    // but not elsewhere.
     #[test]
     fn backticks_outside_code() {
-        let source = "# A `title\n[A `title] \\`b\\` `c`";
-        let wiki = parse_test(source).unwrap();
+        let wiki = parse_test("# A `title\n[A `title] \\`b\\` `[c]`").unwrap();
 
-        assert_eq!(
-            wiki.code_spans
-                .iter()
-                .map(|span| &source[span.start..span.end])
-                .collect::<Vec<_>>(),
-            vec!["`c`"],
-        );
         assert_eq!(
             link_targets(&wiki.page("A `title").links),
             vec!["text:A `title"],
         );
     }
 
-    // Locate code and links for an editor, including a link which isn't closed. A link contains an
-    // offset after its opening delimiter through its closing delimiter or the end of its line.
+    // Locate links for an editor, including a link which isn't closed, but not what looks like a
+    // link in code. A link contains an offset after its opening delimiter through its closing
+    // delimiter or the end of its line.
     #[test]
-    fn code_and_links_at_offsets() {
-        let (wiki, _errors) = parse_fixture("# Home\na `b` [c] [d");
+    fn links_at_offsets() {
+        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [c] [d");
 
-        assert!(!wiki.is_in_code(8));
-        assert!(wiki.is_in_code(9));
-        assert!(wiki.is_in_code(11));
-        assert!(!wiki.is_in_code(12));
-        assert!(wiki.link_at(13).is_none());
-        assert_eq!(wiki.link_at(14).unwrap().closing, Some(15));
-        assert_eq!(wiki.link_at(15).unwrap().closing, Some(15));
-        assert!(wiki.link_at(16).is_none());
-        assert_eq!(wiki.link_at(18).unwrap().opening, 17);
-        assert_eq!(wiki.link_at(19).unwrap().closing, None);
+        assert!(wiki.link_at(11).is_none());
+        assert!(wiki.link_at(15).is_none());
+        assert_eq!(wiki.link_at(16).unwrap().closing, Some(17));
+        assert_eq!(wiki.link_at(17).unwrap().closing, Some(17));
+        assert!(wiki.link_at(18).is_none());
+        assert_eq!(wiki.link_at(20).unwrap().opening, 19);
+        assert_eq!(wiki.link_at(21).unwrap().closing, None);
     }
 
     // Reject filesystem links whose paths contain parent components.

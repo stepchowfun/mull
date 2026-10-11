@@ -847,15 +847,12 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 
 // Complete the link target at an editor position with page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
-    // Offer nothing in code, where text is taken as written, or outside a link. Decline a link with
-    // an unexpected opening delimiter, whose target is unreliable. Targets are trimmed by the
+    // Offer nothing outside a link, including in code, which never contains one. Decline a link
+    // with an unexpected opening delimiter, whose target is unreliable. Targets are trimmed by the
     // parser, so the text typed so far starts after any leading whitespace.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    let wiki = snapshot.wiki();
-    if wiki.is_in_code(cursor_offset) {
-        return None;
-    }
-    let delimiters = wiki
+    let delimiters = snapshot
+        .wiki()
         .link_at(cursor_offset)
         .filter(|delimiters| !delimiters.has_nested_start)?;
     let target_start = delimiters.opening + '['.len_utf8();
