@@ -54,8 +54,7 @@ pub fn parse(
         source_start: 0,
         links: Vec::new(),
     };
-    let mut has_seen_title_marker = false;
-    let mut reported_content_before_title = false;
+    let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
@@ -108,8 +107,8 @@ pub fn parse(
             };
             if let Some(raw_title) = title_line_text(line) {
                 // Finish the preceding region, then start one which belongs to a page if its
-                // title is valid and hasn't been used.
-                has_seen_title_marker = true;
+                // title is valid and hasn't been used. Content after a title line is in a region.
+                can_report_content_before_title = false;
                 finish_page(&mut wiki, pending_page, position, source_contents);
                 let title = match parse_title(
                     raw_title,
@@ -141,14 +140,14 @@ pub fn parse(
                 continue;
             }
 
-            // Report only the first non-whitespace content outside a valid page.
-            if !has_seen_title_marker && !reported_content_before_title && !line.trim().is_empty() {
+            // Report only the first non-whitespace content before the first title line.
+            if can_report_content_before_title && !line.trim().is_empty() {
                 errors.push(syntax_error(
                     "This content isn't in any page.",
                     trim_source_range(source_contents, line_source_range),
                     None,
                 ));
-                reported_content_before_title = true;
+                can_report_content_before_title = false;
             }
         }
 

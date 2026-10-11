@@ -139,7 +139,6 @@ struct Snapshot {
     version: i32,
     line_index: OnceLock<LineIndex>,
     parsed: OnceLock<(Wiki, Vec<Error>)>,
-    titles: OnceLock<Arc<[Title]>>,
 }
 
 impl Snapshot {
@@ -152,7 +151,6 @@ impl Snapshot {
             version,
             line_index: OnceLock::new(),
             parsed: OnceLock::new(),
-            titles: OnceLock::new(),
         }
     }
 
@@ -188,31 +186,6 @@ impl Snapshot {
     fn wiki(&self) -> &Wiki {
         &self.parsed().0
     }
-
-    // List the titles of the pages in the wiki in title order, for completion.
-    fn titles(&self) -> &Arc<[Title]> {
-        self.titles.get_or_init(|| {
-            let mut titles = self
-                .wiki()
-                .pages
-                .keys()
-                .map(|title| Title {
-                    title: title.clone(),
-                    lowercase: title.text(Context::Verbatim).to_lowercase(),
-                })
-                .collect::<Vec<_>>();
-            titles.sort_by(|a, b| a.title.cmp(&b.title));
-            titles.into()
-        })
-    }
-}
-
-// This is a page title along with its lowercase form, which typed text is matched against
-// regardless of case.
-#[derive(Debug)]
-struct Title {
-    title: PageTitle,
-    lowercase: String,
 }
 
 // This is the result of a check whose diagnostics were published. A check which is cancelled or
@@ -1032,25 +1005,21 @@ fn text_link_completions(
     typed_text: &str,
     replacement_source_range: SourceRange,
 ) -> CompletionList {
-    // Collect enough matches of each kind, in title order, while counting all of them.
+    // Collect the matches of each kind in title order, ignoring case, and count all of them.
     let typed_text = typed_text.to_lowercase();
     let mut prefix_matches = Vec::new();
     let mut other_matches = Vec::new();
-    let mut match_count = 0_usize;
-    for title in snapshot.titles().iter() {
-        if !is_subsequence(&typed_text, &title.lowercase) {
-            continue;
-        }
-        match_count += 1;
-        let matches = if title.lowercase.starts_with(&typed_text) {
-            &mut prefix_matches
-        } else {
-            &mut other_matches
-        };
-        if matches.len() < MAX_TITLE_COMPLETIONS {
-            matches.push(&title.title);
+    for title in snapshot.wiki().pages.keys() {
+        let lowercase_title = title.text(Context::Verbatim).to_lowercase();
+        if lowercase_title.starts_with(&typed_text) {
+            prefix_matches.push(title);
+        } else if is_subsequence(&typed_text, &lowercase_title) {
+            other_matches.push(title);
         }
     }
+    prefix_matches.sort();
+    other_matches.sort();
+    let match_count = prefix_matches.len() + other_matches.len();
 
     // Replace the whole link, including its delimiters, so the cursor ends up after the closing
     // `]`.
