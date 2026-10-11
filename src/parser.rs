@@ -562,20 +562,20 @@ mod tests {
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(wiki.pages["Home"].title.text(Context::Verbatim), "Home");
+        assert_eq!(wiki.page("Home").title.text(Context::Verbatim), "Home");
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec!["text:Greeting"],
         );
         assert_eq!(
             wiki.to_string(),
             "# Home\n\n Check out the [Greeting].\n\n# Greeting\n\n Hello,\nworld!\n",
         );
-        assert_eq!(wiki.pages["Home"].title_source_range.start, 7);
-        assert_eq!(wiki.pages["Home"].title_source_range.end, 13);
-        assert_eq!(wiki.pages["Home"].source_range.start, 3);
-        assert_eq!(wiki.pages["Home"].source_range.end, 41);
-        let Link::Text { source_range, .. } = &wiki.pages["Home"].links[0] else {
+        assert_eq!(wiki.page("Home").title_source_range.start, 7);
+        assert_eq!(wiki.page("Home").title_source_range.end, 13);
+        assert_eq!(wiki.page("Home").source_range.start, 3);
+        assert_eq!(wiki.page("Home").source_range.end, 41);
+        let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
             panic!("The parsed link should be a text link.");
         };
         assert_eq!(&source[source_range.start..source_range.end], "[Greeting]");
@@ -591,7 +591,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec!["text:Greeting", "text:About", "text:Greeting"],
         );
         assert_eq!(
@@ -605,14 +605,14 @@ mod tests {
     fn unicode_source_ranges() {
         let source = "# Home\nSee [Grüße].\n# Grüße";
         let wiki = parse_test(source).unwrap();
-        let Link::Text { source_range, .. } = &wiki.pages["Home"].links[0] else {
+        let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
             panic!("The parsed link should be a text link.");
         };
 
         assert_eq!(&source[source_range.start..source_range.end], "[Grüße]");
         assert_eq!(
-            &source[wiki.pages["Grüße"].title_source_range.start
-                ..wiki.pages["Grüße"].title_source_range.end],
+            &source[wiki.page("Grüße").title_source_range.start
+                ..wiki.page("Grüße").title_source_range.end],
             "Grüße",
         );
     }
@@ -630,7 +630,7 @@ See \[Ignored\], [One\]Two], [\[Three], [Four], and \[also ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec!["text:One]Two", "text:[Three", "text:Four"],
         );
     }
@@ -649,7 +649,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec!["text:Four", "text:Five\\", "text:A\\B"],
         );
     }
@@ -674,7 +674,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .to_string()
                 .contains("A backslash must be followed by")
         }));
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
     }
 
     // Leave out a link with a backslash which doesn't escape anything, whose target is unreliable,
@@ -690,7 +690,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 Some(&Fix::EscapeBackslash(16)),
             ],
         );
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
     }
 
     // Reject a backslash before `#`, which can't be escaped, since only a title marker at the start
@@ -729,7 +729,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         .unwrap();
 
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec![
                 format!("file:{}", PathBuf::from("notes.txt").display()),
                 format!("dir:{}", PathBuf::from("images").display()),
@@ -782,7 +782,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .all(|error| error.to_string().contains("This link is missing a target.")),
         );
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
     // Take the text of code as written, without titles, links, or escapes, whether it's inline or
@@ -799,7 +799,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
         assert_eq!(wiki.to_string(), source);
     }
 
@@ -811,7 +811,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(
-            link_targets(&wiki.pages["The `ls` command"].links),
+            link_targets(&wiki.page("The `ls` command").links),
             vec!["text:The `ls` command"],
         );
         assert_eq!(wiki.to_string(), source);
@@ -831,7 +831,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .contains("In a link, a backslash must be followed by"),
         );
         assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(12)));
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
     // Report a run of backticks which isn't closed, including a short run whose closing run is on
@@ -848,7 +848,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert!(errors[0].to_string().contains("2 \u{2502} ```"));
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
     // Reject filesystem links whose paths contain parent components.
@@ -882,7 +882,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .contains("Unexpected closing link delimiter."),
         );
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec!["text:Home", "text:Other"],
         );
     }
@@ -994,7 +994,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let wiki = parse_test("# Home\n\n#\n#\t\n# \tx").unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(wiki.pages["Home"].links.len(), 0);
+        assert_eq!(wiki.page("Home").links.len(), 0);
         let formatted = wiki.to_string();
         assert!(formatted.starts_with("# Home\n\n#\n#\n"));
         assert_eq!(parse_test(&formatted).unwrap().pages.len(), 2);
@@ -1102,7 +1102,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
 
         assert_eq!(errors.len(), 6);
         assert_eq!(
-            link_targets(&wiki.pages["Home"].links),
+            link_targets(&wiki.page("Home").links),
             vec![
                 "text:Greeting".to_owned(),
                 format!("file:{}", PathBuf::from("notes.txt").display()),
@@ -1116,7 +1116,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let (wiki, errors) = parse_fixture("# Home\nStray] [Greeting]\n# Greeting");
 
         assert_eq!(errors.len(), 1);
-        assert_eq!(wiki.pages["Greeting"].traversal_index, Some(1));
+        assert_eq!(wiki.page("Greeting").traversal_index, Some(1));
     }
 
     // Omit duplicate pages and regions without valid titles, but report the errors in their
@@ -1147,7 +1147,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert!(errors[5].to_string().contains("7 \u{2502} [Greeting] b]"));
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
-        assert_eq!(wiki.pages["Greeting"].traversal_index, None);
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
+        assert_eq!(wiki.page("Greeting").traversal_index, None);
     }
 }

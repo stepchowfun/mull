@@ -78,7 +78,7 @@ fn validate_text_links(
 
     // Require the root page from which every other page must be reachable, which declaring it
     // would fix.
-    let has_home = wiki.pages.contains_key(HOME_TITLE);
+    let has_home = wiki.pages.contains_key(&PageTitle::home());
     if !has_home {
         errors.push(Error::new(
             &format!("The wiki doesn't contain a {} page.", HOME_TITLE.code_str()),
