@@ -16,7 +16,7 @@ pub fn populate_traversal_order(wiki: &mut Wiki) {
     }
     for (index, title) in order.into_iter().enumerate() {
         wiki.pages
-            .get_mut(&title)
+            .get_mut(title.as_str())
             .expect("Traversed titles should refer to existing pages.")
             .traversal_index = Some(index);
     }
@@ -109,7 +109,7 @@ mod tests {
             .values()
             .filter_map(|page| {
                 page.traversal_index
-                    .map(|index| (index, page.title.clone()))
+                    .map(|index| (index, page.title.as_str().to_owned()))
             })
             .collect::<Vec<_>>();
         pages.sort();

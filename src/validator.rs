@@ -5,7 +5,7 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -85,39 +85,27 @@ fn validate_text_links(
             source_path,
             None,
             None,
-            Some(Fix::CreatePage(HOME_TITLE.to_owned())),
+            Some(Fix::CreatePage(PageTitle::home())),
         ));
     }
 
     // Validate text-link targets.
     for page in pages {
         // Report each missing target at the corresponding text-link occurrence, which declaring
-        // the target would fix, unless it's empty, since no title can be. Filesystem links are
-        // checked separately.
+        // the target would fix. Filesystem links are checked separately.
         for link in &page.links {
             match link {
                 Link::Text {
                     title,
                     source_range,
                 } if !wiki.pages.contains_key(title) => {
-                    let source_context = Some((source_contents, line_index, *source_range));
-                    errors.push(if title.is_empty() {
-                        Error::new(
-                            "This link is missing a target.",
-                            source_path,
-                            source_context,
-                            None,
-                            None,
-                        )
-                    } else {
-                        Error::new(
-                            &format!("Page {} not found.", title.code_str()),
-                            source_path,
-                            source_context,
-                            None,
-                            Some(Fix::CreatePage(title.clone())),
-                        )
-                    });
+                    errors.push(Error::new(
+                        &format!("Page {} not found.", title.code_str()),
+                        source_path,
+                        Some((source_contents, line_index, *source_range)),
+                        None,
+                        Some(Fix::CreatePage(title.clone())),
+                    ));
                 }
                 Link::Text { .. } | Link::Filesystem { .. } => {}
             }
@@ -1162,17 +1150,6 @@ mod tests {
         ] {
             assert!(contains_error(&errors, message));
         }
-    }
-
-    // Reject an empty text link because page titles can't be empty.
-    #[test]
-    fn empty_text_link() {
-        let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [].").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(contains_error(&errors, "This link is missing a target."));
     }
 
     // Require every wiki to contain its special root page.

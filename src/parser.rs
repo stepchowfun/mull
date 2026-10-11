@@ -4,14 +4,16 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
-    wiki::{FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, Wiki, title_line_text},
+    wiki::{
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, Wiki, title_line_text,
+    },
 };
 use std::{iter, path::Path};
 
 // This struct retains the source information needed to finish a region at its next boundary. A
 // region belongs to a page only if its title is valid.
 struct PendingPage {
-    title: Option<(String, SourceRange)>,
+    title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
     content_start: usize,
 }
@@ -122,16 +124,15 @@ pub fn parse(
     (wiki, errors)
 }
 
-// Locate the title that follows a title marker, rejecting titles that are empty after surrounding
-// whitespace is stripped, as well as titles that text links couldn't target because they would
-// become filesystem links.
+// Locate the title that follows a title marker, rejecting a title which breaks the rules for
+// titles, such as one which is empty once surrounding whitespace is stripped.
 fn parse_title(
     raw_title: &str,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
     line_source_range: SourceRange,
-) -> Result<(String, SourceRange), Error> {
+) -> Result<(PageTitle, SourceRange), Error> {
     // Strip surrounding whitespace from the text after the marker, which ends the line.
     let title_source_range = trim_source_range(
         source_contents,
@@ -140,38 +141,33 @@ fn parse_title(
             end: line_source_range.end,
         },
     );
-    let title = &source_contents[title_source_range.start..title_source_range.end];
 
-    // Report an empty title at the whole line, since the title has no text of its own.
-    if title.is_empty() {
-        Err(Error::new(
-            "A page title can't be empty.",
-            source_path,
-            Some((source_contents, line_index, line_source_range)),
-            None,
-            None,
-        ))
-    } else if !title.starts_with(FILESYSTEM_LINK_PREFIX) {
-        // Extend the title's range through any trailing whitespace to the end of its line, so the
-        // title is found with the cursor anywhere after it.
-        Ok((
-            title.to_owned(),
+    // Extend a title's range through any trailing whitespace to the end of its line, so the title
+    // is found with the cursor anywhere after it. Report a problem at the title, or at the whole
+    // line if the title is empty, since it then has no text of its own.
+    match PageTitle::parse(raw_title) {
+        Ok(title) => Ok((
+            title,
             SourceRange {
                 start: title_source_range.start,
                 end: line_source_range.end,
             },
-        ))
-    } else {
-        Err(Error::new(
-            &format!(
-                "A page title can't start with {}.",
-                FILESYSTEM_LINK_PREFIX.code_str(),
-            ),
+        )),
+        Err(message) => Err(Error::new(
+            &message,
             source_path,
-            Some((source_contents, line_index, title_source_range)),
+            Some((
+                source_contents,
+                line_index,
+                if title_source_range.start == title_source_range.end {
+                    line_source_range
+                } else {
+                    title_source_range
+                },
+            )),
             None,
             None,
-        ))
+        )),
     }
 }
 
@@ -402,25 +398,29 @@ fn parse_link(
     line_index: &LineIndex,
     source_range: SourceRange,
 ) -> Result<Link, Error> {
-    // Parse a filesystem link's target, which starts with `/`, and take any other target as a
-    // link's title.
+    // Report a problem with the link at the link.
+    let link_error = |message: &str| {
+        Error::new(
+            message,
+            source_path,
+            Some((source_contents, line_index, source_range)),
+            None,
+            None,
+        )
+    };
+
+    // Parse a filesystem link's target, which starts with `/`, and take any other target as the
+    // title of the page it links to, which an empty link lacks.
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        let target = FilesystemTarget::parse(target).map_err(|message| {
-            Error::new(
-                &message,
-                source_path,
-                Some((source_contents, line_index, source_range)),
-                None,
-                None,
-            )
-        })?;
         Ok(Link::Filesystem {
-            target,
+            target: FilesystemTarget::parse(target).map_err(|message| link_error(&message))?,
             source_range,
         })
+    } else if target.is_empty() {
+        Err(link_error("This link is missing a target."))
     } else {
         Ok(Link::Text {
-            title: target.to_owned(),
+            title: PageTitle::parse(target).map_err(|message| link_error(&message))?,
             source_range,
         })
     }
@@ -500,7 +500,7 @@ mod tests {
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
-        assert_eq!(wiki.pages["Home"].title, "Home");
+        assert_eq!(wiki.pages["Home"].title.as_str(), "Home");
         assert_eq!(
             link_targets(&wiki.pages["Home"].links),
             vec!["text:Greeting"],
@@ -706,6 +706,21 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             wiki.to_string(),
             "# Home\n\nFirst\n\nSee [Home]\nand [Home] later.\nLast\n",
         );
+    }
+
+    // Reject an empty text link, since no page title can be empty, leaving it out of the page's
+    // links.
+    #[test]
+    fn empty_text_links() {
+        let (wiki, errors) = parse_fixture("# Home\nSee [] and [  ] and [Home].");
+
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("This link is missing a target.")),
+        );
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
     }
 
     // Reject filesystem links whose paths contain parent components.
