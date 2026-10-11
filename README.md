@@ -8,7 +8,7 @@
 
 Since Mull runs in Visual Studio Code or Cursor, you can use it with your favorite settings and extensions. For example, the screenshot above shows the [Berkeley Mono](https://usgraphics.com/products/berkeley-mono) typeface with the [Monokai Pro (Filter Spectrum)](https://monokai.pro/) color theme.
 
-## The basics
+## A quick tour
 
 A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 4 pages:
 
