@@ -77,7 +77,7 @@ It verifies these structural properties:
 It also verifies these connectivity properties:
 
 - All pages are reachable by following links from the `Home` page, which must exist.
-- Any files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
+- All files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
 
 Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable by following links starting from the `Home` page. This promotes a basic form of organization that makes Mull different from other wiki software.
 
