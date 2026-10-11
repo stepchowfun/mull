@@ -838,7 +838,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Don't reinterpret content after an invalid title as content before the first title.
     #[test]
     fn content_after_empty_title() {
-        let errors = parse_test("# Home\n\nfoo\n\n#\n\nbar").unwrap_err();
+        let errors = parse_test("# Home\n\nfoo\n\n# \n\nbar").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -848,18 +848,17 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Recognize a bare title marker so it can be reported as an empty title.
+    // Treat a bare title marker as content, even once formatting removes whitespace after it, so
+    // formatting can't turn it into a title.
     #[test]
-    fn bare_empty_title() {
-        let errors = parse_test("#").unwrap_err();
+    fn bare_title_markers() {
+        let wiki = parse_test("# Home\n\n#\n#\t\n# \tx").unwrap();
 
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("A page title can't be empty."),
-        );
-        assert!(errors[0].to_string().contains("1 │ #"));
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(wiki.pages["Home"].links.len(), 0);
+        let formatted = wiki.to_string();
+        assert!(formatted.starts_with("# Home\n\n#\n#\n"));
+        assert_eq!(parse_test(&formatted).unwrap().pages.len(), 2);
     }
 
     // Report only the first occurrence of content before a valid title.
@@ -986,7 +985,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     #[test]
     fn recovered_wiki_omits_untitled_regions() {
         let (wiki, errors) = parse_fixture(
-            "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n#\n[Greeting] b]\n# Greeting",
+            "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n# \n[Greeting] b]\n# Greeting",
         );
 
         assert_eq!(errors.len(), 6);

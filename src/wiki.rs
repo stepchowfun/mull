@@ -14,18 +14,13 @@ use std::{
 // relative to the file root, which names a directory if it ends with `/`.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
-const TITLE_MARKER: &str = "#";
 pub const TITLE_PREFIX: &str = "# ";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 
-// Find the text after a title line's marker, which is a title marker followed by either a space or
-// the end of the line. A line that isn't a title line has none.
+// Find the text after a title line's prefix, which is a title marker followed by a space. A line
+// that isn't a title line has none, including a bare title marker.
 pub fn title_line_text(line: &str) -> Option<&str> {
-    if line == TITLE_MARKER {
-        Some("")
-    } else {
-        line.strip_prefix(TITLE_PREFIX)
-    }
+    line.strip_prefix(TITLE_PREFIX)
 }
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
@@ -401,11 +396,13 @@ mod tests {
         wiki
     }
 
-    // Recognize a title marker followed by a space or the end of the line, but not other headings.
+    // Recognize a title marker followed by a space, but not a bare title marker or other headings.
     #[test]
     fn title_lines() {
-        assert_eq!(title_line_text("#"), Some(""));
+        assert_eq!(title_line_text("# "), Some(""));
         assert_eq!(title_line_text("# Greeting  "), Some("Greeting  "));
+        assert_eq!(title_line_text("#"), None);
+        assert_eq!(title_line_text("#\tGreeting"), None);
         assert_eq!(title_line_text("#Greeting"), None);
         assert_eq!(title_line_text("## Greeting"), None);
         assert_eq!(title_line_text(""), None);
