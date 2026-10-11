@@ -15,33 +15,23 @@ A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which
 ```md
 # Home
 
-Welcome to the example wiki!
+Welcome to my wiki! Start with my [Recipes].
 
-This is the [Home] page, which is the starting point for every wiki.
+# Recipes
 
-[My favorite art] is another page. It's easy to link to other pages!
+- [Pancakes]
+- Grandma's lemonade, from a photo of her card: [/lemonade.jpg]
 
-# My favorite art
+# Pancakes
 
-- My favorite poem is [To make a prairie].
-- My favorite painting is [/mona_lisa.jpg] by Leonardo da Vinci.
-
-# To make a prairie
-
-> To make a prairie it takes a clover and one bee,
-> One clover, and a bee,
-> And revery.
-> The revery alone will do,
-> If bees are few.
-
-—Emily Dickinson
+Whisk 1 cup of flour, 1 cup of milk, and 1 egg. Cook on a hot, buttered pan.
 ```
 
 Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
 
-To link to a page, use square brackets like `[My favorite art]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+To link to a page, use square brackets like `[Recipes]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/mona_lisa.jpg]`.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/lemonade.jpg]`.
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown.
 
