@@ -14,21 +14,141 @@ use std::{
 
 // These strings define the wiki format's extension, the suffix that names a wiki's file
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
-// relative to the file root, which names a directory if it ends with `/`.
+// relative to the file root, which names a directory if it ends with `/`. The home page's title
+// identifies the root of every wiki's text-link graph.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
+pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
+pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // Find the text after a title line's prefix, which is a title marker followed by a space. A line
 // that isn't a title line has none, including a bare title marker.
 pub fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
-pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
-// This title identifies the root of every wiki's text-link graph.
-pub const HOME_TITLE: &str = "Home";
+// This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
+// source ranges address and which it's rendered from.
+#[derive(Clone, Debug)]
+pub struct Wiki {
+    pub pages: HashMap<PageTitle, Page>,
+    source: String,
+}
+
+impl Wiki {
+    // Start a wiki without any pages for the given source.
+    pub fn new(source: &str) -> Self {
+        Self {
+            pages: HashMap::new(),
+            source: source.to_owned(),
+        }
+    }
+
+    // Iterate over the links of every page, in no particular order.
+    pub fn links(&self) -> impl Iterator<Item = &Link> {
+        self.pages.values().flat_map(|page| &page.links)
+    }
+
+    // Look up a page by its title as written in its title line, for tests.
+    #[cfg(test)]
+    pub fn page(&self, title: &str) -> &Page {
+        &self.pages[&PageTitle::parse(title).expect("The title should be valid.")]
+    }
+
+    // Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
+    // unreachable pages in title order.
+    pub fn rendering_order_key(
+        traversal_index: Option<usize>,
+        title: &PageTitle,
+    ) -> (bool, Option<usize>, &PageTitle) {
+        (traversal_index.is_none(), traversal_index, title)
+    }
+
+    // Render a page's content from the source, with each link written in its canonical form, Unix
+    // line endings, and no whitespace at the end of a line.
+    fn rendered_content(&self, page: &Page) -> String {
+        // Find the content after the title line, skipping the blank lines around it but keeping the
+        // indentation of its first line, so an indented line which starts with a title marker
+        // doesn't become a title.
+        let content_end = page.source_range.end;
+        let after_title = &self.source[page.title_source_range.end..content_end];
+        let Some(first_character) = after_title.find(|character: char| !character.is_whitespace())
+        else {
+            return String::new();
+        };
+        let content_start = page.title_source_range.end
+            + after_title[..first_character]
+                .rfind('\n')
+                .map_or(0, |index| index + '\n'.len_utf8());
+
+        // Copy the content, replacing each link with its canonical form: a text link's title
+        // escaped, and a filesystem link's normalized target.
+        let mut links = page.links.iter().collect::<Vec<_>>();
+        links.sort_by_key(|link| link.source_range().start);
+        let mut content = String::new();
+        let mut copied_through = content_start;
+        for link in links {
+            let source_range = link.source_range();
+            content.push_str(&self.source[copied_through..source_range.start]);
+            content.push('[');
+            content.push_str(&match link {
+                Link::Text { title, .. } => title.text(Context::Link),
+                Link::Filesystem { target, .. } => target.text(Context::Link),
+            });
+            content.push(']');
+            copied_through = source_range.end;
+        }
+        content.push_str(&self.source[copied_through..content_end]);
+
+        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
+        // line breaks, and each ends with a delimiter, so this never changes one.
+        content
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// Render pages deterministically in traversal order, with unreachable pages last in title order.
+// Rendering assumes the wiki has no syntax errors, so every link in a page's content was parsed.
+impl fmt::Display for Wiki {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Sort reachable pages by traversal order, followed by unreachable pages in title order.
+        let mut pages = self.pages.iter().collect::<Vec<_>>();
+        pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
+
+        // Write each page as a heading and its content, omitting the content separator when there's
+        // no content. Add one line break between pages because each page already ends with one.
+        for (index, (_title, page)) in pages.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
+            let title = page.title.text(Context::Verbatim);
+            let content = self.rendered_content(page);
+            if content.is_empty() {
+                writeln!(formatter, "{TITLE_PREFIX}{title}")?;
+            } else {
+                writeln!(formatter, "{TITLE_PREFIX}{title}\n\n{content}")?;
+            }
+        }
+
+        // Rendering succeeded.
+        Ok(())
+    }
+}
+
+// This struct represents a page in a wiki.
+#[derive(Clone, Debug)]
+pub struct Page {
+    pub title: PageTitle,
+    pub links: Vec<Link>,
+    pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
+    pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
+    pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
+}
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
 // starting with `/`, which would make a link to it a filesystem link. It travels to the editor and
@@ -90,129 +210,6 @@ impl CodeStr for PageTitle {
     fn code_str(&self) -> ColoredString {
         self.0.code_str()
     }
-}
-
-// This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
-// source ranges address and which it's rendered from.
-#[derive(Clone, Debug)]
-pub struct Wiki {
-    pub pages: HashMap<PageTitle, Page>,
-    source: String,
-}
-
-impl Wiki {
-    // Start a wiki without any pages for the given source.
-    pub fn new(source: &str) -> Self {
-        Self {
-            pages: HashMap::new(),
-            source: source.to_owned(),
-        }
-    }
-
-    // Iterate over the links of every page, in no particular order.
-    pub fn links(&self) -> impl Iterator<Item = &Link> {
-        self.pages.values().flat_map(|page| &page.links)
-    }
-
-    // Look up a page by its title as written in its title line, for tests.
-    #[cfg(test)]
-    pub fn page(&self, title: &str) -> &Page {
-        &self.pages[&PageTitle::parse(title).expect("The title should be valid.")]
-    }
-
-    // Order pages as the wiki is rendered: reachable pages by their traversal index, followed by
-    // unreachable pages in title order.
-    pub fn rendering_order_key(
-        traversal_index: Option<usize>,
-        title: &PageTitle,
-    ) -> (bool, Option<usize>, &PageTitle) {
-        (traversal_index.is_none(), traversal_index, title)
-    }
-}
-
-// Render pages deterministically in traversal order, with unreachable pages last in title order.
-// Rendering assumes the wiki has no syntax errors, so every link in a page's content was parsed.
-impl fmt::Display for Wiki {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Sort reachable pages by traversal order, followed by unreachable pages in title order.
-        let mut pages = self.pages.iter().collect::<Vec<_>>();
-        pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
-
-        // Write each page as a heading and its content, omitting the content separator when there's
-        // no content. Add one line break between pages because each page already ends with one.
-        for (index, (_title, page)) in pages.into_iter().enumerate() {
-            if index > 0 {
-                writeln!(formatter)?;
-            }
-            let title = page.title.text(Context::Verbatim);
-            let content = self.rendered_content(page);
-            if content.is_empty() {
-                writeln!(formatter, "{TITLE_PREFIX}{title}")?;
-            } else {
-                writeln!(formatter, "{TITLE_PREFIX}{title}\n\n{content}")?;
-            }
-        }
-
-        // Rendering succeeded.
-        Ok(())
-    }
-}
-
-impl Wiki {
-    // Render a page's content from the source, with each link written in its canonical form, Unix
-    // line endings, and no whitespace at the end of a line.
-    fn rendered_content(&self, page: &Page) -> String {
-        // Find the content after the title line, skipping the blank lines around it but keeping the
-        // indentation of its first line, so an indented line which starts with a title marker
-        // doesn't become a title.
-        let content_end = page.source_range.end;
-        let after_title = &self.source[page.title_source_range.end..content_end];
-        let Some(first_character) = after_title.find(|character: char| !character.is_whitespace())
-        else {
-            return String::new();
-        };
-        let content_start = page.title_source_range.end
-            + after_title[..first_character]
-                .rfind('\n')
-                .map_or(0, |index| index + '\n'.len_utf8());
-
-        // Copy the content, replacing each link with its canonical form: a text link's title
-        // escaped, and a filesystem link's normalized target.
-        let mut links = page.links.iter().collect::<Vec<_>>();
-        links.sort_by_key(|link| link.source_range().start);
-        let mut content = String::new();
-        let mut copied_through = content_start;
-        for link in links {
-            let source_range = link.source_range();
-            content.push_str(&self.source[copied_through..source_range.start]);
-            content.push('[');
-            content.push_str(&match link {
-                Link::Text { title, .. } => title.text(Context::Link),
-                Link::Filesystem { target, .. } => target.text(Context::Link),
-            });
-            content.push(']');
-            copied_through = source_range.end;
-        }
-        content.push_str(&self.source[copied_through..content_end]);
-
-        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
-        // line breaks, and each ends with a delimiter, so this never changes one.
-        content
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-
-// This struct represents a page in a wiki.
-#[derive(Clone, Debug)]
-pub struct Page {
-    pub title: PageTitle,
-    pub links: Vec<Link>,
-    pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
-    pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
-    pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
 }
 
 // These are the source occurrences through which a page can reference a target.
@@ -307,6 +304,30 @@ impl FilesystemTarget {
         Self::new(PathBuf::new(), true)
     }
 
+    // Create a target from a normalized path. The file root is always a directory.
+    fn new(path: PathBuf, is_directory: bool) -> Self {
+        Self {
+            is_directory: is_directory || path.as_os_str().is_empty(),
+            path,
+        }
+    }
+
+    // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
+    // components. It's spelled as written, which may differ from the names on disk.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    // Determine whether the target is a directory.
+    pub fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+
+    // Determine whether the target is the file root itself.
+    pub fn is_file_root(&self) -> bool {
+        self.path.as_os_str().is_empty()
+    }
+
     // List the directories containing this target, from nearest to farthest, ending with the
     // file root.
     pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
@@ -346,30 +367,6 @@ impl FilesystemTarget {
         // Escape the finished text once, as it will appear in the source.
         escape(&text, context)
     }
-
-    // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
-    // components. It's spelled as written, which may differ from the names on disk.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    // Determine whether the target is the file root itself.
-    pub fn is_file_root(&self) -> bool {
-        self.path.as_os_str().is_empty()
-    }
-
-    // Determine whether the target is a directory.
-    pub fn is_directory(&self) -> bool {
-        self.is_directory
-    }
-
-    // Create a target from a normalized path. The file root is always a directory.
-    fn new(path: PathBuf, is_directory: bool) -> Self {
-        Self {
-            is_directory: is_directory || path.as_os_str().is_empty(),
-            path,
-        }
-    }
 }
 
 // Format a target for human-facing diagnostic output by its path as written.
@@ -405,6 +402,58 @@ mod tests {
         assert_eq!(title_line_text("#Greeting"), None);
         assert_eq!(title_line_text("## Greeting"), None);
         assert_eq!(title_line_text(""), None);
+    }
+
+    // Render pages in traversal order, placing unreachable pages last.
+    #[test]
+    fn wiki_display() {
+        let wiki = parse_wiki(concat!(
+            "# Orphan\n",
+            "# Greeting\n\nHello, world!\n",
+            "# Home\n\nCheck out the [Greeting].",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\nCheck out the [Greeting].\n\n",
+                "# Greeting\n\nHello, world!\n\n",
+                "# Orphan\n",
+            ),
+        );
+    }
+
+    // Ensure an empty wiki has no output.
+    #[test]
+    fn empty_wiki_display() {
+        assert_eq!(Wiki::new("").to_string(), "");
+    }
+
+    // Ensure a wiki containing an empty page has only its trailing line break, without a redundant
+    // content separator.
+    #[test]
+    fn empty_page_wiki_display() {
+        assert_eq!(parse_wiki("# Greeting\n\n\n").to_string(), "# Greeting\n");
+    }
+
+    // Write content as written, apart from links in their canonical forms, blank lines around the
+    // content, and whitespace at the ends of lines, keeping the indentation of the first line.
+    #[test]
+    fn content_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\r\n\r\n\r\n  # Indented  \r\n",
+            "See [ Other ] and [//images/./raw//].  \r\n\r\n",
+            "\tDone.\r\n\r\n",
+            "# Other",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n  # Indented\nSee [Other] and [/images/raw/].\n\n\tDone.\n\n",
+                "# Other\n",
+            ),
+        );
     }
 
     // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.
@@ -503,57 +552,5 @@ mod tests {
             Some("/archive/photos/cat.jpg".to_owned()),
         );
         assert_eq!(moved("/photographs/cat.jpg"), None);
-    }
-
-    // Ensure a wiki containing an empty page has only its trailing line break, without a redundant
-    // content separator.
-    #[test]
-    fn empty_page_wiki_display() {
-        assert_eq!(parse_wiki("# Greeting\n\n\n").to_string(), "# Greeting\n");
-    }
-
-    // Render pages in traversal order, placing unreachable pages last.
-    #[test]
-    fn wiki_display() {
-        let wiki = parse_wiki(concat!(
-            "# Orphan\n",
-            "# Greeting\n\nHello, world!\n",
-            "# Home\n\nCheck out the [Greeting].",
-        ));
-
-        assert_eq!(
-            wiki.to_string(),
-            concat!(
-                "# Home\n\nCheck out the [Greeting].\n\n",
-                "# Greeting\n\nHello, world!\n\n",
-                "# Orphan\n",
-            ),
-        );
-    }
-
-    // Write content as written, apart from links in their canonical forms, blank lines around the
-    // content, and whitespace at the ends of lines, keeping the indentation of the first line.
-    #[test]
-    fn content_display() {
-        let wiki = parse_wiki(concat!(
-            "# Home\r\n\r\n\r\n  # Indented  \r\n",
-            "See [ Other ] and [//images/./raw//].  \r\n\r\n",
-            "\tDone.\r\n\r\n",
-            "# Other",
-        ));
-
-        assert_eq!(
-            wiki.to_string(),
-            concat!(
-                "# Home\n\n  # Indented\nSee [Other] and [/images/raw/].\n\n\tDone.\n\n",
-                "# Other\n",
-            ),
-        );
-    }
-
-    // Ensure an empty wiki has no output.
-    #[test]
-    fn empty_wiki_display() {
-        assert_eq!(Wiki::new("").to_string(), "");
     }
 }
