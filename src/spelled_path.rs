@@ -11,111 +11,6 @@ use std::{
     sync::Arc,
 };
 
-// A path relative to the file root whose components are spelled exactly as the names in
-// their directories' listings. Comparing such paths as written then agrees with the filesystem,
-// whether or not it ignores case. Such a path describes the disk when it was spelled, so it
-// shouldn't outlive a check or request.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SpelledPath(PathBuf);
-
-impl SpelledPath {
-    // Expose the path for display and for filesystem operations.
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-
-    // Determine whether this path is the file root itself.
-    pub fn is_file_root(&self) -> bool {
-        self.0.as_os_str().is_empty()
-    }
-
-    // Determine whether this path is another or lies within it.
-    pub fn starts_with(&self, other: &SpelledPath) -> bool {
-        self.0.starts_with(&other.0)
-    }
-
-    // Find the directory containing this path, which is spelled as on disk as well.
-    pub fn parent(&self) -> Option<SpelledPath> {
-        self.0.parent().map(|parent| SpelledPath(parent.to_owned()))
-    }
-
-    // Expose the final component's name.
-    pub fn file_name(&self) -> Option<&OsStr> {
-        self.0.file_name()
-    }
-
-    // Require a target's path, relative to a directory, to be spelled exactly as the names in each
-    // of its directories' listings. Filesystems that ignore case or Unicode normalization find an
-    // entry even when its path is spelled differently, but such a path would break on other
-    // filesystems and wouldn't match the names found when walking the directory. No attempt is made
-    // to guess which name a misspelling refers to.
-    fn spell(
-        file_root: &Path,
-        target: &FilesystemTarget,
-        listings: &mut DirectoryListings,
-    ) -> Result<Self, SpellingError> {
-        let mut spelled = SpelledPath(PathBuf::new());
-        for component in target.path().components() {
-            // Accept a name only if its directory lists it exactly as written. If the directory
-            // can't be listed, the spelling can't be checked at all.
-            let name = component.as_os_str();
-            let directory = file_root.join(&spelled.0);
-            let names = match listings.entry(directory.clone()).or_insert_with(|| {
-                fs::read_dir(&directory)
-                    .map(|entries| {
-                        entries
-                            .flatten()
-                            .map(|entry| fs::DirEntry::file_name(&entry))
-                            .collect()
-                    })
-                    .map_err(Arc::new)
-            }) {
-                Ok(names) => names,
-                Err(error) => {
-                    return Err(SpellingError {
-                        message: format!(
-                            "Unable to list {}, so the spelling of {} can't be checked.",
-                            if spelled.is_file_root() {
-                                file_root.code_str().to_string()
-                            } else {
-                                spelled.code_str().to_string()
-                            },
-                            target.code_str(),
-                        ),
-                        reason: Some(error.clone()),
-                    });
-                }
-            };
-            spelled.0.push(name);
-            if !names.contains(name) {
-                return Err(SpellingError {
-                    message: format!(
-                        "{} doesn't match the spelling of any name on disk.",
-                        spelled.code_str(),
-                    ),
-                    reason: None,
-                });
-            }
-        }
-        Ok(spelled)
-    }
-}
-
-// Format a spelled path for human-facing diagnostic output as a link would write it.
-impl CodeStr for SpelledPath {
-    fn code_str(&self) -> ColoredString {
-        code_file_path(&self.0)
-    }
-}
-
-// This explains why a path's spelling isn't confirmed: a name along it isn't listed as written, or
-// a directory along it can't be listed, for an underlying reason.
-#[derive(Debug)]
-pub struct SpellingError {
-    pub message: String,
-    pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
-}
-
 // This is a wiki's file root, which sits beside the wiki and is named after it, as
 // derived from the wiki's path as given. It contains every file the wiki can link
 // to, and it may not exist. Its own spelling doesn't matter, since it's only a prefix from which
@@ -224,6 +119,103 @@ impl FileRoot {
     }
 }
 
+// A path relative to the file root whose components are spelled exactly as the names in
+// their directories' listings. Comparing such paths as written then agrees with the filesystem,
+// whether or not it ignores case. Such a path describes the disk when it was spelled, so it
+// shouldn't outlive a check or request.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SpelledPath(PathBuf);
+
+impl SpelledPath {
+    // Expose the path for display and for filesystem operations.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    // Determine whether this path is the file root itself.
+    pub fn is_file_root(&self) -> bool {
+        self.0.as_os_str().is_empty()
+    }
+
+    // Determine whether this path is another or lies within it.
+    pub fn starts_with(&self, other: &SpelledPath) -> bool {
+        self.0.starts_with(&other.0)
+    }
+
+    // Find the directory containing this path, which is spelled as on disk as well.
+    pub fn parent(&self) -> Option<SpelledPath> {
+        self.0.parent().map(|parent| SpelledPath(parent.to_owned()))
+    }
+
+    // Expose the final component's name.
+    pub fn file_name(&self) -> Option<&OsStr> {
+        self.0.file_name()
+    }
+
+    // Require a target's path, relative to a directory, to be spelled exactly as the names in each
+    // of its directories' listings. Filesystems that ignore case or Unicode normalization find an
+    // entry even when its path is spelled differently, but such a path would break on other
+    // filesystems and wouldn't match the names found when walking the directory. No attempt is made
+    // to guess which name a misspelling refers to.
+    fn spell(
+        file_root: &Path,
+        target: &FilesystemTarget,
+        listings: &mut DirectoryListings,
+    ) -> Result<Self, SpellingError> {
+        let mut spelled = SpelledPath(PathBuf::new());
+        for component in target.path().components() {
+            // Accept a name only if its directory lists it exactly as written. If the directory
+            // can't be listed, the spelling can't be checked at all.
+            let name = component.as_os_str();
+            let directory = file_root.join(&spelled.0);
+            let names = match listings.entry(directory.clone()).or_insert_with(|| {
+                fs::read_dir(&directory)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|entry| fs::DirEntry::file_name(&entry))
+                            .collect()
+                    })
+                    .map_err(Arc::new)
+            }) {
+                Ok(names) => names,
+                Err(error) => {
+                    return Err(SpellingError {
+                        message: format!(
+                            "Unable to list {}, so the spelling of {} can't be checked.",
+                            if spelled.is_file_root() {
+                                file_root.code_str().to_string()
+                            } else {
+                                spelled.code_str().to_string()
+                            },
+                            target.code_str(),
+                        ),
+                        reason: Some(error.clone()),
+                    });
+                }
+            };
+            spelled.0.push(name);
+            if !names.contains(name) {
+                return Err(SpellingError {
+                    message: format!(
+                        "{} doesn't match the spelling of any name on disk.",
+                        spelled.code_str(),
+                    ),
+                    reason: None,
+                });
+            }
+        }
+        Ok(spelled)
+    }
+}
+
+// Format a spelled path for human-facing diagnostic output as a link would write it.
+impl CodeStr for SpelledPath {
+    fn code_str(&self) -> ColoredString {
+        code_file_path(&self.0)
+    }
+}
+
 // Format a path relative to the file root as a link would write it, starting with `/`
 // and separating components with `/`, so it isn't mistaken for a path relative to the current
 // directory.
@@ -233,6 +225,14 @@ pub fn code_file_path(path: &Path) -> ColoredString {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>();
     format!("/{}", components.join("/")).code_str()
+}
+
+// This explains why a path's spelling isn't confirmed: a name along it isn't listed as written, or
+// a directory along it can't be listed, for an underlying reason.
+#[derive(Debug)]
+pub struct SpellingError {
+    pub message: String,
+    pub reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
 // These are the names of the entries in each directory, listed at most once per validation or
