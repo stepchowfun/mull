@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-10-11
+
+### Added
+
+- In the VS Code extension, a code block whose first line is just the name of a language, like ```` ```yaml ````, is now highlighted as that language. Many common languages are supported, using the editor's grammars for them, as is Mull itself. Other code blocks are shown as before.
+
 ## [0.44.2] - 2026-10-11
 
 ### Fixed
