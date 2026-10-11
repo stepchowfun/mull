@@ -1,5 +1,6 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
+    code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
     escaping::{escape, unescape, unescaped_characters},
     file_tree::{Visibility, file_tree_walker, visibility},
@@ -882,11 +883,18 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 
 // Complete the link target at an editor position with page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
+    // Offer nothing in code, where text is taken as written. Finding the code spans is a quick
+    // scan, which doesn't wait for the wiki to be parsed.
+    let cursor_offset = snapshot.byte_offset(cursor)?;
+    let code_spans = CodeSpans::new(&snapshot.contents);
+    if code_spans.contains(cursor_offset) {
+        return None;
+    }
+
     // Find the link containing the cursor using only the cursor's line, so completion doesn't wait
     // for the wiki to be parsed. Targets are trimmed by the parser, so the text typed so far starts
     // after any leading whitespace.
-    let cursor_offset = snapshot.byte_offset(cursor)?;
-    let delimiters = link_delimiters_at(&snapshot.contents, cursor_offset)?;
+    let delimiters = link_delimiters_at(&snapshot.contents, cursor_offset, &code_spans)?;
     let target_start = delimiters.opening + '['.len_utf8();
     let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
 
@@ -936,7 +944,11 @@ struct LinkDelimiters {
 // Find the delimiters of a link containing the cursor, even if the link is unfinished, by scanning
 // only the cursor's line. This reimplements the parser's reading of links, so completion doesn't
 // wait for the wiki to be parsed. Keep this in sync with [group:link_delimiters].
-fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimiters> {
+fn link_delimiters_at(
+    source_contents: &str,
+    cursor: usize,
+    code_spans: &CodeSpans,
+) -> Option<LinkDelimiters> {
     // Confine the search to the cursor's line, since links can't contain line breaks.
     let line_start = source_contents[..cursor]
         .rfind('\n')
@@ -953,11 +965,14 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     }
 
     // Find the open link before the cursor and any closing delimiter after it, skipping escaped
-    // delimiters as the parser does.
+    // delimiters and code spans as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
     for (index, character) in unescaped_characters(line) {
         let offset = line_start + index;
+        if code_spans.contains(offset) {
+            continue;
+        }
         if offset < cursor {
             match character {
                 '[' => opening_delimiter = Some(offset),
@@ -2938,6 +2953,25 @@ mod tests {
                 .items
                 .iter()
                 .any(|completion| completion.label == "A[B]"),
+        );
+    }
+
+    // Offer no completions in code, even in what looks like a link, but offer them after it.
+    #[test]
+    fn completions_ignore_code() {
+        let source = "# Home\n\n```\n[]\n```\n\n`[` []";
+
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 1))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 2))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 5))
+                .is_some(),
         );
     }
 

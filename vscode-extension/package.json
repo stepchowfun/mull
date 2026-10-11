@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.42.1",
+  "version": "0.43.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -46,7 +46,9 @@
         "path": "./syntaxes/mull.tmLanguage.json",
         "tokenTypes": {
           "constant.character.escape.mull": "string",
-          "invalid.illegal": "string"
+          "invalid.illegal": "string",
+          "markup.inline.raw.mull": "string",
+          "markup.raw.block.mull": "string"
         }
       }
     ],

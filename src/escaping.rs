@@ -5,7 +5,8 @@ use std::iter;
 // character after it [ref:content_escapes]. A heading isn't content: a page's title appears in its
 // heading as is.
 
-// Escape plain text, such as a page title or a path, so it retains its meaning in content.
+// Escape plain text, such as a page title or a path, so it retains its meaning as a link's target.
+// Backticks are plain characters there, so they're left as written.
 pub fn escape(plain: &str) -> String {
     plain
         .replace('\\', "\\\\")
@@ -59,8 +60,8 @@ pub fn invalid_escapes(source: &str) -> impl Iterator<Item = usize> {
 }
 
 // Determine whether a backslash escapes a character in content [tag:content_escapes].
-fn is_escapable(character: char) -> bool {
-    matches!(character, '\\' | '[' | ']')
+pub fn is_escapable(character: char) -> bool {
+    matches!(character, '\\' | '[' | ']' | '`')
 }
 
 #[cfg(test)]
@@ -71,8 +72,11 @@ mod tests {
     // a backslash doesn't escape anything.
     #[test]
     fn escaping() {
-        assert_eq!(escape(r"a\[b]\c\"), r"a\\\[b\]\\c\\");
-        assert_eq!(unescape(r"a\\\[b\]\\c\\"), Some(r"a\[b]\c\".to_owned()));
+        assert_eq!(escape(r"a\[b]\c`"), r"a\\\[b\]\\c`");
+        assert_eq!(
+            unescape(r"a\\\[b\]\\c\\\``"),
+            Some(r"a\[b]\c\``".to_owned()),
+        );
         assert_eq!(unescape(r"\a"), None);
         assert_eq!(unescape(r"\#"), None);
         assert_eq!(unescape(r"a\\\"), None);

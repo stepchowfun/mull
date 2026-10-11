@@ -1,4 +1,5 @@
 use crate::{
+    code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
     escaping::{invalid_escapes, unescape, unescaped_characters},
     format::CodeStr,
@@ -41,6 +42,11 @@ pub fn parse(
     let mut reported_content_before_title = false;
     let mut line_start = 0;
 
+    // Find the code spans, whose lines can't be titles, and report each run of backticks which
+    // isn't closed when its line is reached, so errors stay in source order.
+    let code_spans = CodeSpans::new(source_contents);
+    let mut unclosed_runs = code_spans.unclosed().iter().peekable();
+
     // Process ranged source lines as boundaries while retaining their original byte offsets.
     for raw_line in source_contents.split_inclusive('\n') {
         let next_line_start = line_start + raw_line.len();
@@ -53,8 +59,21 @@ pub fn parse(
             end: line_start + line.len(),
         };
 
-        // Start a new region at each title line.
-        if let Some(raw_title) = title_line_text(line) {
+        // Report each run of backticks on the line which isn't closed.
+        while let Some(run_source_range) = unclosed_runs.next_if(|run| run.start < next_line_start)
+        {
+            errors.push(Error::new(
+                "Unclosed code.",
+                source_path,
+                Some((source_contents, line_index, *run_source_range)),
+                None,
+                None,
+            ));
+        }
+
+        // Start a new region at each title line outside a code span.
+        if let Some(raw_title) = title_line_text(line).filter(|_| !code_spans.contains(line_start))
+        {
             // Treat invalid titles as structural boundaries for subsequent content.
             has_seen_title_marker = true;
 
@@ -66,6 +85,7 @@ pub fn parse(
                 source_path,
                 source_contents,
                 line_index,
+                &code_spans,
             ));
 
             // Start a region which belongs to a page if the title is valid.
@@ -117,6 +137,7 @@ pub fn parse(
         source_path,
         source_contents,
         line_index,
+        &code_spans,
     ));
 
     // Order the pages and return the wiki with every error in source order.
@@ -181,6 +202,7 @@ fn finish_page(
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
+    code_spans: &CodeSpans,
 ) -> Vec<Error> {
     // Locate the trimmed region and its content in the original source.
     let PendingPage {
@@ -209,6 +231,7 @@ fn finish_page(
         source_contents,
         line_index,
         content_source_range,
+        code_spans,
     );
 
     // Discard the content of a region without a valid title, whose title error was already
@@ -255,6 +278,7 @@ fn parse_content(
     source_contents: &str,
     line_index: &LineIndex,
     source_range: SourceRange,
+    code_spans: &CodeSpans,
 ) -> (Vec<Link>, Vec<Error>) {
     // Traverse the original content while retaining indices for diagnostics.
     let original_content = &source_contents[source_range.start..source_range.end];
@@ -286,6 +310,12 @@ fn parse_content(
     };
 
     for (index, character) in unescaped_characters(original_content) {
+        // Take the text of code spans as written. A span can't start within a link, so it can't
+        // contain a link's delimiters.
+        if code_spans.contains(source_range.start + index) {
+            continue;
+        }
+
         // Locate the current character for any delimiter error.
         let character_source_range = SourceRange {
             start: source_range.start + index,
@@ -362,10 +392,12 @@ fn parse_content(
         errors.push(unclosed_link(start));
     }
 
-    // Reject each backslash which doesn't escape anything, so it can't be mistaken for an escape,
-    // and offer to escape it. The message lists the characters which can be escaped
-    // [ref:content_escapes].
-    for index in invalid_escapes(original_content) {
+    // Reject each backslash outside code spans which doesn't escape anything, so it can't be
+    // mistaken for an escape, and offer to escape it. The message lists the characters which can be
+    // escaped [ref:content_escapes].
+    for index in invalid_escapes(original_content)
+        .filter(|&index| !code_spans.contains(source_range.start + index))
+    {
         let offset = source_range.start + index;
         errors.push(Error::new(
             "A backslash must be followed by `[`, `]`, or `\\`, so write `\\\\` for a backslash \
@@ -718,6 +750,53 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .all(|error| error.to_string().contains("This link is missing a target.")),
         );
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
+    }
+
+    // Take the text of code as written, without titles, links, or escapes, whether it's inline or
+    // spans lines, while parsing the text around it as usual. Formatting keeps the code's text.
+    #[test]
+    fn code_spans() {
+        let source = concat!(
+            "# Home\n\n",
+            "Run `[a] C:\\Users`, not ``x ` y``.\n\n",
+            "```sh\n# A comment\n[Not a link] C:\\Users \\[ ]\n```\n\n",
+            "See [Other].\n\n",
+            "# Other\n",
+        );
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(wiki.pages.len(), 2);
+        assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Other"]);
+        assert_eq!(wiki.to_string(), source);
+    }
+
+    // Treat backticks as plain characters in a title and in a link's target, and accept an escaped
+    // backtick anywhere else.
+    #[test]
+    fn plain_backticks() {
+        let wiki = parse_test("# The `ls` command\n\n[The `ls` command] and \\`.").unwrap();
+
+        assert_eq!(
+            link_targets(&wiki.pages["The `ls` command"].links),
+            vec!["text:The `ls` command"],
+        );
+    }
+
+    // Report a run of backticks which isn't closed, including a short run whose closing run is on
+    // a later line, and parse the text after it as usual, so it can't hide the rest of the wiki.
+    #[test]
+    fn unclosed_code() {
+        let (wiki, errors) = parse_fixture("# Home\n```\n[Home] `a\nb`\n# Other");
+
+        assert_eq!(errors.len(), 3);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().contains("Unclosed code.")),
+        );
+        assert!(errors[0].to_string().contains("2 \u{2502} ```"));
+        assert_eq!(wiki.pages.len(), 2);
         assert_eq!(link_targets(&wiki.pages["Home"].links), vec!["text:Home"]);
     }
 
