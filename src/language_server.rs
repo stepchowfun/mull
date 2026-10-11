@@ -1,7 +1,8 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
+    code_spans::CodeSpans,
     error::{Error, Fix, SourceRange},
-    escaping::{escape, unescape, unescaped_characters},
+    escaping::{Context, escape, unescape, unescaped_characters},
     file_tree::{Visibility, file_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
@@ -882,11 +883,18 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 
 // Complete the link target at an editor position with page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
+    // Offer nothing in code, where text is taken as written. Finding the code spans is a quick
+    // scan, which doesn't wait for the wiki to be parsed.
+    let cursor_offset = snapshot.byte_offset(cursor)?;
+    let code_spans = CodeSpans::new(&snapshot.contents);
+    if code_spans.contains(cursor_offset) {
+        return None;
+    }
+
     // Find the link containing the cursor using only the cursor's line, so completion doesn't wait
     // for the wiki to be parsed. Targets are trimmed by the parser, so the text typed so far starts
     // after any leading whitespace.
-    let cursor_offset = snapshot.byte_offset(cursor)?;
-    let delimiters = link_delimiters_at(&snapshot.contents, cursor_offset)?;
+    let delimiters = link_delimiters_at(&snapshot.contents, cursor_offset, &code_spans)?;
     let target_start = delimiters.opening + '['.len_utf8();
     let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
 
@@ -917,7 +925,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     // nothing while the typed text has a backslash which doesn't escape anything.
     Some(text_link_completions(
         snapshot,
-        &unescape(typed_target)?,
+        &unescape(typed_target, Context::Link)?,
         SourceRange {
             start: delimiters.opening,
             end: delimiters
@@ -936,7 +944,11 @@ struct LinkDelimiters {
 // Find the delimiters of a link containing the cursor, even if the link is unfinished, by scanning
 // only the cursor's line. This reimplements the parser's reading of links, so completion doesn't
 // wait for the wiki to be parsed. Keep this in sync with [group:link_delimiters].
-fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimiters> {
+fn link_delimiters_at(
+    source_contents: &str,
+    cursor: usize,
+    code_spans: &CodeSpans,
+) -> Option<LinkDelimiters> {
     // Confine the search to the cursor's line, since links can't contain line breaks.
     let line_start = source_contents[..cursor]
         .rfind('\n')
@@ -953,11 +965,14 @@ fn link_delimiters_at(source_contents: &str, cursor: usize) -> Option<LinkDelimi
     }
 
     // Find the open link before the cursor and any closing delimiter after it, skipping escaped
-    // delimiters as the parser does.
+    // delimiters and code spans as the parser does.
     let mut opening_delimiter = None;
     let mut closing_delimiter = None;
     for (index, character) in unescaped_characters(line) {
         let offset = line_start + index;
+        if code_spans.contains(offset) {
+            continue;
+        }
         if offset < cursor {
             match character {
                 '[' => opening_delimiter = Some(offset),
@@ -989,7 +1004,8 @@ fn filesystem_link_completions(
     // tree or have a backslash which doesn't escape anything.
     let typed_directory = &typed_path[..typed_path.rfind('/').map_or(0, |index| index + 1)];
     let segment_start = cursor - (typed_path.len() - typed_directory.len());
-    let directory = FilesystemTarget::from_name(&unescape(typed_directory)?, true).ok()?;
+    let directory =
+        FilesystemTarget::from_name(&unescape(typed_directory, Context::Link)?, true).ok()?;
 
     // Derive every filesystem path from the file root, as validation does.
     let Ok(file_root) = FileRoot::new(wiki_path) else {
@@ -1001,7 +1017,7 @@ fn filesystem_link_completions(
     for child in visible_children(&file_root, directory.path()) {
         // Leave a directory's link open for its children, and close a file's link.
         let name = child.name.as_str();
-        let escaped_name = escape(name);
+        let escaped_name = escape(name, Context::Link);
         let (label, kind, new_text, replacement_end, command) = if child.is_directory {
             (
                 format!("{name}/"),
@@ -1142,7 +1158,7 @@ fn text_link_completions(
             .chain(other_matches)
             .take(MAX_TITLE_COMPLETIONS)
             .map(|title| {
-                let escaped_title = escape(title);
+                let escaped_title = escape(title, Context::Link);
                 CompletionItem {
                     label: title.clone(),
                     kind: Some(CompletionItemKind::REFERENCE),
@@ -1296,7 +1312,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
             let path = target.path().join(&child.name);
             let child_target =
                 FilesystemTarget::from_name(path.to_str()?, child.is_directory).ok()?;
-            Some(format!("[{}]", child_target.text()))
+            Some(format!("[{}]", child_target.text(Context::Link)))
         })
         .collect::<Vec<_>>();
     if let Some(remaining) = children.len().checked_sub(MAX_DIRECTORY_PREVIEW_ENTRIES)
@@ -1523,7 +1539,8 @@ fn prepare_rename_for_document(
                 start,
                 end: start + trimmed.len(),
             }),
-            placeholder: unescape(trimmed).expect("A link's escapes should have been checked."),
+            placeholder: unescape(trimmed, Context::Link)
+                .expect("A link's escapes should have been checked."),
         }));
     }
 
@@ -1593,7 +1610,7 @@ fn rename_page_for_document(
 
     // Replace the declaration literally, since a heading isn't content, and escape the title inside
     // every matching text link.
-    let escaped_title = escape(&new_title);
+    let escaped_title = escape(&new_title, Context::Link);
     let mut edits = text_link_source_ranges(snapshot.wiki(), &page.title)
         .into_iter()
         .map(|source_range| {
@@ -1906,7 +1923,7 @@ fn filesystem_rename_edits(
         if let Some(moved_target) = moved_target {
             edits.push((
                 filesystem_link_path_source_range(source_contents, *source_range),
-                moved_target.text(),
+                moved_target.text(Context::Link),
             ));
         }
     }
@@ -2938,6 +2955,25 @@ mod tests {
                 .items
                 .iter()
                 .any(|completion| completion.label == "A[B]"),
+        );
+    }
+
+    // Offer no completions in code, even in what looks like a link, but offer them after it.
+    #[test]
+    fn completions_ignore_code() {
+        let source = "# Home\n\n```\n[]\n```\n\n`[` []";
+
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 1))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 2))
+                .is_none(),
+        );
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 5))
+                .is_some(),
         );
     }
 

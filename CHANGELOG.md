@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0] - 2026-10-10
+
+### Added
+
+- Code, which starts with a run of backticks and ends with the next run of exactly as many backticks, is now taken as written. Code written with one or two backticks must end on the same line, but code written with three or more can span lines, and anything right after the opening backticks, such as the name of a language, is part of the code. A line starting with `# ` in code no longer starts a new page, square brackets don't make a link, and backslashes don't escape anything, so they don't need to be doubled. Backticks are plain characters in a title and in a link's target. A run of backticks which isn't closed is reported as an error and otherwise ignored, so it can't hide the rest of the wiki. The VS Code extension highlights code as raw text and doesn't offer completions in it.
+- A backtick outside a link can be escaped as ``\` ``, so it doesn't start code. In a link, where backticks are plain characters, ``\` `` is reported as an error, and the error message lists only the characters which can be escaped there.
+
+### Fixed
+
+- In the VS Code extension, the rest of the line after an unclosed `[` is highlighted as link contents, as it's parsed, so escapes there follow a link's rules. Links, code, and escapes in a line starting with `##` through `######` are now highlighted, since such a line is ordinary content.
+
 ## [0.42.1] - 2026-10-10
 
 ### Fixed

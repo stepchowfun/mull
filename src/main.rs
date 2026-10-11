@@ -1,6 +1,7 @@
 mod analyzer;
 mod assertions;
 mod cancellation;
+mod code_spans;
 mod error;
 mod escaping;
 mod file_tree;
