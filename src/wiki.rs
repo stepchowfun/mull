@@ -198,7 +198,7 @@ impl Wiki {
             content.push('[');
             content.push_str(&match link {
                 Link::Text { title, .. } => escape(title, Context::Link),
-                Link::Filesystem { target, .. } => target.text(),
+                Link::Filesystem { target, .. } => target.text(Context::Link),
             });
             content.push(']');
             copied_through = source_range.end;
@@ -334,8 +334,8 @@ impl FilesystemTarget {
     }
 
     // Write the link text: `/` and the path's components, followed by `/` for a directory, escaped
-    // as content. This is the only place that decides how a link is written.
-    pub fn text(&self) -> String {
+    // for a context. This is the only place that decides how a link is written.
+    pub fn text(&self, context: Context) -> String {
         // Join the components with the separator that links use on every platform. Link paths come
         // from UTF-8 text.
         let components = self
@@ -354,7 +354,7 @@ impl FilesystemTarget {
         }
 
         // Escape the finished text once, as it will appear in the source.
-        escape(&text, Context::Link)
+        escape(&text, context)
     }
 
     // Expose the path relative to the file root, without any root, prefix, `.`, or `..`
@@ -461,10 +461,13 @@ mod tests {
             ("/.", "/", true),
         ] {
             let target = FilesystemTarget::parse(&unescape(text, Context::Link).unwrap()).unwrap();
-            assert_eq!(target.text(), canonical);
+            assert_eq!(target.text(Context::Link), canonical);
             assert_eq!(target.is_directory(), is_directory);
             assert_eq!(
-                FilesystemTarget::parse(&unescape(&target.text(), Context::Link).unwrap()).unwrap(),
+                FilesystemTarget::parse(
+                    &unescape(&target.text(Context::Link), Context::Link).unwrap(),
+                )
+                .unwrap(),
                 target,
             );
         }
@@ -482,9 +485,11 @@ mod tests {
     #[test]
     fn filesystem_target_from_name() {
         let target = FilesystemTarget::from_name("photos/a[1]/", false).unwrap();
-        assert_eq!(target.text(), "/photos/a\\[1\\]");
+        assert_eq!(target.text(Context::Link), "/photos/a\\[1\\]");
         assert_eq!(
-            FilesystemTarget::from_name("photos", true).unwrap().text(),
+            FilesystemTarget::from_name("photos", true)
+                .unwrap()
+                .text(Context::Link),
             "/photos/",
         );
     }
@@ -498,7 +503,7 @@ mod tests {
             FilesystemTarget::parse(text)
                 .unwrap()
                 .moved(&directory, &destination)
-                .map(|target| target.text())
+                .map(|target| target.text(Context::Link))
         };
         assert_eq!(moved("/photos/"), Some("/archive/photos/".to_owned()));
         assert_eq!(

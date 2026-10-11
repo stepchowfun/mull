@@ -1312,7 +1312,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> String 
             let path = target.path().join(&child.name);
             let child_target =
                 FilesystemTarget::from_name(path.to_str()?, child.is_directory).ok()?;
-            Some(format!("[{}]", child_target.text()))
+            Some(format!("[{}]", child_target.text(Context::Link)))
         })
         .collect::<Vec<_>>();
     if let Some(remaining) = children.len().checked_sub(MAX_DIRECTORY_PREVIEW_ENTRIES)
@@ -1923,7 +1923,7 @@ fn filesystem_rename_edits(
         if let Some(moved_target) = moved_target {
             edits.push((
                 filesystem_link_path_source_range(source_contents, *source_range),
-                moved_target.text(),
+                moved_target.text(Context::Link),
             ));
         }
     }
