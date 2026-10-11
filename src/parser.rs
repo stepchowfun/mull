@@ -244,7 +244,8 @@ fn finish_page(
     content_errors
 }
 
-// Parse the link occurrences in a page's content, reporting any syntax errors.
+// Parse the link occurrences in a page's content, reporting any syntax errors. Completion finds the
+// link containing the cursor on its own. Keep this in sync with [group:link_delimiters].
 #[allow(
     clippy::too_many_lines,
     reason = "The function scans content once, tracking the state of the link being read."
