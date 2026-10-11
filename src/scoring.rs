@@ -92,7 +92,7 @@ fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
         .iter()
         .filter_map(|link| match link {
             Link::Text { title, .. } => Some(title),
-            Link::Filesystem { .. } => None,
+            Link::Filesystem { .. } | Link::Malformed { .. } => None,
         })
         .collect()
 }

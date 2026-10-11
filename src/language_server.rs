@@ -815,15 +815,19 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 
 // Complete the link target at an editor position with page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
-    // Offer nothing outside a link, including in code, which never contains one. Decline a link
-    // with an unexpected opening delimiter, whose target is unreliable. Targets are trimmed by the
+    // Find the link whose target contains the cursor, which is after its opening delimiter and no
+    // later than its closing delimiter or, if it isn't closed, the end of its line. Offer nothing
+    // outside a link, including in code, which never contains one. Targets are trimmed by the
     // parser, so the text typed so far starts after any leading whitespace.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    let delimiters = snapshot
-        .wiki()
-        .link_at(cursor_offset)
-        .filter(|delimiters| !delimiters.has_nested_start)?;
-    let target_start = delimiters.opening + '['.len_utf8();
+    let link = snapshot.wiki().links().find(|link| {
+        let source_range = link.source_range();
+        source_range.start < cursor_offset
+            && cursor_offset <= link.closing_delimiter().unwrap_or(source_range.end)
+    })?;
+    let opening_delimiter = link.source_range().start;
+    let closing_delimiter = link.closing_delimiter();
+    let target_start = opening_delimiter + '['.len_utf8();
     let typed_target = snapshot.contents[target_start..cursor_offset].trim_start();
 
     // Complete a filesystem link from the file root.
@@ -835,13 +839,13 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
                 snapshot.path.as_deref()?,
                 typed_target,
                 cursor_offset,
-                delimiters.closing,
+                closing_delimiter,
             )?,
         });
     }
 
     // Decline a filesystem link whose prefix follows the cursor.
-    if snapshot.contents[target_start..delimiters.closing.unwrap_or(cursor_offset)]
+    if snapshot.contents[target_start..closing_delimiter.unwrap_or(cursor_offset)]
         .trim_start()
         .starts_with(FILESYSTEM_LINK_PREFIX)
     {
@@ -855,10 +859,8 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
         snapshot,
         &unescape(typed_target, Context::Link)?,
         SourceRange {
-            start: delimiters.opening,
-            end: delimiters
-                .closing
-                .map_or(cursor_offset, |closing| closing + ']'.len_utf8()),
+            start: opening_delimiter,
+            end: closing_delimiter.map_or(cursor_offset, |closing| closing + ']'.len_utf8()),
         },
     ))
 }
@@ -1035,7 +1037,7 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
             target,
             source_range,
         }) => return filesystem_hover(snapshot, target, *source_range),
-        Occurrence::Prose(_) => return None,
+        Occurrence::Link(Link::Malformed { .. }) | Occurrence::Prose(_) => return None,
     };
 
     // Show the page as written.
@@ -1169,13 +1171,13 @@ fn references_for_document(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     // Parse only the wiki syntax because finding references doesn't require validation, and recover
-    // from syntax errors so references can be found while they're fixed. A link to a missing page
-    // or a filesystem link denotes no page.
+    // from syntax errors so references can be found while they're fixed. A link to a missing page,
+    // a filesystem link, or a malformed link denotes no page.
     let wiki = snapshot.wiki();
     let page = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
         Occurrence::Title(page) | Occurrence::Prose(page) => page,
         Occurrence::Link(Link::Text { title, .. }) => wiki.pages.get(title)?,
-        Occurrence::Link(Link::Filesystem { .. }) => return None,
+        Occurrence::Link(Link::Filesystem { .. } | Link::Malformed { .. }) => return None,
     };
 
     // Include the declaration only when requested, then restore source order.
@@ -1205,8 +1207,8 @@ fn document_highlight_for_document(
     let byte_offset = snapshot.byte_offset(cursor)?;
 
     // Distinguish a page declaration from its references. Filesystem links have no declaration in
-    // the wiki, so every matching link is a reference. A link to a missing page and other text in a
-    // page have nothing to highlight.
+    // the wiki, so every matching link is a reference. A link to a missing page, a malformed link,
+    // and other text in a page have nothing to highlight.
     let mut highlights = match occurrence_at(wiki, byte_offset)? {
         Occurrence::Title(page) => page_highlights(wiki, page),
         Occurrence::Link(Link::Text { title, .. }) => page_highlights(wiki, wiki.pages.get(title)?),
@@ -1216,7 +1218,7 @@ fn document_highlight_for_document(
                 .map(|source_range| (source_range, DocumentHighlightKind::READ))
                 .collect()
         }
-        Occurrence::Prose(_) => return None,
+        Occurrence::Link(Link::Malformed { .. }) | Occurrence::Prose(_) => return None,
     };
 
     // Return every matching source occurrence in wiki order.
@@ -1251,7 +1253,7 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<
                 target: link_target,
                 source_range,
             } if link_target == target => Some(*source_range),
-            Link::Text { .. } | Link::Filesystem { .. } => None,
+            Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => None,
         })
         .collect()
 }
@@ -2133,7 +2135,8 @@ fn page_at(
                 }
             },
         )),
-        Occurrence::Link(Link::Filesystem { .. }) | Occurrence::Prose(_) => None,
+        Occurrence::Link(Link::Filesystem { .. } | Link::Malformed { .. })
+        | Occurrence::Prose(_) => None,
     }
 }
 
@@ -2162,7 +2165,7 @@ fn text_link_source_ranges(wiki: &Wiki, title: &PageTitle) -> Vec<SourceRange> {
                 title: link_title,
                 source_range,
             } if link_title == title => Some(*source_range),
-            Link::Text { .. } | Link::Filesystem { .. } => None,
+            Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => None,
         })
         .collect::<Vec<_>>();
     source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
@@ -2765,15 +2768,22 @@ mod tests {
         );
     }
 
-    // Offer no completions in a link with an unexpected opening delimiter, whose target is
-    // unreliable.
+    // Complete a link with an unexpected opening delimiter from its first one, so completing a
+    // title which contains the delimiter escapes it and repairs the link.
     #[test]
-    fn completions_ignore_links_with_nested_starts() {
-        let source = "# Home\n\n[a [b";
+    fn completions_repair_unexpected_opening_delimiters() {
+        let source = "# Home\n\n[a [b\n\n# a [b";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 5))
+                .unwrap();
 
-        assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 6))
-                .is_none(),
+        assert_eq!(
+            completion_edits(&completions.items),
+            vec![(
+                "a [b",
+                Range::new(Position::new(2, 0), Position::new(2, 5)),
+                "[a \\[b]",
+            )],
         );
     }
 

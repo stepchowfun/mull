@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.2] - 2026-10-11
+
+### Changed
+
+- In the VS Code extension, completion is no longer offered in content outside any page, such as before the first title, like the other editor features.
+- In the VS Code extension, completion in a link containing an unexpected `[`, like `[a [b`, now completes from the first `[`. Completing a title which contains `[` escapes it, which repairs the link.
+
 ## [0.43.1] - 2026-10-11
 
 ### Changed
