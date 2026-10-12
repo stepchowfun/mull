@@ -37,17 +37,13 @@ Each page starts with a `# Title`, followed by the contents of the page on subse
 
 Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable (directly or indirectly) by following links starting from a special `Home` page at the top of the wiki. This promotes a basic form of organization that doesn't involve an auxiliary directory structure.
 
-This is what it looks like when a page is unreachable:
-
-![An unreachable page.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/unreachable.png)
-
 ### Linking to files and directories
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki.
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as a link to everything inside it.
 
 ### Formatting
 
