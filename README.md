@@ -47,7 +47,7 @@ You can link to a file called `my_wiki_files/photos/beach.jpg` with `[/photos/be
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Autocomplete will help you enter the names of a files and directories. You can also drag-and-drop (while holding the Shift key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
+Autocomplete will help you enter the names of files and directories. You can also drag-and-drop (while holding the Shift key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
 
