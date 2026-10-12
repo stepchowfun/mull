@@ -43,7 +43,9 @@ This is what it looks like when a page is unreachable:
 
 ### Linking to files and directories
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. This is useful for attaching non-textual data to pages, such as images, PDFs, spreadsheets, etc.
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
+
+![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki.
 
