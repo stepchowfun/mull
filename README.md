@@ -51,7 +51,7 @@ To use a special symbol like `[` or `]` literally, put a backslash before it, li
 
 ![A fenced code block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/code_block.png)
 
-No escaping is necessary inside code.
+No escaping is necessary inside page titles or code.
 
 ## Keyboard shortcuts
 
