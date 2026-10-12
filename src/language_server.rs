@@ -178,7 +178,8 @@ pub async fn run() {
     // Keep ANSI terminal escapes out of protocol diagnostics.
     colored::control::set_override(false);
 
-    // Connect the backend to the standard streams reserved for LSP messages.
+    // Connect the backend, including its custom request, to the standard streams reserved for LSP
+    // messages.
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::build(Backend::new)

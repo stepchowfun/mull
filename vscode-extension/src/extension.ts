@@ -220,8 +220,8 @@ const SETTLE_DELAY_MILLISECONDS = 150;
 
 // This keeps the page containing the cursor, the current page, in focus in each main editor showing
 // a wiki. It dims everything outside the current page, as well as the bodies of the embeds in it,
-// which formatting regenerates, and once the view and the cursor stop
-// moving, it brings the current page back into view, like a rubber band, if it was scrolled away.
+// which formatting regenerates, and once the view and the cursor stop moving, it brings the current
+// page back into view, like a rubber band, if it was scrolled away.
 //
 // Settling waits for the view to stop moving, since there's no way to limit or intercept scrolling,
 // only to observe it after the fact. It reveals only the page's nearer edge, since the editor
@@ -318,7 +318,7 @@ class PageFocus implements vscode.Disposable {
     }
   }
 
-  // Find the pages of every wiki shown in a main editor.
+  // Find the pages and embeds of every wiki shown in a main editor.
   public async refreshVisible(): Promise<void> {
     const documents = new Set(
       vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
@@ -768,8 +768,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
 
-  // Find the pages of the wikis already shown, which needs the language server, and start the
-  // active wiki's trail.
+  // Find the pages and embeds of the wikis already shown, which needs the language server, and
+  // start the active wiki's trail.
   await pageFocus.refreshVisible();
   pageHistory.recordActive();
 }
