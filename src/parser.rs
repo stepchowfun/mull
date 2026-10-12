@@ -47,10 +47,10 @@ struct OpenLink {
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
 // run of colons is a fence: an opening fence names a verb, and the only verb embeds the page named
 // by the link after it, while a closing fence consists of colons alone and closes the innermost
-// open embed with a fence of the same length. The wiki retains as much of the source
-// as possible so it can still be validated and navigated, but it omits the content of duplicate
-// pages, invalid titles, and anything before the first title, so it mustn't be rendered if there
-// are any syntax errors. The line index locates syntax errors in their source listings.
+// open embed with a fence of the same length. The wiki retains as much of the source as possible
+// so it can still be validated and navigated, but it omits the content of duplicate pages, invalid
+// titles, and anything before the first title, so it mustn't be rendered if there are any syntax
+// errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
@@ -74,7 +74,7 @@ pub fn parse(
     let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
     let mut open_embeds = Vec::<OpenEmbed>::new();
-    let mut opening_fence_links_before = None::<usize>; // Set while reading an opening fence's line
+    let mut opening_fence_links_before = None::<usize>; // Links before the fence whose line is read
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
     let mut position = 0;
@@ -112,7 +112,7 @@ pub fn parse(
         };
 
     // Once an opening fence's line has been read, find the page named by the link which makes up
-    // its argument.
+    // its argument, which must be the only link read since the fence started.
     let read_opening_fence = |open_embed: &mut OpenEmbed,
                               links: &[Link],
                               links_before: usize,
@@ -338,7 +338,8 @@ pub fn parse(
             }
             '\n' => {
                 // End an unclosed link at the end of its line, since links can't contain line
-                // breaks, so the following lines are read as usual.
+                // breaks, so the following lines are read as usual. Then finish reading an opening
+                // fence on this line.
                 if let Some(link) = open_link.take() {
                     let end = if source_contents[..position].ends_with('\r') {
                         position - '\r'.len_utf8()
@@ -454,7 +455,8 @@ pub fn parse(
         position += character.len_utf8();
     }
 
-    // Reject a link that's still open at the end of the wiki, and finish the final region.
+    // Reject a link that's still open at the end of the wiki, finish reading an opening fence on
+    // the last line, and finish the final region.
     if let Some(link) = open_link.take() {
         close_unclosed_link(
             &mut pending_page.links,
