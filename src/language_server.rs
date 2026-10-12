@@ -13,7 +13,7 @@ use crate::{
     wiki::{FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, TITLE_PREFIX, Wiki},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -54,6 +54,10 @@ use tower_lsp_server::{
 // This request lists the bodies of the embeds in a wiki, which the editor sets apart since
 // formatting regenerates them. Keep this in sync with [ref:embeds_request_client].
 const EMBEDS_REQUEST: &str = "mull/embeds"; // [tag:embeds_request_server]
+
+// This request plans attaching files, such as pasted images, to a wiki: where to create them and
+// how to link to them. Keep this in sync with [ref:attach_files_request_client].
+const ATTACH_FILES_REQUEST: &str = "mull/attachFiles"; // [tag:attach_files_request_server]
 
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
@@ -184,6 +188,7 @@ pub async fn run() {
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::build(Backend::new)
         .custom_method(EMBEDS_REQUEST, Backend::embeds)
+        .custom_method(ATTACH_FILES_REQUEST, Backend::attach_files)
         .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
 }
@@ -341,6 +346,31 @@ impl Backend {
         })
         .await
     }
+
+    // Plan attaching files to the latest synchronized editor snapshot.
+    async fn attach_files(&self, params: AttachFilesParams) -> Result<Option<AttachFilesPlan>> {
+        self.respond(&params.text_document.uri, move |snapshot| {
+            Ok(attach_files_for_document(snapshot, &params.file_names))
+        })
+        .await
+    }
+}
+
+// These are the parameters of the request to attach files, named as they were pasted.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesParams {
+    text_document: TextDocumentIdentifier,
+    file_names: Vec<String>,
+}
+
+// This plan attaches files to a wiki by creating each one at its URI and inserting the text, which
+// links to them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesPlan {
+    file_uris: Vec<Uri>, // In the order the files were named
+    text: String,
 }
 
 // These are the parameters of the request for the bodies of the embeds in a wiki.
@@ -2072,6 +2102,74 @@ fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
         .collect()
 }
 
+// Plan attaching files to a saved wiki. Each file goes directly in the file root, under its own
+// name unless an entry or another attached file already has it.
+fn attach_files_for_document(
+    snapshot: &Snapshot,
+    file_names: &[String],
+) -> Option<AttachFilesPlan> {
+    // Choose an available name for each file.
+    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
+    let mut targets = Vec::<FilesystemTarget>::new();
+    for file_name in file_names {
+        targets.push(available_file_target(&file_root, file_name, &targets)?);
+    }
+
+    // Link to each file, separating the links with spaces.
+    Some(AttachFilesPlan {
+        file_uris: targets
+            .iter()
+            .map(|target| file_uri(&file_root.path().join(target.path())))
+            .collect(),
+        text: targets
+            .iter()
+            .map(|target| format!("[{}]", target.text(Context::Link)))
+            .collect::<Vec<_>>()
+            .join(" "),
+    })
+}
+
+// Name a file directly in the file root, numbering the name's stem if no entry or other attached
+// file may already have it, comparing names without regard to case for case-insensitive
+// filesystems. A name which a link couldn't name, such as one containing `/`, has no target.
+fn available_file_target(
+    file_root: &FileRoot,
+    file_name: &str,
+    taken: &[FilesystemTarget],
+) -> Option<FilesystemTarget> {
+    // Require a name which links to a file directly in the file root.
+    let target = FilesystemTarget::from_name(file_name, false).ok()?;
+    if target.path().components().count() != 1 {
+        return None;
+    }
+
+    // Try the name as given, then with numbered stems.
+    let name = Path::new(file_name);
+    let stem = name.file_stem()?.to_str()?;
+    let extension = name
+        .extension()
+        .and_then(OsStr::to_str)
+        .map_or_else(String::new, |extension| format!(".{extension}"));
+    let mut candidate = target;
+    let mut number = 0_u64;
+    loop {
+        // Accept a name which neither an entry nor another attached file has.
+        if fs::symlink_metadata(file_root.path().join(candidate.path())).is_err()
+            && !taken.iter().any(|other| {
+                other.path().to_string_lossy().to_lowercase()
+                    == candidate.path().to_string_lossy().to_lowercase()
+            })
+        {
+            return Some(candidate);
+        }
+
+        // Number the stem, or count up from the last number.
+        number = number.checked_add(1)?;
+        candidate =
+            FilesystemTarget::from_name(&format!("{stem}-{number}{extension}"), false).ok()?;
+    }
+}
+
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to.
 #[allow(
@@ -2527,12 +2625,12 @@ mod tests {
     use super::{
         FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
         MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS, RevealType,
-        Snapshot, code_action_for_document, code_block_language, completion_for_document,
-        diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
-        document_link_for_document, document_symbol_for_document, embeds_for_document,
-        formatting_for_document, goto_definition_for_document, hover_for_document,
-        image_preview_size, is_subsequence, prepare_rename_for_document, references_for_document,
-        rename_for_document,
+        Snapshot, attach_files_for_document, code_action_for_document, code_block_language,
+        completion_for_document, diagnostic_from_error, diagnostics_for_document,
+        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
+        embeds_for_document, formatting_for_document, goto_definition_for_document,
+        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4714,6 +4812,50 @@ mod tests {
                 Range::new(Position::new(3, 0), Position::new(4, 0)),
                 Range::new(Position::new(16, 0), Position::new(19, 0)),
             ],
+        );
+    }
+
+    // Attach files under names no entry or other attached file has, and link to them.
+    #[test]
+    fn attaching_files_chooses_available_names() {
+        let source = "# Home\n\nTart.\n";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.directory().join("image.png"), "image").unwrap();
+        let saved = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
+        let attach = |snapshot: &Snapshot, names: &[&str]| {
+            let names = names
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect::<Vec<_>>();
+            attach_files_for_document(snapshot, &names).map(|plan| {
+                (
+                    plan.file_uris
+                        .iter()
+                        .map(|uri| uri.to_file_path().unwrap().into_owned())
+                        .collect::<Vec<_>>(),
+                    plan.text,
+                )
+            })
+        };
+
+        // Number names which are taken, and escape special characters in links.
+        assert_eq!(
+            attach(&saved, &["image.png", "image.png", "a [b].txt"]),
+            Some((
+                vec![
+                    wiki.directory().join("image-1.png"),
+                    wiki.directory().join("image-2.png"),
+                    wiki.directory().join("a [b].txt"),
+                ],
+                "[/image-1.png] [/image-2.png] [/a \\[b\\].txt]".to_owned(),
+            )),
+        );
+
+        // Decline names a link can't give directly in the file root, and untitled wikis.
+        assert_eq!(attach(&saved, &["a/b.png"]), None);
+        assert_eq!(
+            attach(&snapshot(&untitled_uri(), source), &["notes.txt"]),
+            None,
         );
     }
 
