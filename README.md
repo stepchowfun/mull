@@ -45,6 +45,14 @@ If the wiki is called `my_wiki.mull`, for example, then you can put files (image
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as a link to everything inside it.
 
+### Embedding a page inside another
+
+If you want to keep multiple copies of some content in sync, you can embed a page inside other pages.
+
+![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
+
+When the source page is modified, the changes will be propagated automatically to where they are embedded when the wiki is formatted.
+
 ### Orthography
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
