@@ -19,7 +19,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs::{self, File},
-    io::Read,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
@@ -1249,10 +1249,15 @@ fn image_preview(path: &Path) -> Option<String> {
         return None;
     }
 
-    // Embed the image, sized to fit.
+    // Embed the image, sized to fit. The editor shows an image turned as its EXIF orientation says,
+    // so a quarter turn trades its width and height.
     let dimensions = match imagesize::size(path) {
         Ok(size) => {
-            let (width, height) = image_preview_size(size.width, size.height);
+            let (width, height) = if is_quarter_turned(path) {
+                image_preview_size(size.height, size.width)
+            } else {
+                image_preview_size(size.width, size.height)
+            };
             format!("width=\"{width}\" height=\"{height}\"")
         }
         Err(_) => format!("width=\"{MAX_IMAGE_WIDTH}\""),
@@ -1262,6 +1267,24 @@ fn image_preview(path: &Path) -> Option<String> {
         .replace('&', "&amp;")
         .replace('"', "&quot;");
     Some(format!("<img src=\"{source}\" {dimensions}>"))
+}
+
+// Determine whether an image's EXIF orientation turns it a quarter turn when it's shown, as
+// orientations 5 through 8 do. An image without one isn't turned.
+fn is_quarter_turned(path: &Path) -> bool {
+    File::open(path)
+        .ok()
+        .and_then(|file| {
+            exif::Reader::new()
+                .read_from_container(&mut BufReader::new(file))
+                .ok()
+        })
+        .and_then(|exif| {
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
+                .value
+                .get_uint(0)
+        })
+        .is_some_and(|orientation| (5..=8).contains(&orientation))
 }
 
 // Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
@@ -3542,6 +3565,22 @@ mod tests {
         assert_eq!(lines[MAX_DIRECTORY_PREVIEW_ENTRIES + 1], "…and 2 more");
     }
 
+    // Write a JPEG file with the given size and EXIF orientation, enough for both to be read.
+    fn jpeg_with_orientation(width: u16, height: u16, orientation: u16) -> Vec<u8> {
+        // Start the image and its EXIF segment, whose little-endian directory has one entry.
+        let mut jpeg = b"\xff\xd8\xff\xe1\x00\x22Exif\x00\x00II\x2a\x00\x08\x00\x00\x00".to_vec();
+        jpeg.extend(b"\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00");
+        jpeg.extend(orientation.to_le_bytes());
+        jpeg.extend(b"\x00\x00\x00\x00\x00\x00");
+
+        // Describe the frame, whose size follows its precision.
+        jpeg.extend(b"\xff\xc0\x00\x0b\x08");
+        jpeg.extend(height.to_be_bytes());
+        jpeg.extend(width.to_be_bytes());
+        jpeg.extend(b"\x01\x01\x11\x00\xff\xd9");
+        jpeg
+    }
+
     // Write the start of a PNG file with the given size, enough for its size to be read.
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
@@ -3597,6 +3636,38 @@ mod tests {
         assert!(
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
         );
+    }
+
+    // Size an image which its EXIF orientation turns a quarter turn as it's shown.
+    #[test]
+    fn hovers_turn_images_by_their_orientation() {
+        let source = "# Home\n\n[/upright.jpg] [/turned.jpg]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(
+            directory.join("upright.jpg"),
+            jpeg_with_orientation(200, 100, 1),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("turned.jpg"),
+            jpeg_with_orientation(200, 100, 6),
+        )
+        .unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let dimensions = |column| {
+            let HoverContents::Markup(contents) =
+                hover_for_document(&snapshot(&uri, source), Position::new(2, column))
+                    .unwrap()
+                    .contents
+            else {
+                panic!("An image preview should use markup content.");
+            };
+            contents.value[contents.value.find(" width").unwrap()..].to_owned()
+        };
+
+        assert_eq!(dimensions(3), " width=\"200\" height=\"100\">");
+        assert_eq!(dimensions(18), " width=\"100\" height=\"200\">");
     }
 
     // Give an image whose size can't be read the maximum preview width.
