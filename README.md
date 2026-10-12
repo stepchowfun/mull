@@ -67,11 +67,9 @@ When the wiki is formatted, the source page will automatically be replicated to 
 
 ### Orthography
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages. No escaping is necessary inside page titles or code.
 
 ![A fenced code block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/code_block.png)
-
-No escaping is necessary inside page titles or code.
 
 ## Keyboard shortcuts
 
