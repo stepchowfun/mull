@@ -10,7 +10,9 @@ Since Mull runs in Visual Studio Code or Cursor, you can use it with your favori
 
 ## A quick tour
 
-A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 3 pages:
+### Pages and links
+
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a little wiki with 3 pages:
 
 ```md
 # Home
@@ -29,34 +31,35 @@ Great on [Pancakes].
 - A squeeze of [Lemons]
 ```
 
-Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
+Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file. To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
-To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-![Autocomplete](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
+Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable (directly or indirectly) by following links starting from a special `Home` page at the top of the wiki. This promotes a basic form of organization that doesn't involve an auxiliary directory structure.
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
+### Linking to files and directories
+
+If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`.
+
+![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
+
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as a link to everything inside it.
+
+### Embedding a page inside another
+
+If you want to keep multiple copies of some content in sync, you can embed a page inside other pages.
+
+![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
+
+When the source page is modified, the changes will be propagated automatically to where they are embedded when the wiki is formatted. The propagation is unidirectional; any edits to the embedded copies will be discarded.
+
+### Orthography
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
-## What does Mull check?
+![A fenced code block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/code_block.png)
 
-Mull validates the wiki as you edit it, which looks like this:
-
-![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
-
-It verifies these structural properties:
-
-- The wiki has valid syntax (links are closed, etc.).
-- Pages have unique titles.
-- Links have valid targets. A link can point to a `[page]`, `[/file]`, or `[/directory/]`.
-
-It also verifies these connectivity properties:
-
-- All pages are reachable by following links from the `Home` page, which must exist.
-- All files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
-
-Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable by following links starting from the `Home` page. This promotes a basic form of organization that makes Mull different from other wiki software.
+No escaping is necessary inside page titles or code.
 
 ## Keyboard shortcuts
 
@@ -74,7 +77,6 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
 | Find a page | `Command + Shift + O` | `Control + Shift + O` |
 | Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
-| Show completions | `Control + Space` | `Control + Space` |
 | Rename a page | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
