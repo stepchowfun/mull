@@ -185,33 +185,33 @@ interface AttachFilesPlan {
   text: string;
 }
 
-// This kind identifies pasting images into a wiki by copying them into its file root.
-const PASTE_IMAGES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'image');
+// This kind identifies pasting files into a wiki by copying them into its file root.
+const PASTE_FILES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'file');
 
-// Paste images into a saved wiki by copying them into its file root and linking to the copies where
-// they're pasted, as one edit. The language server chooses the copies' names and writes the links.
-async function pasteImages(
+// Paste files whose data is on the clipboard, such as screenshots, into a saved wiki by copying them
+// into its file root and linking to the copies where they're pasted, as one edit. The language server chooses the copies' names and writes the links.
+async function pasteFiles(
   document: vscode.TextDocument,
   _ranges: readonly vscode.Range[],
   dataTransfer: vscode.DataTransfer,
   _context: vscode.DocumentPasteEditContext,
   token: vscode.CancellationToken,
 ): Promise<vscode.DocumentPasteEdit[] | undefined> {
-  // Collect the pasted images.
-  const images = new Set<vscode.DataTransferFile>();
-  for (const [mimeType, item] of dataTransfer) {
+  // Collect the pasted files, each of which may be offered under several types.
+  const pastedFiles = new Set<vscode.DataTransferFile>();
+  for (const [, item] of dataTransfer) {
     const file = item.asFile();
-    if (mimeType.startsWith('image/') && file !== undefined) {
-      images.add(file);
+    if (file !== undefined) {
+      pastedFiles.add(file);
     }
   }
   const activeClient = client;
-  if (images.size === 0 || activeClient === undefined || !activeClient.isRunning()) {
+  if (pastedFiles.size === 0 || activeClient === undefined || !activeClient.isRunning()) {
     return undefined;
   }
 
   // Ask the language server for the copies' names and the links.
-  const files = [...images];
+  const files = [...pastedFiles];
   const plan = await activeClient.sendRequest<AttachFilesPlan | null>(
     ATTACH_FILES_REQUEST,
     {
@@ -234,7 +234,7 @@ async function pasteImages(
   const edit = new vscode.DocumentPasteEdit(
     plan.text,
     "Copy into the wiki's files and link",
-    PASTE_IMAGES_KIND,
+    PASTE_FILES_KIND,
   );
   edit.additionalEdit = additionalEdit;
 
@@ -716,12 +716,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Expose the command that checks the wiki being edited again.
   context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
 
-  // Paste images into saved wikis as links to copies in their file roots.
+  // Paste files into saved wikis as links to copies in their file roots.
   context.subscriptions.push(
     vscode.languages.registerDocumentPasteEditProvider(
       { scheme: 'file', language: 'mull' },
-      { provideDocumentPasteEdits: pasteImages },
-      { providedPasteEditKinds: [PASTE_IMAGES_KIND], pasteMimeTypes: ['image/*'] },
+      { provideDocumentPasteEdits: pasteFiles },
+      { providedPasteEditKinds: [PASTE_FILES_KIND], pasteMimeTypes: ['files'] },
     ),
   );
 
