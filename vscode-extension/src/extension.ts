@@ -237,6 +237,10 @@ async function pasteImages(
     PASTE_IMAGES_KIND,
   );
   edit.additionalEdit = additionalEdit;
+
+  // Prefer pasting text, which apps like spreadsheets copy along with an image of it, leaving this
+  // edit in the paste widget.
+  edit.yieldTo = [vscode.DocumentDropOrPasteEditKind.Text];
   return [edit];
 }
 
