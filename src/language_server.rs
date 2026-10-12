@@ -55,8 +55,9 @@ use tower_lsp_server::{
 // formatting regenerates them. Keep this in sync with [ref:embeds_request_client].
 const EMBEDS_REQUEST: &str = "mull/embeds"; // [tag:embeds_request_server]
 
-// This request plans attaching files, such as pasted images, to a wiki: where to create them and
-// how to link to them. Keep this in sync with [ref:attach_files_request_client].
+// This request plans attaching files which are pasted or dropped into a wiki: which ones to copy
+// into its file root, under what names, and how to link to them. Keep this in sync with
+// [ref:attach_files_request_client].
 const ATTACH_FILES_REQUEST: &str = "mull/attachFiles"; // [tag:attach_files_request_server]
 
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
@@ -2162,9 +2163,10 @@ fn file_root_target(file_root: &FileRoot, uri: &Uri) -> Option<FilesystemTarget>
     FilesystemTarget::from_name(spelled_path.as_path().to_str()?, false).ok()
 }
 
-// Name a file directly in the file root, numbering the name's stem if no entry or other attached
-// file may already have it, comparing names without regard to case for case-insensitive
-// filesystems. A name which a link couldn't name, such as one containing `/`, has no target.
+// Name a file directly in the file root, numbering the name's stem if an entry or another attached
+// file already has it. Attached files' names are compared without regard to case, as on a
+// case-insensitive filesystem. A name which a link couldn't name, such as one containing `/`, has
+// no target.
 fn available_file_target(
     file_root: &FileRoot,
     file_name: &str,

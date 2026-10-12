@@ -174,8 +174,8 @@ async function wikiEmbeds(document: vscode.TextDocument): Promise<vscode.Range[]
   return (ranges ?? []).map((range) => activeClient.protocol2CodeConverter.asRange(range));
 }
 
-// This request plans attaching files, such as pasted images, to a wiki. Keep this in sync with
-// [ref:attach_files_request_server].
+// This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
+// with [ref:attach_files_request_server].
 const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
 
 // This is a file to attach to a wiki: its name, where it is if that's known, and its data if it
