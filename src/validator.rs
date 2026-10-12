@@ -5,7 +5,7 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
+    wiki::{Embed, FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -113,24 +113,20 @@ fn validate_text_links(
         }
     }
 
-    // Reject each embed of a page which embeds the embedding page in turn, directly or through
-    // other pages, since there's no finite copy of either page's content.
-    for page in pages {
-        for embed in &page.embeds {
-            if embeds_transitively(wiki, &embed.title, &page.title) {
-                errors.push(Error::new(
-                    &format!(
-                        "Embedding page {} here creates a cycle of embeds.",
-                        embed.title.code_str(),
-                    ),
-                    source_path,
-                    Some((source_contents, line_index, embed.link_source_range)),
-                    None,
-                    None,
-                ));
-            }
-        }
-    }
+    // Reject embeds which close cycles of embeds, since there's no finite copy of the content of
+    // the pages in a cycle.
+    errors.extend(cycle_closing_embeds(wiki, pages).into_iter().map(|embed| {
+        Error::new(
+            &format!(
+                "Embedding page {} here creates a cycle of embeds.",
+                embed.title.code_str(),
+            ),
+            source_path,
+            Some((source_contents, line_index, embed.link_source_range)),
+            None,
+            None,
+        )
+    }));
 
     // Reject every page outside the graph rooted at the home page.
     if has_home {
@@ -157,21 +153,46 @@ fn validate_text_links(
     errors
 }
 
-// Determine whether a page is or embeds another page, directly or through other pages.
-fn embeds_transitively(wiki: &Wiki, from: &PageTitle, to: &PageTitle) -> bool {
-    let mut visited = HashSet::new();
-    let mut pending = vec![from];
-    while let Some(title) = pending.pop() {
-        if title == to {
-            return true;
+// Find embeds which close cycles of embeds with a depth-first search over embeds, starting from
+// each page in title order. An embed of a page whose search is still in progress closes a cycle.
+// Every cycle has such an embed, and without them there would be no cycles.
+fn cycle_closing_embeds<'a>(wiki: &'a Wiki, pages: &[&'a Page]) -> Vec<&'a Embed> {
+    let mut cycle_closing_embeds = Vec::new();
+    let mut in_progress = HashSet::new();
+    let mut done = HashSet::new();
+    for &start in pages {
+        // Search from a page which hasn't been searched, keeping each page on the current path
+        // along with the index of its next embed to follow.
+        if done.contains(&start.title) {
+            continue;
         }
-        if visited.insert(title)
-            && let Some(page) = wiki.pages.get(title)
-        {
-            pending.extend(page.embeds.iter().map(|embed| &embed.title));
+        in_progress.insert(&start.title);
+        let mut path = vec![(start, 0)];
+        while let Some((page, next_embed)) = path.last_mut() {
+            let page = *page;
+
+            // Finish a page once all of its embeds have been followed.
+            let Some(embed) = page.embeds.get(*next_embed) else {
+                in_progress.remove(&page.title);
+                done.insert(&page.title);
+                path.pop();
+                continue;
+            };
+
+            // Follow the next embed, unless it closes a cycle or leads to a page which has been
+            // searched or doesn't exist.
+            *next_embed += 1;
+            if in_progress.contains(&embed.title) {
+                cycle_closing_embeds.push(embed);
+            } else if !done.contains(&embed.title)
+                && let Some(embedded_page) = wiki.pages.get(&embed.title)
+            {
+                in_progress.insert(&embedded_page.title);
+                path.push((embedded_page, 0));
+            }
         }
     }
-    false
+    cycle_closing_embeds
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
@@ -692,13 +713,18 @@ mod tests {
         ));
     }
 
-    // Reject embeds which complete a cycle of embeds, including a page embedding itself, at the
-    // links in their opening fences.
+    // Reject an embed which closes each cycle of embeds, including a page embedding itself, at the
+    // link in its opening fence. The search for cycles starts from pages in title order. Pages
+    // embedded along several paths without a cycle are fine.
     #[test]
     fn embed_cycles() {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
-            "# Home\n[Middle] [Self]\n",
+            "# Home\n[Middle] [Self] [Top]\n",
+            "# Top\n::: embed [Left]\n:::\n::: embed [Right]\n:::\n",
+            "# Left\n::: embed [Bottom]\n:::\n",
+            "# Right\n::: embed [Bottom]\n:::\n",
+            "# Bottom\n",
             "# Middle\n::: embed [Last]\n:::\n",
             "# Last\n::: embed [Middle]\n:::\n",
             "# Self\n::: embed [Self]\n:::\n",
@@ -706,8 +732,8 @@ mod tests {
         .unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 3);
-        for title in ["Last", "Middle", "Self"] {
+        assert_eq!(errors.len(), 2);
+        for title in ["Last", "Self"] {
             assert!(contains_error(
                 &errors,
                 &format!("Embedding page `{title}` here creates a cycle of embeds."),
