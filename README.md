@@ -45,6 +45,8 @@ If a wiki is named `my_wiki.mull`, for example, then you can put files (images, 
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
+When you're typing a link to a file or directory, autocomplete will help you find what you're looking for. You can also drag-and-drop (while holding the Shift key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
+
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
 
 ### Embedding a page inside another

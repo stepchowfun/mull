@@ -534,6 +534,36 @@ mod tests {
         assert_eq!(title_line_text(""), None);
     }
 
+    // Recognize opening fences with a verb and a trimmed argument, and closing fences, but not
+    // shorter runs or runs followed directly by other text.
+    #[test]
+    fn fence_lines() {
+        assert_eq!(
+            fence_line("::: embed [Page]  "),
+            Some(FenceLine::Opening {
+                length: 3,
+                verb: "embed",
+                argument: (10, 16),
+            }),
+        );
+        assert_eq!(
+            fence_line("::::\tembed"),
+            Some(FenceLine::Opening {
+                length: 4,
+                verb: "embed",
+                argument: (10, 10),
+            }),
+        );
+        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
+        assert_eq!(
+            fence_line("::::: \t"),
+            Some(FenceLine::Closing { length: 5 }),
+        );
+        assert_eq!(fence_line(":: embed [Page]"), None);
+        assert_eq!(fence_line(":::embed [Page]"), None);
+        assert_eq!(fence_line(" ::: embed [Page]"), None);
+    }
+
     // Render pages in traversal order, placing unreachable pages last.
     #[test]
     fn wiki_display() {
@@ -584,36 +614,6 @@ mod tests {
                 "# Other\n",
             ),
         );
-    }
-
-    // Recognize opening fences with a verb and a trimmed argument, and closing fences, but not
-    // shorter runs or runs followed directly by other text.
-    #[test]
-    fn fence_lines() {
-        assert_eq!(
-            fence_line("::: embed [Page]  "),
-            Some(FenceLine::Opening {
-                length: 3,
-                verb: "embed",
-                argument: (10, 16),
-            }),
-        );
-        assert_eq!(
-            fence_line("::::\tembed"),
-            Some(FenceLine::Opening {
-                length: 4,
-                verb: "embed",
-                argument: (10, 10),
-            }),
-        );
-        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(
-            fence_line("::::: \t"),
-            Some(FenceLine::Closing { length: 5 }),
-        );
-        assert_eq!(fence_line(":: embed [Page]"), None);
-        assert_eq!(fence_line(":::embed [Page]"), None);
-        assert_eq!(fence_line(" ::: embed [Page]"), None);
     }
 
     // Refresh each embed with a copy of the embedded page's content, including the embeds in it,
