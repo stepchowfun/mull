@@ -2151,7 +2151,7 @@ fn available_file_target(
         .and_then(OsStr::to_str)
         .map_or_else(String::new, |extension| format!(".{extension}"));
     let mut candidate = target;
-    let mut number = 0_u32;
+    let mut number = 0_u64;
     loop {
         // Accept a name which neither an entry nor another attached file has.
         if fs::symlink_metadata(file_root.path().join(candidate.path())).is_err()
