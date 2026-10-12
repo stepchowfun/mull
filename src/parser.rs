@@ -11,6 +11,9 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path};
 
+// Code which starts with a run of at least this many backticks can span lines.
+const MIN_MULTILINE_CODE_LENGTH: usize = 3;
+
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
 // a valid one which hasn't been used, where it starts, and the links and embeds in its content.
 struct PendingPage {
@@ -426,13 +429,14 @@ pub fn parse(
                 // Once a long run can't be closed, a later run of the same length can't be either,
                 // since the text after it was already searched.
                 let length = backtick_run_length(&source_contents[position..]);
-                let closing_end = (length < 3 || !unclosable_lengths.contains(&length))
-                    .then(|| closing_run_end(source_contents, position + length, length))
-                    .flatten();
+                let closing_end = (length < MIN_MULTILINE_CODE_LENGTH
+                    || !unclosable_lengths.contains(&length))
+                .then(|| closing_run_end(source_contents, position + length, length))
+                .flatten();
                 if let Some(end) = closing_end {
                     position = end;
                 } else {
-                    if length >= 3 {
+                    if length >= MIN_MULTILINE_CODE_LENGTH {
                         unclosable_lengths.insert(length);
                     }
                     errors.push(syntax_error(
@@ -605,7 +609,7 @@ fn backtick_run_length(text: &str) -> usize {
 // Find the end of the run of exactly the given number of backticks which closes code whose text
 // starts at an offset, searching only the rest of the line for a run of one or two backticks.
 fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
-    let end = if length < 3 {
+    let end = if length < MIN_MULTILINE_CODE_LENGTH {
         source[start..]
             .find('\n')
             .map_or(source.len(), |index| start + index)

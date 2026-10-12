@@ -23,10 +23,9 @@ pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
-// A line which starts with at least this many of this character is a fence: an opening fence names
-// a verb and its argument, and a closing fence consists of the character alone. The only verb is
-// the one which embeds a page.
-pub const FENCE_CHARACTER: char = ':';
+// A line which starts with at least this many colons is a fence: an opening fence names a verb and
+// its argument, and a closing fence consists of colons alone. The only verb is the one which embeds
+// a page.
 pub const MIN_FENCE_LENGTH: usize = 3;
 pub const EMBED_VERB: &str = "embed";
 
@@ -55,7 +54,7 @@ pub enum FenceLine<'a> {
 // the run is followed directly by other text, isn't a fence line.
 pub fn fence_line(line: &str) -> Option<FenceLine<'_>> {
     // Measure the run, which must be long enough.
-    let length = line.len() - line.trim_start_matches(FENCE_CHARACTER).len();
+    let length = line.len() - line.trim_start_matches(':').len();
     if length < MIN_FENCE_LENGTH {
         return None;
     }
@@ -153,12 +152,10 @@ impl Wiki {
             let body = self.rendered_content(embedded_page, embedding_pages);
             let longest_run = body
                 .lines()
-                .map(|line| line.len() - line.trim_start_matches(FENCE_CHARACTER).len())
+                .map(|line| line.len() - line.trim_start_matches(':').len())
                 .max()
                 .unwrap_or(0);
-            let fence = FENCE_CHARACTER
-                .to_string()
-                .repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
+            let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
             for part in [
                 &fence,
                 " ",
