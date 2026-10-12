@@ -13,6 +13,7 @@ use crate::{
     wiki::{FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, TITLE_PREFIX, Wiki},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use serde::Deserialize;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -44,11 +45,15 @@ use tower_lsp_server::{
         OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
         PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
         RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentPositionParams,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
-        WorkDoneProgressOptions, WorkspaceEdit,
+        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
+
+// This request lists the bodies of the embeds in a wiki, which the editor sets apart since
+// formatting regenerates them. Keep this in sync with [ref:embeds_request_client].
+const EMBEDS_REQUEST: &str = "mull/embeds"; // [tag:embeds_request_server]
 
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
@@ -173,10 +178,13 @@ pub async fn run() {
     // Keep ANSI terminal escapes out of protocol diagnostics.
     colored::control::set_override(false);
 
-    // Connect the backend to the standard streams reserved for LSP messages.
+    // Connect the backend, including its custom request, to the standard streams reserved for LSP
+    // messages.
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(Backend::new);
+    let (service, socket) = LspService::build(Backend::new)
+        .custom_method(EMBEDS_REQUEST, Backend::embeds)
+        .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 
@@ -325,6 +333,21 @@ impl Backend {
             .await
             .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
     }
+
+    // List the bodies of the embeds in the latest synchronized editor snapshot.
+    async fn embeds(&self, params: EmbedsParams) -> Result<Option<Vec<Range>>> {
+        self.respond(&params.text_document.uri, |snapshot| {
+            Ok(Some(embeds_for_document(snapshot)))
+        })
+        .await
+    }
+}
+
+// These are the parameters of the request for the bodies of the embeds in a wiki.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmbedsParams {
+    text_document: TextDocumentIdentifier,
 }
 
 // Lock the open documents, which no thread holds while panicking.
@@ -2021,6 +2044,34 @@ fn document_symbol_for_document(
     }
 }
 
+// List the bodies of the embeds in a wiki, from the line after each opening fence through the line
+// before its closing fence, omitting empty bodies. Embeds within others are part of their bodies.
+fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
+    let contents = &snapshot.contents;
+    let mut embeds = snapshot
+        .wiki()
+        .pages
+        .values()
+        .flat_map(|page| &page.embeds)
+        .map(|embed| SourceRange {
+            start: contents[embed.source_range.start..]
+                .find('\n')
+                .map_or(embed.source_range.end, |index| {
+                    embed.source_range.start + index + 1
+                }),
+            end: contents[..embed.source_range.end]
+                .rfind('\n')
+                .map_or(embed.source_range.start, |index| index + 1),
+        })
+        .filter(|source_range| source_range.start < source_range.end)
+        .collect::<Vec<_>>();
+    embeds.sort_by_key(|source_range| source_range.start);
+    embeds
+        .into_iter()
+        .map(|source_range| snapshot.range(source_range))
+        .collect()
+}
+
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to.
 #[allow(
@@ -2478,9 +2529,10 @@ mod tests {
         MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS, RevealType,
         Snapshot, code_action_for_document, code_block_language, completion_for_document,
         diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
-        document_link_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
-        prepare_rename_for_document, references_for_document, rename_for_document,
+        document_link_for_document, document_symbol_for_document, embeds_for_document,
+        formatting_for_document, goto_definition_for_document, hover_for_document,
+        image_preview_size, is_subsequence, prepare_rename_for_document, references_for_document,
+        rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4646,6 +4698,22 @@ mod tests {
                 .map(|symbol| symbol.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["Zebra", "Alpha"],
+        );
+    }
+
+    // List the bodies of top-level embeds in source order, including any embeds within them, and
+    // omit empty bodies.
+    #[test]
+    fn embeds_list_bodies() {
+        let source = "# Zebra\n\n::: embed [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
+                      ::: embed [Beta]\n:::\n\n# Beta\n\n:::: embed [Alpha]\n\
+                      ::: embed [Beta]\nNested\n:::\n::::";
+        assert_eq!(
+            embeds_for_document(&snapshot(&untitled_uri(), source)),
+            vec![
+                Range::new(Position::new(3, 0), Position::new(4, 0)),
+                Range::new(Position::new(16, 0), Position::new(19, 0)),
+            ],
         );
     }
 

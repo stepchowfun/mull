@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -219,6 +219,11 @@
           "type": "boolean",
           "default": true,
           "description": "Dim everything except the current page."
+        },
+        "mull.dimEmbeds": {
+          "type": "boolean",
+          "default": true,
+          "description": "Dim the bodies of embeds, which formatting regenerates."
         },
         "mull.snapBackToCurrentPage": {
           "type": "boolean",

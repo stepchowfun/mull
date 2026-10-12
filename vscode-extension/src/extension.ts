@@ -2,7 +2,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
-import { ExecuteCommandRequest, LanguageClient } from 'vscode-languageclient/node';
+import {
+  ExecuteCommandRequest,
+  LanguageClient,
+  type Range as ProtocolRange,
+} from 'vscode-languageclient/node';
 
 // Make executable probes compatible with the extension's asynchronous startup.
 const execFileAsync = promisify(execFile);
@@ -151,6 +155,25 @@ async function wikiPages(document: vscode.TextDocument): Promise<vscode.Document
   return (symbols ?? []).toSorted((a, b) => a.range.start.compareTo(b.range.start));
 }
 
+// Retain the active client so it can be stopped when the extension is deactivated.
+let client: LanguageClient | undefined;
+
+// This request lists the bodies of the embeds in a wiki. Keep this in sync with
+// [ref:embeds_request_server].
+const EMBEDS_REQUEST = 'mull/embeds'; // [tag:embeds_request_client]
+
+// List the bodies of a wiki's embeds in source order, which needs the language server.
+async function wikiEmbeds(document: vscode.TextDocument): Promise<vscode.Range[]> {
+  const activeClient = client;
+  if (activeClient === undefined || !activeClient.isRunning()) {
+    return [];
+  }
+  const ranges = await activeClient.sendRequest<ProtocolRange[] | null>(EMBEDS_REQUEST, {
+    textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
+  });
+  return (ranges ?? []).map((range) => activeClient.protocol2CodeConverter.asRange(range));
+}
+
 // Find the page containing a position, which is the last page starting at or before it, so a
 // position between pages belongs to the one above. A position before the first page has none.
 function pageAt(
@@ -196,8 +219,9 @@ async function moveToPageBoundary(boundary: 'start' | 'end', select: boolean): P
 const SETTLE_DELAY_MILLISECONDS = 150;
 
 // This keeps the page containing the cursor, the current page, in focus in each main editor showing
-// a wiki. It dims everything outside the current page, and once the view and the cursor stop
-// moving, it brings the current page back into view, like a rubber band, if it was scrolled away.
+// a wiki. It dims everything outside the current page, as well as the bodies of the embeds in it,
+// which formatting regenerates, and once the view and the cursor stop moving, it brings the current
+// page back into view, like a rubber band, if it was scrolled away.
 //
 // Settling waits for the view to stop moving, since there's no way to limit or intercept scrolling,
 // only to observe it after the fact. It reveals only the page's nearer edge, since the editor
@@ -210,8 +234,14 @@ class PageFocus implements vscode.Disposable {
     opacity: '0.5',
   });
 
-  // Remember each wiki's pages, which are found again after every edit.
+  // Dim the bodies of embeds less than other pages, so they still read as part of the current page.
+  private readonly embedDecorationType = vscode.window.createTextEditorDecorationType({
+    opacity: '0.7',
+  });
+
+  // Remember each wiki's pages and the bodies of its embeds, which are found again after every edit.
   private readonly pages = new Map<string, vscode.DocumentSymbol[]>();
+  private readonly embeds = new Map<string, vscode.Range[]>();
 
   // Remember each editor's pending settling, which is postponed while its view keeps moving.
   private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
@@ -221,23 +251,44 @@ class PageFocus implements vscode.Disposable {
     return setting('mull', 'dimOtherPages', isBoolean);
   }
 
+  // Determine whether the user wants the bodies of embeds dimmed.
+  private static dimsEmbeds(): boolean {
+    return setting('mull', 'dimEmbeds', isBoolean);
+  }
+
   // Determine whether the user wants the view to settle back toward the current page.
   private static snapsBackToCurrentPage(): boolean {
     return setting('mull', 'snapBackToCurrentPage', isBoolean);
   }
 
-  // Dim around an editor's current page, using the pages last found in its wiki. Blank lines at the
-  // end of the current page aren't dimmed, since they belong to it.
+  // Dim around an editor's current page and the bodies of the embeds in it, using the pages and
+  // embeds last found in its wiki. Blank lines at the end of the current page aren't dimmed, since
+  // they belong to it.
   public dim(editor: vscode.TextEditor): void {
     // Find the current page and the page after it.
-    const pages = this.pages.get(editor.document.uri.toString()) ?? [];
+    const uri = editor.document.uri.toString();
+    const pages = this.pages.get(uri) ?? [];
     const cursor = editor.selection.active;
     const page = PageFocus.dimsOtherPages() ? pageAt(pages, cursor) : undefined;
+    const nextPage = pages.find((other) => other.range.start.isAfter(cursor));
+
+    // Dim the bodies of the embeds in the current page, or in every page if no other pages are
+    // dimmed, so the two kinds of dimming never overlap.
+    editor.setDecorations(
+      this.embedDecorationType,
+      PageFocus.dimsEmbeds()
+        ? (this.embeds.get(uri) ?? []).filter(
+            (embed) =>
+              page === undefined ||
+              (!embed.start.isBefore(page.range.start) &&
+                (nextPage === undefined || embed.start.isBefore(nextPage.range.start))),
+          )
+        : [],
+    );
     if (page === undefined) {
       editor.setDecorations(this.decorationType, []);
       return;
     }
-    const nextPage = pages.find((other) => other.range.start.isAfter(cursor));
 
     // Dim the lines before the current page, and those from the next page to the end of the wiki.
     const documentEnd = editor.document.lineAt(editor.document.lineCount - 1).range.end;
@@ -250,15 +301,16 @@ class PageFocus implements vscode.Disposable {
     );
   }
 
-  // Find a wiki's pages again and dim its editors accordingly. A result is discarded if the wiki
-  // changed while it was being found, since a later refresh will replace it.
+  // Find a wiki's pages and embeds again and dim its editors accordingly. A result is discarded if
+  // the wiki changed while it was being found, since a later refresh will replace it.
   public async refresh(document: vscode.TextDocument): Promise<void> {
     const { version } = document;
-    const pages = await wikiPages(document);
+    const [pages, embeds] = await Promise.all([wikiPages(document), wikiEmbeds(document)]);
     if (document.version !== version) {
       return;
     }
     this.pages.set(document.uri.toString(), pages);
+    this.embeds.set(document.uri.toString(), embeds);
     for (const editor of vscode.window.visibleTextEditors) {
       if (isMainWikiEditor(editor) && editor.document === document) {
         this.dim(editor);
@@ -266,7 +318,7 @@ class PageFocus implements vscode.Disposable {
     }
   }
 
-  // Find the pages of every wiki shown in a main editor.
+  // Find the pages and embeds of every wiki shown in a main editor.
   public async refreshVisible(): Promise<void> {
     const documents = new Set(
       vscode.window.visibleTextEditors.filter(isMainWikiEditor).map((editor) => editor.document),
@@ -322,14 +374,16 @@ class PageFocus implements vscode.Disposable {
     return this.pages.get(document.uri.toString()) ?? [];
   }
 
-  // Forget the pages of a wiki that's no longer open.
+  // Forget the pages and embeds of a wiki that's no longer open.
   public forget(document: vscode.TextDocument): void {
     this.pages.delete(document.uri.toString());
+    this.embeds.delete(document.uri.toString());
   }
 
-  // Release the decoration type, which removes the dimming, and cancel any pending settling.
+  // Release the decoration types, which removes the dimming, and cancel any pending settling.
   public dispose(): void {
     this.decorationType.dispose();
+    this.embedDecorationType.dispose();
     for (const timer of this.settleTimers.values()) {
       clearTimeout(timer);
     }
@@ -565,9 +619,6 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
   }
 }
 
-// Retain the active client so it can be stopped when the extension is deactivated.
-let client: LanguageClient | undefined;
-
 // This command checks the wiki being edited again, through the language server command of the same
 // name. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND = 'mull.checkWiki';
@@ -639,7 +690,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       pageFocus.forget(document);
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
-      if (event.affectsConfiguration('mull.dimOtherPages')) {
+      if (
+        event.affectsConfiguration('mull.dimOtherPages') ||
+        event.affectsConfiguration('mull.dimEmbeds')
+      ) {
         await pageFocus.refreshVisible();
       }
     }),
@@ -714,8 +768,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
 
-  // Find the pages of the wikis already shown, which needs the language server, and start the
-  // active wiki's trail.
+  // Find the pages and embeds of the wikis already shown, which needs the language server, and
+  // start the active wiki's trail.
   await pageFocus.refreshVisible();
   pageHistory.recordActive();
 }
