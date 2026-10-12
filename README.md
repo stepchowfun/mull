@@ -37,17 +37,17 @@ Each page starts with a `# Title`, followed by the contents of the page. To link
 
 Mull formats the wiki when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
 
-Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. In computer jargon, pages serve the role traditionally filled by both files and directories.
+Every wiki starts with a `Home` page. Mull requires that **every other page is *reachable* (directly or indirectly) by following links, starting from `Home`.** This rule promotes a basic form of organization that doesn't involve any hierarchical structure. In computer jargon, pages serve the roles traditionally filled by both files and directories.
 
 ### Linking to files and directories
 
-If you've got receipts, spreadsheets, or any other kinds of external files you want to track, you can link to them from the wiki. Such files go in a directory next to the wiki which has the name of the wiki + `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`.
+If you've got receipts, spreadsheets, or any other kinds of external files you want to track, you can link to them from the wiki. Such files go in a directory next to the wiki which has the name of the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`.
 
 You can link to a file called `my_wiki_files/photos/beach.jpg` with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`. Mull will check that those things actually exist, and you can preview them without leaving the editor.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Autocomplete will help you enter the names of files and directories. You can also drag-and-drop (while holding the Shift key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
+Autocomplete will help you enter the names of files and directories. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
 
@@ -57,11 +57,11 @@ If you want to keep multiple copies of some content in sync, you can embed a pag
 
 ```md
 ::: embed [Pancakes]
-This sentence will be replaced by my delicious pancake recipe.
+This sentence will be replaced by the pancake recipe.
 :::
 ```
 
-When the wiki is formatted, the source page will automatically be replicated to all the embedded copies. The propagation is unidirectional; any edits to the copies will be discarded.
+When the wiki is formatted, the source page will automatically be replicated to all the embedded copies. The replication is unidirectional; any edits to the copies will be discarded.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
