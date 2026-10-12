@@ -90,7 +90,7 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Rename a page | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
-Most of these keyboard shortcuts are built into Visual Studio Code and Cursor, so they may be familiar to you already. You can remap them.
+Most of these keyboard shortcuts are standard in Visual Studio Code and Cursor, so they may be familiar to you already. You can remap them.
 
 ## Usage
 
