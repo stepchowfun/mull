@@ -350,26 +350,34 @@ impl Backend {
     // Plan attaching files to the latest synchronized editor snapshot.
     async fn attach_files(&self, params: AttachFilesParams) -> Result<Option<AttachFilesPlan>> {
         self.respond(&params.text_document.uri, move |snapshot| {
-            Ok(attach_files_for_document(snapshot, &params.file_names))
+            Ok(attach_files_for_document(snapshot, &params.files))
         })
         .await
     }
 }
 
-// These are the parameters of the request to attach files, named as they were pasted.
+// These are the parameters of the request to attach files.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttachFilesParams {
     text_document: TextDocumentIdentifier,
-    file_names: Vec<String>,
+    files: Vec<AttachedFile>,
 }
 
-// This plan attaches files to a wiki by creating each one at its URI and inserting the text, which
-// links to them.
+// This is a file to attach, as it was pasted or dropped.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachedFile {
+    name: String,
+    uri: Option<Uri>, // Where the file is, unless only its data was given
+}
+
+// This plan attaches files to a wiki by copying each one which isn't already in its file root, and
+// inserting the text, which links to them.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AttachFilesPlan {
-    file_uris: Vec<Uri>, // In the order the files were named
+    copy_uris: Vec<Option<Uri>>, // Where to copy each file, in the order given, if anywhere
     text: String,
 }
 
@@ -2102,31 +2110,56 @@ fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
         .collect()
 }
 
-// Plan attaching files to a saved wiki. Each file goes directly in the file root, under its own
-// name unless an entry or another attached file already has it.
+// Plan attaching files to a saved wiki. A file already in the file root is linked where it is.
+// Any other file is copied directly into the file root, under its own name unless an entry or
+// another attached file already has it.
 fn attach_files_for_document(
     snapshot: &Snapshot,
-    file_names: &[String],
+    files: &[AttachedFile],
 ) -> Option<AttachFilesPlan> {
-    // Choose an available name for each file.
+    // Find or choose a target for each file.
     let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
     let mut targets = Vec::<FilesystemTarget>::new();
-    for file_name in file_names {
-        targets.push(available_file_target(&file_root, file_name, &targets)?);
+    let mut copy_uris = Vec::new();
+    for file in files {
+        if let Some(target) = file
+            .uri
+            .as_ref()
+            .and_then(|uri| file_root_target(&file_root, uri))
+        {
+            targets.push(target);
+            copy_uris.push(None);
+        } else {
+            let target = available_file_target(&file_root, &file.name, &targets)?;
+            copy_uris.push(Some(file_uri(&file_root.path().join(target.path()))));
+            targets.push(target);
+        }
     }
 
     // Link to each file, separating the links with spaces.
     Some(AttachFilesPlan {
-        file_uris: targets
-            .iter()
-            .map(|target| file_uri(&file_root.path().join(target.path())))
-            .collect(),
+        copy_uris,
         text: targets
             .iter()
             .map(|target| format!("[{}]", target.text(Context::Link)))
             .collect::<Vec<_>>()
             .join(" "),
     })
+}
+
+// Find the target of a file in the file root, spelled as it is on disk, if a URI locates one.
+fn file_root_target(file_root: &FileRoot, uri: &Uri) -> Option<FilesystemTarget> {
+    let path = local_path(uri)?;
+    let target =
+        FilesystemTarget::from_name(path.strip_prefix(file_root.path()).ok()?.to_str()?, false)
+            .ok()?;
+    let spelled_path = file_root
+        .spell(&target, &mut DirectoryListings::new())
+        .ok()?;
+    if !fs::metadata(file_root.resolve(&spelled_path)).is_ok_and(|metadata| metadata.is_file()) {
+        return None;
+    }
+    FilesystemTarget::from_name(spelled_path.as_path().to_str()?, false).ok()
 }
 
 // Name a file directly in the file root, numbering the name's stem if no entry or other attached
@@ -2623,14 +2656,14 @@ fn file_uri(path: &Path) -> Uri {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH,
-        MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS, RevealType,
-        Snapshot, attach_files_for_document, code_action_for_document, code_block_language,
-        completion_for_document, diagnostic_from_error, diagnostics_for_document,
-        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
-        embeds_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
+        MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
+        RevealType, Snapshot, attach_files_for_document, code_action_for_document,
+        code_block_language, completion_for_document, diagnostic_from_error,
+        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
+        document_symbol_for_document, embeds_for_document, formatting_for_document,
+        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
+        prepare_rename_for_document, references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4815,23 +4848,33 @@ mod tests {
         );
     }
 
-    // Attach files under names no entry or other attached file has, and link to them.
+    // Link to files already in the file root where they are, and copy other files into it under
+    // names no entry or other attached file has.
     #[test]
-    fn attaching_files_chooses_available_names() {
+    fn attaching_files_links_or_copies_them() {
         let source = "# Home\n\nTart.\n";
         let wiki = TestWiki::new(source);
+        fs::create_dir(wiki.directory().join("photos")).unwrap();
+        fs::write(wiki.directory().join("photos/beach.jpg"), "beach").unwrap();
         fs::write(wiki.directory().join("image.png"), "image").unwrap();
+        let elsewhere = wiki.path().with_file_name("elsewhere.pdf");
         let saved = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
-        let attach = |snapshot: &Snapshot, names: &[&str]| {
-            let names = names
+        let attach = |snapshot: &Snapshot, files: &[(&str, Option<&Path>)]| {
+            let files = files
                 .iter()
-                .map(|&name| name.to_owned())
+                .map(|&(name, path)| AttachedFile {
+                    name: name.to_owned(),
+                    uri: path.map(|path| Uri::from_file_path(path).unwrap()),
+                })
                 .collect::<Vec<_>>();
-            attach_files_for_document(snapshot, &names).map(|plan| {
+            attach_files_for_document(snapshot, &files).map(|plan| {
                 (
-                    plan.file_uris
+                    plan.copy_uris
                         .iter()
-                        .map(|uri| uri.to_file_path().unwrap().into_owned())
+                        .map(|uri| {
+                            uri.as_ref()
+                                .map(|uri| uri.to_file_path().unwrap().into_owned())
+                        })
                         .collect::<Vec<_>>(),
                     plan.text,
                 )
@@ -4840,21 +4883,46 @@ mod tests {
 
         // Number names which are taken, and escape special characters in links.
         assert_eq!(
-            attach(&saved, &["image.png", "image.png", "a [b].txt"]),
+            attach(
+                &saved,
+                &[
+                    ("image.png", None),
+                    ("image.png", None),
+                    ("a [b].txt", None),
+                ],
+            ),
             Some((
                 vec![
-                    wiki.directory().join("image-1.png"),
-                    wiki.directory().join("image-2.png"),
-                    wiki.directory().join("a [b].txt"),
+                    Some(wiki.directory().join("image-1.png")),
+                    Some(wiki.directory().join("image-2.png")),
+                    Some(wiki.directory().join("a [b].txt")),
                 ],
                 "[/image-1.png] [/image-2.png] [/a \\[b\\].txt]".to_owned(),
             )),
         );
 
-        // Decline names a link can't give directly in the file root, and untitled wikis.
-        assert_eq!(attach(&saved, &["a/b.png"]), None);
+        // Link to a file in the file root without copying it, and copy a file from elsewhere.
         assert_eq!(
-            attach(&snapshot(&untitled_uri(), source), &["notes.txt"]),
+            attach(
+                &saved,
+                &[
+                    (
+                        "beach.jpg",
+                        Some(&wiki.directory().join("photos/beach.jpg")),
+                    ),
+                    ("elsewhere.pdf", Some(&elsewhere)),
+                ],
+            ),
+            Some((
+                vec![None, Some(wiki.directory().join("elsewhere.pdf"))],
+                "[/photos/beach.jpg] [/elsewhere.pdf]".to_owned(),
+            )),
+        );
+
+        // Decline names a link can't give directly in the file root, and untitled wikis.
+        assert_eq!(attach(&saved, &[("a/b.png", None)]), None);
+        assert_eq!(
+            attach(&snapshot(&untitled_uri(), source), &[("notes.txt", None)]),
             None,
         );
     }
