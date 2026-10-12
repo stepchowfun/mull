@@ -51,25 +51,6 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
-## What does Mull check?
-
-Mull validates the wiki as you edit it, which looks like this:
-
-![A broken link.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/broken_link.png)
-
-It verifies these structural properties:
-
-- The wiki has valid syntax (links are closed, etc.).
-- Pages have unique titles.
-- Links have valid targets. A link can point to a `[page]`, `[/file]`, or `[/directory/]`.
-
-It also verifies these connectivity properties:
-
-- All pages are reachable by following links from the `Home` page, which must exist.
-- All files in the `<wiki>_files` directory (if it exists) are linked to from the wiki.
-
-Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable by following links starting from the `Home` page. This promotes a basic form of organization that makes Mull different from other wiki software.
-
 ## Keyboard shortcuts
 
 These common keyboard shortcuts are helpful when navigating and editing a wiki:
