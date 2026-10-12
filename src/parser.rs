@@ -429,10 +429,11 @@ pub fn parse(
                 // Once a long run can't be closed, a later run of the same length can't be either,
                 // since the text after it was already searched.
                 let length = backtick_run_length(&source_contents[position..]);
-                let closing_end = (length < MIN_MULTILINE_CODE_LENGTH
-                    || !unclosable_lengths.contains(&length))
-                .then(|| closing_run_end(source_contents, position + length, length))
-                .flatten();
+                let can_close =
+                    length < MIN_MULTILINE_CODE_LENGTH || !unclosable_lengths.contains(&length);
+                let closing_end = can_close
+                    .then(|| closing_run_end(source_contents, position + length, length))
+                    .flatten();
                 if let Some(end) = closing_end {
                     position = end;
                 } else {
