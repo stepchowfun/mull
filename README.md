@@ -67,7 +67,6 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
 | Find a page | `Command + Shift + O` | `Control + Shift + O` |
 | Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
-| Show completions | `Control + Space` | `Control + Space` |
 | Rename a page | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
