@@ -12,7 +12,7 @@ Since Mull runs in Visual Studio Code or Cursor, you can use it with your favori
 
 ### Pages and links
 
-A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 3 pages:
+A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a little wiki with 3 pages:
 
 ```md
 # Home
