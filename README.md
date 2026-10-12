@@ -53,7 +53,7 @@ If you want to keep multiple copies of some content in sync, you can embed a pag
 
 ```md
 ::: embed [Pancakes]
-Everything in here will be replaced by my delicious recipe.
+This sentence will be replaced by my delicious pancake recipe.
 :::
 ```
 
