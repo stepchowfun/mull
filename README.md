@@ -10,6 +10,8 @@ Since Mull runs in Visual Studio Code or Cursor, you can use it with your favori
 
 ## A quick tour
 
+### Pages and links
+
 A Mull *wiki* is a text file with a `.mull` extension. It contains *pages* which link to each other, all in the same file. Here's a small wiki with 3 pages:
 
 ```md
@@ -29,13 +31,23 @@ Great on [Pancakes].
 - A squeeze of [Lemons]
 ```
 
-Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file.
+Each page starts with a `# Title`, followed by the contents of the page on subsequent lines, up to the next page or the end of the file. To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
 
-To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete will kick in to help you find the target page.
+![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-![Autocomplete](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
+Mull formats the wiki for you when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file, so you don't have to think about that. Linking to pages is the only way to organize them. Mull requires that every page is reachable (directly or indirectly) by following links starting from a special `Home` page at the top of the wiki. This promotes a basic form of organization that doesn't involve an auxiliary directory structure.
 
-If the wiki is called `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`.
+This is what it looks like when a page is unreachable:
+
+![An unreachable page.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/unreachable.png)
+
+### Linking to files and directories
+
+If the wiki is called `my_wiki.mull`, for example, then you can put files in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. This is useful for attaching non-textual data to pages, such as images, PDFs, spreadsheets, etc.
+
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki.
+
+### Formatting
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
