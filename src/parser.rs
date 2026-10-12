@@ -29,7 +29,6 @@ struct OpenEmbed {
     fence_length: usize,
     start: usize,                           // The offset of its opening fence
     argument_source_range: SourceRange,     // The trimmed text after the verb
-    links_before: usize,                    // How many links the page had before the opening fence
     link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
 }
 
@@ -75,7 +74,7 @@ pub fn parse(
     let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
     let mut open_embeds = Vec::<OpenEmbed>::new();
-    let mut is_in_opening_fence = false;
+    let mut opening_fence_links_before = None::<usize>; // Set while reading an opening fence's line
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
     let mut position = 0;
@@ -116,8 +115,9 @@ pub fn parse(
     // its argument.
     let read_opening_fence = |open_embed: &mut OpenEmbed,
                               links: &[Link],
+                              links_before: usize,
                               errors: &mut Vec<Error>| {
-        let new_links = &links[open_embed.links_before..];
+        let new_links = &links[links_before..];
         let argument_source_range = open_embed.argument_source_range;
         match new_links {
             [
@@ -236,10 +236,9 @@ pub fn parse(
                                 start: position + argument_start,
                                 end: position + argument_end,
                             },
-                            links_before: pending_page.links.len(),
                             link: None,
                         });
-                        is_in_opening_fence = true;
+                        opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
                     }
                     FenceLine::Opening { length, verb, .. } => {
@@ -258,7 +257,6 @@ pub fn parse(
                             fence_length: length,
                             start: position,
                             argument_source_range: line_source_range,
-                            links_before: pending_page.links.len(),
                             link: None,
                         });
                         position = line_end;
@@ -349,11 +347,10 @@ pub fn parse(
                     };
                     close_unclosed_link(&mut pending_page.links, &mut errors, link, end);
                 }
-                if is_in_opening_fence {
-                    is_in_opening_fence = false;
-                    if let Some(open_embed) = open_embeds.last_mut() {
-                        read_opening_fence(open_embed, &pending_page.links, &mut errors);
-                    }
+                if let Some(links_before) = opening_fence_links_before.take()
+                    && let Some(open_embed) = open_embeds.last_mut()
+                {
+                    read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
                 }
                 is_at_line_start = true;
             }
@@ -466,8 +463,10 @@ pub fn parse(
             source_contents.len(),
         );
     }
-    if is_in_opening_fence && let Some(open_embed) = open_embeds.last_mut() {
-        read_opening_fence(open_embed, &pending_page.links, &mut errors);
+    if let Some(links_before) = opening_fence_links_before
+        && let Some(open_embed) = open_embeds.last_mut()
+    {
+        read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
     }
     report_unclosed_embeds(&mut open_embeds, &mut errors);
     finish_page(
