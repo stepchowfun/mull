@@ -51,7 +51,7 @@ If you want to keep multiple copies of some content in sync, you can embed a pag
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
-When the source page is modified, the changes will be propagated automatically to where they are embedded when the wiki is formatted.
+When the source page is modified, the changes will be propagated automatically to where they are embedded when the wiki is formatted. The propagation is unidirectional; any edits to the embedded copies will be discarded.
 
 ### Orthography
 
