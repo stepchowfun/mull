@@ -9,6 +9,9 @@
       "include": "#secondary-headings"
     },
     {
+      "include": "#fences"
+    },
+    {
       "include": "#text"
     }
   ],
@@ -534,6 +537,43 @@
       "patterns": [
         {
           "include": "#text"
+        }
+      ]
+    },
+    "fences": {
+      "patterns": [
+        {
+          "name": "meta.embed.mull",
+          "begin": "^(:{3,})[ \\t]+(embed)(?=[ \\t]|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.embed.begin.mull"
+            },
+            "2": {
+              "name": "keyword.control.embed.mull"
+            }
+          },
+          "end": "^(\\1)[ \\t]*$|^(?=# )",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.embed.end.mull"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#secondary-headings"
+            },
+            {
+              "include": "#fences"
+            },
+            {
+              "include": "#text"
+            }
+          ]
+        },
+        {
+          "name": "invalid.illegal.fence.mull",
+          "match": "^:{3,}(?=[ \\t]|$).*$"
         }
       ]
     },

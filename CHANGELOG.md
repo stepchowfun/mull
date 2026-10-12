@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0] - 2026-10-11
+
+### Added
+
+- A page can embed another page's content with an embed, which starts with a fence like `::: embed [Page]` and ends with a fence of as many colons alone, like `:::`. Formatting refreshes the content between the fences with a copy of the embedded page's content, choosing fences long enough for any embeds within it. An embed must name a page with a single link, and embeds can't form a cycle.
+
+### Changed
+
+- A line which starts with three or more colons followed by whitespace or nothing else is now a fence, so it's no longer taken as text.
+
 ## [0.45.0] - 2026-10-11
 
 ### Added

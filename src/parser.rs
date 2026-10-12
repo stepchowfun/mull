@@ -5,17 +5,31 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, Wiki, title_line_text,
+        EMBED_VERB, Embed, FILESYSTEM_LINK_PREFIX, FenceLine, FilesystemTarget, Link, Page,
+        PageTitle, Wiki, fence_line, title_line_text,
     },
 };
 use std::{collections::HashSet, path::Path};
 
+// Code which starts with a run of at least this many backticks can span lines.
+const MIN_MULTILINE_CODE_LENGTH: usize = 3;
+
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
-// a valid one which hasn't been used, where it starts, and the links in its content.
+// a valid one which hasn't been used, where it starts, and the links and embeds in its content.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
     links: Vec<Link>,
+    embeds: Vec<Embed>,
+}
+
+// This struct tracks an embed which has been opened but not yet closed. Its title is known once the
+// link in its opening fence has been read, if that link names a page.
+struct OpenEmbed {
+    fence_length: usize,
+    start: usize,                           // The offset of its opening fence
+    argument_source_range: SourceRange,     // The trimmed text after the verb
+    link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
 }
 
 // This struct tracks a link which has been opened but not yet closed.
@@ -30,14 +44,17 @@ struct OpenLink {
 // run of exactly as many backticks, on the same line for a run of one or two, and its text is
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
-// allowed by whether it's in a link [ref:content_escapes]. The wiki retains as much of the source
-// as possible so it can still be validated and navigated, but it omits the content of duplicate
-// pages, invalid titles, and anything before the first title, so it mustn't be rendered if there
-// are any syntax errors. The line index locates syntax errors in their source listings.
+// allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
+// run of colons is a fence: an opening fence names a verb, and the only verb embeds the page named
+// by the link after it, while a closing fence consists of colons alone and closes the innermost
+// open embed with a fence of the same length. The wiki retains as much of the source as possible
+// so it can still be validated and navigated, but it omits the content of duplicate pages, invalid
+// titles, and anything before the first title, so it mustn't be rendered if there are any syntax
+// errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
-              and line being read."
+              embeds, and line being read."
 )]
 pub fn parse(
     source_path: Option<&Path>,
@@ -52,9 +69,12 @@ pub fn parse(
         title: None,
         source_start: 0,
         links: Vec::new(),
+        embeds: Vec::new(),
     };
     let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
+    let mut open_embeds = Vec::<OpenEmbed>::new();
+    let mut opening_fence_links_before = None::<usize>; // Links before the fence whose line is read
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
     let mut position = 0;
@@ -91,9 +111,66 @@ pub fn parse(
             ));
         };
 
+    // Once an opening fence's line has been read, find the page named by the link which makes up
+    // its argument, which must be the only link read since the fence started.
+    let read_opening_fence = |open_embed: &mut OpenEmbed,
+                              links: &[Link],
+                              links_before: usize,
+                              errors: &mut Vec<Error>| {
+        let new_links = &links[links_before..];
+        let argument_source_range = open_embed.argument_source_range;
+        match new_links {
+            [
+                Link::Text {
+                    title,
+                    source_range,
+                },
+            ] if *source_range == argument_source_range => {
+                open_embed.link = Some((title.clone(), *source_range));
+            }
+            [Link::Malformed { .. }] => {}
+            [Link::Filesystem { source_range, .. }] if *source_range == argument_source_range => {
+                errors.push(syntax_error(
+                    "Only pages can be embedded.",
+                    *source_range,
+                    None,
+                ));
+            }
+            _ => errors.push(syntax_error(
+                &format!(
+                    "An embed names the page to embed with a link, like {}.",
+                    format!("::: {EMBED_VERB} [Page]").code_str(),
+                ),
+                if argument_source_range.start == argument_source_range.end {
+                    SourceRange {
+                        start: open_embed.start,
+                        end: argument_source_range.end,
+                    }
+                } else {
+                    argument_source_range
+                },
+                None,
+            )),
+        }
+    };
+
+    // Report each embed which is still open at the end of its page at its opening fence.
+    let report_unclosed_embeds = |open_embeds: &mut Vec<OpenEmbed>, errors: &mut Vec<Error>| {
+        for open_embed in open_embeds.drain(..) {
+            errors.push(syntax_error(
+                "Unclosed embed.",
+                SourceRange {
+                    start: open_embed.start,
+                    end: open_embed.start + open_embed.fence_length,
+                },
+                None,
+            ));
+        }
+    };
+
     while let Some(character) = source_contents[position..].chars().next() {
         // At the start of a line, which is never within code or a link, read a title line, which
-        // starts a new region.
+        // starts a new region, or a fence line.
         if is_at_line_start {
             is_at_line_start = false;
             let line_end = source_contents[position..]
@@ -109,6 +186,7 @@ pub fn parse(
                 // Finish the preceding region, then start one which belongs to a page if its
                 // title is valid and hasn't been used. Content after a title line is in a region.
                 can_report_content_before_title = false;
+                report_unclosed_embeds(&mut open_embeds, &mut errors);
                 finish_page(&mut wiki, pending_page, position, source_contents);
                 let title = match parse_title(
                     raw_title,
@@ -135,8 +213,84 @@ pub fn parse(
                     title,
                     source_start: position,
                     links: Vec::new(),
+                    embeds: Vec::new(),
                 };
                 position = line_end;
+                continue;
+            }
+
+            // Read a fence line within a page. An opening fence starts an embed, whose link is read
+            // as usual from where its argument starts. A closing fence ends the innermost open
+            // embed with a fence of the same length, and any open within it.
+            if !can_report_content_before_title && let Some(fence) = fence_line(line) {
+                match fence {
+                    FenceLine::Opening {
+                        length,
+                        verb,
+                        argument: (argument_start, argument_end),
+                    } if verb == EMBED_VERB => {
+                        open_embeds.push(OpenEmbed {
+                            fence_length: length,
+                            start: position,
+                            argument_source_range: SourceRange {
+                                start: position + argument_start,
+                                end: position + argument_end,
+                            },
+                            link: None,
+                        });
+                        opening_fence_links_before = Some(pending_page.links.len());
+                        position += argument_start;
+                    }
+                    FenceLine::Opening { length, verb, .. } => {
+                        // Report an unknown verb, but still match its closing fence, so it doesn't
+                        // seem unexpected.
+                        errors.push(syntax_error(
+                            &format!(
+                                "Unknown verb {}. The only verb is {}.",
+                                verb.code_str(),
+                                EMBED_VERB.code_str(),
+                            ),
+                            trim_source_range(source_contents, line_source_range),
+                            None,
+                        ));
+                        open_embeds.push(OpenEmbed {
+                            fence_length: length,
+                            start: position,
+                            argument_source_range: line_source_range,
+                            link: None,
+                        });
+                        position = line_end;
+                    }
+                    FenceLine::Closing { length } => {
+                        if let Some(index) = open_embeds
+                            .iter()
+                            .rposition(|open_embed| open_embed.fence_length == length)
+                        {
+                            let mut inner_embeds = open_embeds.split_off(index);
+                            let open_embed = inner_embeds.remove(0);
+                            report_unclosed_embeds(&mut inner_embeds, &mut errors);
+                            if let Some((title, link_source_range)) = open_embed.link
+                                && index == 0
+                            {
+                                pending_page.embeds.push(Embed {
+                                    title,
+                                    source_range: SourceRange {
+                                        start: open_embed.start,
+                                        end: line_source_range.end,
+                                    },
+                                    link_source_range,
+                                });
+                            }
+                        } else {
+                            errors.push(syntax_error(
+                                "Unexpected closing fence.",
+                                trim_source_range(source_contents, line_source_range),
+                                None,
+                            ));
+                        }
+                        position = line_end;
+                    }
+                }
                 continue;
             }
 
@@ -184,7 +338,8 @@ pub fn parse(
             }
             '\n' => {
                 // End an unclosed link at the end of its line, since links can't contain line
-                // breaks, so the following lines are read as usual.
+                // breaks, so the following lines are read as usual. Then finish reading an opening
+                // fence on this line.
                 if let Some(link) = open_link.take() {
                     let end = if source_contents[..position].ends_with('\r') {
                         position - '\r'.len_utf8()
@@ -192,6 +347,11 @@ pub fn parse(
                         position
                     };
                     close_unclosed_link(&mut pending_page.links, &mut errors, link, end);
+                }
+                if let Some(links_before) = opening_fence_links_before.take()
+                    && let Some(open_embed) = open_embeds.last_mut()
+                {
+                    read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
                 }
                 is_at_line_start = true;
             }
@@ -267,13 +427,15 @@ pub fn parse(
                 // Once a long run can't be closed, a later run of the same length can't be either,
                 // since the text after it was already searched.
                 let length = backtick_run_length(&source_contents[position..]);
-                let closing_end = (length < 3 || !unclosable_lengths.contains(&length))
+                let can_close =
+                    length < MIN_MULTILINE_CODE_LENGTH || !unclosable_lengths.contains(&length);
+                let closing_end = can_close
                     .then(|| closing_run_end(source_contents, position + length, length))
                     .flatten();
                 if let Some(end) = closing_end {
                     position = end;
                 } else {
-                    if length >= 3 {
+                    if length >= MIN_MULTILINE_CODE_LENGTH {
                         unclosable_lengths.insert(length);
                     }
                     errors.push(syntax_error(
@@ -293,7 +455,8 @@ pub fn parse(
         position += character.len_utf8();
     }
 
-    // Reject a link that's still open at the end of the wiki, and finish the final region.
+    // Reject a link that's still open at the end of the wiki, finish reading an opening fence on
+    // the last line, and finish the final region.
     if let Some(link) = open_link.take() {
         close_unclosed_link(
             &mut pending_page.links,
@@ -302,6 +465,12 @@ pub fn parse(
             source_contents.len(),
         );
     }
+    if let Some(links_before) = opening_fence_links_before
+        && let Some(open_embed) = open_embeds.last_mut()
+    {
+        read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
+    }
+    report_unclosed_embeds(&mut open_embeds, &mut errors);
     finish_page(
         &mut wiki,
         pending_page,
@@ -328,6 +497,7 @@ fn finish_page(
         title,
         source_start,
         links,
+        embeds,
     } = pending_page;
     if let Some((title, title_source_range)) = title {
         wiki.pages.insert(
@@ -335,6 +505,7 @@ fn finish_page(
             Page {
                 title,
                 links,
+                embeds,
                 traversal_index: None,
                 source_range: trim_source_range(
                     source_contents,
@@ -440,7 +611,7 @@ fn backtick_run_length(text: &str) -> usize {
 // Find the end of the run of exactly the given number of backticks which closes code whose text
 // starts at an offset, searching only the rest of the line for a run of one or two backticks.
 fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
-    let end = if length < 3 {
+    let end = if length < MIN_MULTILINE_CODE_LENGTH {
         source[start..]
             .find('\n')
             .map_or(source.len(), |index| start + index)
@@ -1207,5 +1378,85 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(links[0].closing_delimiter(), Some(16));
         assert_eq!(links[3].closing_delimiter(), None);
+    }
+
+    // Read an embed from its opening fence through its closing fence, with the link in its opening
+    // fence among the page's links. The embeds within it aren't kept, since they're part of its
+    // copy of the embedded page's content.
+    #[test]
+    fn embeds() {
+        let source = concat!(
+            "# Home\n\n:::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::\n\n",
+            "# Other\n# Last",
+        );
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            link_targets(&home.links),
+            vec!["text:Other", "text:Last", "text:Last"],
+        );
+        assert_eq!(
+            home.embeds
+                .iter()
+                .map(|embed| {
+                    (
+                        embed.title.text(Context::Verbatim),
+                        &source[embed.source_range.start..embed.source_range.end],
+                        &source[embed.link_source_range.start..embed.link_source_range.end],
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![(
+                "Other".to_owned(),
+                ":::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::",
+                "[ Other ]",
+            )],
+        );
+    }
+
+    // Take fence lines as written in code, and take lines which only resemble fences as text.
+    #[test]
+    fn text_resembling_fences() {
+        let wiki = parse_test("# Home\n```\n::: embed [Other]\n```\n:: embed\n:::embed\n").unwrap();
+
+        assert!(wiki.page("Home").embeds.is_empty());
+        assert!(wiki.page("Home").links.is_empty());
+    }
+
+    // Reject an embed which doesn't name a page with a single link in its opening fence.
+    #[test]
+    fn invalid_embed_links() {
+        assert_fails!(
+            parse_test("# Home\n::: embed\n:::"),
+            "An embed names the page to embed with a link, like `::: embed [Page]`.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: embed [Other] [Last]\n:::"),
+            "An embed names the page to embed with a link, like `::: embed [Page]`.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: embed [/notes.txt]\n:::"),
+            "Only pages can be embedded.",
+        );
+    }
+
+    // Reject unknown verbs, closing fences which don't close an embed, and embeds which aren't
+    // closed by the end of their pages. An unknown verb's closing fence still matches it.
+    #[test]
+    fn invalid_fences() {
+        assert_fails!(
+            parse_test("# Home\n::: sort\n:::"),
+            "Unknown verb `sort`. The only verb is `embed`.",
+        );
+        assert_eq!(parse_test("# Home\n::: sort\n:::").unwrap_err().len(), 1);
+        assert_fails!(
+            parse_test("# Home\n::: embed [Other]\n::::\n:::"),
+            "Unexpected closing fence.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: embed [Other]\n# Other"),
+            "Unclosed embed.",
+        );
     }
 }

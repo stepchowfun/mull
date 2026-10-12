@@ -23,10 +23,61 @@ pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
+// A line which starts with at least this many colons is a fence: an opening fence names a verb and
+// its argument, and a closing fence consists of colons alone. The only verb is the one which embeds
+// a page.
+pub const MIN_FENCE_LENGTH: usize = 3;
+pub const EMBED_VERB: &str = "embed";
+
 // Find the text after a title line's prefix, which is a title marker followed by a space. A line
 // that isn't a title line has none, including a bare title marker.
 pub fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
+}
+
+// These are the kinds of fence lines. An opening fence's verb and argument are located by their
+// offsets within the line, and its argument is trimmed.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FenceLine<'a> {
+    Opening {
+        length: usize,
+        verb: &'a str,
+        argument: (usize, usize),
+    },
+    Closing {
+        length: usize,
+    },
+}
+
+// Read a line as a fence line: a run of fence characters, alone for a closing fence, or followed by
+// whitespace, a verb, and an argument for an opening fence. Any other line, including one in which
+// the run is followed directly by other text, isn't a fence line.
+pub fn fence_line(line: &str) -> Option<FenceLine<'_>> {
+    // Measure the run, which must be long enough.
+    let length = line.len() - line.trim_start_matches(':').len();
+    if length < MIN_FENCE_LENGTH {
+        return None;
+    }
+
+    // Find what follows the run, which is either nothing or whitespace and a verb.
+    let rest = &line[length..];
+    if rest.trim().is_empty() {
+        return Some(FenceLine::Closing { length });
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let verb_start = line.len() - rest.trim_start().len();
+    let verb_end = line[verb_start..]
+        .find(char::is_whitespace)
+        .map_or(line.len(), |index| verb_start + index);
+    let argument_start = line.len() - line[verb_end..].trim_start().len();
+    let argument_end = line.trim_end().len().max(argument_start);
+    Some(FenceLine::Opening {
+        length,
+        verb: &line[verb_start..verb_end],
+        argument: (argument_start, argument_end),
+    })
 }
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
@@ -66,9 +117,10 @@ impl Wiki {
         (traversal_index.is_none(), traversal_index, title)
     }
 
-    // Render a page's content from the source, with each link written in its canonical form, Unix
-    // line endings, and no whitespace at the end of a line.
-    fn rendered_content(&self, page: &Page) -> String {
+    // Render a page's content from the source, with each link written in its canonical form, each
+    // embed refreshed, Unix line endings, and no whitespace at the end of a line. The pages being
+    // rendered, which embed this one, are listed so a cycle of embeds is left as written.
+    fn rendered_content(&self, page: &Page, embedding_pages: &mut Vec<PageTitle>) -> String {
         // Find the content after the title line, skipping the blank lines around it but keeping the
         // indentation of its first line, so an indented line which starts with a title marker
         // doesn't become a title.
@@ -83,13 +135,67 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, replacing each link with its canonical form: a text link's title
-        // escaped, and a filesystem link's normalized target. A malformed link, which a wiki
-        // without syntax errors doesn't have, is copied as written.
-        let mut links = page.links.iter().collect::<Vec<_>>();
-        links.sort_by_key(|link| link.source_range().start);
+        // Copy the content, replacing each embed with a fresh copy of the embedded page's content.
+        // An embed of a missing page, or one which would complete a cycle, is copied as written.
         let mut content = String::new();
         let mut copied_through = content_start;
+        embedding_pages.push(page.title.clone());
+        for embed in &page.embeds {
+            let Some(embedded_page) = self
+                .pages
+                .get(&embed.title)
+                .filter(|embedded_page| !embedding_pages.contains(&embedded_page.title))
+            else {
+                continue;
+            };
+            self.copy_links(page, copied_through, embed.source_range.start, &mut content);
+            let body = self.rendered_content(embedded_page, embedding_pages);
+            let longest_run = body
+                .lines()
+                .map(|line| line.len() - line.trim_start_matches(':').len())
+                .max()
+                .unwrap_or(0);
+            let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
+            for part in [
+                &fence,
+                " ",
+                EMBED_VERB,
+                " [",
+                &embed.title.text(Context::Link),
+                "]\n",
+            ] {
+                content.push_str(part);
+            }
+            if !body.is_empty() {
+                content.push_str(&body);
+                content.push('\n');
+            }
+            content.push_str(&fence);
+            copied_through = embed.source_range.end;
+        }
+        embedding_pages.pop();
+        self.copy_links(page, copied_through, content_end, &mut content);
+
+        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
+        // line breaks, and each ends with a delimiter, so this never changes one.
+        content
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // Copy part of a page's content, replacing each link within it with its canonical form: a text
+    // link's title escaped, and a filesystem link's normalized target. A malformed link, which a
+    // wiki without syntax errors doesn't have, is copied as written.
+    fn copy_links(&self, page: &Page, start: usize, end: usize, content: &mut String) {
+        let mut links = page
+            .links
+            .iter()
+            .filter(|link| start <= link.source_range().start && link.source_range().end <= end)
+            .collect::<Vec<_>>();
+        links.sort_by_key(|link| link.source_range().start);
+        let mut copied_through = start;
         for link in links {
             let source_range = link.source_range();
             content.push_str(&self.source[copied_through..source_range.start]);
@@ -107,15 +213,7 @@ impl Wiki {
             content.push(']');
             copied_through = source_range.end;
         }
-        content.push_str(&self.source[copied_through..content_end]);
-
-        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
-        // line breaks, and each ends with a delimiter, so this never changes one.
-        content
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
+        content.push_str(&self.source[copied_through..end]);
     }
 }
 
@@ -134,7 +232,7 @@ impl fmt::Display for Wiki {
                 writeln!(formatter)?;
             }
             let title = page.title.text(Context::Verbatim);
-            let content = self.rendered_content(page);
+            let content = self.rendered_content(page, &mut Vec::new());
             if content.is_empty() {
                 writeln!(formatter, "{TITLE_PREFIX}{title}")?;
             } else {
@@ -152,9 +250,19 @@ impl fmt::Display for Wiki {
 pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
+    pub embeds: Vec<Embed>, // In source order, excluding embeds within the copies made by others
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
-    pub source_range: SourceRange,      // The complete page without leading or trailing whitespace
+    pub source_range: SourceRange, // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
+}
+
+// This struct represents a page embedded in another page's content. The embedding page shows a copy
+// of the embedded page's content, which formatting refreshes along with any embeds within it.
+#[derive(Clone, Debug)]
+pub struct Embed {
+    pub title: PageTitle,
+    pub source_range: SourceRange, // From the opening fence through the end of the closing fence
+    pub link_source_range: SourceRange, // The link in the opening fence which names the page
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -400,7 +508,7 @@ impl CodeStr for FilesystemTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilesystemTarget, PageTitle, Wiki, title_line_text};
+    use super::{FenceLine, FilesystemTarget, PageTitle, Wiki, fence_line, title_line_text};
     use crate::{
         escaping::{Context, unescape},
         line_index::LineIndex,
@@ -474,6 +582,62 @@ mod tests {
             concat!(
                 "# Home\n\n  # Indented\nSee [Other] and [/images/raw/].\n\n\tDone.\n\n",
                 "# Other\n",
+            ),
+        );
+    }
+
+    // Recognize opening fences with a verb and a trimmed argument, and closing fences, but not
+    // shorter runs or runs followed directly by other text.
+    #[test]
+    fn fence_lines() {
+        assert_eq!(
+            fence_line("::: embed [Page]  "),
+            Some(FenceLine::Opening {
+                length: 3,
+                verb: "embed",
+                argument: (10, 16),
+            }),
+        );
+        assert_eq!(
+            fence_line("::::\tembed"),
+            Some(FenceLine::Opening {
+                length: 4,
+                verb: "embed",
+                argument: (10, 10),
+            }),
+        );
+        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
+        assert_eq!(
+            fence_line("::::: \t"),
+            Some(FenceLine::Closing { length: 5 }),
+        );
+        assert_eq!(fence_line(":: embed [Page]"), None);
+        assert_eq!(fence_line(":::embed [Page]"), None);
+        assert_eq!(fence_line(" ::: embed [Page]"), None);
+    }
+
+    // Refresh each embed with a copy of the embedded page's content, including the embeds in it,
+    // with a fence longer than any in the copy. An embed of a missing page or one which would
+    // complete a cycle is left as written.
+    #[test]
+    fn embeds_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n::: embed [ Other ]\nstale\n:::\n\n",
+            "::: embed [Missing]\nkept\n:::\n\n",
+            "::: embed [Home]\nkept\n:::\n\n",
+            "# Other\n\nSee [ Last ].\n\n::: embed [Last]\n:::\n\n",
+            "# Last\n\nThe end.",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n",
+                ":::: embed [Other]\nSee [Last].\n\n::: embed [Last]\nThe end.\n:::\n::::\n\n",
+                "::: embed [Missing]\nkept\n:::\n\n",
+                "::: embed [Home]\nkept\n:::\n\n",
+                "# Other\n\nSee [Last].\n\n::: embed [Last]\nThe end.\n:::\n\n",
+                "# Last\n\nThe end.\n",
             ),
         );
     }
