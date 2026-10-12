@@ -104,7 +104,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Select the wiki and make its path relative when it's contained in the current directory.
     let current_directory = env::current_dir().map_err(|error| {
         vec![Error::new(
-            "Unable to determine the current directory.",
+            "Unable to determine the current folder.",
             None,
             None,
             Some(Arc::new(error)),

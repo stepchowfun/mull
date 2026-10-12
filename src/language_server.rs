@@ -1215,7 +1215,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> Option<
     // Describe a directory with nothing to list.
     let mut children = visible_children(file_root, target.path());
     if children.is_empty() {
-        return Some("This directory contains no files.".to_owned());
+        return Some("This folder contains no files.".to_owned());
     }
 
     // List the first entries, keeping each group in name order.
@@ -1625,7 +1625,7 @@ fn rename_filesystem_entry_for_document(
         return Ok(Some(WorkspaceEdit::default()));
     }
     if new_target.is_file_root() {
-        return Err("A file or directory can't be renamed to `/`.".to_owned());
+        return Err("A file or folder can't be renamed to `/`.".to_owned());
     }
 
     // Require the existing directories along the new path to be spelled as they are on disk, as a
@@ -1775,7 +1775,7 @@ fn renamable_filesystem_entry_at(
         let name = Path::new(file_root.path().file_name().unwrap_or_default());
         return Err(format!("{} can't be renamed.", name.code_str()));
     }
-    let kind = if is_directory { "Directory" } else { "File" };
+    let kind = if is_directory { "Folder" } else { "File" };
     if !fs::metadata(file_root.path().join(old_path))
         .is_ok_and(|metadata| metadata.is_dir() == is_directory)
     {
@@ -1845,10 +1845,7 @@ fn check_rename_destination(
 
     // Refuse to create a directory beneath an existing file.
     if !file_root.resolve(new_ancestor).is_dir() {
-        return Err(format!(
-            "Path {} isn't a directory.",
-            new_ancestor.code_str(),
-        ));
+        return Err(format!("Path {} isn't a folder.", new_ancestor.code_str()));
     }
     Ok(())
 }
@@ -3407,7 +3404,7 @@ mod tests {
         else {
             panic!("A directory preview should use markup content.");
         };
-        assert_eq!(contents.value, "This directory contains no files.");
+        assert_eq!(contents.value, "This folder contains no files.");
         assert!(
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
         );
@@ -4554,7 +4551,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "/", ALL_FILE_OPERATIONS),
-            "A file or directory can't be renamed to `/`.",
+            "A file or folder can't be renamed to `/`.",
         );
         assert_eq!(
             rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
@@ -4562,7 +4559,7 @@ mod tests {
         );
         assert_eq!(
             rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
-            "Path `/notes.txt` isn't a directory.",
+            "Path `/notes.txt` isn't a folder.",
         );
         assert_eq!(
             rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),

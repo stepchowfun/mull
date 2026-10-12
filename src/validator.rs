@@ -375,13 +375,13 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
                 "/".code_str(),
             ))
         } else {
-            Some(format!("{} isn't a directory.", target.code_str()))
+            Some(format!("{} isn't a folder.", target.code_str()))
         }
     } else if metadata.is_file() {
         None
     } else if metadata.is_dir() {
         Some(format!(
-            "{} is a directory, so its link must end with {}.",
+            "{} is a folder, so its link must end with {}.",
             target.code_str(),
             "/".code_str(),
         ))
@@ -439,7 +439,7 @@ fn find_unreferenced_filesystem_links(
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Outcome::Completed(vec![Error::new(
-                &format!("{} isn't a directory.", file_root.path().code_str()),
+                &format!("{} isn't a folder.", file_root.path().code_str()),
                 Some(wiki_path),
                 None,
                 None,
@@ -826,7 +826,7 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(contains_error(&errors, "wiki_files`"));
-        assert!(contains_error(&errors, "` isn't a directory."));
+        assert!(contains_error(&errors, "` isn't a folder."));
     }
 
     // Name the file root after the wiki, replacing the usual extension, whatever its
@@ -1191,7 +1191,7 @@ mod tests {
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 4);
         for message in [
-            "`/images` is a directory, so its link must end with `/`.",
+            "`/images` is a folder, so its link must end with `/`.",
             "File `/notes.txt` isn't linked to.",
             "`/notes.txt` is a file, so its link must not end with `/`.",
             "File `/images/photo.jpg` isn't linked to.",

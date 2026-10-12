@@ -37,15 +37,15 @@ Each page starts with a `# Title`, followed by the contents of the page. To link
 
 Mull formats the wiki when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
 
-Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any auxiliary directory structure; pages effectively serve the role of directories.
+Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any auxiliary folder structure; pages effectively serve the role of folders.
 
-### Linking to files and directories
+### Linking to files and folders
 
-If a wiki is named `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling directory named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. You can also link to subdirectories as in `[/photos/]`.
+If a wiki is named `my_wiki.mull`, for example, then you can put files (images, PDFs, spreadsheets, etc.) in a sibling folder named `my_wiki_files` (in general, `<wiki>_files`) and link to them like `[/photos/beach.jpg]`. You can also link to subfolders as in `[/photos/]`.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a folder implicitly counts as linking to everything inside it.
 
 ### Embedding a page inside another
 
@@ -137,7 +137,7 @@ The installation script supports the following optional environment variables:
 - `VERSION=x.y.z` (defaults to the latest version)
 - `PREFIX=/path/to/install` (defaults to `/usr/local/bin`)
 
-For example, the following will install the binary into the working directory:
+For example, the following will install the binary into the current folder:
 
 ```sh
 curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | PREFIX=. sh
@@ -145,11 +145,11 @@ curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | 
 
 Note that if you change the installation path, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
 
-If you prefer not to use this installation method, you can download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installing-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
+If you prefer not to use this installation method, you can download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest), make it executable (e.g., with `chmod`), and place it in some folder in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installing-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
 
 ### Installing the binary on Windows (AArch64 or x86-64)
 
-If you're running Windows (AArch64 or x86-64), download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and rename it to `mull` (or `mull.exe` if you have file extensions visible). Create a directory called `Mull` in your `%PROGRAMFILES%` directory (e.g., `C:\Program Files\Mull`), and place the renamed binary in there. Then, in the "Advanced" tab of the "System Properties" section of Control Panel, click on "Environment Variables..." and add the full path to the new `Mull` directory to the `PATH` variable under "System variables". Note that the `Program Files` directory might have a different name if Windows is configured for a language other than English.
+If you're running Windows (AArch64 or x86-64), download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and rename it to `mull` (or `mull.exe` if you have file extensions visible). Create a folder called `Mull` in your `%PROGRAMFILES%` folder (e.g., `C:\Program Files\Mull`), and place the renamed binary in there. Then, in the "Advanced" tab of the "System Properties" section of Control Panel, click on "Environment Variables..." and add the full path to the new `Mull` folder to the `PATH` variable under "System variables". Note that the `Program Files` folder might have a different name if Windows is configured for a language other than English.
 
 To update an existing installation, simply replace the existing binary.
 
