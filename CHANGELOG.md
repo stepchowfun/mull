@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-10-12
+
+### Added
+
+- In the VS Code extension, files copied in a file manager, or from the explorer, can now be pasted into a saved wiki as well. Files can also be dropped into a saved wiki by holding Shift while dropping them. A file already in `<wiki>_files` is linked where it is, rather than copied. When pasting a file copied in a file manager, the file is pasted rather than its name.
+
 ## [0.48.0] - 2026-10-12
 
 ### Added
