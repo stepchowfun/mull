@@ -45,9 +45,13 @@ If the wiki is called `my_wiki.mull`, for example, then you can put files (image
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as a link to everything inside it.
 
-### Formatting
+### Orthography
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
+
+![A fenced code block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/code_block.png)
+
+No escaping is necessary inside code.
 
 ## Keyboard shortcuts
 
