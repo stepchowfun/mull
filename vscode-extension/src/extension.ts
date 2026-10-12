@@ -174,6 +174,72 @@ async function wikiEmbeds(document: vscode.TextDocument): Promise<vscode.Range[]
   return (ranges ?? []).map((range) => activeClient.protocol2CodeConverter.asRange(range));
 }
 
+// This request plans attaching files, such as pasted images, to a wiki. Keep this in sync with
+// [ref:attach_files_request_server].
+const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
+
+// This is the language server's plan for attaching files: create each file at its URI, in the
+// order they were named, and insert the text, which links to them.
+interface AttachFilesPlan {
+  fileUris: string[];
+  text: string;
+}
+
+// This kind identifies pasting images into a wiki by copying them into its file root.
+const PASTE_IMAGES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'image');
+
+// Paste images into a saved wiki by copying them into its file root and linking to the copies where
+// they're pasted, as one edit. The language server chooses the copies' names and writes the links.
+async function pasteImages(
+  document: vscode.TextDocument,
+  _ranges: readonly vscode.Range[],
+  dataTransfer: vscode.DataTransfer,
+  _context: vscode.DocumentPasteEditContext,
+  token: vscode.CancellationToken,
+): Promise<vscode.DocumentPasteEdit[] | undefined> {
+  // Collect the pasted images.
+  const images = new Set<vscode.DataTransferFile>();
+  for (const [mimeType, item] of dataTransfer) {
+    const file = item.asFile();
+    if (mimeType.startsWith('image/') && file !== undefined) {
+      images.add(file);
+    }
+  }
+  const activeClient = client;
+  if (images.size === 0 || activeClient === undefined || !activeClient.isRunning()) {
+    return undefined;
+  }
+
+  // Ask the language server for the copies' names and the links.
+  const files = [...images];
+  const plan = await activeClient.sendRequest<AttachFilesPlan | null>(
+    ATTACH_FILES_REQUEST,
+    {
+      textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
+      fileNames: files.map((file) => file.name),
+    },
+    token,
+  );
+  if (plan === null || token.isCancellationRequested) {
+    return undefined;
+  }
+
+  // Create the copies along with the links.
+  const additionalEdit = new vscode.WorkspaceEdit();
+  for (const [index, uri] of plan.fileUris.entries()) {
+    additionalEdit.createFile(activeClient.protocol2CodeConverter.asUri(uri), {
+      contents: files[index],
+    });
+  }
+  const edit = new vscode.DocumentPasteEdit(
+    plan.text,
+    "Copy into the wiki's files and link",
+    PASTE_IMAGES_KIND,
+  );
+  edit.additionalEdit = additionalEdit;
+  return [edit];
+}
+
 // Find the page containing a position, which is the last page starting at or before it, so a
 // position between pages belongs to the one above. A position before the first page has none.
 function pageAt(
@@ -645,6 +711,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Expose the command that checks the wiki being edited again.
   context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
+
+  // Paste images into saved wikis as links to copies in their file roots.
+  context.subscriptions.push(
+    vscode.languages.registerDocumentPasteEditProvider(
+      { scheme: 'file', language: 'mull' },
+      { provideDocumentPasteEdits: pasteImages },
+      { providedPasteEditKinds: [PASTE_IMAGES_KIND], pasteMimeTypes: ['image/*'] },
+    ),
+  );
 
   // Expose the commands that move the cursor within the page containing it.
   const pageBoundaryCommands = [
