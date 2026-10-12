@@ -51,6 +51,21 @@ use tower_lsp_server::{
     },
 };
 
+// This server command rechecks the open wiki named by its argument, as when the filesystem changed
+// without the editor reporting it. Keep this in sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
+
+// This extension command reveals a source range in a document. Keep this in sync with
+// [group:reveal_range_command].
+const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
+
+// This extension command reveals a directory in the explorer. Keep this in sync with
+// [group:reveal_in_explorer_command].
+const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
+
+// This editor command reopens suggestions so the children of a completed directory can be chosen.
+const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
+
 // This request lists the bodies of the embeds in a wiki, which the editor sets apart since
 // formatting regenerates them. Keep this in sync with [ref:embeds_request_client].
 const EMBEDS_REQUEST: &str = "mull/embeds"; // [tag:embeds_request_server]
@@ -66,9 +81,6 @@ const CHECK_DELAY: Duration = Duration::from_millis(250);
 // Limit the page titles offered as completions so responses remain small in large wikis.
 const MAX_TITLE_COMPLETIONS: usize = 100;
 
-// These file extensions identify the images which hovering over a filesystem link previews.
-const IMAGE_EXTENSIONS: &[&str] = &["bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"];
-
 // List at most this many entries when previewing a directory, so a large one doesn't flood the
 // hover.
 const MAX_DIRECTORY_PREVIEW_ENTRIES: usize = 50;
@@ -76,6 +88,14 @@ const MAX_DIRECTORY_PREVIEW_ENTRIES: usize = 50;
 // Scale image previews down to fit within this many pixels, since hovers don't limit their size.
 const MAX_IMAGE_WIDTH: usize = 480;
 const MAX_IMAGE_HEIGHT: usize = 360;
+
+// Read at most this many bytes of a text file and show at most this many of its lines when
+// previewing it, so a large file doesn't slow down or flood the hover.
+const MAX_TEXT_PREVIEW_BYTES: usize = 64 * 1024;
+const MAX_TEXT_PREVIEW_LINES: usize = 50;
+
+// These file extensions identify the images which hovering over a filesystem link previews.
+const IMAGE_EXTENSIONS: &[&str] = &["bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"];
 
 // These file names, in lowercase, have languages which editors don't recognize by the names
 // themselves, so a code block names the language instead. Editors recognize some other names, like
@@ -157,26 +177,6 @@ const EXTENSION_LANGUAGES: &[(&str, &str)] = &[
     ("xslt", "xsl"),
     ("yml", "yaml"),
 ];
-
-// Read at most this many bytes of a text file and show at most this many of its lines when
-// previewing it, so a large file doesn't slow down or flood the hover.
-const MAX_TEXT_PREVIEW_BYTES: usize = 64 * 1024;
-const MAX_TEXT_PREVIEW_LINES: usize = 50;
-
-// This extension command reveals a source range in a document. Keep this in sync with
-// [group:reveal_range_command].
-const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
-
-// This extension command reveals a directory in the explorer. Keep this in sync with
-// [group:reveal_in_explorer_command].
-const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
-
-// This server command rechecks the open wiki named by its argument, as when the filesystem changed
-// without the editor reporting it. Keep this in sync with [group:check_wiki_command].
-const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
-
-// This editor command reopens suggestions so the children of a completed directory can be chosen.
-const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // Serve language-server requests over standard input and output until the client disconnects.
 pub async fn run() {
@@ -355,149 +355,6 @@ impl Backend {
         })
         .await
     }
-}
-
-// These are the parameters of the request to attach files.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachFilesParams {
-    text_document: TextDocumentIdentifier,
-    files: Vec<AttachedFile>,
-}
-
-// This is a file to attach, as it was pasted or dropped.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachedFile {
-    name: String,
-    uri: Option<Uri>, // Where the file is, unless only its data was given
-}
-
-// This plan attaches files to a wiki by copying each one which isn't already in its file root, and
-// inserting the text, which links to them.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachFilesPlan {
-    copy_uris: Vec<Option<Uri>>, // Where to copy each file, in the order given, if anywhere
-    text: String,
-}
-
-// These are the parameters of the request for the bodies of the embeds in a wiki.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbedsParams {
-    text_document: TextDocumentIdentifier,
-}
-
-// Lock the open documents, which no thread holds while panicking.
-fn lock(
-    documents: &Mutex<HashMap<Uri, OpenDocument>>,
-) -> MutexGuard<'_, HashMap<Uri, OpenDocument>> {
-    documents
-        .lock()
-        .expect("The open-document mutex shouldn't be poisoned.")
-}
-
-// This state associates the latest editor snapshot with a pending diagnostic update. The server
-// assigns the generation, which increases every time a snapshot is stored, including rechecks of
-// unchanged contents after a save, so it identifies which snapshot stale work was computed from.
-#[derive(Debug)]
-struct OpenDocument {
-    snapshot: Arc<Snapshot>,
-    generation: u64,
-    pending_check: Option<PendingCheck>,
-}
-
-// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
-#[derive(Debug)]
-struct PendingCheck {
-    handle: JoinHandle<()>,
-    cancellation: CancellationFlag,
-}
-
-impl PendingCheck {
-    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
-    // started checking, and setting its flag stops it if it has already started.
-    fn cancel(self) {
-        self.cancellation.cancel();
-        self.handle.abort();
-    }
-}
-
-// This is the result of a check whose diagnostics were published. A check which is cancelled or
-// superseded by a newer one reports nothing.
-struct PublishedCheck {
-    diagnostic_count: usize,
-}
-
-// This is an immutable version of a document's contents, shared by the requests and checks made
-// against it so each derived structure is computed at most once, when it's first needed. The
-// client assigns the version, which changes only when the contents do and is reported back with
-// diagnostics.
-#[derive(Debug)]
-struct Snapshot {
-    uri: Uri,
-    path: Option<PathBuf>,
-    contents: String,
-    version: i32,
-    line_index: OnceLock<LineIndex>,
-    parsed: OnceLock<(Wiki, Vec<Error>)>,
-}
-
-impl Snapshot {
-    // Capture a version of a document without analyzing it yet.
-    fn new(uri: Uri, contents: String, version: i32) -> Self {
-        Self {
-            path: local_path(&uri).map(Cow::into_owned),
-            uri,
-            contents,
-            version,
-            line_index: OnceLock::new(),
-            parsed: OnceLock::new(),
-        }
-    }
-
-    // Index the lines of the contents for position conversions.
-    fn line_index(&self) -> &LineIndex {
-        self.line_index
-            .get_or_init(|| LineIndex::new(&self.contents))
-    }
-
-    // Convert an editor position into a byte offset in the contents.
-    fn byte_offset(&self, position: Position) -> Option<usize> {
-        self.line_index().byte_offset(&self.contents, position)
-    }
-
-    // Convert a byte offset in the contents into an editor position.
-    fn position(&self, byte_offset: usize) -> Position {
-        self.line_index().position(&self.contents, byte_offset)
-    }
-
-    // Convert a source range in the contents into an editor range.
-    fn range(&self, source_range: SourceRange) -> Range {
-        self.line_index().range(&self.contents, source_range)
-    }
-
-    // Parse the contents, recovering from syntax errors so the wiki can still be validated and
-    // navigated.
-    fn parsed(&self) -> &(Wiki, Vec<Error>) {
-        self.parsed
-            .get_or_init(|| parser::parse(self.path.as_deref(), &self.contents, self.line_index()))
-    }
-
-    // Retrieve the wiki parsed with recovery from syntax errors.
-    fn wiki(&self) -> &Wiki {
-        &self.parsed().0
-    }
-}
-
-// Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
-fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
-    uri.scheme()
-        .as_str()
-        .eq_ignore_ascii_case("file")
-        .then(|| uri.to_file_path())
-        .flatten()
 }
 
 // Respond to protocol requests and notifications for document synchronization, diagnostics, and
@@ -895,6 +752,108 @@ impl LanguageServer for Backend {
             Ok(document_link_for_document(snapshot))
         })
         .await
+    }
+}
+
+// This state associates the latest editor snapshot with a pending diagnostic update. The server
+// assigns the generation, which increases every time a snapshot is stored, including rechecks of
+// unchanged contents after a save, so it identifies which snapshot stale work was computed from.
+#[derive(Debug)]
+struct OpenDocument {
+    snapshot: Arc<Snapshot>,
+    generation: u64,
+    pending_check: Option<PendingCheck>,
+}
+
+// Lock the open documents, which no thread holds while panicking.
+fn lock(
+    documents: &Mutex<HashMap<Uri, OpenDocument>>,
+) -> MutexGuard<'_, HashMap<Uri, OpenDocument>> {
+    documents
+        .lock()
+        .expect("The open-document mutex shouldn't be poisoned.")
+}
+
+// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
+#[derive(Debug)]
+struct PendingCheck {
+    handle: JoinHandle<()>,
+    cancellation: CancellationFlag,
+}
+
+impl PendingCheck {
+    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
+    // started checking, and setting its flag stops it if it has already started.
+    fn cancel(self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
+// This is the result of a check whose diagnostics were published. A check which is cancelled or
+// superseded by a newer one reports nothing.
+struct PublishedCheck {
+    diagnostic_count: usize,
+}
+
+// This is an immutable version of a document's contents, shared by the requests and checks made
+// against it so each derived structure is computed at most once, when it's first needed. The
+// client assigns the version, which changes only when the contents do and is reported back with
+// diagnostics.
+#[derive(Debug)]
+struct Snapshot {
+    uri: Uri,
+    path: Option<PathBuf>,
+    contents: String,
+    version: i32,
+    line_index: OnceLock<LineIndex>,
+    parsed: OnceLock<(Wiki, Vec<Error>)>,
+}
+
+impl Snapshot {
+    // Capture a version of a document without analyzing it yet.
+    fn new(uri: Uri, contents: String, version: i32) -> Self {
+        Self {
+            path: local_path(&uri).map(Cow::into_owned),
+            uri,
+            contents,
+            version,
+            line_index: OnceLock::new(),
+            parsed: OnceLock::new(),
+        }
+    }
+
+    // Index the lines of the contents for position conversions.
+    fn line_index(&self) -> &LineIndex {
+        self.line_index
+            .get_or_init(|| LineIndex::new(&self.contents))
+    }
+
+    // Convert an editor position into a byte offset in the contents.
+    fn byte_offset(&self, position: Position) -> Option<usize> {
+        self.line_index().byte_offset(&self.contents, position)
+    }
+
+    // Convert a byte offset in the contents into an editor position.
+    fn position(&self, byte_offset: usize) -> Position {
+        self.line_index().position(&self.contents, byte_offset)
+    }
+
+    // Convert a source range in the contents into an editor range.
+    fn range(&self, source_range: SourceRange) -> Range {
+        self.line_index().range(&self.contents, source_range)
+    }
+
+    // Parse the contents, recovering from syntax errors so the wiki can still be validated and
+    // navigated.
+    fn parsed(&self) -> &(Wiki, Vec<Error>) {
+        self.parsed
+            .get_or_init(|| parser::parse(self.path.as_deref(), &self.contents, self.line_index()))
+    }
+
+    // Retrieve the wiki parsed with recovery from syntax errors.
+    fn wiki(&self) -> &Wiki {
+        &self.parsed().0
     }
 }
 
@@ -1305,6 +1264,24 @@ fn image_preview(path: &Path) -> Option<String> {
     Some(format!("<img src=\"{source}\" {dimensions}>"))
 }
 
+// Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
+// Neither side shrinks below a pixel, and an image which already fits keeps its size.
+fn image_preview_size(width: usize, height: usize) -> (usize, usize) {
+    if width <= MAX_IMAGE_WIDTH && height <= MAX_IMAGE_HEIGHT {
+        (width, height)
+    } else if width.saturating_mul(MAX_IMAGE_HEIGHT) > height.saturating_mul(MAX_IMAGE_WIDTH) {
+        (
+            MAX_IMAGE_WIDTH,
+            (height.saturating_mul(MAX_IMAGE_WIDTH) / width).max(1),
+        )
+    } else {
+        (
+            (width.saturating_mul(MAX_IMAGE_HEIGHT) / height).max(1),
+            MAX_IMAGE_HEIGHT,
+        )
+    }
+}
+
 // Show the first lines of a text file in a code block. A file is text if it's UTF-8 without control
 // characters other than line breaks and tabs, and other files have no text preview. Only the start
 // of a large file is read, so it may end partway through a character.
@@ -1392,24 +1369,6 @@ fn code_block_language(path: &Path) -> String {
             })
     })
     .unwrap_or_else(|| "text".to_owned())
-}
-
-// Scale an image's size down to fit within the maximum preview size, keeping its aspect ratio.
-// Neither side shrinks below a pixel, and an image which already fits keeps its size.
-fn image_preview_size(width: usize, height: usize) -> (usize, usize) {
-    if width <= MAX_IMAGE_WIDTH && height <= MAX_IMAGE_HEIGHT {
-        (width, height)
-    } else if width.saturating_mul(MAX_IMAGE_HEIGHT) > height.saturating_mul(MAX_IMAGE_WIDTH) {
-        (
-            MAX_IMAGE_WIDTH,
-            (height.saturating_mul(MAX_IMAGE_WIDTH) / width).max(1),
-        )
-    } else {
-        (
-            (width.saturating_mul(MAX_IMAGE_HEIGHT) / height).max(1),
-            MAX_IMAGE_HEIGHT,
-        )
-    }
 }
 
 // Locate every text link to the page at an editor position. Outside a title or link, that's the
@@ -1507,6 +1466,13 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<
         .collect()
 }
 
+// This records which file operations the client can perform within a versioned workspace edit.
+#[derive(Clone, Copy)]
+struct FileOperationSupport {
+    rename: bool,
+    delete: bool,
+}
+
 // Identify the source occurrence that should be selected before renaming a page, file, or
 // directory, or explain why the filesystem entry a link targets can't be renamed.
 fn prepare_rename_for_document(
@@ -1551,13 +1517,6 @@ fn prepare_rename_for_document(
         range: snapshot.range(source_range),
         placeholder: page.title.text(Context::Verbatim),
     }))
-}
-
-// This records which file operations the client can perform within a versioned workspace edit.
-#[derive(Clone, Copy)]
-struct FileOperationSupport {
-    rename: bool,
-    delete: bool,
 }
 
 // Rename the filesystem entry or page at an editor position, along with every link to it.
@@ -2083,128 +2042,6 @@ fn document_symbol_for_document(
     }
 }
 
-// List the bodies of the embeds in a wiki, from the line after each opening fence through the line
-// before its closing fence, omitting empty bodies. Embeds within others are part of their bodies.
-fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
-    let contents = &snapshot.contents;
-    let mut embeds = snapshot
-        .wiki()
-        .pages
-        .values()
-        .flat_map(|page| &page.embeds)
-        .map(|embed| SourceRange {
-            start: contents[embed.source_range.start..]
-                .find('\n')
-                .map_or(embed.source_range.end, |index| {
-                    embed.source_range.start + index + 1
-                }),
-            end: contents[..embed.source_range.end]
-                .rfind('\n')
-                .map_or(embed.source_range.start, |index| index + 1),
-        })
-        .filter(|source_range| source_range.start < source_range.end)
-        .collect::<Vec<_>>();
-    embeds.sort_by_key(|source_range| source_range.start);
-    embeds
-        .into_iter()
-        .map(|source_range| snapshot.range(source_range))
-        .collect()
-}
-
-// Plan attaching files to a saved wiki. A file already in the file root is linked where it is.
-// Any other file is copied directly into the file root, under its own name unless an entry or
-// another attached file already has it.
-fn attach_files_for_document(
-    snapshot: &Snapshot,
-    files: &[AttachedFile],
-) -> Option<AttachFilesPlan> {
-    // Find or choose a target for each file.
-    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
-    let mut targets = Vec::<FilesystemTarget>::new();
-    let mut copy_uris = Vec::new();
-    for file in files {
-        if let Some(target) = file
-            .uri
-            .as_ref()
-            .and_then(|uri| file_root_target(&file_root, uri))
-        {
-            targets.push(target);
-            copy_uris.push(None);
-        } else {
-            let target = available_file_target(&file_root, &file.name, &targets)?;
-            copy_uris.push(Some(file_uri(&file_root.path().join(target.path()))));
-            targets.push(target);
-        }
-    }
-
-    // Link to each file, separating the links with spaces.
-    Some(AttachFilesPlan {
-        copy_uris,
-        text: targets
-            .iter()
-            .map(|target| format!("[{}]", target.text(Context::Link)))
-            .collect::<Vec<_>>()
-            .join(" "),
-    })
-}
-
-// Find the target of a file in the file root, spelled as it is on disk, if a URI locates one.
-fn file_root_target(file_root: &FileRoot, uri: &Uri) -> Option<FilesystemTarget> {
-    let path = local_path(uri)?;
-    let target =
-        FilesystemTarget::from_name(path.strip_prefix(file_root.path()).ok()?.to_str()?, false)
-            .ok()?;
-    let spelled_path = file_root
-        .spell(&target, &mut DirectoryListings::new())
-        .ok()?;
-    if !fs::metadata(file_root.resolve(&spelled_path)).is_ok_and(|metadata| metadata.is_file()) {
-        return None;
-    }
-    FilesystemTarget::from_name(spelled_path.as_path().to_str()?, false).ok()
-}
-
-// Name a file directly in the file root, numbering the name's stem if an entry or another attached
-// file already has it. Attached files' names are compared without regard to case, as on a
-// case-insensitive filesystem. A name which a link couldn't name, such as one containing `/`, has
-// no target.
-fn available_file_target(
-    file_root: &FileRoot,
-    file_name: &str,
-    taken: &[FilesystemTarget],
-) -> Option<FilesystemTarget> {
-    // Require a name which links to a file directly in the file root.
-    let target = FilesystemTarget::from_name(file_name, false).ok()?;
-    if target.path().components().count() != 1 {
-        return None;
-    }
-
-    // Try the name as given, then with numbered stems.
-    let name = Path::new(file_name);
-    let stem = name.file_stem()?.to_str()?;
-    let extension = name
-        .extension()
-        .and_then(OsStr::to_str)
-        .map_or_else(String::new, |extension| format!(".{extension}"));
-    let mut candidate = target;
-    let mut number = 0_u64;
-    loop {
-        // Accept a name which neither an entry nor another attached file has.
-        if fs::symlink_metadata(file_root.path().join(candidate.path())).is_err()
-            && !taken.iter().any(|other| {
-                other.path().to_string_lossy().to_lowercase()
-                    == candidate.path().to_string_lossy().to_lowercase()
-            })
-        {
-            return Some(candidate);
-        }
-
-        // Number the stem, or count up from the last number.
-        number = number.checked_add(1)?;
-        candidate =
-            FilesystemTarget::from_name(&format!("{stem}-{number}{extension}"), false).ok()?;
-    }
-}
-
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to.
 #[allow(
@@ -2434,14 +2271,158 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
     Some(document_links)
 }
 
-// This describes which part of a resolved text link a caller considers relevant.
-#[derive(Clone, Copy)]
-enum LinkExtent {
-    // The complete link, including its square-bracket delimiters.
-    Whole,
+// These are the parameters of the request for the bodies of the embeds in a wiki.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmbedsParams {
+    text_document: TextDocumentIdentifier,
+}
 
-    // The link's inner text, which excludes its delimiters.
-    Target,
+// List the bodies of the embeds in a wiki, from the line after each opening fence through the line
+// before its closing fence, omitting empty bodies. Embeds within others are part of their bodies.
+fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
+    let contents = &snapshot.contents;
+    let mut embeds = snapshot
+        .wiki()
+        .pages
+        .values()
+        .flat_map(|page| &page.embeds)
+        .map(|embed| SourceRange {
+            start: contents[embed.source_range.start..]
+                .find('\n')
+                .map_or(embed.source_range.end, |index| {
+                    embed.source_range.start + index + 1
+                }),
+            end: contents[..embed.source_range.end]
+                .rfind('\n')
+                .map_or(embed.source_range.start, |index| index + 1),
+        })
+        .filter(|source_range| source_range.start < source_range.end)
+        .collect::<Vec<_>>();
+    embeds.sort_by_key(|source_range| source_range.start);
+    embeds
+        .into_iter()
+        .map(|source_range| snapshot.range(source_range))
+        .collect()
+}
+
+// These are the parameters of the request to attach files.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesParams {
+    text_document: TextDocumentIdentifier,
+    files: Vec<AttachedFile>,
+}
+
+// This is a file to attach, as it was pasted or dropped.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachedFile {
+    name: String,
+    uri: Option<Uri>, // Where the file is, unless only its data was given
+}
+
+// This plan attaches files to a wiki by copying each one which isn't already in its file root, and
+// inserting the text, which links to them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesPlan {
+    copy_uris: Vec<Option<Uri>>, // Where to copy each file, in the order given, if anywhere
+    text: String,
+}
+
+// Plan attaching files to a saved wiki. A file already in the file root is linked where it is.
+// Any other file is copied directly into the file root, under its own name unless an entry or
+// another attached file already has it.
+fn attach_files_for_document(
+    snapshot: &Snapshot,
+    files: &[AttachedFile],
+) -> Option<AttachFilesPlan> {
+    // Find or choose a target for each file.
+    let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
+    let mut targets = Vec::<FilesystemTarget>::new();
+    let mut copy_uris = Vec::new();
+    for file in files {
+        if let Some(target) = file
+            .uri
+            .as_ref()
+            .and_then(|uri| file_root_target(&file_root, uri))
+        {
+            targets.push(target);
+            copy_uris.push(None);
+        } else {
+            let target = available_file_target(&file_root, &file.name, &targets)?;
+            copy_uris.push(Some(file_uri(&file_root.path().join(target.path()))));
+            targets.push(target);
+        }
+    }
+
+    // Link to each file, separating the links with spaces.
+    Some(AttachFilesPlan {
+        copy_uris,
+        text: targets
+            .iter()
+            .map(|target| format!("[{}]", target.text(Context::Link)))
+            .collect::<Vec<_>>()
+            .join(" "),
+    })
+}
+
+// Find the target of a file in the file root, spelled as it is on disk, if a URI locates one.
+fn file_root_target(file_root: &FileRoot, uri: &Uri) -> Option<FilesystemTarget> {
+    let path = local_path(uri)?;
+    let target =
+        FilesystemTarget::from_name(path.strip_prefix(file_root.path()).ok()?.to_str()?, false)
+            .ok()?;
+    let spelled_path = file_root
+        .spell(&target, &mut DirectoryListings::new())
+        .ok()?;
+    if !fs::metadata(file_root.resolve(&spelled_path)).is_ok_and(|metadata| metadata.is_file()) {
+        return None;
+    }
+    FilesystemTarget::from_name(spelled_path.as_path().to_str()?, false).ok()
+}
+
+// Name a file directly in the file root, numbering the name's stem if an entry or another attached
+// file already has it. Attached files' names are compared without regard to case, as on a
+// case-insensitive filesystem. A name which a link couldn't name, such as one containing `/`, has
+// no target.
+fn available_file_target(
+    file_root: &FileRoot,
+    file_name: &str,
+    taken: &[FilesystemTarget],
+) -> Option<FilesystemTarget> {
+    // Require a name which links to a file directly in the file root.
+    let target = FilesystemTarget::from_name(file_name, false).ok()?;
+    if target.path().components().count() != 1 {
+        return None;
+    }
+
+    // Try the name as given, then with numbered stems.
+    let name = Path::new(file_name);
+    let stem = name.file_stem()?.to_str()?;
+    let extension = name
+        .extension()
+        .and_then(OsStr::to_str)
+        .map_or_else(String::new, |extension| format!(".{extension}"));
+    let mut candidate = target;
+    let mut number = 0_u64;
+    loop {
+        // Accept a name which neither an entry nor another attached file has.
+        if fs::symlink_metadata(file_root.path().join(candidate.path())).is_err()
+            && !taken.iter().any(|other| {
+                other.path().to_string_lossy().to_lowercase()
+                    == candidate.path().to_string_lossy().to_lowercase()
+            })
+        {
+            return Some(candidate);
+        }
+
+        // Number the stem, or count up from the last number.
+        number = number.checked_add(1)?;
+        candidate =
+            FilesystemTarget::from_name(&format!("{stem}-{number}{extension}"), false).ok()?;
+    }
 }
 
 // This is what a source offset within a page falls on.
@@ -2455,6 +2436,16 @@ enum Occurrence<'a> {
 
     // Anything else in the page.
     Prose(&'a Page),
+}
+
+// This describes which part of a resolved text link a caller considers relevant.
+#[derive(Clone, Copy)]
+enum LinkExtent {
+    // The complete link, including its square-bracket delimiters.
+    Whole,
+
+    // The link's inner text, which excludes its delimiters.
+    Target,
 }
 
 // Find what a source offset falls on, if it's within a page. A page includes the offset just past
@@ -2511,6 +2502,12 @@ fn page_at(
     }
 }
 
+// Find where navigating to a page leads: an empty range at its start, right before its `#`.
+fn page_start_range(snapshot: &Snapshot, page: &Page) -> Range {
+    let start = snapshot.position(page.source_range.start);
+    Range::new(start, start)
+}
+
 // Exclude the delimiters from a source range known to represent a complete link.
 fn text_link_target_source_range(source_contents: &str, source_range: SourceRange) -> SourceRange {
     // Confirm the parser-provided range still addresses square-bracket delimiters.
@@ -2541,12 +2538,6 @@ fn text_link_source_ranges(wiki: &Wiki, title: &PageTitle) -> Vec<SourceRange> {
         .collect::<Vec<_>>();
     source_ranges.sort_by_key(|source_range| (source_range.start, source_range.end));
     source_ranges
-}
-
-// Find where navigating to a page leads: an empty range at its start, right before its `#`.
-fn page_start_range(snapshot: &Snapshot, page: &Page) -> Range {
-    let start = snapshot.position(page.source_range.start);
-    Range::new(start, start)
 }
 
 // This is an entry of a directory in the file tree which a link could name.
@@ -2639,6 +2630,20 @@ fn filesystem_link_path(
         .then_some(path)
 }
 
+// Convert only file-scheme URIs because the URI library doesn't enforce this distinction.
+fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
+    uri.scheme()
+        .as_str()
+        .eq_ignore_ascii_case("file")
+        .then(|| uri.to_file_path())
+        .flatten()
+}
+
+// Convert a path within a saved wiki's file root, which is absolute, into a file URI.
+fn file_uri(path: &Path) -> Uri {
+    Uri::from_file_path(path).expect("A path within a saved wiki's file root should be absolute.")
+}
+
 // Encode a command and its positional arguments as a Markdown-safe URI.
 fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
     format!(
@@ -2648,11 +2653,6 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
             NON_ALPHANUMERIC,
         ),
     )
-}
-
-// Convert a path within a saved wiki's file root, which is absolute, into a file URI.
-fn file_uri(path: &Path) -> Uri {
-    Uri::from_file_path(path).expect("A path within a saved wiki's file root should be absolute.")
 }
 
 #[cfg(test)]
@@ -3028,16 +3028,6 @@ mod tests {
         );
     }
 
-    // Match a query's characters in order, wherever they appear.
-    #[test]
-    fn subsequences_match_in_order() {
-        assert!(is_subsequence("grt", "greeting"));
-        assert!(is_subsequence("", "greeting"));
-        assert!(is_subsequence("greeting", "greeting"));
-        assert!(!is_subsequence("gtr", "greeting"));
-        assert!(!is_subsequence("x", ""));
-    }
-
     // Complete a link at the end of the document, but not from before its opening delimiter or
     // outside of any link.
     #[test]
@@ -3181,6 +3171,16 @@ mod tests {
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(0, 3))
                 .is_none(),
         );
+    }
+
+    // Match a query's characters in order, wherever they appear.
+    #[test]
+    fn subsequences_match_in_order() {
+        assert!(is_subsequence("grt", "greeting"));
+        assert!(is_subsequence("", "greeting"));
+        assert!(is_subsequence("greeting", "greeting"));
+        assert!(!is_subsequence("gtr", "greeting"));
+        assert!(!is_subsequence("x", ""));
     }
 
     // Summarize each completion by its label, replacement range, and inserted text.
@@ -3489,6 +3489,59 @@ mod tests {
         );
     }
 
+    // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
+    fn hover_markdown(uri: &Uri, source: &str, position: Position) -> Option<String> {
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(uri, source), position)?.contents
+        else {
+            panic!("A preview should use markup content.");
+        };
+        Some(contents.value)
+    }
+
+    // List a directory's visible entries as links, with directories first, leaving out ignored
+    // entries and directories without files. A missing directory has no preview.
+    #[test]
+    fn hovers_preview_directories() {
+        let source = "# Home\n\n[/] [/b/] [/missing/]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+        fs::write(directory.join("a.txt"), "a").unwrap();
+        fs::create_dir_all(directory.join("b")).unwrap();
+        fs::write(directory.join("b").join("c [1].txt"), "c").unwrap();
+        fs::create_dir(directory.join("empty")).unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 1)).unwrap(),
+            "```mull\n[/b/]\n[/.gitignore]\n[/a.txt]\n```",
+        );
+        assert_eq!(
+            hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
+            "```mull\n[/b/c \\[1\\].txt]\n```",
+        );
+        assert!(hover_markdown(&uri, source, Position::new(2, 12)).is_none());
+    }
+
+    // List only so many of a directory's entries, followed by a count of the rest.
+    #[test]
+    fn hovers_preview_large_directories() {
+        let source = "# Home\n\n[/]";
+        let wiki = TestWiki::new(source);
+        for index in 0..MAX_DIRECTORY_PREVIEW_ENTRIES + 2 {
+            fs::write(wiki.directory().join(format!("{index:03}.txt")), "").unwrap();
+        }
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let markdown = hover_markdown(&uri, source, Position::new(2, 1)).unwrap();
+        let lines = markdown.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), MAX_DIRECTORY_PREVIEW_ENTRIES + 3);
+        assert_eq!(lines[1], "[/000.txt]");
+        assert_eq!(lines[MAX_DIRECTORY_PREVIEW_ENTRIES + 1], "…and 2 more");
+    }
+
     // Write the start of a PNG file with the given size, enough for its size to be read.
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
@@ -3544,6 +3597,44 @@ mod tests {
         assert!(
             hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
         );
+    }
+
+    // Give an image whose size can't be read the maximum preview width.
+    #[test]
+    fn hovers_preview_unreadable_images() {
+        let source = "# Home\n\n[/drawing.svg]";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.directory().join("drawing.svg"), "<svg/>").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 3))
+                .unwrap()
+                .contents
+        else {
+            panic!("An image preview should use markup content.");
+        };
+        assert!(
+            contents
+                .value
+                .ends_with(&format!(" width=\"{MAX_IMAGE_WIDTH}\">")),
+        );
+    }
+
+    // Shrink images to fit within the maximum preview size, keeping their aspect ratios, but leave
+    // smaller images as they are.
+    #[test]
+    fn image_preview_sizes() {
+        assert_eq!(image_preview_size(100, 50), (100, 50));
+        assert_eq!(
+            image_preview_size(MAX_IMAGE_WIDTH * 2, MAX_IMAGE_HEIGHT),
+            (MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT / 2),
+        );
+        assert_eq!(
+            image_preview_size(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT * 3),
+            (MAX_IMAGE_WIDTH / 3, MAX_IMAGE_HEIGHT),
+        );
+        assert_eq!(image_preview_size(100_000, 1), (MAX_IMAGE_WIDTH, 1));
     }
 
     // Show text files in code blocks, but not files which are invalid UTF-8 or contain control
@@ -3633,97 +3724,6 @@ mod tests {
         ] {
             assert_eq!(code_block_language(Path::new(path)), language);
         }
-    }
-
-    // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
-    fn hover_markdown(uri: &Uri, source: &str, position: Position) -> Option<String> {
-        let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(uri, source), position)?.contents
-        else {
-            panic!("A preview should use markup content.");
-        };
-        Some(contents.value)
-    }
-
-    // List a directory's visible entries as links, with directories first, leaving out ignored
-    // entries and directories without files. A missing directory has no preview.
-    #[test]
-    fn hovers_preview_directories() {
-        let source = "# Home\n\n[/] [/b/] [/missing/]";
-        let wiki = TestWiki::new(source);
-        let directory = wiki.directory();
-        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
-        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
-        fs::write(directory.join("a.txt"), "a").unwrap();
-        fs::create_dir_all(directory.join("b")).unwrap();
-        fs::write(directory.join("b").join("c [1].txt"), "c").unwrap();
-        fs::create_dir(directory.join("empty")).unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 1)).unwrap(),
-            "```mull\n[/b/]\n[/.gitignore]\n[/a.txt]\n```",
-        );
-        assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
-            "```mull\n[/b/c \\[1\\].txt]\n```",
-        );
-        assert!(hover_markdown(&uri, source, Position::new(2, 12)).is_none());
-    }
-
-    // List only so many of a directory's entries, followed by a count of the rest.
-    #[test]
-    fn hovers_preview_large_directories() {
-        let source = "# Home\n\n[/]";
-        let wiki = TestWiki::new(source);
-        for index in 0..MAX_DIRECTORY_PREVIEW_ENTRIES + 2 {
-            fs::write(wiki.directory().join(format!("{index:03}.txt")), "").unwrap();
-        }
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        let markdown = hover_markdown(&uri, source, Position::new(2, 1)).unwrap();
-        let lines = markdown.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), MAX_DIRECTORY_PREVIEW_ENTRIES + 3);
-        assert_eq!(lines[1], "[/000.txt]");
-        assert_eq!(lines[MAX_DIRECTORY_PREVIEW_ENTRIES + 1], "…and 2 more");
-    }
-
-    // Give an image whose size can't be read the maximum preview width.
-    #[test]
-    fn hovers_preview_unreadable_images() {
-        let source = "# Home\n\n[/drawing.svg]";
-        let wiki = TestWiki::new(source);
-        fs::write(wiki.directory().join("drawing.svg"), "<svg/>").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(&uri, source), Position::new(2, 3))
-                .unwrap()
-                .contents
-        else {
-            panic!("An image preview should use markup content.");
-        };
-        assert!(
-            contents
-                .value
-                .ends_with(&format!(" width=\"{MAX_IMAGE_WIDTH}\">")),
-        );
-    }
-
-    // Shrink images to fit within the maximum preview size, keeping their aspect ratios, but leave
-    // smaller images as they are.
-    #[test]
-    fn image_preview_sizes() {
-        assert_eq!(image_preview_size(100, 50), (100, 50));
-        assert_eq!(
-            image_preview_size(MAX_IMAGE_WIDTH * 2, MAX_IMAGE_HEIGHT),
-            (MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT / 2),
-        );
-        assert_eq!(
-            image_preview_size(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT * 3),
-            (MAX_IMAGE_WIDTH / 3, MAX_IMAGE_HEIGHT),
-        );
-        assert_eq!(image_preview_size(100_000, 1), (MAX_IMAGE_WIDTH, 1));
     }
 
     // Find every text link from either a declaration or one of its references.
@@ -4834,101 +4834,6 @@ mod tests {
         );
     }
 
-    // List the bodies of top-level embeds in source order, including any embeds within them, and
-    // omit empty bodies.
-    #[test]
-    fn embeds_list_bodies() {
-        let source = "# Zebra\n\n::: embed [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
-                      ::: embed [Beta]\n:::\n\n# Beta\n\n:::: embed [Alpha]\n\
-                      ::: embed [Beta]\nNested\n:::\n::::";
-        assert_eq!(
-            embeds_for_document(&snapshot(&untitled_uri(), source)),
-            vec![
-                Range::new(Position::new(3, 0), Position::new(4, 0)),
-                Range::new(Position::new(16, 0), Position::new(19, 0)),
-            ],
-        );
-    }
-
-    // Link to files already in the file root where they are, and copy other files into it under
-    // names no entry or other attached file has.
-    #[test]
-    fn attaching_files_links_or_copies_them() {
-        let source = "# Home\n\nTart.\n";
-        let wiki = TestWiki::new(source);
-        fs::create_dir(wiki.directory().join("photos")).unwrap();
-        fs::write(wiki.directory().join("photos/beach.jpg"), "beach").unwrap();
-        fs::write(wiki.directory().join("image.png"), "image").unwrap();
-        let elsewhere = wiki.path().with_file_name("elsewhere.pdf");
-        let saved = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
-        let attach = |snapshot: &Snapshot, files: &[(&str, Option<&Path>)]| {
-            let files = files
-                .iter()
-                .map(|&(name, path)| AttachedFile {
-                    name: name.to_owned(),
-                    uri: path.map(|path| Uri::from_file_path(path).unwrap()),
-                })
-                .collect::<Vec<_>>();
-            attach_files_for_document(snapshot, &files).map(|plan| {
-                (
-                    plan.copy_uris
-                        .iter()
-                        .map(|uri| {
-                            uri.as_ref()
-                                .map(|uri| uri.to_file_path().unwrap().into_owned())
-                        })
-                        .collect::<Vec<_>>(),
-                    plan.text,
-                )
-            })
-        };
-
-        // Number names which are taken, and escape special characters in links.
-        assert_eq!(
-            attach(
-                &saved,
-                &[
-                    ("image.png", None),
-                    ("image.png", None),
-                    ("a [b].txt", None),
-                ],
-            ),
-            Some((
-                vec![
-                    Some(wiki.directory().join("image-1.png")),
-                    Some(wiki.directory().join("image-2.png")),
-                    Some(wiki.directory().join("a [b].txt")),
-                ],
-                "[/image-1.png] [/image-2.png] [/a \\[b\\].txt]".to_owned(),
-            )),
-        );
-
-        // Link to a file in the file root without copying it, and copy a file from elsewhere.
-        assert_eq!(
-            attach(
-                &saved,
-                &[
-                    (
-                        "beach.jpg",
-                        Some(&wiki.directory().join("photos/beach.jpg")),
-                    ),
-                    ("elsewhere.pdf", Some(&elsewhere)),
-                ],
-            ),
-            Some((
-                vec![None, Some(wiki.directory().join("elsewhere.pdf"))],
-                "[/photos/beach.jpg] [/elsewhere.pdf]".to_owned(),
-            )),
-        );
-
-        // Decline names a link can't give directly in the file root, and untitled wikis.
-        assert_eq!(attach(&saved, &[("a/b.png", None)]), None);
-        assert_eq!(
-            attach(&snapshot(&untitled_uri(), source), &[("notes.txt", None)]),
-            None,
-        );
-    }
-
     // Expose pages in source order for saved and untitled editor outlines.
     #[test]
     fn document_symbols_describe_pages() {
@@ -5323,6 +5228,101 @@ mod tests {
         assert_eq!(
             document_links[0].target,
             Some(Uri::from_file_path(wiki.directory().join("within.txt")).unwrap()),
+        );
+    }
+
+    // List the bodies of top-level embeds in source order, including any embeds within them, and
+    // omit empty bodies.
+    #[test]
+    fn embeds_list_bodies() {
+        let source = "# Zebra\n\n::: embed [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
+                      ::: embed [Beta]\n:::\n\n# Beta\n\n:::: embed [Alpha]\n\
+                      ::: embed [Beta]\nNested\n:::\n::::";
+        assert_eq!(
+            embeds_for_document(&snapshot(&untitled_uri(), source)),
+            vec![
+                Range::new(Position::new(3, 0), Position::new(4, 0)),
+                Range::new(Position::new(16, 0), Position::new(19, 0)),
+            ],
+        );
+    }
+
+    // Link to files already in the file root where they are, and copy other files into it under
+    // names no entry or other attached file has.
+    #[test]
+    fn attaching_files_links_or_copies_them() {
+        let source = "# Home\n\nTart.\n";
+        let wiki = TestWiki::new(source);
+        fs::create_dir(wiki.directory().join("photos")).unwrap();
+        fs::write(wiki.directory().join("photos/beach.jpg"), "beach").unwrap();
+        fs::write(wiki.directory().join("image.png"), "image").unwrap();
+        let elsewhere = wiki.path().with_file_name("elsewhere.pdf");
+        let saved = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
+        let attach = |snapshot: &Snapshot, files: &[(&str, Option<&Path>)]| {
+            let files = files
+                .iter()
+                .map(|&(name, path)| AttachedFile {
+                    name: name.to_owned(),
+                    uri: path.map(|path| Uri::from_file_path(path).unwrap()),
+                })
+                .collect::<Vec<_>>();
+            attach_files_for_document(snapshot, &files).map(|plan| {
+                (
+                    plan.copy_uris
+                        .iter()
+                        .map(|uri| {
+                            uri.as_ref()
+                                .map(|uri| uri.to_file_path().unwrap().into_owned())
+                        })
+                        .collect::<Vec<_>>(),
+                    plan.text,
+                )
+            })
+        };
+
+        // Number names which are taken, and escape special characters in links.
+        assert_eq!(
+            attach(
+                &saved,
+                &[
+                    ("image.png", None),
+                    ("image.png", None),
+                    ("a [b].txt", None),
+                ],
+            ),
+            Some((
+                vec![
+                    Some(wiki.directory().join("image-1.png")),
+                    Some(wiki.directory().join("image-2.png")),
+                    Some(wiki.directory().join("a [b].txt")),
+                ],
+                "[/image-1.png] [/image-2.png] [/a \\[b\\].txt]".to_owned(),
+            )),
+        );
+
+        // Link to a file in the file root without copying it, and copy a file from elsewhere.
+        assert_eq!(
+            attach(
+                &saved,
+                &[
+                    (
+                        "beach.jpg",
+                        Some(&wiki.directory().join("photos/beach.jpg")),
+                    ),
+                    ("elsewhere.pdf", Some(&elsewhere)),
+                ],
+            ),
+            Some((
+                vec![None, Some(wiki.directory().join("elsewhere.pdf"))],
+                "[/photos/beach.jpg] [/elsewhere.pdf]".to_owned(),
+            )),
+        );
+
+        // Decline names a link can't give directly in the file root, and untitled wikis.
+        assert_eq!(attach(&saved, &[("a/b.png", None)]), None);
+        assert_eq!(
+            attach(&snapshot(&untitled_uri(), source), &[("notes.txt", None)]),
+            None,
         );
     }
 }

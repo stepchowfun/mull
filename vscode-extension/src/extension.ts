@@ -8,9 +8,6 @@ import {
   type Range as ProtocolRange,
 } from 'vscode-languageclient/node';
 
-// Make executable probes compatible with the extension's asynchronous startup.
-const execFileAsync = promisify(execFile);
-
 // Determine the type of a setting's value.
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 const isString = (value: unknown): value is string => typeof value === 'string';
@@ -29,6 +26,9 @@ function setting<T>(
   }
   return value;
 }
+
+// Make executable probes compatible with the extension's asynchronous startup.
+const execFileAsync = promisify(execFile);
 
 // Link users to Mull's platform-specific installation instructions.
 const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
@@ -98,6 +98,68 @@ async function reportVersionMismatch(
   await offerRecovery(false, message);
 }
 
+// Retain the active client so it can be stopped when the extension is deactivated.
+let client: LanguageClient | undefined;
+
+// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
+// the preview in the references view, have no view column, and are left alone.
+function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
+  return (
+    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
+  );
+}
+
+// List a wiki's pages in source order, using the language server's document symbols, which are
+// named after the pages' titles and whose ranges span entire pages.
+async function wikiPages(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
+  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
+    'vscode.executeDocumentSymbolProvider',
+    document.uri,
+  );
+  return (symbols ?? []).toSorted((a, b) => a.range.start.compareTo(b.range.start));
+}
+
+// Find the page containing a position, which is the last page starting at or before it, so a
+// position between pages belongs to the one above. A position before the first page has none.
+function pageAt(
+  pages: readonly vscode.DocumentSymbol[],
+  position: vscode.Position,
+): vscode.DocumentSymbol | undefined {
+  return pages.findLast((page) => page.range.start.isBeforeOrEqual(position));
+}
+
+// This request lists the bodies of the embeds in a wiki. Keep this in sync with
+// [ref:embeds_request_server].
+const EMBEDS_REQUEST = 'mull/embeds'; // [tag:embeds_request_client]
+
+// List the bodies of a wiki's embeds in source order, which needs the language server.
+async function wikiEmbeds(document: vscode.TextDocument): Promise<vscode.Range[]> {
+  const activeClient = client;
+  if (activeClient === undefined || !activeClient.isRunning()) {
+    return [];
+  }
+  const ranges = await activeClient.sendRequest<ProtocolRange[] | null>(EMBEDS_REQUEST, {
+    textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
+  });
+  return (ranges ?? []).map((range) => activeClient.protocol2CodeConverter.asRange(range));
+}
+
+// This command checks the wiki being edited again, through the language server command of the same
+// name. Keep this in sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+
+// Ask the language server to check the wiki being edited, which reports the result.
+async function checkActiveWiki(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (client === undefined || !isMainWikiEditor(editor)) {
+    return;
+  }
+  await client.sendRequest(ExecuteCommandRequest.type, {
+    command: CHECK_WIKI_COMMAND,
+    arguments: [editor.document.uri.toString()],
+  });
+}
+
 // This private command lets the language server reveal a source range in a document.
 // [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = 'mull.revealRange';
@@ -135,222 +197,6 @@ async function revealInExplorer(uriString: string): Promise<void> {
   } else {
     await vscode.commands.executeCommand('revealInExplorer', uri);
   }
-}
-
-// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
-// the preview in the references view, have no view column, and are left alone.
-function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
-  return (
-    editor !== undefined && editor.document.languageId === 'mull' && editor.viewColumn !== undefined
-  );
-}
-
-// List a wiki's pages in source order, using the language server's document symbols, which are
-// named after the pages' titles and whose ranges span entire pages.
-async function wikiPages(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
-  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
-    'vscode.executeDocumentSymbolProvider',
-    document.uri,
-  );
-  return (symbols ?? []).toSorted((a, b) => a.range.start.compareTo(b.range.start));
-}
-
-// Retain the active client so it can be stopped when the extension is deactivated.
-let client: LanguageClient | undefined;
-
-// This request lists the bodies of the embeds in a wiki. Keep this in sync with
-// [ref:embeds_request_server].
-const EMBEDS_REQUEST = 'mull/embeds'; // [tag:embeds_request_client]
-
-// List the bodies of a wiki's embeds in source order, which needs the language server.
-async function wikiEmbeds(document: vscode.TextDocument): Promise<vscode.Range[]> {
-  const activeClient = client;
-  if (activeClient === undefined || !activeClient.isRunning()) {
-    return [];
-  }
-  const ranges = await activeClient.sendRequest<ProtocolRange[] | null>(EMBEDS_REQUEST, {
-    textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
-  });
-  return (ranges ?? []).map((range) => activeClient.protocol2CodeConverter.asRange(range));
-}
-
-// This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
-// with [ref:attach_files_request_server].
-const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
-
-// This is a file to attach to a wiki: its name, where it is if that's known, and its data if it
-// came from outside the editor. One of the last two is always given.
-interface AttachableFile {
-  name: string;
-  uri: vscode.Uri | undefined;
-  data: vscode.DataTransferFile | undefined;
-}
-
-// This is the language server's plan for attaching files: copy each file to its URI, if it has
-// one, in the order they were given, and insert the text, which links to them.
-interface AttachFilesPlan {
-  copyUris: (string | null)[];
-  text: string;
-}
-
-// This kind identifies pasting or dropping files into a wiki as links to them.
-const ATTACH_FILES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'file');
-
-// This describes pasting or dropping files into a wiki to the user.
-const ATTACH_FILES_TITLE = 'Link to the files, copying them into the wiki if needed';
-
-// Collect the files being pasted or dropped. They come as data, like a screenshot, or as locations,
-// like a file copied in a file manager or dragged from the explorer, or both. Folders, and
-// locations which aren't on disk, like web pages, are left out.
-async function attachableFiles(dataTransfer: vscode.DataTransfer): Promise<AttachableFile[]> {
-  // Collect the files given as data, each of which may be offered under several types.
-  const files: AttachableFile[] = [];
-  const seenData = new Set<vscode.DataTransferFile>();
-  for (const [, item] of dataTransfer) {
-    const data = item.asFile();
-    if (data !== undefined && !seenData.has(data)) {
-      seenData.add(data);
-      files.push({ name: data.name, uri: data.uri, data });
-    }
-  }
-
-  // Collect the files given only as locations, skipping the list's comments.
-  const uriListItem = dataTransfer.get('text/uri-list');
-  const uriList = uriListItem === undefined ? '' : await uriListItem.asString();
-  const uris = uriList
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !line.startsWith('#'))
-    .map((line) => vscode.Uri.parse(line))
-    .filter(
-      (uri) =>
-        uri.scheme === 'file' &&
-        !files.some((file) => file.uri !== undefined && file.uri.toString() === uri.toString()),
-    );
-  const types = await Promise.all(
-    uris.map(async (uri) => {
-      try {
-        return (await vscode.workspace.fs.stat(uri)).type;
-      } catch {
-        return vscode.FileType.Unknown;
-      }
-    }),
-  );
-  for (const [index, uri] of uris.entries()) {
-    if (types[index] === vscode.FileType.File) {
-      files.push({ name: uri.path.split('/').at(-1) ?? '', uri, data: undefined });
-    }
-  }
-  return files;
-}
-
-// Attach files to a saved wiki: link to those already in its file root where they are, and copy
-// the others into it and link to the copies, as one edit. The language server chooses the copies'
-// names and writes the links.
-async function attachFiles(
-  document: vscode.TextDocument,
-  files: readonly AttachableFile[],
-  token: vscode.CancellationToken,
-): Promise<{ text: string; additionalEdit: vscode.WorkspaceEdit } | undefined> {
-  // Ask the language server where the files go and how to link to them.
-  const activeClient = client;
-  if (files.length === 0 || activeClient === undefined || !activeClient.isRunning()) {
-    return undefined;
-  }
-  const plan = await activeClient.sendRequest<AttachFilesPlan | null>(
-    ATTACH_FILES_REQUEST,
-    {
-      textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
-      files: files.map((file) => ({
-        name: file.name,
-        uri: file.uri === undefined ? null : activeClient.code2ProtocolConverter.asUri(file.uri),
-      })),
-    },
-    token,
-  );
-  if (plan === null || token.isCancellationRequested) {
-    return undefined;
-  }
-
-  // Copy the files which need it along with the links, reading any given only as locations. Give
-  // up if a file can't be read, rather than link to a copy which wouldn't exist.
-  const copies = await Promise.all(
-    plan.copyUris.map(async (copyUri, index) => {
-      const file = files[index];
-      if (copyUri === null || file === undefined) {
-        return undefined;
-      }
-      let contents: Uint8Array | vscode.DataTransferFile | undefined = file.data;
-      if (contents === undefined && file.uri !== undefined) {
-        try {
-          contents = await vscode.workspace.fs.readFile(file.uri);
-        } catch {
-          return null;
-        }
-      }
-      return { uri: activeClient.protocol2CodeConverter.asUri(copyUri), contents };
-    }),
-  );
-  const additionalEdit = new vscode.WorkspaceEdit();
-  for (const copy of copies) {
-    if (copy === null || (copy !== undefined && copy.contents === undefined)) {
-      return undefined;
-    }
-    if (copy !== undefined) {
-      additionalEdit.createFile(copy.uri, { contents: copy.contents });
-    }
-  }
-  return { text: plan.text, additionalEdit };
-}
-
-// Paste files into a saved wiki as links to them, copying them into its file root if needed.
-async function pasteFiles(
-  document: vscode.TextDocument,
-  _ranges: readonly vscode.Range[],
-  dataTransfer: vscode.DataTransfer,
-  _context: vscode.DocumentPasteEditContext,
-  token: vscode.CancellationToken,
-): Promise<vscode.DocumentPasteEdit[] | undefined> {
-  // Plan the edit.
-  const files = await attachableFiles(dataTransfer);
-  const attachment = await attachFiles(document, files, token);
-  if (attachment === undefined) {
-    return undefined;
-  }
-  const edit = new vscode.DocumentPasteEdit(attachment.text, ATTACH_FILES_TITLE, ATTACH_FILES_KIND);
-  edit.additionalEdit = attachment.additionalEdit;
-
-  // Prefer pasting text when every file came only as data, as when apps like spreadsheets copy an
-  // image of their content along with its text, leaving this edit in the paste widget.
-  if (files.every((file) => file.uri === undefined)) {
-    edit.yieldTo = [vscode.DocumentDropOrPasteEditKind.Text];
-  }
-  return [edit];
-}
-
-// Drop files into a saved wiki as links to them, copying them into its file root if needed.
-async function dropFiles(
-  document: vscode.TextDocument,
-  _position: vscode.Position,
-  dataTransfer: vscode.DataTransfer,
-  token: vscode.CancellationToken,
-): Promise<vscode.DocumentDropEdit | undefined> {
-  const attachment = await attachFiles(document, await attachableFiles(dataTransfer), token);
-  if (attachment === undefined) {
-    return undefined;
-  }
-  const edit = new vscode.DocumentDropEdit(attachment.text, ATTACH_FILES_TITLE, ATTACH_FILES_KIND);
-  edit.additionalEdit = attachment.additionalEdit;
-  return edit;
-}
-
-// Find the page containing a position, which is the last page starting at or before it, so a
-// position between pages belongs to the one above. A position before the first page has none.
-function pageAt(
-  pages: readonly vscode.DocumentSymbol[],
-  position: vscode.Position,
-): vscode.DocumentSymbol | undefined {
-  return pages.findLast((page) => page.range.start.isBeforeOrEqual(position));
 }
 
 // These commands move the cursor to the start or end of the page containing it, optionally
@@ -789,20 +635,174 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
   }
 }
 
-// This command checks the wiki being edited again, through the language server command of the same
-// name. Keep this in sync with [group:check_wiki_command].
-const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+// This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
+// with [ref:attach_files_request_server].
+const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
 
-// Ask the language server to check the wiki being edited, which reports the result.
-async function checkActiveWiki(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (client === undefined || !isMainWikiEditor(editor)) {
-    return;
+// This is a file to attach to a wiki: its name, where it is if that's known, and its data if it
+// came from outside the editor. One of the last two is always given.
+interface AttachableFile {
+  name: string;
+  uri: vscode.Uri | undefined;
+  data: vscode.DataTransferFile | undefined;
+}
+
+// This is the language server's plan for attaching files: copy each file to its URI, if it has
+// one, in the order they were given, and insert the text, which links to them.
+interface AttachFilesPlan {
+  copyUris: (string | null)[];
+  text: string;
+}
+
+// This kind identifies pasting or dropping files into a wiki as links to them.
+const ATTACH_FILES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'file');
+
+// This describes pasting or dropping files into a wiki to the user.
+const ATTACH_FILES_TITLE = 'Link to the files, copying them into the wiki if needed';
+
+// Collect the files being pasted or dropped. They come as data, like a screenshot, or as locations,
+// like a file copied in a file manager or dragged from the explorer, or both. Folders, and
+// locations which aren't on disk, like web pages, are left out.
+async function attachableFiles(dataTransfer: vscode.DataTransfer): Promise<AttachableFile[]> {
+  // Collect the files given as data, each of which may be offered under several types.
+  const files: AttachableFile[] = [];
+  const seenData = new Set<vscode.DataTransferFile>();
+  for (const [, item] of dataTransfer) {
+    const data = item.asFile();
+    if (data !== undefined && !seenData.has(data)) {
+      seenData.add(data);
+      files.push({ name: data.name, uri: data.uri, data });
+    }
   }
-  await client.sendRequest(ExecuteCommandRequest.type, {
-    command: CHECK_WIKI_COMMAND,
-    arguments: [editor.document.uri.toString()],
-  });
+
+  // Collect the files given only as locations, skipping the list's comments.
+  const uriListItem = dataTransfer.get('text/uri-list');
+  const uriList = uriListItem === undefined ? '' : await uriListItem.asString();
+  const uris = uriList
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+    .map((line) => vscode.Uri.parse(line))
+    .filter(
+      (uri) =>
+        uri.scheme === 'file' &&
+        !files.some((file) => file.uri !== undefined && file.uri.toString() === uri.toString()),
+    );
+  const types = await Promise.all(
+    uris.map(async (uri) => {
+      try {
+        return (await vscode.workspace.fs.stat(uri)).type;
+      } catch {
+        return vscode.FileType.Unknown;
+      }
+    }),
+  );
+  for (const [index, uri] of uris.entries()) {
+    if (types[index] === vscode.FileType.File) {
+      files.push({ name: uri.path.split('/').at(-1) ?? '', uri, data: undefined });
+    }
+  }
+  return files;
+}
+
+// Attach files to a saved wiki: link to those already in its file root where they are, and copy
+// the others into it and link to the copies, as one edit. The language server chooses the copies'
+// names and writes the links.
+async function attachFiles(
+  document: vscode.TextDocument,
+  files: readonly AttachableFile[],
+  token: vscode.CancellationToken,
+): Promise<{ text: string; additionalEdit: vscode.WorkspaceEdit } | undefined> {
+  // Ask the language server where the files go and how to link to them.
+  const activeClient = client;
+  if (files.length === 0 || activeClient === undefined || !activeClient.isRunning()) {
+    return undefined;
+  }
+  const plan = await activeClient.sendRequest<AttachFilesPlan | null>(
+    ATTACH_FILES_REQUEST,
+    {
+      textDocument: { uri: activeClient.code2ProtocolConverter.asUri(document.uri) },
+      files: files.map((file) => ({
+        name: file.name,
+        uri: file.uri === undefined ? null : activeClient.code2ProtocolConverter.asUri(file.uri),
+      })),
+    },
+    token,
+  );
+  if (plan === null || token.isCancellationRequested) {
+    return undefined;
+  }
+
+  // Copy the files which need it along with the links, reading any given only as locations. Give
+  // up if a file can't be read, rather than link to a copy which wouldn't exist.
+  const copies = await Promise.all(
+    plan.copyUris.map(async (copyUri, index) => {
+      const file = files[index];
+      if (copyUri === null || file === undefined) {
+        return undefined;
+      }
+      let contents: Uint8Array | vscode.DataTransferFile | undefined = file.data;
+      if (contents === undefined && file.uri !== undefined) {
+        try {
+          contents = await vscode.workspace.fs.readFile(file.uri);
+        } catch {
+          return null;
+        }
+      }
+      return { uri: activeClient.protocol2CodeConverter.asUri(copyUri), contents };
+    }),
+  );
+  const additionalEdit = new vscode.WorkspaceEdit();
+  for (const copy of copies) {
+    if (copy === null || (copy !== undefined && copy.contents === undefined)) {
+      return undefined;
+    }
+    if (copy !== undefined) {
+      additionalEdit.createFile(copy.uri, { contents: copy.contents });
+    }
+  }
+  return { text: plan.text, additionalEdit };
+}
+
+// Paste files into a saved wiki as links to them, copying them into its file root if needed.
+async function pasteFiles(
+  document: vscode.TextDocument,
+  _ranges: readonly vscode.Range[],
+  dataTransfer: vscode.DataTransfer,
+  _context: vscode.DocumentPasteEditContext,
+  token: vscode.CancellationToken,
+): Promise<vscode.DocumentPasteEdit[] | undefined> {
+  // Plan the edit.
+  const files = await attachableFiles(dataTransfer);
+  const attachment = await attachFiles(document, files, token);
+  if (attachment === undefined) {
+    return undefined;
+  }
+  const edit = new vscode.DocumentPasteEdit(attachment.text, ATTACH_FILES_TITLE, ATTACH_FILES_KIND);
+  edit.additionalEdit = attachment.additionalEdit;
+
+  // Prefer pasting text when every file came only as data, as when apps like spreadsheets copy an
+  // image of their content along with its text, leaving this edit in the paste widget.
+  if (files.every((file) => file.uri === undefined)) {
+    edit.yieldTo = [vscode.DocumentDropOrPasteEditKind.Text];
+  }
+  return [edit];
+}
+
+// Drop files into a saved wiki as links to them, copying them into its file root if needed.
+async function dropFiles(
+  document: vscode.TextDocument,
+  _position: vscode.Position,
+  dataTransfer: vscode.DataTransfer,
+  token: vscode.CancellationToken,
+): Promise<vscode.DocumentDropEdit | undefined> {
+  const attachment = await attachFiles(document, await attachableFiles(dataTransfer), token);
+  if (attachment === undefined) {
+    return undefined;
+  }
+  const edit = new vscode.DocumentDropEdit(attachment.text, ATTACH_FILES_TITLE, ATTACH_FILES_KIND);
+  edit.additionalEdit = attachment.additionalEdit;
+  return edit;
 }
 
 // Start a Mull language server for local and untitled Mull documents.
