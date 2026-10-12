@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0] - 2026-10-12
+
+### Added
+
+- In the VS Code extension, pasting an image into a saved wiki, such as a screenshot, now copies it into the wiki's `<wiki>_files` directory and links to the copy where it's pasted. A copy is numbered, like `image-1.png`, if its name is taken. When the clipboard also has text, as when copying from a spreadsheet, the text is pasted instead, and the image can be pasted from the paste widget.
+
 ## [0.47.0] - 2026-10-11
 
 ### Added
