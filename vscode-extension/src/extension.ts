@@ -2,7 +2,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
-import { ExecuteCommandRequest, LanguageClient } from 'vscode-languageclient/node';
+import {
+  ExecuteCommandRequest,
+  LanguageClient,
+  type ProvideDocumentFormattingEditsSignature,
+} from 'vscode-languageclient/node';
 
 // Determine the type of a setting's value.
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
@@ -754,6 +758,119 @@ async function dropFiles(
   return edit;
 }
 
+// This is where an editor's cursor is in a page, as its title and the number of characters before
+// the cursor in the page, counting only those which aren't whitespace, along with the whitespace
+// right before the cursor. Formatting rarely changes anything but whitespace within a page, so these
+// find the same place in the page after formatting, wherever the page moves.
+interface PagePosition {
+  readonly editor: vscode.TextEditor;
+  readonly title: string;
+  readonly charactersBefore: number;
+  readonly whitespaceBefore: number;
+}
+
+// Find where each main editor showing a wiki has its cursor in a page, if it's in one.
+async function pagePositions(document: vscode.TextDocument): Promise<PagePosition[]> {
+  const pages = await wikiPages(document);
+  const text = document.getText();
+  const positions: PagePosition[] = [];
+  for (const editor of vscode.window.visibleTextEditors) {
+    const cursor = editor.selection.active;
+    const page =
+      isMainWikiEditor(editor) && editor.document === document ? pageAt(pages, cursor) : undefined;
+    if (page !== undefined) {
+      const before = text.slice(document.offsetAt(page.range.start), document.offsetAt(cursor));
+      positions.push({
+        editor,
+        title: page.name,
+        charactersBefore: before.replaceAll(/\s/gu, '').length,
+        whitespaceBefore: before.length - before.trimEnd().length,
+      });
+    }
+  }
+  return positions;
+}
+
+// Move each editor's cursor to where it was in its page, wherever the page is now. A page which no
+// longer exists leaves its cursor where it is.
+async function restorePagePositions(
+  document: vscode.TextDocument,
+  positions: readonly PagePosition[],
+): Promise<void> {
+  const pages = await wikiPages(document);
+  const text = document.getText();
+  for (const position of positions) {
+    const page = pages.find((candidate) => candidate.name === position.title);
+    if (page !== undefined) {
+      // Pass the same number of characters which aren't whitespace, then as much of the same
+      // whitespace as remains, without leaving the page.
+      const pageEnd = document.offsetAt(page.range.end);
+      let offset = document.offsetAt(page.range.start);
+      for (
+        let remaining = position.charactersBefore;
+        remaining > 0 && offset < pageEnd;
+        offset += 1
+      ) {
+        if (/\S/u.test(text.charAt(offset))) {
+          remaining -= 1;
+        }
+      }
+      for (
+        let remaining = position.whitespaceBefore;
+        remaining > 0 && offset < pageEnd && /\s/u.test(text.charAt(offset));
+        remaining -= 1
+      ) {
+        offset += 1;
+      }
+      const cursor = document.positionAt(offset);
+      position.editor.selection = new vscode.Selection(cursor, cursor);
+      position.editor.revealRange(
+        new vscode.Range(cursor, cursor),
+        vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+      );
+    }
+  }
+}
+
+// Format a wiki, keeping each editor's cursor where it was in its page, even if formatting moves
+// the page. The editor keeps a cursor in place only if the text around it doesn't change, so the
+// cursors are moved back once the formatting edits are applied. A later change to the wiki, as
+// when the edits are discarded because it changed while being formatted, cancels this.
+async function formatKeepingPagePositions(
+  document: vscode.TextDocument,
+  options: vscode.FormattingOptions,
+  token: vscode.CancellationToken,
+  next: ProvideDocumentFormattingEditsSignature,
+): Promise<vscode.TextEdit[] | null | undefined> {
+  // Note the cursors, then format.
+  const positions = await pagePositions(document);
+  const edits = await next(document, options, token);
+  if (edits === null || edits === undefined || edits.length === 0 || positions.length === 0) {
+    return edits;
+  }
+
+  // Find the text the edits produce, applying them from the end so earlier offsets stay valid.
+  let formattedText = document.getText();
+  for (const edit of edits.toSorted((a, b) => b.range.start.compareTo(a.range.start))) {
+    formattedText =
+      formattedText.slice(0, document.offsetAt(edit.range.start)) +
+      edit.newText +
+      formattedText.slice(document.offsetAt(edit.range.end));
+  }
+
+  // Restore the cursors after the next change, if it applies the edits.
+  const subscription = vscode.workspace.onDidChangeTextDocument(async (event) => {
+    if (event.document !== document || event.contentChanges.length === 0) {
+      return;
+    }
+    subscription.dispose();
+    if (document.getText() === formattedText) {
+      await restorePagePositions(document, positions);
+    }
+  });
+  return edits;
+}
+
 // Start a Mull language server for local and untitled Mull documents.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Expose the navigation commands that the language server's responses refer to.
@@ -894,6 +1011,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     // Let hovers use HTML, which sizes image previews.
     markdown: { supportHtml: true },
+    // Keep cursors in place within their pages when formatting moves the pages.
+    middleware: { provideDocumentFormattingEdits: formatKeepingPagePositions },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();

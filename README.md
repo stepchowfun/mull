@@ -43,7 +43,7 @@ Every wiki starts with a `Home` page. Mull requires that **every other page is *
 
 If you've got receipts, spreadsheets, or any other kinds of external files you want to track, you can link to them from the wiki. Such files go in a directory next to the wiki which has the name of the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`.
 
-You can link to a file called `my_wiki_files/photos/beach.jpg` with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`. Mull will check that those things actually exist, and you can preview them without leaving the editor.
+If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`. Mull will check that those things actually exist, and you can preview them without leaving the editor.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
