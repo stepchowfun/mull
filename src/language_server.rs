@@ -3001,34 +3001,21 @@ mod tests {
         );
     }
 
-    // Complete a partial target by replacing the whole link, including its delimiters.
-    #[test]
-    fn completions_replace_closed_links() {
-        let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
-                .unwrap()
-                .items;
-
-        assert_eq!(
-            completions
-                .iter()
-                .map(|completion| completion.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Greeting"],
-        );
-        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
-            panic!("A completion should replace the link.");
-        };
-        let link_range = Range::new(Position::new(2, 0), Position::new(2, 4));
-        assert_eq!(edit.range, link_range);
-        assert_eq!(edit.new_text, "[Greeting]");
-
-        // Offer nothing from a cursor before the link's opening delimiter.
-        assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .is_none(),
-        );
+    // Summarize each completion by its label, replacement range, and inserted text.
+    fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
+        completions
+            .iter()
+            .map(|completion| {
+                let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
+                    panic!("A completion should replace part of the link.");
+                };
+                (
+                    completion.label.as_str(),
+                    edit.range,
+                    edit.new_text.as_str(),
+                )
+            })
+            .collect()
     }
 
     // Offer to embed a page after the colons which start a fence, writing the embed on one line
@@ -3086,6 +3073,213 @@ mod tests {
         ] {
             assert!(completion_for_document(&snapshot(&untitled_uri(), source), cursor).is_none());
         }
+    }
+
+    // Complete a filesystem link with the visible entries of the file root.
+    #[test]
+    fn completions_list_filesystem_entries() {
+        let source = "# Home\n\n[/]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
+        fs::write(directory.join("notes.txt"), "notes").unwrap();
+        fs::create_dir(directory.join("images")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+            .unwrap()
+            .items;
+
+        // Close a file's link but leave a directory's link open for its children.
+        let empty_path = Range::new(Position::new(2, 2), Position::new(2, 2));
+        let closed_path = Range::new(Position::new(2, 2), Position::new(2, 3));
+        assert_eq!(
+            completion_edits(&completions),
+            vec![
+                (".gitignore", closed_path, ".gitignore]"),
+                ("images/", empty_path, "images/"),
+                ("notes.txt", closed_path, "notes.txt]"),
+            ],
+        );
+        assert_eq!(completions[0].kind, Some(CompletionItemKind::FILE));
+        assert_eq!(completions[1].kind, Some(CompletionItemKind::FOLDER));
+        assert!(completions[0].command.is_none());
+        assert_eq!(
+            completions[1]
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerSuggest"),
+        );
+    }
+
+    // Complete the path after the filesystem-link prefix, which the typed path includes.
+    #[test]
+    fn completions_follow_prefix() {
+        let source = "# Home\n\n[/no";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 4))
+            .unwrap()
+            .items;
+
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "notes.txt",
+                Range::new(Position::new(2, 2), Position::new(2, 4)),
+                "notes.txt]",
+            )],
+        );
+    }
+
+    // Complete only entries within the file root, which may not exist, and never those
+    // beside the wiki.
+    #[test]
+    fn completions_list_only_the_file_root() {
+        let source = "# Home\n\n[/";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = || {
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+                .unwrap()
+                .items
+        };
+
+        assert_eq!(completion_edits(&completions()), vec![]);
+        fs::write(wiki.directory().join("within.txt"), "within").unwrap();
+        assert_eq!(
+            completion_edits(&completions()),
+            vec![(
+                "within.txt",
+                Range::new(Position::new(2, 2), Position::new(2, 2)),
+                "within.txt]",
+            )],
+        );
+    }
+
+    // Complete the children of the directory named by an unfinished link, replacing only the
+    // component being typed and omitting directories without files.
+    #[test]
+    fn completions_list_nested_directories() {
+        let source = "# Home\n\n[/images/r";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::create_dir_all(directory.join("images/raw/large")).unwrap();
+        fs::write(directory.join("images/raw/large/photo.tiff"), "photo").unwrap();
+        fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
+        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 10))
+            .unwrap()
+            .items;
+
+        let typed_component = Range::new(Position::new(2, 9), Position::new(2, 10));
+        assert_eq!(
+            completion_edits(&completions),
+            vec![
+                ("photo.jpg", typed_component, "photo.jpg]"),
+                ("raw/", typed_component, "raw/"),
+            ],
+        );
+        assert_eq!(completions[1].filter_text.as_deref(), Some("raw"));
+    }
+
+    // Escape link delimiters in completed names and interpret them in typed directories, which
+    // completions leave untouched.
+    #[test]
+    fn completions_escape_path_delimiters() {
+        let source = "# Home\n\n[/a\\[b\\]/]";
+        let wiki = TestWiki::new(source);
+        let directory = wiki.directory();
+        fs::create_dir_all(directory.join("a[b]")).unwrap();
+        fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+            .unwrap()
+            .items;
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "a[b]/",
+                Range::new(Position::new(2, 2), Position::new(2, 9)),
+                "a\\[b\\]/",
+            )],
+        );
+
+        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 9))
+            .unwrap()
+            .items;
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "c[d].txt",
+                Range::new(Position::new(2, 9), Position::new(2, 10)),
+                "c\\[d\\].txt]",
+            )],
+        );
+    }
+
+    // Decline filesystem completions where the parser wouldn't recognize a valid link path.
+    #[test]
+    fn completions_ignore_invalid_filesystem_contexts() {
+        let source = "# [/\n\n[/../] \\[/";
+        let wiki = TestWiki::new(source);
+        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        // Ignore titles, escaping paths, and escaped delimiters.
+        for cursor in [
+            Position::new(0, 4),
+            Position::new(2, 5),
+            Position::new(2, 10),
+        ] {
+            assert!(
+                completion_for_document(&snapshot(&uri, source), cursor)
+                    .is_none_or(|completions| completions.items.is_empty()),
+            );
+        }
+
+        // Require a filesystem to list entries from.
+        let source = "# Home\n\n[/]";
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2))
+                .is_none(),
+        );
+    }
+
+    // Complete a partial target by replacing the whole link, including its delimiters.
+    #[test]
+    fn completions_replace_closed_links() {
+        let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
+                .unwrap()
+                .items;
+
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Greeting"],
+        );
+        let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
+            panic!("A completion should replace the link.");
+        };
+        let link_range = Range::new(Position::new(2, 0), Position::new(2, 4));
+        assert_eq!(edit.range, link_range);
+        assert_eq!(edit.new_text, "[Greeting]");
+
+        // Offer nothing from a cursor before the link's opening delimiter.
+        assert!(
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
+                .is_none(),
+        );
     }
 
     // Complete an unfinished link despite a syntax error elsewhere in the wiki.
@@ -3362,200 +3556,6 @@ mod tests {
         assert!(is_subsequence("greeting", "greeting"));
         assert!(!is_subsequence("gtr", "greeting"));
         assert!(!is_subsequence("x", ""));
-    }
-
-    // Summarize each completion by its label, replacement range, and inserted text.
-    fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
-        completions
-            .iter()
-            .map(|completion| {
-                let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
-                    panic!("A completion should replace part of the link.");
-                };
-                (
-                    completion.label.as_str(),
-                    edit.range,
-                    edit.new_text.as_str(),
-                )
-            })
-            .collect()
-    }
-
-    // Complete a filesystem link with the visible entries of the file root.
-    #[test]
-    fn completions_list_filesystem_entries() {
-        let source = "# Home\n\n[/]";
-        let wiki = TestWiki::new(source);
-        let directory = wiki.directory();
-        fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
-        fs::write(directory.join("ignored.txt"), "ignored").unwrap();
-        fs::write(directory.join("notes.txt"), "notes").unwrap();
-        fs::create_dir(directory.join("images")).unwrap();
-        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
-            .unwrap()
-            .items;
-
-        // Close a file's link but leave a directory's link open for its children.
-        let empty_path = Range::new(Position::new(2, 2), Position::new(2, 2));
-        let closed_path = Range::new(Position::new(2, 2), Position::new(2, 3));
-        assert_eq!(
-            completion_edits(&completions),
-            vec![
-                (".gitignore", closed_path, ".gitignore]"),
-                ("images/", empty_path, "images/"),
-                ("notes.txt", closed_path, "notes.txt]"),
-            ],
-        );
-        assert_eq!(completions[0].kind, Some(CompletionItemKind::FILE));
-        assert_eq!(completions[1].kind, Some(CompletionItemKind::FOLDER));
-        assert!(completions[0].command.is_none());
-        assert_eq!(
-            completions[1]
-                .command
-                .as_ref()
-                .map(|command| command.command.as_str()),
-            Some("editor.action.triggerSuggest"),
-        );
-    }
-
-    // Complete the path after the filesystem-link prefix, which the typed path includes.
-    #[test]
-    fn completions_follow_prefix() {
-        let source = "# Home\n\n[/no";
-        let wiki = TestWiki::new(source);
-        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 4))
-            .unwrap()
-            .items;
-
-        assert_eq!(
-            completion_edits(&completions),
-            vec![(
-                "notes.txt",
-                Range::new(Position::new(2, 2), Position::new(2, 4)),
-                "notes.txt]",
-            )],
-        );
-    }
-
-    // Complete only entries within the file root, which may not exist, and never those
-    // beside the wiki.
-    #[test]
-    fn completions_list_only_the_file_root() {
-        let source = "# Home\n\n[/";
-        let wiki = TestWiki::new(source);
-        fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = || {
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
-                .unwrap()
-                .items
-        };
-
-        assert_eq!(completion_edits(&completions()), vec![]);
-        fs::write(wiki.directory().join("within.txt"), "within").unwrap();
-        assert_eq!(
-            completion_edits(&completions()),
-            vec![(
-                "within.txt",
-                Range::new(Position::new(2, 2), Position::new(2, 2)),
-                "within.txt]",
-            )],
-        );
-    }
-
-    // Complete the children of the directory named by an unfinished link, replacing only the
-    // component being typed and omitting directories without files.
-    #[test]
-    fn completions_list_nested_directories() {
-        let source = "# Home\n\n[/images/r";
-        let wiki = TestWiki::new(source);
-        let directory = wiki.directory();
-        fs::create_dir_all(directory.join("images/raw/large")).unwrap();
-        fs::write(directory.join("images/raw/large/photo.tiff"), "photo").unwrap();
-        fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
-        fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 10))
-            .unwrap()
-            .items;
-
-        let typed_component = Range::new(Position::new(2, 9), Position::new(2, 10));
-        assert_eq!(
-            completion_edits(&completions),
-            vec![
-                ("photo.jpg", typed_component, "photo.jpg]"),
-                ("raw/", typed_component, "raw/"),
-            ],
-        );
-        assert_eq!(completions[1].filter_text.as_deref(), Some("raw"));
-    }
-
-    // Escape link delimiters in completed names and interpret them in typed directories, which
-    // completions leave untouched.
-    #[test]
-    fn completions_escape_path_delimiters() {
-        let source = "# Home\n\n[/a\\[b\\]/]";
-        let wiki = TestWiki::new(source);
-        let directory = wiki.directory();
-        fs::create_dir_all(directory.join("a[b]")).unwrap();
-        fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
-            .unwrap()
-            .items;
-        assert_eq!(
-            completion_edits(&completions),
-            vec![(
-                "a[b]/",
-                Range::new(Position::new(2, 2), Position::new(2, 9)),
-                "a\\[b\\]/",
-            )],
-        );
-
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 9))
-            .unwrap()
-            .items;
-        assert_eq!(
-            completion_edits(&completions),
-            vec![(
-                "c[d].txt",
-                Range::new(Position::new(2, 9), Position::new(2, 10)),
-                "c\\[d\\].txt]",
-            )],
-        );
-    }
-
-    // Decline filesystem completions where the parser wouldn't recognize a valid link path.
-    #[test]
-    fn completions_ignore_invalid_filesystem_contexts() {
-        let source = "# [/\n\n[/../] \\[/";
-        let wiki = TestWiki::new(source);
-        fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        // Ignore titles, escaping paths, and escaped delimiters.
-        for cursor in [
-            Position::new(0, 4),
-            Position::new(2, 5),
-            Position::new(2, 10),
-        ] {
-            assert!(
-                completion_for_document(&snapshot(&uri, source), cursor)
-                    .is_none_or(|completions| completions.items.is_empty()),
-            );
-        }
-
-        // Require a filesystem to list entries from.
-        let source = "# Home\n\n[/]";
-        assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2))
-                .is_none(),
-        );
     }
 
     // Treat a title as its own definition, which lets editors fall back to finding references.

@@ -17,6 +17,14 @@ use std::{
 // agreeing, so its instances must agree already.
 pub type Baseline = HashMap<PageTitle, Arc<str>>;
 
+// These are the instances of each embedded page, with the page itself first, along with the copies
+// which can't be read as a page's content and so can't be compared with their pages.
+#[derive(Debug, Default)]
+pub struct Instances {
+    pages: HashMap<PageTitle, Vec<Instance>>,
+    unreadable_copies: Vec<(PageTitle, SourceRange)>,
+}
+
 // This is an instance of an embedded page, which is either the page itself or a copy of it,
 // possibly within another copy. Errors about it are reported at the page's title or at the link in
 // the copy's opening fence.
@@ -24,14 +32,6 @@ pub type Baseline = HashMap<PageTitle, Arc<str>>;
 struct Instance {
     content: String,
     source_range: SourceRange,
-}
-
-// These are the instances of each embedded page, with the page itself first, along with the copies
-// which can't be read as a page's content and so can't be compared with their pages.
-#[derive(Debug, Default)]
-pub struct Instances {
-    pages: HashMap<PageTitle, Vec<Instance>>,
-    unreadable_copies: Vec<(PageTitle, SourceRange)>,
 }
 
 // Collect the instances of each embedded page in a wiki without syntax errors.
@@ -45,29 +45,6 @@ pub fn instances(wiki: &Wiki) -> Instances {
         }
     }
     instances
-}
-
-// This maps offsets in a copy read as a page back to the source of the wiki, through the copies
-// containing it. Each line of the copy is listed with where it starts in the copy, after the title
-// line which makes it a page, and where it starts in the source of the copy containing it.
-struct CopyMap<'a> {
-    title_line_length: usize,
-    line_starts: Vec<(usize, usize)>,
-    outer: Option<&'a CopyMap<'a>>,
-}
-
-impl CopyMap<'_> {
-    // Map an offset after the title line to the source of the wiki.
-    fn offset(&self, offset: usize) -> usize {
-        let copy_offset = offset - self.title_line_length;
-        let (copy_line_start, source_line_start) = self.line_starts[self
-            .line_starts
-            .partition_point(|(copy_line_start, _)| *copy_line_start <= copy_offset)
-            - 1];
-        let source_offset = source_line_start + copy_offset - copy_line_start;
-        self.outer
-            .map_or(source_offset, |copy_map| copy_map.offset(source_offset))
-    }
 }
 
 // Record the copy an embed shows in a wiki, which is either the wiki itself or a copy read as a
@@ -139,6 +116,29 @@ fn collect_copies(
     }
 }
 
+// This maps offsets in a copy read as a page back to the source of the wiki, through the copies
+// containing it. Each line of the copy is listed with where it starts in the copy, after the title
+// line which makes it a page, and where it starts in the source of the copy containing it.
+struct CopyMap<'a> {
+    title_line_length: usize,
+    line_starts: Vec<(usize, usize)>,
+    outer: Option<&'a CopyMap<'a>>,
+}
+
+impl CopyMap<'_> {
+    // Map an offset after the title line to the source of the wiki.
+    fn offset(&self, offset: usize) -> usize {
+        let copy_offset = offset - self.title_line_length;
+        let (copy_line_start, source_line_start) = self.line_starts[self
+            .line_starts
+            .partition_point(|(copy_line_start, _)| *copy_line_start <= copy_offset)
+            - 1];
+        let source_offset = source_line_start + copy_offset - copy_line_start;
+        self.outer
+            .map_or(source_offset, |copy_map| copy_map.offset(source_offset))
+    }
+}
+
 // List the own content of each embedded page whose instances all agree, which becomes its
 // baseline.
 pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &str)> {
@@ -157,6 +157,28 @@ pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &s
                 .all(|instance| instance.content == page_instances[0].content)
         })
         .map(|(title, page_instances)| (title, page_instances[0].content.as_str()))
+}
+
+// Format a wiki without syntax errors, propagating the changes to each embedded page to all of its
+// instances.
+pub fn format(
+    wiki: &Wiki,
+    source_path: Option<&Path>,
+    source_contents: &str,
+    line_index: &LineIndex,
+    instances: &Instances,
+    baseline: &Baseline,
+) -> Result<String, Vec<Error>> {
+    // Render the rewritten wiki, which refreshes the copies from the pages.
+    propagate(
+        wiki,
+        source_path,
+        source_contents,
+        line_index,
+        instances,
+        baseline,
+    )
+    .map(|propagated_wiki| propagated_wiki.to_string())
 }
 
 // Rewrite a wiki so each embedded page has the content to propagate to all of its instances: the
@@ -310,28 +332,6 @@ fn embeds_itself(wiki: &Wiki, title: &PageTitle) -> bool {
     false
 }
 
-// Format a wiki without syntax errors, propagating the changes to each embedded page to all of its
-// instances.
-pub fn format(
-    wiki: &Wiki,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_index: &LineIndex,
-    instances: &Instances,
-    baseline: &Baseline,
-) -> Result<String, Vec<Error>> {
-    // Render the rewritten wiki, which refreshes the copies from the pages.
-    propagate(
-        wiki,
-        source_path,
-        source_contents,
-        line_index,
-        instances,
-        baseline,
-    )
-    .map(|propagated_wiki| propagated_wiki.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Baseline, agreements, format, instances};
@@ -366,6 +366,94 @@ mod tests {
                 &source[source_range.start..source_range.end]
             })
             .collect()
+    }
+
+    // Compare instances as formatting would write them, so differences it erases aren't changes.
+    #[test]
+    fn canonical_instances() {
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n  ::: [Pancakes]\n  Mix [ Home ].  \r\n\n  :::\n\n",
+                    "# Pancakes\n\nMix [Home].",
+                ),
+                &[],
+            )
+            .unwrap(),
+            "# Home\n\n  ::: [Pancakes]\n  Mix [Home].\n  :::\n\n# Pancakes\n\nMix [Home].\n",
+        );
+    }
+
+    // Treat a copy within another copy as an instance of the page it embeds, but not as part of the
+    // instance containing it.
+    #[test]
+    fn nested_copies() {
+        let source = concat!(
+            "# Home\n\n::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n:::\n\n",
+            "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour.\n  :::\n\n",
+            "# Syrup\n\nPour.\n",
+        );
+
+        assert_eq!(
+            format_test(
+                source,
+                &[
+                    ("Pancakes", "Mix.\n\n  ::: [Syrup]\n  :::"),
+                    ("Syrup", "Pour."),
+                ],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n:::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n::::\n\n",
+                "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n\n",
+                "# Syrup\n\nPour lots.\n",
+            ),
+        );
+        assert_eq!(
+            error_texts(source, &format_test(source, &[]).unwrap_err()),
+            vec!["Syrup", "[Syrup]", "[Syrup]"],
+        );
+    }
+
+    // Fill in an embed written on one line, which isn't an instance until then.
+    #[test]
+    fn one_line_embeds() {
+        assert_eq!(
+            format_test("# Home\n\n::: [Pancakes] :::\n\n# Pancakes\n\nMix.\n", &[]).unwrap(),
+            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.\n",
+        );
+    }
+
+    // Report a copy with a line which would start another page if it were a page's content.
+    #[test]
+    fn unreadable_copies() {
+        let source = "# Home\n\n  ::: [Pancakes]\n  # Mix.\n  :::\n\n# Pancakes\n\nMix.\n";
+        let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
+
+        assert_eq!(error_texts(source, &errors), vec!["[Pancakes]"]);
+        assert_fails!(
+            Err::<(), _>(errors),
+            "This copy of `Pancakes` can't be read as the content of a page.",
+        );
+    }
+
+    // List the own content of the pages whose instances agree.
+    #[test]
+    fn agreeing_instances() {
+        let source = concat!(
+            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n::: [Syrup]\nPour lots.\n:::\n\n",
+            "# Pancakes\n\nMix.\n\n# Syrup\n\nPour.\n",
+        );
+        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
+        assert!(errors.is_empty());
+        let instances = instances(&wiki);
+
+        assert_eq!(
+            agreements(&instances)
+                .map(|(title, content)| (title.text(crate::escaping::Context::Verbatim), content))
+                .collect::<Vec<_>>(),
+            vec![("Pancakes".to_owned(), "Mix.")],
+        );
     }
 
     // Propagate a change to a page to its copies.
@@ -423,6 +511,19 @@ mod tests {
         );
     }
 
+    // Propagate a copy which was emptied like any other change.
+    #[test]
+    fn emptied_copies() {
+        assert_eq!(
+            format_test(
+                "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n\nMix.\n",
+                &[("Pancakes", "Mix.")],
+            )
+            .unwrap(),
+            "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n",
+        );
+    }
+
     // Report each instance changed differently from the others, rather than choosing one.
     #[test]
     fn different_changes() {
@@ -460,75 +561,6 @@ mod tests {
         );
     }
 
-    // Compare instances as formatting would write them, so differences it erases aren't changes.
-    #[test]
-    fn canonical_instances() {
-        assert_eq!(
-            format_test(
-                concat!(
-                    "# Home\n\n  ::: [Pancakes]\n  Mix [ Home ].  \r\n\n  :::\n\n",
-                    "# Pancakes\n\nMix [Home].",
-                ),
-                &[],
-            )
-            .unwrap(),
-            "# Home\n\n  ::: [Pancakes]\n  Mix [Home].\n  :::\n\n# Pancakes\n\nMix [Home].\n",
-        );
-    }
-
-    // Treat a copy within another copy as an instance of the page it embeds, but not as part of the
-    // instance containing it.
-    #[test]
-    fn nested_copies() {
-        let source = concat!(
-            "# Home\n\n::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n:::\n\n",
-            "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour.\n  :::\n\n",
-            "# Syrup\n\nPour.\n",
-        );
-
-        assert_eq!(
-            format_test(
-                source,
-                &[
-                    ("Pancakes", "Mix.\n\n  ::: [Syrup]\n  :::"),
-                    ("Syrup", "Pour."),
-                ],
-            )
-            .unwrap(),
-            concat!(
-                "# Home\n\n:::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n::::\n\n",
-                "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n\n",
-                "# Syrup\n\nPour lots.\n",
-            ),
-        );
-        assert_eq!(
-            error_texts(source, &format_test(source, &[]).unwrap_err()),
-            vec!["Syrup", "[Syrup]", "[Syrup]"],
-        );
-    }
-
-    // Propagate a copy which was emptied like any other change.
-    #[test]
-    fn emptied_copies() {
-        assert_eq!(
-            format_test(
-                "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n\nMix.\n",
-                &[("Pancakes", "Mix.")],
-            )
-            .unwrap(),
-            "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n",
-        );
-    }
-
-    // Fill in an embed written on one line, which isn't an instance until then.
-    #[test]
-    fn one_line_embeds() {
-        assert_eq!(
-            format_test("# Home\n\n::: [Pancakes] :::\n\n# Pancakes\n\nMix.\n", &[]).unwrap(),
-            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.\n",
-        );
-    }
-
     // Report a change which would make a page embed itself, directly or through other pages.
     #[test]
     fn changes_which_embed_their_pages() {
@@ -548,37 +580,5 @@ mod tests {
                 "Propagating this change would make `Pancakes` embed itself.",
             );
         }
-    }
-
-    // Report a copy with a line which would start another page if it were a page's content.
-    #[test]
-    fn unreadable_copies() {
-        let source = "# Home\n\n  ::: [Pancakes]\n  # Mix.\n  :::\n\n# Pancakes\n\nMix.\n";
-        let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
-
-        assert_eq!(error_texts(source, &errors), vec!["[Pancakes]"]);
-        assert_fails!(
-            Err::<(), _>(errors),
-            "This copy of `Pancakes` can't be read as the content of a page.",
-        );
-    }
-
-    // List the own content of the pages whose instances agree.
-    #[test]
-    fn agreeing_instances() {
-        let source = concat!(
-            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n::: [Syrup]\nPour lots.\n:::\n\n",
-            "# Pancakes\n\nMix.\n\n# Syrup\n\nPour.\n",
-        );
-        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
-        assert!(errors.is_empty());
-        let instances = instances(&wiki);
-
-        assert_eq!(
-            agreements(&instances)
-                .map(|(title, content)| (title.text(crate::escaping::Context::Verbatim), content))
-                .collect::<Vec<_>>(),
-            vec![("Pancakes".to_owned(), "Mix.")],
-        );
     }
 }

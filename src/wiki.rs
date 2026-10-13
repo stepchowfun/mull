@@ -147,6 +147,37 @@ impl Wiki {
             .join("\n")
     }
 
+    // Copy part of a page's content, replacing each link within it with its canonical form: a text
+    // link's title escaped, and a filesystem link's normalized target. A malformed link, which a
+    // wiki without syntax errors doesn't have, is copied as written.
+    fn copy_links(&self, page: &Page, start: usize, end: usize, content: &mut String) {
+        let mut links = page
+            .links
+            .iter()
+            .filter(|link| start <= link.source_range().start && link.source_range().end <= end)
+            .collect::<Vec<_>>();
+        links.sort_by_key(|link| link.source_range().start);
+        let mut copied_through = start;
+        for link in links {
+            let source_range = link.source_range();
+            content.push_str(&self.source[copied_through..source_range.start]);
+            let target = match link {
+                Link::Text { title, .. } => title.text(Context::Link),
+                Link::Filesystem { target, .. } => target.text(Context::Link),
+                Link::Malformed { .. } => {
+                    content.push_str(&self.source[source_range.start..source_range.end]);
+                    copied_through = source_range.end;
+                    continue;
+                }
+            };
+            content.push('[');
+            content.push_str(&target);
+            content.push(']');
+            copied_through = source_range.end;
+        }
+        content.push_str(&self.source[copied_through..end]);
+    }
+
     // Find the copy an embed shows, with the indentation of its opening fence removed from each
     // line, along with where each line of the copy starts in it and in the source. An embed written
     // on one line has no copy, since formatting fills it in.
@@ -178,37 +209,6 @@ impl Wiki {
             .rfind('\n')
             .map_or(0, |index| index + '\n'.len_utf8())
             ..embed.source_range.start]
-    }
-
-    // Copy part of a page's content, replacing each link within it with its canonical form: a text
-    // link's title escaped, and a filesystem link's normalized target. A malformed link, which a
-    // wiki without syntax errors doesn't have, is copied as written.
-    fn copy_links(&self, page: &Page, start: usize, end: usize, content: &mut String) {
-        let mut links = page
-            .links
-            .iter()
-            .filter(|link| start <= link.source_range().start && link.source_range().end <= end)
-            .collect::<Vec<_>>();
-        links.sort_by_key(|link| link.source_range().start);
-        let mut copied_through = start;
-        for link in links {
-            let source_range = link.source_range();
-            content.push_str(&self.source[copied_through..source_range.start]);
-            let target = match link {
-                Link::Text { title, .. } => title.text(Context::Link),
-                Link::Filesystem { target, .. } => target.text(Context::Link),
-                Link::Malformed { .. } => {
-                    content.push_str(&self.source[source_range.start..source_range.end]);
-                    copied_through = source_range.end;
-                    continue;
-                }
-            };
-            content.push('[');
-            content.push_str(&target);
-            content.push(']');
-            copied_through = source_range.end;
-        }
-        content.push_str(&self.source[copied_through..end]);
     }
 }
 
@@ -598,6 +598,28 @@ mod tests {
         );
     }
 
+    // Indent each line of an embed's copy, including its closing fence, like its opening fence,
+    // leaving blank lines empty, and indent nested embeds further.
+    #[test]
+    fn indented_embeds_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
+            "# Other\n\nSee:\n\n\t::: [Last]\n\t:::\n\n",
+            "# Last\n\nThe end.",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n- Item\n",
+                "  :::: [Other]\n  See:\n\n  \t::: [Last]\n  \tThe end.\n  \t:::\n",
+                "  ::::\n\n",
+                "# Other\n\nSee:\n\n\t::: [Last]\n\tThe end.\n\t:::\n\n",
+                "# Last\n\nThe end.\n",
+            ),
+        );
+    }
+
     // Render a page's own content in its canonical form, leaving out the copies its embeds show.
     #[test]
     fn own_content() {
@@ -632,28 +654,6 @@ mod tests {
         assert_eq!(&source[23..28], "First");
         assert_eq!(&source[31..37], "Second");
         assert_eq!(wiki.copy(&embeds[1]), None);
-    }
-
-    // Indent each line of an embed's copy, including its closing fence, like its opening fence,
-    // leaving blank lines empty, and indent nested embeds further.
-    #[test]
-    fn indented_embeds_display() {
-        let wiki = parse_wiki(concat!(
-            "# Home\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
-            "# Other\n\nSee:\n\n\t::: [Last]\n\t:::\n\n",
-            "# Last\n\nThe end.",
-        ));
-
-        assert_eq!(
-            wiki.to_string(),
-            concat!(
-                "# Home\n\n- Item\n",
-                "  :::: [Other]\n  See:\n\n  \t::: [Last]\n  \tThe end.\n  \t:::\n",
-                "  ::::\n\n",
-                "# Other\n\nSee:\n\n\t::: [Last]\n\tThe end.\n\t:::\n\n",
-                "# Last\n\nThe end.\n",
-            ),
-        );
     }
 
     // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.
