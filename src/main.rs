@@ -10,6 +10,7 @@ mod line_index;
 mod lsp_position;
 mod parser;
 mod path_util;
+mod propagation;
 mod scoring;
 mod spelled_path;
 mod validator;

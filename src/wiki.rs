@@ -64,10 +64,36 @@ impl Wiki {
         (traversal_index.is_none(), traversal_index, title)
     }
 
-    // Render a page's content from the source, with each link written in its canonical form, each
-    // embed refreshed, Unix line endings, and no whitespace at the end of a line. The pages being
-    // rendered, which embed this one, are listed so a cycle of embeds is left as written.
+    // Render a page's content from the source in its canonical form, with each embed refreshed. The
+    // pages being rendered, which embed this one, are listed so a cycle of embeds is left as
+    // written.
     fn rendered_content(&self, page: &Page, embedding_pages: &mut Vec<PageTitle>) -> String {
+        embedding_pages.push(page.title.clone());
+        let content = self.canonical_content(page, |embed| {
+            self.pages
+                .get(&embed.title)
+                .filter(|embedded_page| !embedding_pages.contains(&embedded_page.title))
+                .map(|embedded_page| self.rendered_content(embedded_page, embedding_pages))
+        });
+        embedding_pages.pop();
+        content
+    }
+
+    // Render a page's own content in its canonical form, leaving out the copies its embeds show,
+    // which belong to the embedded pages. Instances of a page with the same own content differ
+    // only in ways formatting erases.
+    pub fn own_content(&self, page: &Page) -> String {
+        self.canonical_content(page, |_embed| Some(String::new()))
+    }
+
+    // Render a page's content from the source, with each link written in its canonical form, Unix
+    // line endings, and no whitespace at the end of a line. Each embed shows the body given for it,
+    // with each line indented like its opening fence, or is copied as written if it has none.
+    fn canonical_content(
+        &self,
+        page: &Page,
+        mut body: impl FnMut(&Embed) -> Option<String>,
+    ) -> String {
         // Find the content after the title line, skipping the blank lines around it but keeping the
         // indentation of its first line, so an indented line which starts with a title marker
         // doesn't become a title.
@@ -82,26 +108,15 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, replacing each embed with a fresh copy of the embedded page's content,
-        // with each of its lines indented like its opening fence. An embed of a missing page, or
-        // one which would complete a cycle, is copied as written.
+        // Copy the content, writing each embed with its body and a fence longer than any in it.
         let mut content = String::new();
         let mut copied_through = content_start;
-        embedding_pages.push(page.title.clone());
         for embed in &page.embeds {
-            let Some(embedded_page) = self
-                .pages
-                .get(&embed.title)
-                .filter(|embedded_page| !embedding_pages.contains(&embedded_page.title))
-            else {
+            let Some(body) = body(embed) else {
                 continue;
             };
             self.copy_links(page, copied_through, embed.source_range.start, &mut content);
-            let indentation = &self.source[self.source[..embed.source_range.start]
-                .rfind('\n')
-                .map_or(0, |index| index + '\n'.len_utf8())
-                ..embed.source_range.start];
-            let body = self.rendered_content(embedded_page, embedding_pages);
+            let indentation = self.indentation(embed);
             let longest_run = body
                 .lines()
                 .map(str::trim_start)
@@ -121,7 +136,6 @@ impl Wiki {
             content.push_str(&fence);
             copied_through = embed.source_range.end;
         }
-        embedding_pages.pop();
         self.copy_links(page, copied_through, content_end, &mut content);
 
         // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
@@ -131,6 +145,39 @@ impl Wiki {
             .map(str::trim_end)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // Find the copy an embed shows, with the indentation of its opening fence removed from each
+    // line, along with where each line of the copy starts in it and in the source. An embed written
+    // on one line has no copy, since formatting fills it in.
+    pub fn copy(&self, embed: &Embed) -> Option<(String, Vec<(usize, usize)>)> {
+        let embed_source = &self.source[embed.source_range.start..embed.source_range.end];
+        let body_start = embed_source.find('\n')? + '\n'.len_utf8();
+        let body_end = embed_source.rfind('\n')? + '\n'.len_utf8();
+        let indentation = self.indentation(embed);
+        let mut copy = String::new();
+        let mut line_starts = Vec::new();
+        let mut line_source_start = embed.source_range.start + body_start;
+        for line in embed_source[body_start..body_end].split_inclusive('\n') {
+            let unindented_line = line
+                .strip_prefix(indentation)
+                .unwrap_or_else(|| line.trim_start_matches([' ', '\t']));
+            line_starts.push((
+                copy.len(),
+                line_source_start + line.len() - unindented_line.len(),
+            ));
+            copy.push_str(unindented_line);
+            line_source_start += line.len();
+        }
+        Some((copy, line_starts))
+    }
+
+    // Find the indentation of an embed's opening fence.
+    fn indentation(&self, embed: &Embed) -> &str {
+        &self.source[self.source[..embed.source_range.start]
+            .rfind('\n')
+            .map_or(0, |index| index + '\n'.len_utf8())
+            ..embed.source_range.start]
     }
 
     // Copy part of a page's content, replacing each link within it with its canonical form: a text
@@ -166,7 +213,9 @@ impl Wiki {
 }
 
 // Render pages deterministically in traversal order, with unreachable pages last in title order.
-// Rendering assumes the wiki has no syntax errors, so none of a page's links are malformed.
+// Rendering assumes the wiki has no syntax errors, so none of a page's links are malformed. It
+// refreshes each copy from its page, so any changes to copies must be propagated to their pages
+// first.
 impl fmt::Display for Wiki {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Sort reachable pages by traversal order, followed by unreachable pages in title order.
@@ -205,7 +254,8 @@ pub struct Page {
 }
 
 // This struct represents a page embedded in another page's content. The embedding page shows a copy
-// of the embedded page's content, which formatting refreshes along with any embeds within it.
+// of the embedded page's content, which formatting keeps in sync with the page, along with any
+// embeds within it.
 #[derive(Clone, Debug)]
 pub struct Embed {
     pub title: PageTitle,
@@ -546,6 +596,42 @@ mod tests {
                 "# Last\n\nThe end.\n",
             ),
         );
+    }
+
+    // Render a page's own content in its canonical form, leaving out the copies its embeds show.
+    #[test]
+    fn own_content() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\nSee [ Other ].  \r\n\n",
+            "  :::: [Other]\n  Stale.\n  ::: [Last]\n  :::\n  ::::\n",
+            "# Other\n# Last",
+        ));
+
+        assert_eq!(
+            wiki.own_content(&wiki.pages[&PageTitle::parse("Home").unwrap()]),
+            "See [Other].\n\n  ::: [Other]\n  :::",
+        );
+    }
+
+    // Find the copy an embed shows without its indentation, with where each line starts in the copy
+    // and in the source. A line indented less than the opening fence loses its indentation, and an
+    // embed written on one line has no copy.
+    #[test]
+    fn copies() {
+        let source = "# Home\n  ::: [Other]\n  First\n\n Second\n  :::\n::: [Other] :::\n# Other";
+        let wiki = parse_wiki(source);
+        let embeds = &wiki.pages[&PageTitle::parse("Home").unwrap()].embeds;
+
+        assert_eq!(
+            wiki.copy(&embeds[0]),
+            Some((
+                "First\n\nSecond\n".to_owned(),
+                vec![(0, 23), (6, 29), (7, 31)],
+            )),
+        );
+        assert_eq!(&source[23..28], "First");
+        assert_eq!(&source[31..37], "Second");
+        assert_eq!(wiki.copy(&embeds[1]), None);
     }
 
     // Indent each line of an embed's copy, including its closing fence, like its opening fence,

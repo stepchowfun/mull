@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0] - 2026-10-13
+
+### Added
+
+- The page an embed shows and its copies can now all be edited. While the wiki is open in VS Code, formatting applies a change to the page or to any of its copies to all of them, and a page and its copies which were changed in different ways are reported as an error instead. Mull only remembers which version was the latest while the wiki is open, so outside the editor, the page and its copies must already match.
+- An embed can now be written on one line, like `::: [Page] :::`, which formatting expands into a copy of the page.
+
+### Changed
+
+- `mull check` and `mull format` now report an error when a page and its copies don't match, rather than replacing the copies with the page. To discard the changes to a copy, replace it with `::: [Page] :::`.
+
+### Removed
+
+- The VS Code extension no longer dims the bodies of embeds, since they can now be edited, so the `mull.dimEmbeds` setting is gone.
+
 ## [0.51.0] - 2026-10-13
 
 ### Changed

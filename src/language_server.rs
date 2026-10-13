@@ -7,6 +7,7 @@ use crate::{
     line_index::LineIndex,
     lsp_position::LspPosition,
     parser,
+    propagation::{self, Baseline, Instances},
     scoring::traversal_order,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
@@ -65,10 +66,6 @@ const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
 // This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
-
-// This request lists the bodies of the embeds in a wiki, which the editor sets apart since
-// formatting regenerates them. Keep this in sync with [ref:embeds_request_client].
-const EMBEDS_REQUEST: &str = "mull/embeds"; // [tag:embeds_request_server]
 
 // This request plans attaching files which are pasted or dropped into a wiki: which ones to copy
 // into its file root, under what names, and how to link to them. Keep this in sync with
@@ -188,7 +185,6 @@ pub async fn run() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::build(Backend::new)
-        .custom_method(EMBEDS_REQUEST, Backend::embeds)
         .custom_method(ATTACH_FILES_REQUEST, Backend::attach_files)
         .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -241,6 +237,7 @@ impl Backend {
                 snapshot: Arc::clone(&snapshot),
                 generation: 0,
                 pending_check: None,
+                baseline: HashMap::new(),
             });
         if let Some(pending_check) = document.pending_check.take() {
             pending_check.cancel();
@@ -252,6 +249,29 @@ impl Backend {
             .expect("A document generation should fit in a u64.");
         let generation = document.generation;
 
+        // Record the pages whose instances agree in this snapshot, outside the asynchronous
+        // executor. Every snapshot is examined, even one superseded before it's checked, so an
+        // agreement isn't missed, and a page's record is replaced only by a newer snapshot's.
+        let baseline_snapshot = Arc::clone(&document.snapshot);
+        let baseline_documents = Arc::clone(&self.documents);
+        tokio::task::spawn_blocking(move || {
+            let Some(instances) = baseline_snapshot.instances() else {
+                return;
+            };
+            let agreements = propagation::agreements(instances)
+                .map(|(title, content)| (title.clone(), Arc::from(content)))
+                .collect::<Vec<_>>();
+            if let Some(document) = lock(&baseline_documents).get_mut(&baseline_snapshot.uri) {
+                for (title, content) in agreements {
+                    if document.baseline.get(&title).is_none_or(
+                        |(recorded_generation, _content)| *recorded_generation < generation,
+                    ) {
+                        document.baseline.insert(title, (generation, content));
+                    }
+                }
+            }
+        });
+
         // Check outside the asynchronous executor and publish only if the snapshot is still
         // current.
         document.pending_check = Some(PendingCheck {
@@ -260,10 +280,11 @@ impl Backend {
                     tokio::time::sleep(delay).await;
                 }
                 let check_snapshot = Arc::clone(&diagnostic_snapshot);
+                let baseline = baseline(&documents, &diagnostic_snapshot.uri);
 
                 // Publish nothing when a newer snapshot cancelled this check partway through.
                 let Some(diagnostics) = tokio::task::spawn_blocking(move || {
-                    diagnostics_for_document(&check_snapshot, &check_cancellation)
+                    diagnostics_for_document(&check_snapshot, &baseline, &check_cancellation)
                 })
                 .await
                 .unwrap_or_else(|error| {
@@ -338,14 +359,6 @@ impl Backend {
         tokio::task::spawn_blocking(move || respond(&snapshot))
             .await
             .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
-    }
-
-    // List the bodies of the embeds in the latest synchronized editor snapshot.
-    async fn embeds(&self, params: EmbedsParams) -> Result<Option<Vec<Range>>> {
-        self.respond(&params.text_document.uri, |snapshot| {
-            Ok(Some(embeds_for_document(snapshot)))
-        })
-        .await
     }
 
     // Plan attaching files to the latest synchronized editor snapshot.
@@ -713,9 +726,11 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        // Render the latest synchronized editor snapshot, leaving unparsable contents unchanged.
-        self.respond(&params.text_document.uri, |snapshot| {
-            Ok(formatting_for_document(snapshot))
+        // Render the latest synchronized editor snapshot, propagating changes to embedded pages and
+        // leaving contents which can't be rendered unchanged.
+        let baseline = baseline(&self.documents, &params.text_document.uri);
+        self.respond(&params.text_document.uri, move |snapshot| {
+            Ok(formatting_for_document(snapshot, &baseline))
         })
         .await
     }
@@ -758,11 +773,14 @@ impl LanguageServer for Backend {
 // This state associates the latest editor snapshot with a pending diagnostic update. The server
 // assigns the generation, which increases every time a snapshot is stored, including rechecks of
 // unchanged contents after a save, so it identifies which snapshot stale work was computed from.
+// The baseline of each embedded page is recorded along with the generation it was found in, and
+// it's kept only while the document is open.
 #[derive(Debug)]
 struct OpenDocument {
     snapshot: Arc<Snapshot>,
     generation: u64,
     pending_check: Option<PendingCheck>,
+    baseline: HashMap<PageTitle, (u64, Arc<str>)>,
 }
 
 // Lock the open documents, which no thread holds while panicking.
@@ -772,6 +790,20 @@ fn lock(
     documents
         .lock()
         .expect("The open-document mutex shouldn't be poisoned.")
+}
+
+// Copy the baseline recorded for an open document, which is empty if it isn't open.
+fn baseline(documents: &Mutex<HashMap<Uri, OpenDocument>>, uri: &Uri) -> Baseline {
+    lock(documents)
+        .get(uri)
+        .map(|document| {
+            document
+                .baseline
+                .iter()
+                .map(|(title, (_generation, content))| (title.clone(), Arc::clone(content)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
@@ -808,6 +840,7 @@ struct Snapshot {
     version: i32,
     line_index: OnceLock<LineIndex>,
     parsed: OnceLock<(Wiki, Vec<Error>)>,
+    instances: OnceLock<Instances>,
 }
 
 impl Snapshot {
@@ -820,6 +853,7 @@ impl Snapshot {
             version,
             line_index: OnceLock::new(),
             parsed: OnceLock::new(),
+            instances: OnceLock::new(),
         }
     }
 
@@ -855,11 +889,22 @@ impl Snapshot {
     fn wiki(&self) -> &Wiki {
         &self.parsed().0
     }
+
+    // Collect the instances of each embedded page, which can only be compared without syntax
+    // errors.
+    fn instances(&self) -> Option<&Instances> {
+        let (wiki, syntax_errors) = self.parsed();
+        syntax_errors
+            .is_empty()
+            .then(|| self.instances.get_or_init(|| propagation::instances(wiki)))
+    }
 }
 
-// Analyze an editor snapshot without checking its formatting.
+// Analyze an editor snapshot without checking its formatting, comparing the instances of each
+// embedded page with its baseline.
 fn diagnostics_for_document(
     snapshot: &Snapshot,
+    baseline: &Baseline,
     cancellation: &CancellationFlag,
 ) -> Option<Vec<Diagnostic>> {
     // Validate the wiki even if it has syntax errors, so they don't hide validation errors. Report
@@ -876,12 +921,29 @@ fn diagnostics_for_document(
         Outcome::Cancelled => return None,
     };
 
-    // Preserve independent Mull errors as independent editor diagnostics, with syntax errors first.
+    // Report instances of embedded pages which were changed differently.
     let line_index = snapshot.line_index();
+    let propagation_errors = snapshot
+        .instances()
+        .and_then(|instances| {
+            propagation::propagate(
+                wiki,
+                snapshot.path.as_deref(),
+                &snapshot.contents,
+                line_index,
+                instances,
+                baseline,
+            )
+            .err()
+        })
+        .unwrap_or_default();
+
+    // Preserve independent Mull errors as independent editor diagnostics, with syntax errors first.
     Some(
         syntax_errors
             .iter()
             .chain(&validation_errors)
+            .chain(&propagation_errors)
             .map(|error| diagnostic_from_error(&snapshot.contents, line_index, error))
             .collect(),
     )
@@ -1992,14 +2054,20 @@ fn resolves_within(path: &Path, directory: &Path) -> Option<bool> {
     )
 }
 
-// Produce a whole-document formatting edit for any wiki that parses, even if it's invalid.
-fn formatting_for_document(snapshot: &Snapshot) -> Option<Vec<TextEdit>> {
-    // Render the parsed wiki without reporting syntax errors, which diagnostics already cover.
-    let (wiki, syntax_errors) = snapshot.parsed();
-    if !syntax_errors.is_empty() {
-        return None;
-    }
-    let rendered_wiki = wiki.to_string();
+// Produce a whole-document formatting edit for any wiki that parses, even if it's invalid, unless
+// an embedded page and its copies were changed differently.
+fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<Vec<TextEdit>> {
+    // Render the parsed wiki, propagating changes to embedded pages, without reporting syntax
+    // errors or instances which were changed differently, which diagnostics already cover.
+    let rendered_wiki = propagation::format(
+        snapshot.wiki(),
+        snapshot.path.as_deref(),
+        &snapshot.contents,
+        snapshot.line_index(),
+        snapshot.instances()?,
+        baseline,
+    )
+    .ok()?;
 
     // A successful request returns either one whole-document edit or an empty edit list.
     if snapshot.contents == rendered_wiki {
@@ -2292,41 +2360,6 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
     // Report the links in source order.
     document_links.sort_by_key(|document_link| document_link.range.start);
     Some(document_links)
-}
-
-// These are the parameters of the request for the bodies of the embeds in a wiki.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbedsParams {
-    text_document: TextDocumentIdentifier,
-}
-
-// List the bodies of the embeds in a wiki, from the line after each opening fence through the line
-// before its closing fence, omitting empty bodies. Embeds within others are part of their bodies.
-fn embeds_for_document(snapshot: &Snapshot) -> Vec<Range> {
-    let contents = &snapshot.contents;
-    let mut embeds = snapshot
-        .wiki()
-        .pages
-        .values()
-        .flat_map(|page| &page.embeds)
-        .map(|embed| SourceRange {
-            start: contents[embed.source_range.start..]
-                .find('\n')
-                .map_or(embed.source_range.end, |index| {
-                    embed.source_range.start + index + 1
-                }),
-            end: contents[..embed.source_range.end]
-                .rfind('\n')
-                .map_or(embed.source_range.start, |index| index + 1),
-        })
-        .filter(|source_range| source_range.start < source_range.end)
-        .collect::<Vec<_>>();
-    embeds.sort_by_key(|source_range| source_range.start);
-    embeds
-        .into_iter()
-        .map(|source_range| snapshot.range(source_range))
-        .collect()
 }
 
 // These are the parameters of the request to attach files.
@@ -2686,13 +2719,13 @@ mod tests {
         RevealType, Snapshot, attach_files_for_document, code_action_for_document,
         code_block_language, completion_for_document, diagnostic_from_error,
         diagnostics_for_document, document_highlight_for_document, document_link_for_document,
-        document_symbol_for_document, embeds_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
-        prepare_rename_for_document, references_for_document, rename_for_document,
+        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
+        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
-        lsp_position::LspPosition, parser,
+        lsp_position::LspPosition, parser, propagation::Baseline, wiki::PageTitle,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
@@ -2700,7 +2733,10 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
     use tower_lsp_server::ls_types::{
         CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
@@ -2725,6 +2761,7 @@ mod tests {
     fn diagnostics(uri: &Uri, source_contents: &str) -> Vec<Diagnostic> {
         diagnostics_for_document(
             &snapshot(uri, source_contents),
+            &Baseline::new(),
             &CancellationFlag::default(),
         )
         .expect("A check without cancellation should complete.")
@@ -4812,7 +4849,7 @@ mod tests {
         let source = "# Zulu\n\n😀\n\n# Home\n\n[Zulu]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let edits = formatting_for_document(&snapshot(&uri, source)).unwrap();
+        let edits = formatting_for_document(&snapshot(&uri, source), &Baseline::new()).unwrap();
 
         assert_eq!(edits.len(), 1);
         let edit = &edits[0];
@@ -4830,8 +4867,33 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
-            formatting_for_document(&snapshot(&uri, source)),
+            formatting_for_document(&snapshot(&uri, source), &Baseline::new()),
             Some(Vec::new()),
+        );
+    }
+
+    // Propagate a change to a copy, given the baseline from before it, and leave instances which
+    // disagree without one unchanged, reporting them instead.
+    #[test]
+    fn formatting_propagates_changes() {
+        let source = "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix.\n";
+        let snapshot = snapshot(&untitled_uri(), source);
+        let baseline = Baseline::from([(PageTitle::parse("Pancakes").unwrap(), Arc::from("Mix."))]);
+
+        assert_eq!(
+            formatting_for_document(&snapshot, &baseline).unwrap()[0].new_text,
+            "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix well.\n",
+        );
+        assert!(formatting_for_document(&snapshot, &Baseline::new()).is_none());
+        assert_eq!(
+            diagnostics(&untitled_uri(), source)
+                .iter()
+                .map(|diagnostic| diagnostic.range)
+                .collect::<Vec<_>>(),
+            vec![
+                Range::new(Position::new(6, 2), Position::new(6, 10)),
+                Range::new(Position::new(2, 4), Position::new(2, 14)),
+            ],
         );
     }
 
@@ -4841,7 +4903,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(formatting_for_document(&snapshot(&uri, source)).is_none());
+        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
     }
 
     // Refuse to format a wiki whose recovered form would omit some of its source, like a duplicate
@@ -4852,7 +4914,7 @@ mod tests {
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        assert!(formatting_for_document(&snapshot(&uri, source)).is_none());
+        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
     }
 
     // Format wikis that parse but fail validation, such as one without a home page.
@@ -4861,7 +4923,7 @@ mod tests {
         let source = "# Zulu\n\n# Elsewhere";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let edits = formatting_for_document(&snapshot(&uri, source)).unwrap();
+        let edits = formatting_for_document(&snapshot(&uri, source), &Baseline::new()).unwrap();
 
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "# Elsewhere\n\n# Zulu\n");
@@ -4871,7 +4933,8 @@ mod tests {
     #[test]
     fn formatting_supports_untitled_wikis() {
         let source = "# Zulu\n\n# Home\n\n[Zulu]";
-        let edits = formatting_for_document(&snapshot(&untitled_uri(), source)).unwrap();
+        let edits =
+            formatting_for_document(&snapshot(&untitled_uri(), source), &Baseline::new()).unwrap();
 
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
@@ -5082,7 +5145,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            formatting_for_document(&snapshot(&uri, &applied.replace('|', ""))),
+            formatting_for_document(&snapshot(&uri, &applied.replace('|', "")), &Baseline::new()),
             Some(Vec::new()),
         );
     }
@@ -5101,7 +5164,7 @@ mod tests {
             "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n|# Missing\n\n# Zebra\n",
         );
         assert_eq!(
-            formatting_for_document(&snapshot(&uri, &applied.replace('|', ""))),
+            formatting_for_document(&snapshot(&uri, &applied.replace('|', "")), &Baseline::new()),
             Some(Vec::new()),
         );
     }
@@ -5299,22 +5362,6 @@ mod tests {
         assert_eq!(
             document_links[0].target,
             Some(Uri::from_file_path(wiki.directory().join("within.txt")).unwrap()),
-        );
-    }
-
-    // List the bodies of top-level embeds in source order, including any embeds within them, and
-    // omit empty bodies.
-    #[test]
-    fn embeds_list_bodies() {
-        let source = "# Zebra\n\n::: [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
-                      ::: [Beta]\n:::\n\n# Beta\n\n:::: [Alpha]\n\
-                      ::: [Beta]\nNested\n:::\n::::";
-        assert_eq!(
-            embeds_for_document(&snapshot(&untitled_uri(), source)),
-            vec![
-                Range::new(Position::new(3, 0), Position::new(4, 0)),
-                Range::new(Position::new(16, 0), Position::new(19, 0)),
-            ],
         );
     }
 
