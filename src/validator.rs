@@ -1028,7 +1028,7 @@ mod tests {
         );
     }
 
-    // Infer references to directories whose files are all explicitly referenced.
+    // Accept a directory without a link when all the files in it are linked.
     #[test]
     fn implicitly_referenced_directories() {
         let directory = TestDirectory::new();
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Consider empty directories referenced because all their contents are referenced.
+    // Accept empty directories, which contain no files that need links.
     #[test]
     fn empty_directories() {
         let directory = TestDirectory::new();
