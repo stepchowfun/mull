@@ -74,7 +74,7 @@ This is my favorite breakfast:
 :::
 ```
 
-The copy is automatically kept in sync with the original. Formatting will propagate edits from either one to the other.
+Mull keeps the copies synchronized. You can directly edit any of the copies, and formatting will propagate your edits to all the other copies, including the original.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
