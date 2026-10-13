@@ -30,6 +30,7 @@ struct OpenEmbed {
     start: usize,                           // The offset of its opening fence's colons
     argument_source_range: SourceRange,     // The trimmed text after the colons
     link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
+    one_line_end: Option<usize>,            // The end of the line of an embed written on one line
 }
 
 // This struct tracks a link which has been opened but not yet closed.
@@ -39,13 +40,15 @@ struct OpenLink {
 }
 
 // These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
-// argument is trimmed and located by its offsets within the line.
+// argument is trimmed and located by its offsets within the line. An embed written on one line
+// ends with a closing run of colons after its argument.
 #[derive(Debug, Eq, PartialEq)]
 enum FenceLine {
     Opening {
         indentation: usize,
         length: usize,
         argument: (usize, usize),
+        is_one_line: bool,
     },
     Closing {
         length: usize,
@@ -61,10 +64,11 @@ enum FenceLine {
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
 // run of colons, after any indentation, is a fence: an opening fence embeds the page named by the
 // link after it, while a closing fence consists of colons alone and closes the innermost open embed
-// with a fence of the same length. The wiki retains as much of the source as possible so it can
-// still be validated and navigated, but it omits the content of duplicate pages, invalid titles,
-// and anything before the first title, so it mustn't be rendered if there are any syntax errors.
-// The line index locates syntax errors in their source listings.
+// with a fence of the same length. An embed can also be written on one line, closed by a run of
+// colons after its link, for formatting to fill in. The wiki retains as much of the source as
+// possible so it can still be validated and navigated, but it omits the content of duplicate pages,
+// invalid titles, and anything before the first title, so it mustn't be rendered if there are any
+// syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
@@ -182,6 +186,51 @@ pub fn parse(
         }
     };
 
+    // Close the embed at an index among those open, reporting any open within it, and keep it if
+    // it isn't within another and names a page.
+    let close_embed = |open_embeds: &mut Vec<OpenEmbed>,
+                       index: usize,
+                       end: usize,
+                       embeds: &mut Vec<Embed>,
+                       errors: &mut Vec<Error>| {
+        let mut inner_embeds = open_embeds.split_off(index);
+        let open_embed = inner_embeds.remove(0);
+        report_unclosed_embeds(&mut inner_embeds, errors);
+        if let Some((title, link_source_range)) = open_embed.link
+            && index == 0
+        {
+            embeds.push(Embed {
+                title,
+                source_range: SourceRange {
+                    start: open_embed.start,
+                    end,
+                },
+                link_source_range,
+            });
+        }
+    };
+
+    // Once an opening fence's line has been read, find the page it names, and close the embed if
+    // it's written on one line.
+    let finish_opening_fence = |open_embeds: &mut Vec<OpenEmbed>,
+                                pending_page: &mut PendingPage,
+                                links_before: usize,
+                                errors: &mut Vec<Error>| {
+        let Some(open_embed) = open_embeds.last_mut() else {
+            return;
+        };
+        read_opening_fence(open_embed, &pending_page.links, links_before, errors);
+        if let Some(end) = open_embed.one_line_end {
+            close_embed(
+                open_embeds,
+                open_embeds.len() - 1,
+                end,
+                &mut pending_page.embeds,
+                errors,
+            );
+        }
+    };
+
     while let Some(character) = source_contents[position..].chars().next() {
         // At the start of a line, which is never within code or a link, read a title line, which
         // starts a new region, or a fence line.
@@ -234,14 +283,16 @@ pub fn parse(
             }
 
             // Read a fence line within a page. An opening fence starts an embed, whose link is read
-            // as usual from where its argument starts. A closing fence ends the innermost open
-            // embed with a fence of the same length, and any open within it.
+            // as usual from where its argument starts, and which ends with the line if it's
+            // written on one line. A closing fence ends the innermost open embed with a fence of
+            // the same length, and any open within it.
             if !can_report_content_before_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
                         indentation,
                         length,
                         argument: (argument_start, argument_end),
+                        is_one_line,
                     } => {
                         open_embeds.push(OpenEmbed {
                             fence_length: length,
@@ -251,6 +302,7 @@ pub fn parse(
                                 end: position + argument_end,
                             },
                             link: None,
+                            one_line_end: is_one_line.then_some(position + line.trim_end().len()),
                         });
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
@@ -260,21 +312,13 @@ pub fn parse(
                             .iter()
                             .rposition(|open_embed| open_embed.fence_length == length)
                         {
-                            let mut inner_embeds = open_embeds.split_off(index);
-                            let open_embed = inner_embeds.remove(0);
-                            report_unclosed_embeds(&mut inner_embeds, &mut errors);
-                            if let Some((title, link_source_range)) = open_embed.link
-                                && index == 0
-                            {
-                                pending_page.embeds.push(Embed {
-                                    title,
-                                    source_range: SourceRange {
-                                        start: open_embed.start,
-                                        end: line_source_range.end,
-                                    },
-                                    link_source_range,
-                                });
-                            }
+                            close_embed(
+                                &mut open_embeds,
+                                index,
+                                line_source_range.end,
+                                &mut pending_page.embeds,
+                                &mut errors,
+                            );
                         } else {
                             errors.push(syntax_error(
                                 "Unexpected closing fence.",
@@ -342,10 +386,13 @@ pub fn parse(
                     };
                     close_unclosed_link(&mut pending_page.links, &mut errors, link, end);
                 }
-                if let Some(links_before) = opening_fence_links_before.take()
-                    && let Some(open_embed) = open_embeds.last_mut()
-                {
-                    read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
+                if let Some(links_before) = opening_fence_links_before.take() {
+                    finish_opening_fence(
+                        &mut open_embeds,
+                        &mut pending_page,
+                        links_before,
+                        &mut errors,
+                    );
                 }
                 is_at_line_start = true;
             }
@@ -459,10 +506,13 @@ pub fn parse(
             source_contents.len(),
         );
     }
-    if let Some(links_before) = opening_fence_links_before
-        && let Some(open_embed) = open_embeds.last_mut()
-    {
-        read_opening_fence(open_embed, &pending_page.links, links_before, &mut errors);
+    if let Some(links_before) = opening_fence_links_before {
+        finish_opening_fence(
+            &mut open_embeds,
+            &mut pending_page,
+            links_before,
+            &mut errors,
+        );
     }
     report_unclosed_embeds(&mut open_embeds, &mut errors);
     finish_page(
@@ -486,8 +536,9 @@ fn title_line_text(line: &str) -> Option<&str> {
 }
 
 // Read a line as a fence line: optional indentation and a run of fence characters, alone for a
-// closing fence, or followed by whitespace and an argument for an opening fence. Any other line,
-// including one in which the run is followed directly by other text, isn't a fence line.
+// closing fence, or followed by whitespace and an argument for an opening fence, and then by
+// whitespace and another run for an embed written on one line. Any other line, including one in
+// which the run is followed directly by other text, isn't a fence line.
 fn fence_line(line: &str) -> Option<FenceLine> {
     // Measure the indentation and the run after it, which must be long enough.
     let indentation = line.len() - line.trim_start().len();
@@ -504,10 +555,22 @@ fn fence_line(line: &str) -> Option<FenceLine> {
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
+    let argument_start = line.len() - rest.trim_start().len();
+    let argument = line[argument_start..].trim_end();
+    let before_closing_run = argument.trim_end_matches(':');
+    let is_one_line = argument.len() - before_closing_run.len() >= MIN_FENCE_LENGTH
+        && before_closing_run.ends_with(char::is_whitespace)
+        && !before_closing_run.trim().is_empty();
+    let argument = if is_one_line {
+        before_closing_run.trim_end()
+    } else {
+        argument
+    };
     Some(FenceLine::Opening {
         indentation,
         length,
-        argument: (line.len() - rest.trim_start().len(), line.trim_end().len()),
+        argument: (argument_start, argument_start + argument.len()),
+        is_one_line,
     })
 }
 
@@ -736,8 +799,8 @@ mod tests {
         assert_eq!(title_line_text(""), None);
     }
 
-    // Recognize opening fences with a trimmed argument, and closing fences, but not shorter runs or
-    // runs followed directly by other text.
+    // Recognize opening fences with a trimmed argument, including embeds written on one line, and
+    // closing fences, but not shorter runs or runs followed directly by other text.
     #[test]
     fn fence_lines() {
         assert_eq!(
@@ -746,6 +809,7 @@ mod tests {
                 indentation: 0,
                 length: 3,
                 argument: (4, 10),
+                is_one_line: false,
             }),
         );
         assert_eq!(
@@ -754,6 +818,7 @@ mod tests {
                 indentation: 0,
                 length: 4,
                 argument: (5, 11),
+                is_one_line: false,
             }),
         );
         assert_eq!(
@@ -762,6 +827,7 @@ mod tests {
                 indentation: 2,
                 length: 3,
                 argument: (6, 12),
+                is_one_line: false,
             }),
         );
         assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
@@ -770,6 +836,26 @@ mod tests {
             fence_line("::::: \t"),
             Some(FenceLine::Closing { length: 5 }),
         );
+        assert_eq!(
+            fence_line(":::: [Page]\t:::::  "),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 4,
+                argument: (5, 11),
+                is_one_line: true,
+            }),
+        );
+        for (line, argument_end) in [("::: [Page]:::", 13), ("::: [Page] ::", 13), ("::: :::", 7)] {
+            assert_eq!(
+                fence_line(line),
+                Some(FenceLine::Opening {
+                    indentation: 0,
+                    length: 3,
+                    argument: (4, argument_end),
+                    is_one_line: false,
+                }),
+            );
+        }
         assert_eq!(fence_line(":: [Page]"), None);
         assert_eq!(fence_line(":::[Page]"), None);
         assert_eq!(fence_line(" :::[Page]"), None);
@@ -1489,6 +1575,36 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 ":::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::",
                 "[ Other ]",
             )],
+        );
+    }
+
+    // Read an embed written on one line, which ends with its line, including within another embed
+    // and at the end of the wiki.
+    #[test]
+    fn one_line_embeds() {
+        let source =
+            "# Home\n:::: [Other]\n::: [Last] :::\n::::\n::: [ Last ] :::  \n# Other\n# Last\n";
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.embeds
+                .iter()
+                .map(|embed| &source[embed.source_range.start..embed.source_range.end])
+                .collect::<Vec<_>>(),
+            vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::"],
+        );
+        assert_eq!(
+            link_targets(&home.links),
+            vec!["text:Other", "text:Last", "text:Last"],
+        );
+        assert_eq!(
+            parse_test("# Home\n::: [Home] :::")
+                .unwrap()
+                .page("Home")
+                .embeds
+                .len(),
+            1,
         );
     }
 

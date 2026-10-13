@@ -2,7 +2,9 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::Error,
     line_index::LineIndex,
-    parser, validator,
+    parser,
+    propagation::{self, Baseline},
+    validator,
     wiki::Wiki,
 };
 use std::path::Path;
@@ -18,6 +20,22 @@ pub fn analyze(
     // since a wiki with syntax errors doesn't represent all of its source.
     let line_index = LineIndex::new(source_contents);
     let (wiki, mut errors) = parser::parse(source_path, source_contents, &line_index);
+
+    // Without a record of the instances of each embedded page agreeing, they must agree already,
+    // so the wiki renders the same as if its changes were propagated. Instances can only be
+    // compared without syntax errors.
+    if errors.is_empty()
+        && let Err(propagation_errors) = propagation::propagate(
+            &wiki,
+            source_path,
+            source_contents,
+            &line_index,
+            &propagation::instances(&wiki),
+            &Baseline::new(),
+        )
+    {
+        errors.extend(propagation_errors);
+    }
     validator::validate(
         &wiki,
         source_path,

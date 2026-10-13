@@ -53,15 +53,28 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 
 ### Embedding a page inside another
 
-If you want to keep multiple copies of some content in sync, you can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
+You can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
 
 ```md
+This is my favorite breakfast:
+
+::: [Pancakes] :::
+```
+
+When the wiki is formatted, that line will be expanded into a copy of the page:
+
+```md
+This is my favorite breakfast:
+
 ::: [Pancakes]
-This sentence will be replaced by the pancake recipe.
+- 1 cup of flour
+- 1 cup of milk
+- 1 egg
+- A squeeze of [Lemons]
 :::
 ```
 
-When the wiki is formatted, the source page will automatically be replicated to all the embedded copies. The replication is unidirectional; any edits to the copies will be discarded.
+Mull keeps the copies synchronized. You can directly edit any of the copies, and formatting will propagate your edits to all the other copies, including the original.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
