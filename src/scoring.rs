@@ -86,10 +86,21 @@ pub fn traversal_order<'a>(
     order
 }
 
-// Collect the distinct titles of a page's text links in title order.
+// Collect the distinct titles of a page's text links in title order, skipping the links in the
+// copies its embeds show but keeping the link in each embed's opening fence. Formatting refreshes
+// the copies, so counting their links would let formatting change the order it renders pages in,
+// and formatting again would reorder them.
 fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
     page.links
         .iter()
+        .filter(|link| {
+            let source_range = link.source_range();
+            !page.embeds.iter().any(|embed| {
+                embed.source_range.start <= source_range.start
+                    && source_range.end <= embed.source_range.end
+                    && source_range != embed.link_source_range
+            })
+        })
         .filter_map(|link| match link {
             Link::Text { title, .. } => Some(title),
             Link::Filesystem { .. } | Link::Malformed { .. } => None,
@@ -193,6 +204,19 @@ mod tests {
         ));
 
         assert_eq!(titles, vec!["Home", "Left", "Middle", "Target"]);
+    }
+
+    // Follow an embed's link but not the links in its copy, so a page's position doesn't depend on
+    // whether the copy has been refreshed.
+    #[test]
+    fn links_in_embeds() {
+        let (_, titles) = traversal_order(concat!(
+            "# Home\n::: embed [Zulu]\nSee [Alpha].\n:::\n",
+            "# Zulu\nSee [Alpha].\n",
+            "# Alpha\n",
+        ));
+
+        assert_eq!(titles, vec!["Home", "Zulu", "Alpha"]);
     }
 
     // Leave pages which can't be reached from the home page without a position.
