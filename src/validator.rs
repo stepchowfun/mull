@@ -721,13 +721,13 @@ mod tests {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
             "# Home\n[Middle] [Self] [Top]\n",
-            "# Top\n::: embed [Left]\n:::\n::: embed [Right]\n:::\n",
-            "# Left\n::: embed [Bottom]\n:::\n",
-            "# Right\n::: embed [Bottom]\n:::\n",
+            "# Top\n::: [Left]\n:::\n::: [Right]\n:::\n",
+            "# Left\n::: [Bottom]\n:::\n",
+            "# Right\n::: [Bottom]\n:::\n",
             "# Bottom\n",
-            "# Middle\n::: embed [Last]\n:::\n",
-            "# Last\n::: embed [Middle]\n:::\n",
-            "# Self\n::: embed [Self]\n:::\n",
+            "# Middle\n::: [Last]\n:::\n",
+            "# Last\n::: [Middle]\n:::\n",
+            "# Self\n::: [Self]\n:::\n",
         ))
         .unwrap();
 

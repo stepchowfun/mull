@@ -5306,9 +5306,9 @@ mod tests {
     // omit empty bodies.
     #[test]
     fn embeds_list_bodies() {
-        let source = "# Zebra\n\n::: embed [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
-                      ::: embed [Beta]\n:::\n\n# Beta\n\n:::: embed [Alpha]\n\
-                      ::: embed [Beta]\nNested\n:::\n::::";
+        let source = "# Zebra\n\n::: [Alpha]\nFirst\n:::\n\n# Alpha\n\nFirst\n\n\
+                      ::: [Beta]\n:::\n\n# Beta\n\n:::: [Alpha]\n\
+                      ::: [Beta]\nNested\n:::\n::::";
         assert_eq!(
             embeds_for_document(&snapshot(&untitled_uri(), source)),
             vec![

@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn links_in_embeds() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\n::: embed [Zulu]\nSee [Alpha].\n:::\n",
+            "# Home\n::: [Zulu]\nSee [Alpha].\n:::\n",
             "# Zulu\nSee [Alpha].\n",
             "# Alpha\n",
         ));

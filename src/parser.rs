@@ -5,8 +5,8 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        EMBED_VERB, Embed, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page,
-        PageTitle, TITLE_PREFIX, Wiki,
+        Embed, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
+        TITLE_PREFIX, Wiki,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -28,7 +28,7 @@ struct PendingPage {
 struct OpenEmbed {
     fence_length: usize,
     start: usize,                           // The offset of its opening fence
-    argument_source_range: SourceRange,     // The trimmed text after the verb
+    argument_source_range: SourceRange,     // The trimmed text after the colons
     link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
 }
 
@@ -38,14 +38,13 @@ struct OpenLink {
     has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
 }
 
-// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, its verb
-// and argument are located by their offsets within the line, and its argument is trimmed.
+// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
+// argument is trimmed and located by its offsets within the line.
 #[derive(Debug, Eq, PartialEq)]
-enum FenceLine<'a> {
+enum FenceLine {
     Opening {
         indentation: usize,
         length: usize,
-        verb: &'a str,
         argument: (usize, usize),
     },
     Closing {
@@ -60,9 +59,9 @@ enum FenceLine<'a> {
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
-// run of colons, after any indentation, is a fence: an opening fence names a verb, and the only
-// verb embeds the page named by the link after it, while a closing fence consists of colons alone
-// and closes the innermost open embed with a fence of the same length. The wiki retains as much of
+// run of colons, after any indentation, is a fence: an opening fence embeds the page named by the
+// link after it, while a closing fence consists of colons alone and closes the innermost open
+// embed with a fence of the same length. The wiki retains as much of
 // the source as possible so it can still be validated and navigated, but it omits the content of
 // duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
 // if there are any syntax errors. The line index locates syntax errors in their source listings.
@@ -154,7 +153,7 @@ pub fn parse(
             _ => errors.push(syntax_error(
                 &format!(
                     "An embed names the page to embed with a link, like {}.",
-                    format!("::: {EMBED_VERB} [Page]").code_str(),
+                    "::: [Page]".code_str(),
                 ),
                 if argument_source_range.start == argument_source_range.end {
                     SourceRange {
@@ -242,9 +241,8 @@ pub fn parse(
                     FenceLine::Opening {
                         indentation,
                         length,
-                        verb,
                         argument: (argument_start, argument_end),
-                    } if verb == EMBED_VERB => {
+                    } => {
                         open_embeds.push(OpenEmbed {
                             fence_length: length,
                             start: position + indentation,
@@ -256,31 +254,6 @@ pub fn parse(
                         });
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
-                    }
-                    FenceLine::Opening {
-                        indentation,
-                        length,
-                        verb,
-                        ..
-                    } => {
-                        // Report an unknown verb, but still match its closing fence, so it doesn't
-                        // seem unexpected.
-                        errors.push(syntax_error(
-                            &format!(
-                                "Unknown verb {}. The only verb is {}.",
-                                verb.code_str(),
-                                EMBED_VERB.code_str(),
-                            ),
-                            trim_source_range(source_contents, line_source_range),
-                            None,
-                        ));
-                        open_embeds.push(OpenEmbed {
-                            fence_length: length,
-                            start: position + indentation,
-                            argument_source_range: line_source_range,
-                            link: None,
-                        });
-                        position = line_end;
                     }
                     FenceLine::Closing { length } => {
                         if let Some(index) = open_embeds
@@ -513,9 +486,9 @@ fn title_line_text(line: &str) -> Option<&str> {
 }
 
 // Read a line as a fence line: optional indentation and a run of fence characters, alone for a
-// closing fence, or followed by whitespace, a verb, and an argument for an opening fence. Any other
-// line, including one in which the run is followed directly by other text, isn't a fence line.
-fn fence_line(line: &str) -> Option<FenceLine<'_>> {
+// closing fence, or followed by whitespace and an argument for an opening fence. Any other line,
+// including one in which the run is followed directly by other text, isn't a fence line.
+fn fence_line(line: &str) -> Option<FenceLine> {
     // Measure the indentation and the run after it, which must be long enough.
     let indentation = line.len() - line.trim_start().len();
     let length = line.len() - indentation - line[indentation..].trim_start_matches(':').len();
@@ -523,7 +496,7 @@ fn fence_line(line: &str) -> Option<FenceLine<'_>> {
         return None;
     }
 
-    // Find what follows the run, which is either nothing or whitespace and a verb.
+    // Find what follows the run, which is either nothing or whitespace and an argument.
     let rest = &line[indentation + length..];
     if rest.trim().is_empty() {
         return Some(FenceLine::Closing { length });
@@ -531,17 +504,10 @@ fn fence_line(line: &str) -> Option<FenceLine<'_>> {
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
-    let verb_start = line.len() - rest.trim_start().len();
-    let verb_end = line[verb_start..]
-        .find(char::is_whitespace)
-        .map_or(line.len(), |index| verb_start + index);
-    let argument_start = line.len() - line[verb_end..].trim_start().len();
-    let argument_end = line.trim_end().len().max(argument_start);
     Some(FenceLine::Opening {
         indentation,
         length,
-        verb: &line[verb_start..verb_end],
-        argument: (argument_start, argument_end),
+        argument: (line.len() - rest.trim_start().len(), line.trim_end().len()),
     })
 }
 
@@ -770,35 +736,32 @@ mod tests {
         assert_eq!(title_line_text(""), None);
     }
 
-    // Recognize opening fences with a verb and a trimmed argument, and closing fences, but not
-    // shorter runs or runs followed directly by other text.
+    // Recognize opening fences with a trimmed argument, and closing fences, but not shorter runs or
+    // runs followed directly by other text.
     #[test]
     fn fence_lines() {
         assert_eq!(
-            fence_line("::: embed [Page]  "),
+            fence_line("::: [Page]  "),
             Some(FenceLine::Opening {
                 indentation: 0,
                 length: 3,
-                verb: "embed",
-                argument: (10, 16),
+                argument: (4, 10),
             }),
         );
         assert_eq!(
-            fence_line("::::\tembed"),
+            fence_line("::::\t[Page]"),
             Some(FenceLine::Opening {
                 indentation: 0,
                 length: 4,
-                verb: "embed",
-                argument: (10, 10),
+                argument: (5, 11),
             }),
         );
         assert_eq!(
-            fence_line(" \t::: embed [Page]"),
+            fence_line(" \t::: [Page]"),
             Some(FenceLine::Opening {
                 indentation: 2,
                 length: 3,
-                verb: "embed",
-                argument: (12, 18),
+                argument: (6, 12),
             }),
         );
         assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
@@ -807,9 +770,9 @@ mod tests {
             fence_line("::::: \t"),
             Some(FenceLine::Closing { length: 5 }),
         );
-        assert_eq!(fence_line(":: embed [Page]"), None);
-        assert_eq!(fence_line(":::embed [Page]"), None);
-        assert_eq!(fence_line(" :::embed [Page]"), None);
+        assert_eq!(fence_line(":: [Page]"), None);
+        assert_eq!(fence_line(":::[Page]"), None);
+        assert_eq!(fence_line(" :::[Page]"), None);
     }
 
     // Parse titles and multiline content while retaining exact source ranges. A title's range
@@ -1500,7 +1463,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     #[test]
     fn embeds() {
         let source = concat!(
-            "# Home\n\n:::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::\n\n",
+            "# Home\n\n:::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::\n\n",
             "# Other\n# Last",
         );
         let wiki = parse_test(source).unwrap();
@@ -1523,7 +1486,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .collect::<Vec<_>>(),
             vec![(
                 "Other".to_owned(),
-                ":::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::",
+                ":::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::",
                 "[ Other ]",
             )],
         );
@@ -1533,7 +1496,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // same length regardless of the closing fence's indentation.
     #[test]
     fn indented_embeds() {
-        let source = "# Home\n- Item\n  ::: embed [Other]\n\t:::\n# Other";
+        let source = "# Home\n- Item\n  ::: [Other]\n\t:::\n# Other";
         let wiki = parse_test(source).unwrap();
         let home = wiki.page("Home");
 
@@ -1542,51 +1505,57 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .map(|embed| &source[embed.source_range.start..embed.source_range.end])
                 .collect::<Vec<_>>(),
-            vec!["::: embed [Other]\n\t:::"],
+            vec!["::: [Other]\n\t:::"],
         );
     }
 
     // Take fence lines as written in code, and take lines which only resemble fences as text.
     #[test]
     fn text_resembling_fences() {
-        let wiki = parse_test("# Home\n```\n::: embed [Other]\n```\n:: embed\n:::embed\n").unwrap();
+        let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n:::x\n").unwrap();
 
         assert!(wiki.page("Home").embeds.is_empty());
         assert!(wiki.page("Home").links.is_empty());
     }
 
-    // Reject an embed which doesn't name a page with a single link in its opening fence.
+    // Reject an embed which doesn't name a page with a single link in its opening fence, including
+    // one written with the former `embed` verb, but still match its closing fence.
     #[test]
     fn invalid_embed_links() {
         assert_fails!(
-            parse_test("# Home\n::: embed\n:::"),
-            "An embed names the page to embed with a link, like `::: embed [Page]`.",
+            parse_test("# Home\n::: Other\n:::"),
+            "An embed names the page to embed with a link, like `::: [Page]`.",
         );
         assert_fails!(
-            parse_test("# Home\n::: embed [Other] [Last]\n:::"),
-            "An embed names the page to embed with a link, like `::: embed [Page]`.",
+            parse_test("# Home\n::: embed [Other]\n:::\n# Other"),
+            "An embed names the page to embed with a link, like `::: [Page]`.",
+        );
+        assert_eq!(
+            parse_test("# Home\n::: embed [Other]\n:::\n# Other")
+                .unwrap_err()
+                .len(),
+            1,
         );
         assert_fails!(
-            parse_test("# Home\n::: embed [/notes.txt]\n:::"),
+            parse_test("# Home\n::: [Other] [Last]\n:::"),
+            "An embed names the page to embed with a link, like `::: [Page]`.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [/notes.txt]\n:::"),
             "Only pages can be embedded.",
         );
     }
 
-    // Reject unknown verbs, closing fences which don't close an embed, and embeds which aren't
-    // closed by the end of their pages. An unknown verb's closing fence still matches it.
+    // Reject closing fences which don't close an embed, and embeds which aren't closed by the end
+    // of their pages.
     #[test]
     fn invalid_fences() {
         assert_fails!(
-            parse_test("# Home\n::: sort\n:::"),
-            "Unknown verb `sort`. The only verb is `embed`.",
-        );
-        assert_eq!(parse_test("# Home\n::: sort\n:::").unwrap_err().len(), 1);
-        assert_fails!(
-            parse_test("# Home\n::: embed [Other]\n::::\n:::"),
+            parse_test("# Home\n::: [Other]\n::::\n:::"),
             "Unexpected closing fence.",
         );
         assert_fails!(
-            parse_test("# Home\n::: embed [Other]\n# Other"),
+            parse_test("# Home\n::: [Other]\n# Other"),
             "Unclosed embed.",
         );
     }

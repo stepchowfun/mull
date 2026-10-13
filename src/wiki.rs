@@ -24,10 +24,8 @@ pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names a verb and its argument, and a closing fence consists of colons alone. The only verb
-// is the one which embeds a page.
+// fence names the page it embeds, and a closing fence consists of colons alone.
 pub const MIN_FENCE_LENGTH: usize = 3;
-pub const EMBED_VERB: &str = "embed";
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
@@ -111,14 +109,7 @@ impl Wiki {
                 .max()
                 .unwrap_or(0);
             let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
-            for part in [
-                &fence,
-                " ",
-                EMBED_VERB,
-                " [",
-                &embed.title.text(Context::Link),
-                "]\n",
-            ] {
+            for part in [&fence, " [", &embed.title.text(Context::Link), "]\n"] {
                 content.push_str(part);
             }
             for line in body.lines() {
@@ -537,10 +528,10 @@ mod tests {
     #[test]
     fn embeds_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n::: embed [ Other ]\nstale\n:::\n\n",
-            "::: embed [Missing]\nkept\n:::\n\n",
-            "::: embed [Home]\nkept\n:::\n\n",
-            "# Other\n\nSee [ Last ].\n\n::: embed [Last]\n:::\n\n",
+            "# Home\n\n::: [ Other ]\nstale\n:::\n\n",
+            "::: [Missing]\nkept\n:::\n\n",
+            "::: [Home]\nkept\n:::\n\n",
+            "# Other\n\nSee [ Last ].\n\n::: [Last]\n:::\n\n",
             "# Last\n\nThe end.",
         ));
 
@@ -548,10 +539,10 @@ mod tests {
             wiki.to_string(),
             concat!(
                 "# Home\n\n",
-                ":::: embed [Other]\nSee [Last].\n\n::: embed [Last]\nThe end.\n:::\n::::\n\n",
-                "::: embed [Missing]\nkept\n:::\n\n",
-                "::: embed [Home]\nkept\n:::\n\n",
-                "# Other\n\nSee [Last].\n\n::: embed [Last]\nThe end.\n:::\n\n",
+                ":::: [Other]\nSee [Last].\n\n::: [Last]\nThe end.\n:::\n::::\n\n",
+                "::: [Missing]\nkept\n:::\n\n",
+                "::: [Home]\nkept\n:::\n\n",
+                "# Other\n\nSee [Last].\n\n::: [Last]\nThe end.\n:::\n\n",
                 "# Last\n\nThe end.\n",
             ),
         );
@@ -562,8 +553,8 @@ mod tests {
     #[test]
     fn indented_embeds_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n- Item\n  ::: embed [Other]\nstale\n:::\n\n",
-            "# Other\n\nSee:\n\n\t::: embed [Last]\n\t:::\n\n",
+            "# Home\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
+            "# Other\n\nSee:\n\n\t::: [Last]\n\t:::\n\n",
             "# Last\n\nThe end.",
         ));
 
@@ -571,9 +562,9 @@ mod tests {
             wiki.to_string(),
             concat!(
                 "# Home\n\n- Item\n",
-                "  :::: embed [Other]\n  See:\n\n  \t::: embed [Last]\n  \tThe end.\n  \t:::\n",
+                "  :::: [Other]\n  See:\n\n  \t::: [Last]\n  \tThe end.\n  \t:::\n",
                 "  ::::\n\n",
-                "# Other\n\nSee:\n\n\t::: embed [Last]\n\tThe end.\n\t:::\n\n",
+                "# Other\n\nSee:\n\n\t::: [Last]\n\tThe end.\n\t:::\n\n",
                 "# Last\n\nThe end.\n",
             ),
         );

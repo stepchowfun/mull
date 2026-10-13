@@ -56,7 +56,7 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 If you want to keep multiple copies of some content in sync, you can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
 
 ```md
-::: embed [Pancakes]
+::: [Pancakes]
 This sentence will be replaced by the pancake recipe.
 :::
 ```

@@ -544,13 +544,10 @@
       "patterns": [
         {
           "name": "meta.embed.mull",
-          "begin": "^[ \\t]*(:{3,})[ \\t]+(embed)(?=[ \\t]|$)",
+          "begin": "^[ \\t]*(:{3,})(?=[ \\t]+[^ \\t])",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.embed.begin.mull"
-            },
-            "2": {
-              "name": "keyword.control.embed.mull"
             }
           },
           "end": "^[ \\t]*(\\1)[ \\t]*$|^(?=# )",
