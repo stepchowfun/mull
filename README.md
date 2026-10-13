@@ -145,7 +145,7 @@ curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | 
 
 The same command can be used again to update to the latest version.
 
-If Visual Studio Code or Cursor is installed, that command also installs the Mull extension in each editor it finds.
+It first installs the binary, then it installs the extension for Visual Studio Code and/or Cursor.
 
 The installation script supports the following optional environment variables:
 
