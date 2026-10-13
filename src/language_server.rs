@@ -921,7 +921,7 @@ fn diagnostics_for_document(
         Outcome::Cancelled => return None,
     };
 
-    // Report instances of embedded pages which were changed differently.
+    // Report changes to embedded pages which can't be propagated.
     let line_index = snapshot.line_index();
     let propagation_errors = snapshot
         .instances()
@@ -2055,10 +2055,10 @@ fn resolves_within(path: &Path, directory: &Path) -> Option<bool> {
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it's invalid, unless
-// an embedded page and its copies were changed differently.
+// changes to an embedded page can't be propagated.
 fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<Vec<TextEdit>> {
     // Render the parsed wiki, propagating changes to embedded pages, without reporting syntax
-    // errors or instances which were changed differently, which diagnostics already cover.
+    // errors or changes which can't be propagated, which diagnostics already cover.
     let rendered_wiki = propagation::format(
         snapshot.wiki(),
         snapshot.path.as_deref(),
