@@ -544,7 +544,7 @@
       "patterns": [
         {
           "name": "meta.embed.mull",
-          "begin": "^(:{3,})[ \\t]+(embed)(?=[ \\t]|$)",
+          "begin": "^[ \\t]*(:{3,})[ \\t]+(embed)(?=[ \\t]|$)",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.embed.begin.mull"
@@ -553,7 +553,7 @@
               "name": "keyword.control.embed.mull"
             }
           },
-          "end": "^(\\1)[ \\t]*$|^(?=# )",
+          "end": "^[ \\t]*(\\1)[ \\t]*$|^(?=# )",
           "endCaptures": {
             "1": {
               "name": "punctuation.definition.embed.end.mull"
@@ -573,7 +573,7 @@
         },
         {
           "name": "invalid.illegal.fence.mull",
-          "match": "^:{3,}(?=[ \\t]|$).*$"
+          "match": "^[ \\t]*:{3,}(?=[ \\t]|$).*$"
         }
       ]
     },

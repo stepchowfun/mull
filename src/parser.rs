@@ -45,12 +45,12 @@ struct OpenLink {
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
-// run of colons is a fence: an opening fence names a verb, and the only verb embeds the page named
-// by the link after it, while a closing fence consists of colons alone and closes the innermost
-// open embed with a fence of the same length. The wiki retains as much of the source as possible
-// so it can still be validated and navigated, but it omits the content of duplicate pages, invalid
-// titles, and anything before the first title, so it mustn't be rendered if there are any syntax
-// errors. The line index locates syntax errors in their source listings.
+// run of colons, after any indentation, is a fence: an opening fence names a verb, and the only
+// verb embeds the page named by the link after it, while a closing fence consists of colons alone
+// and closes the innermost open embed with a fence of the same length. The wiki retains as much of
+// the source as possible so it can still be validated and navigated, but it omits the content of
+// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
+// if there are any syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
@@ -225,13 +225,14 @@ pub fn parse(
             if !can_report_content_before_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
+                        indentation,
                         length,
                         verb,
                         argument: (argument_start, argument_end),
                     } if verb == EMBED_VERB => {
                         open_embeds.push(OpenEmbed {
                             fence_length: length,
-                            start: position,
+                            start: position + indentation,
                             argument_source_range: SourceRange {
                                 start: position + argument_start,
                                 end: position + argument_end,
@@ -241,7 +242,12 @@ pub fn parse(
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
                     }
-                    FenceLine::Opening { length, verb, .. } => {
+                    FenceLine::Opening {
+                        indentation,
+                        length,
+                        verb,
+                        ..
+                    } => {
                         // Report an unknown verb, but still match its closing fence, so it doesn't
                         // seem unexpected.
                         errors.push(syntax_error(
@@ -255,7 +261,7 @@ pub fn parse(
                         ));
                         open_embeds.push(OpenEmbed {
                             fence_length: length,
-                            start: position,
+                            start: position + indentation,
                             argument_source_range: line_source_range,
                             link: None,
                         });
@@ -1412,6 +1418,23 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 ":::: embed [ Other ]\nSee [Last].\n::: embed [Last]\n:::\n::::",
                 "[ Other ]",
             )],
+        );
+    }
+
+    // Read an indented embed from the colons of its opening fence, closing it with a fence of the
+    // same length regardless of the closing fence's indentation.
+    #[test]
+    fn indented_embeds() {
+        let source = "# Home\n- Item\n  ::: embed [Other]\n\t:::\n# Other";
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.embeds
+                .iter()
+                .map(|embed| &source[embed.source_range.start..embed.source_range.end])
+                .collect::<Vec<_>>(),
+            vec!["::: embed [Other]\n\t:::"],
         );
     }
 

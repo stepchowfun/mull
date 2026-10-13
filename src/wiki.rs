@@ -23,9 +23,9 @@ pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
-// A line which starts with at least this many colons is a fence: an opening fence names a verb and
-// its argument, and a closing fence consists of colons alone. The only verb is the one which embeds
-// a page.
+// A line which starts with at least this many colons, after any indentation, is a fence: an opening
+// fence names a verb and its argument, and a closing fence consists of colons alone. The only verb
+// is the one which embeds a page.
 pub const MIN_FENCE_LENGTH: usize = 3;
 pub const EMBED_VERB: &str = "embed";
 
@@ -35,11 +35,12 @@ pub fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
 
-// These are the kinds of fence lines. An opening fence's verb and argument are located by their
-// offsets within the line, and its argument is trimmed.
+// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, its verb
+// and argument are located by their offsets within the line, and its argument is trimmed.
 #[derive(Debug, Eq, PartialEq)]
 pub enum FenceLine<'a> {
     Opening {
+        indentation: usize,
         length: usize,
         verb: &'a str,
         argument: (usize, usize),
@@ -49,18 +50,19 @@ pub enum FenceLine<'a> {
     },
 }
 
-// Read a line as a fence line: a run of fence characters, alone for a closing fence, or followed by
-// whitespace, a verb, and an argument for an opening fence. Any other line, including one in which
-// the run is followed directly by other text, isn't a fence line.
+// Read a line as a fence line: optional indentation and a run of fence characters, alone for a
+// closing fence, or followed by whitespace, a verb, and an argument for an opening fence. Any other
+// line, including one in which the run is followed directly by other text, isn't a fence line.
 pub fn fence_line(line: &str) -> Option<FenceLine<'_>> {
-    // Measure the run, which must be long enough.
-    let length = line.len() - line.trim_start_matches(':').len();
+    // Measure the indentation and the run after it, which must be long enough.
+    let indentation = line.len() - line.trim_start().len();
+    let length = line.len() - indentation - line[indentation..].trim_start_matches(':').len();
     if length < MIN_FENCE_LENGTH {
         return None;
     }
 
     // Find what follows the run, which is either nothing or whitespace and a verb.
-    let rest = &line[length..];
+    let rest = &line[indentation + length..];
     if rest.trim().is_empty() {
         return Some(FenceLine::Closing { length });
     }
@@ -74,6 +76,7 @@ pub fn fence_line(line: &str) -> Option<FenceLine<'_>> {
     let argument_start = line.len() - line[verb_end..].trim_start().len();
     let argument_end = line.trim_end().len().max(argument_start);
     Some(FenceLine::Opening {
+        indentation,
         length,
         verb: &line[verb_start..verb_end],
         argument: (argument_start, argument_end),
@@ -135,8 +138,9 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, replacing each embed with a fresh copy of the embedded page's content.
-        // An embed of a missing page, or one which would complete a cycle, is copied as written.
+        // Copy the content, replacing each embed with a fresh copy of the embedded page's content,
+        // with each of its lines indented like its opening fence. An embed of a missing page, or
+        // one which would complete a cycle, is copied as written.
         let mut content = String::new();
         let mut copied_through = content_start;
         embedding_pages.push(page.title.clone());
@@ -149,9 +153,14 @@ impl Wiki {
                 continue;
             };
             self.copy_links(page, copied_through, embed.source_range.start, &mut content);
+            let indentation = &self.source[self.source[..embed.source_range.start]
+                .rfind('\n')
+                .map_or(0, |index| index + '\n'.len_utf8())
+                ..embed.source_range.start];
             let body = self.rendered_content(embedded_page, embedding_pages);
             let longest_run = body
                 .lines()
+                .map(str::trim_start)
                 .map(|line| line.len() - line.trim_start_matches(':').len())
                 .max()
                 .unwrap_or(0);
@@ -166,10 +175,12 @@ impl Wiki {
             ] {
                 content.push_str(part);
             }
-            if !body.is_empty() {
-                content.push_str(&body);
+            for line in body.lines() {
+                content.push_str(indentation);
+                content.push_str(line);
                 content.push('\n');
             }
+            content.push_str(indentation);
             content.push_str(&fence);
             copied_through = embed.source_range.end;
         }
@@ -261,7 +272,7 @@ pub struct Page {
 #[derive(Clone, Debug)]
 pub struct Embed {
     pub title: PageTitle,
-    pub source_range: SourceRange, // From the opening fence through the end of the closing fence
+    pub source_range: SourceRange, // From the opening fence's colons through the closing fence
     pub link_source_range: SourceRange, // The link in the opening fence which names the page
 }
 
@@ -541,6 +552,7 @@ mod tests {
         assert_eq!(
             fence_line("::: embed [Page]  "),
             Some(FenceLine::Opening {
+                indentation: 0,
                 length: 3,
                 verb: "embed",
                 argument: (10, 16),
@@ -549,11 +561,22 @@ mod tests {
         assert_eq!(
             fence_line("::::\tembed"),
             Some(FenceLine::Opening {
+                indentation: 0,
                 length: 4,
                 verb: "embed",
                 argument: (10, 10),
             }),
         );
+        assert_eq!(
+            fence_line(" \t::: embed [Page]"),
+            Some(FenceLine::Opening {
+                indentation: 2,
+                length: 3,
+                verb: "embed",
+                argument: (12, 18),
+            }),
+        );
+        assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
         assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
         assert_eq!(
             fence_line("::::: \t"),
@@ -561,7 +584,7 @@ mod tests {
         );
         assert_eq!(fence_line(":: embed [Page]"), None);
         assert_eq!(fence_line(":::embed [Page]"), None);
-        assert_eq!(fence_line(" ::: embed [Page]"), None);
+        assert_eq!(fence_line(" :::embed [Page]"), None);
     }
 
     // Render pages in traversal order, placing unreachable pages last.
@@ -637,6 +660,28 @@ mod tests {
                 "::: embed [Missing]\nkept\n:::\n\n",
                 "::: embed [Home]\nkept\n:::\n\n",
                 "# Other\n\nSee [Last].\n\n::: embed [Last]\nThe end.\n:::\n\n",
+                "# Last\n\nThe end.\n",
+            ),
+        );
+    }
+
+    // Indent each line of an embed's copy, including its closing fence, like its opening fence,
+    // leaving blank lines empty, and indent nested embeds further.
+    #[test]
+    fn indented_embeds_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n- Item\n  ::: embed [Other]\nstale\n:::\n\n",
+            "# Other\n\nSee:\n\n\t::: embed [Last]\n\t:::\n\n",
+            "# Last\n\nThe end.",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n- Item\n",
+                "  :::: embed [Other]\n  See:\n\n  \t::: embed [Last]\n  \tThe end.\n  \t:::\n",
+                "  ::::\n\n",
+                "# Other\n\nSee:\n\n\t::: embed [Last]\n\tThe end.\n\t:::\n\n",
                 "# Last\n\nThe end.\n",
             ),
         );

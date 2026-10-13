@@ -61,7 +61,7 @@ This sentence will be replaced by the pancake recipe.
 :::
 ```
 
-When the wiki is formatted, the source page will automatically be replicated to all the embedded copies. The replication is unidirectional; any edits to the copies will be discarded.
+When the wiki is formatted, the source page will automatically be replicated to all the embedded copies. The replication is unidirectional; any edits to the copies will be discarded. An embed can be indented (e.g., to nest it in a list), in which case every line of the copy gets the same indentation.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
