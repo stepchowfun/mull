@@ -16,10 +16,10 @@
 // empty directory needs no link: under the first interpretation it's implicitly linked, since
 // everything in it is linked, and under the second it isn't anything which could be linked.
 //
-// Mull takes the second interpretation because it matches Git, which has no way to represent an
-// empty directory. It follows that a link to a directory without any files, not counting ignored
-// ones, is an error: a link has to match something, and the directory itself isn't anything. That
-// also means a link can't break in a fresh clone because an empty directory it named is missing.
+// Mull takes the second interpretation for a practical reason. The first would allow a link to an
+// empty directory, but Git has no way to represent one, so the link would break in a fresh clone.
+// Under the second, a link to a directory without any files, not counting ignored ones, is an
+// error, since a link has to match something, and the directory itself isn't anything.
 //
 // Empty directories themselves aren't reported. Neither interpretation calls for it, and an empty
 // directory has no content that the wiki could fail to account for, so reporting it would only be
