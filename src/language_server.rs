@@ -11,7 +11,10 @@ use crate::{
     scoring::traversal_order,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
-    wiki::{FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, Page, PageTitle, TITLE_PREFIX, Wiki},
+    wiki::{
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
+        TITLE_PREFIX, Wiki,
+    },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
@@ -42,13 +45,14 @@ use tower_lsp_server::{
         DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
         FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
         HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, LSPAny, Location, LocationLink, MarkupContent, MarkupKind, MessageType,
-        OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
-        PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
-        RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
-        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+        InitializedParams, InsertTextFormat, LSPAny, Location, LocationLink, MarkupContent,
+        MarkupKind, MessageType, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+        PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, Registration,
+        RenameFile, RenameOptions, RenameParams, ResourceOp, ResourceOperationKind,
+        ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit,
+        TextDocumentIdentifier, TextDocumentPositionParams, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
+        WorkspaceEdit,
     },
 };
 
@@ -64,7 +68,8 @@ const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
-// This editor command reopens suggestions so the children of a completed directory can be chosen.
+// This editor command reopens suggestions so the children of a completed directory, or the page for
+// a new embed, can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // This request plans attaching files which are pasted or dropped into a wiki: which ones to copy
@@ -424,7 +429,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec!["[".to_owned(), "/".to_owned()]),
+                    trigger_characters: Some(vec!["[".to_owned(), "/".to_owned(), ":".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -627,7 +632,7 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        // Complete links against the latest synchronized editor snapshot.
+        // Complete links and embeds against the latest synchronized editor snapshot.
         let position = params.text_document_position.position;
         self.respond(
             &params.text_document_position.text_document.uri,
@@ -984,13 +989,22 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     }
 }
 
-// Complete the link target at an editor position with page titles or filesystem paths.
+// Complete an embed at an editor position, or the target of the link there with page titles or
+// filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
+    // Offer to embed a page after the colons which start a fence.
+    let cursor_offset = snapshot.byte_offset(cursor)?;
+    if let Some(completion) = embed_completion(snapshot, cursor_offset) {
+        return Some(CompletionList {
+            is_incomplete: false,
+            items: vec![completion],
+        });
+    }
+
     // Find the link whose target contains the cursor, which is after its opening delimiter and no
     // later than its closing delimiter or, if it isn't closed, the end of its line. Offer nothing
     // outside a link, including in code, which never contains one. Targets are trimmed by the
     // parser, so the text typed so far starts after any leading whitespace.
-    let cursor_offset = snapshot.byte_offset(cursor)?;
     let link = snapshot.wiki().links().find(|link| {
         let source_range = link.source_range();
         source_range.start < cursor_offset
@@ -1034,6 +1048,56 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
             end: closing_delimiter.map_or(cursor_offset, |closing| closing + ']'.len_utf8()),
         },
     ))
+}
+
+// Offer to embed a page in place of the colons before the cursor, if they're the only text on their
+// line and the parser reports them as an unexpected closing fence, so they don't close an embed and
+// aren't in code. The embed is written on one line with the cursor in its link, where titles are
+// suggested next.
+fn embed_completion(snapshot: &Snapshot, cursor: usize) -> Option<CompletionItem> {
+    // Find the colons and the rest of their line.
+    let contents = &snapshot.contents;
+    let fence = ":".repeat(MIN_FENCE_LENGTH);
+    let fence_start = cursor.checked_sub(fence.len())?;
+    let line_start = contents[..cursor]
+        .rfind('\n')
+        .map_or(0, |index| index + '\n'.len_utf8());
+    let line_end = contents[cursor..]
+        .find('\n')
+        .map_or(contents.len(), |index| cursor + index);
+
+    // Require the colons to be alone on their line and unexpected as a closing fence.
+    if contents[line_start..cursor].trim_start() != fence
+        || !contents[cursor..line_end].trim().is_empty()
+        || !snapshot.parsed().1.iter().any(|error| {
+            error
+                .source_range()
+                .is_some_and(|source_range| source_range.start == fence_start)
+        })
+    {
+        return None;
+    }
+
+    // Write the embed as a snippet with a tab stop in its link.
+    Some(CompletionItem {
+        label: "Embed a page".to_owned(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        filter_text: Some(fence.clone()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+            snapshot.range(SourceRange {
+                start: fence_start,
+                end: cursor,
+            }),
+            format!("{fence} [$1] {fence}"),
+        ))),
+        command: Some(Command {
+            title: "Suggest".to_owned(),
+            command: TRIGGER_SUGGEST_COMMAND.to_owned(),
+            arguments: None,
+        }),
+        ..CompletionItem::default()
+    })
 }
 
 // Complete the next component of a filesystem link's typed path, which ends at the cursor, from
@@ -2742,8 +2806,8 @@ mod tests {
         CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
         CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentChangeOperation,
         DocumentChanges, DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse,
-        GotoDefinitionResponse, HoverContents, MarkupKind, OneOf, Position, PrepareRenameResponse,
-        Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
+        GotoDefinitionResponse, HoverContents, InsertTextFormat, MarkupKind, OneOf, Position,
+        PrepareRenameResponse, Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
     };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
@@ -2965,6 +3029,63 @@ mod tests {
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
                 .is_none(),
         );
+    }
+
+    // Offer to embed a page after the colons which start a fence, writing the embed on one line
+    // with the cursor in its link and suggesting titles there.
+    #[test]
+    fn completions_embed_pages() {
+        let source = "# Home\n\n- Item\n  :::\n\n# Other";
+        let completions =
+            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 5))
+                .unwrap()
+                .items;
+
+        assert_eq!(
+            completion_edits(&completions),
+            vec![(
+                "Embed a page",
+                Range::new(Position::new(3, 2), Position::new(3, 5)),
+                "::: [$1] :::",
+            )],
+        );
+        assert_eq!(
+            completions[0].insert_text_format,
+            Some(InsertTextFormat::SNIPPET),
+        );
+        assert_eq!(
+            completions[0]
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("editor.action.triggerSuggest"),
+        );
+        assert_eq!(
+            completion_for_document(
+                &snapshot(&untitled_uri(), "# Home\n\n::: [] :::\n\n# Other"),
+                Position::new(2, 5),
+            )
+            .unwrap()
+            .items
+            .iter()
+            .map(|completion| completion.label.as_str())
+            .collect::<Vec<_>>(),
+            vec!["Home", "Other"],
+        );
+    }
+
+    // Offer no embed after colons which close an embed, are in code, aren't alone on their line, or
+    // are too many to start a fence with the fewest colons.
+    #[test]
+    fn completions_decline_embeds() {
+        for (source, cursor) in [
+            ("# Home\n\n::: [Other]\n:::\n# Other", Position::new(3, 3)),
+            ("# Home\n\n```\n:::\n```", Position::new(3, 3)),
+            ("# Home\n\n::: :::", Position::new(2, 3)),
+            ("# Home\n\n::::", Position::new(2, 4)),
+        ] {
+            assert!(completion_for_document(&snapshot(&untitled_uri(), source), cursor).is_none());
+        }
     }
 
     // Complete an unfinished link despite a syntax error elsewhere in the wiki.
