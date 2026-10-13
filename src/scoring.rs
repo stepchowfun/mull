@@ -211,13 +211,12 @@ mod tests {
     #[test]
     fn links_in_embeds() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\n::: embed [Middle]\nSee [Zulu].\n::: embed [Alpha]\n:::\n:::\n",
-            "# Middle\nSee [Zulu].\n",
+            "# Home\n::: embed [Zulu]\nSee [Alpha].\n:::\n",
             "# Zulu\nSee [Alpha].\n",
             "# Alpha\n",
         ));
 
-        assert_eq!(titles, vec!["Home", "Middle", "Zulu", "Alpha"]);
+        assert_eq!(titles, vec!["Home", "Zulu", "Alpha"]);
     }
 
     // Leave pages which can't be reached from the home page without a position.

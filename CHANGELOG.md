@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Formatting a wiki twice no longer reorders its pages. Before, when a page embedded a page which embeds others, formatting filled in the copies, and the links in them then changed the order of the pages the next time. The links in a copy no longer affect where pages go, or whether they count as reachable.
+- Formatting a wiki twice no longer reorders its pages. Before, formatting filled in the copies that embeds show, and the links in them then changed the order of the pages the next time. The links in a copy no longer affect where pages go, or whether they count as reachable.
 
 ## [0.50.0] - 2026-10-13
 
