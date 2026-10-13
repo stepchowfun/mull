@@ -27,7 +27,7 @@ struct PendingPage {
 // link in its opening fence has been read, if that link names a page.
 struct OpenEmbed {
     fence_length: usize,
-    start: usize,                           // The offset of its opening fence
+    start: usize,                           // The offset of its opening fence's colons
     argument_source_range: SourceRange,     // The trimmed text after the colons
     link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
 }
@@ -60,11 +60,11 @@ enum FenceLine {
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
 // run of colons, after any indentation, is a fence: an opening fence embeds the page named by the
-// link after it, while a closing fence consists of colons alone and closes the innermost open
-// embed with a fence of the same length. The wiki retains as much of
-// the source as possible so it can still be validated and navigated, but it omits the content of
-// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
-// if there are any syntax errors. The line index locates syntax errors in their source listings.
+// link after it, while a closing fence consists of colons alone and closes the innermost open embed
+// with a fence of the same length. The wiki retains as much of the source as possible so it can
+// still be validated and navigated, but it omits the content of duplicate pages, invalid titles,
+// and anything before the first title, so it mustn't be rendered if there are any syntax errors.
+// The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
