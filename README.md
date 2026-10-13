@@ -56,10 +56,25 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 If you want to keep multiple copies of some content in sync, you can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
 
 ```md
+This is my favorite breakfast:
+
 ::: [Pancakes] :::
 ```
 
-When the wiki is formatted, that line will be expanded into a copy of the page. From then on, you can edit the page or any of its copies, and formatting will apply your changes to all of them. If the page and its copies are changed in different ways, Mull will report an error rather than choose between them. Mull only remembers which version is the latest while the wiki is open in the editor, so outside the editor, the page and its copies must already match.
+When the wiki is formatted, that line will be expanded into a copy of the page:
+
+```md
+This is my favorite breakfast:
+
+::: [Pancakes]
+- 1 cup of flour
+- 1 cup of milk
+- 1 egg
+- A squeeze of [Lemons]
+:::
+```
+
+You can edit the page or any of its copies, and formatting will propagate your changes to all of them.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
