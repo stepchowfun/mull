@@ -1592,7 +1592,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .map(|embed| &source[embed.source_range.start..embed.source_range.end])
                 .collect::<Vec<_>>(),
-            vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::",],
+            vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::"],
         );
         assert_eq!(
             link_targets(&home.links),

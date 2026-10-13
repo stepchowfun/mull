@@ -159,10 +159,11 @@ pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &s
         .map(|(title, page_instances)| (title, page_instances[0].content.as_str()))
 }
 
-// Rewrite the source so each embedded page has the content to propagate to all of its instances:
-// the content of the instances which differ from its baseline, if they all agree, or its own
-// content if none do. Without a baseline, all of its instances must agree. Report the instances
-// which were changed differently, and copies which can't be compared with their pages.
+// Rewrite a wiki so each embedded page has the content to propagate to all of its instances: the
+// content of the instances which differ from its baseline, if they all agree, or its own content if
+// none do. Without a baseline, all of its instances must agree. Report the instances which were
+// changed differently, changes which would make a page embed itself, and copies which can't be
+// compared with their pages.
 pub fn propagate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -170,7 +171,7 @@ pub fn propagate(
     line_index: &LineIndex,
     instances: &Instances,
     baseline: &Baseline,
-) -> Result<String, Vec<Error>> {
+) -> Result<Wiki, Vec<Error>> {
     // Report errors at ranges of the source.
     let error = |message: &str, source_range| {
         Error::new(
@@ -222,7 +223,11 @@ pub fn propagate(
             .all(|instance| instance.content == first_changed_instance.content)
         {
             if first_changed_instance.content != page_instances[0].content {
-                replacements.push((&wiki.pages[title], &first_changed_instance.content));
+                replacements.push((
+                    &wiki.pages[title],
+                    &first_changed_instance.content,
+                    changed_instances,
+                ));
             }
         } else {
             let message = format!(
@@ -242,16 +247,67 @@ pub fn propagate(
         return Err(errors);
     }
 
-    // Replace the content of each page to propagate, from the end so earlier offsets stay valid.
-    replacements.sort_by_key(|(page, _content)| std::cmp::Reverse(page.source_range.start));
+    // Replace the content of each page to propagate, from the end so earlier offsets stay valid,
+    // and read the result.
+    replacements.sort_by_key(|(page, _content, _changed_instances)| {
+        std::cmp::Reverse(page.source_range.start)
+    });
     let mut propagated_contents = source_contents.to_owned();
-    for (page, content) in replacements {
+    for (page, content, _changed_instances) in &replacements {
         propagated_contents.replace_range(
             page.title_source_range.end..page.source_range.end,
             &format!("\n\n{content}"),
         );
     }
-    Ok(propagated_contents)
+    let propagated_line_index = LineIndex::new(&propagated_contents);
+    let (propagated_wiki, syntax_errors) =
+        parser::parse(source_path, &propagated_contents, &propagated_line_index);
+    if !syntax_errors.is_empty() {
+        return Err(syntax_errors);
+    }
+
+    // Report the changed instances of each page which would embed itself, directly or through
+    // other pages, once its changes were propagated. Its copies couldn't be filled in.
+    for (page, _content, changed_instances) in &replacements {
+        if embeds_itself(&propagated_wiki, &page.title) {
+            let message = format!(
+                "Propagating this change would make {} embed itself.",
+                page.title.code_str(),
+            );
+            errors.extend(
+                changed_instances
+                    .iter()
+                    .map(|instance| error(&message, instance.source_range)),
+            );
+        }
+    }
+    if errors.is_empty() {
+        Ok(propagated_wiki)
+    } else {
+        errors.sort_by_key(|error| error.source_range().map(|source_range| source_range.start));
+        Err(errors)
+    }
+}
+
+// Determine whether a page embeds itself, directly or through other pages.
+fn embeds_itself(wiki: &Wiki, title: &PageTitle) -> bool {
+    let mut visited_titles = HashSet::new();
+    let mut pending_titles = vec![title];
+    while let Some(pending_title) = pending_titles.pop() {
+        for embed in wiki
+            .pages
+            .get(pending_title)
+            .map_or(&[][..], |page| &page.embeds)
+        {
+            if embed.title == *title {
+                return true;
+            }
+            if visited_titles.insert(&embed.title) {
+                pending_titles.push(&embed.title);
+            }
+        }
+    }
+    false
 }
 
 // Format a wiki without syntax errors, propagating the changes to each embedded page to all of its
@@ -264,23 +320,16 @@ pub fn format(
     instances: &Instances,
     baseline: &Baseline,
 ) -> Result<String, Vec<Error>> {
-    // Render the rewritten source, which refreshes the copies from the pages.
-    let propagated_contents = propagate(
+    // Render the rewritten wiki, which refreshes the copies from the pages.
+    propagate(
         wiki,
         source_path,
         source_contents,
         line_index,
         instances,
         baseline,
-    )?;
-    let propagated_line_index = LineIndex::new(&propagated_contents);
-    let (propagated_wiki, errors) =
-        parser::parse(source_path, &propagated_contents, &propagated_line_index);
-    if errors.is_empty() {
-        Ok(propagated_wiki.to_string())
-    } else {
-        Err(errors)
-    }
+    )
+    .map(|propagated_wiki| propagated_wiki.to_string())
 }
 
 #[cfg(test)]
@@ -405,9 +454,9 @@ mod tests {
         assert!(
             format_test(
                 "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.",
-                &[]
+                &[],
             )
-            .is_ok()
+            .is_ok(),
         );
     }
 
@@ -442,8 +491,8 @@ mod tests {
                 source,
                 &[
                     ("Pancakes", "Mix.\n\n  ::: [Syrup]\n  :::"),
-                    ("Syrup", "Pour.")
-                ]
+                    ("Syrup", "Pour."),
+                ],
             )
             .unwrap(),
             concat!(
@@ -478,6 +527,27 @@ mod tests {
             format_test("# Home\n\n::: [Pancakes] :::\n\n# Pancakes\n\nMix.\n", &[]).unwrap(),
             "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.\n",
         );
+    }
+
+    // Report a change which would make a page embed itself, directly or through other pages.
+    #[test]
+    fn changes_which_embed_their_pages() {
+        for embedded_title in ["Pancakes", "Syrup"] {
+            let source = format!(
+                concat!(
+                    "# Home\n\n::: [Pancakes]\n::: [{}] :::\n\nMix.\n:::\n\n",
+                    "# Pancakes\n\nMix.\n\n# Syrup\n\n::: [Pancakes]\nMix.\n:::\n",
+                ),
+                embedded_title,
+            );
+            let errors = format_test(&source, &[("Pancakes", "Mix.")]).unwrap_err();
+
+            assert_eq!(error_texts(&source, &errors), vec!["[Pancakes]"]);
+            assert_fails!(
+                Err::<(), _>(errors),
+                "Propagating this change would make `Pancakes` embed itself.",
+            );
+        }
     }
 
     // Report a copy with a line which would start another page if it were a page's content.
