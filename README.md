@@ -53,7 +53,7 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 
 ### Embedding a page inside another
 
-If you want to keep multiple copies of some content in sync, you can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
+You can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
 
 ```md
 This is my favorite breakfast:
@@ -74,7 +74,7 @@ This is my favorite breakfast:
 :::
 ```
 
-You can edit the page or any of its copies, and formatting will propagate your changes to all of them.
+The copy is automatically kept in sync with the original. Formatting will propagate edits from either one to the other.
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
