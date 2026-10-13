@@ -39,22 +39,6 @@ struct OpenLink {
     has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
 }
 
-// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
-// argument is trimmed and located by its offsets within the line. An embed written on one line
-// ends with a closing run of colons after its argument.
-#[derive(Debug, Eq, PartialEq)]
-enum FenceLine {
-    Opening {
-        indentation: usize,
-        length: usize,
-        argument: (usize, usize),
-        is_one_line: bool,
-    },
-    Closing {
-        length: usize,
-    },
-}
-
 // Parse source contents into a scored wiki in a single pass, with source ranges for every page and
 // link, along with any syntax errors in source order. A title line starts a region, which is a page
 // if its title is valid. In the content, code starts with a run of backticks and ends at the next
@@ -535,45 +519,6 @@ fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
 
-// Read a line as a fence line: optional indentation and a run of fence characters, alone for a
-// closing fence, or followed by whitespace and an argument for an opening fence, and then by
-// whitespace and another run for an embed written on one line. Any other line, including one in
-// which the run is followed directly by other text, isn't a fence line.
-fn fence_line(line: &str) -> Option<FenceLine> {
-    // Measure the indentation and the run after it, which must be long enough.
-    let indentation = line.len() - line.trim_start().len();
-    let length = line.len() - indentation - line[indentation..].trim_start_matches(':').len();
-    if length < MIN_FENCE_LENGTH {
-        return None;
-    }
-
-    // Find what follows the run, which is either nothing or whitespace and an argument.
-    let rest = &line[indentation + length..];
-    if rest.trim().is_empty() {
-        return Some(FenceLine::Closing { length });
-    }
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let argument_start = line.len() - rest.trim_start().len();
-    let argument = line[argument_start..].trim_end();
-    let before_closing_run = argument.trim_end_matches(':');
-    let is_one_line = argument.len() - before_closing_run.len() >= MIN_FENCE_LENGTH
-        && before_closing_run.ends_with(char::is_whitespace)
-        && !before_closing_run.trim().is_empty();
-    let argument = if is_one_line {
-        before_closing_run.trim_end()
-    } else {
-        argument
-    };
-    Some(FenceLine::Opening {
-        indentation,
-        length,
-        argument: (argument_start, argument_start + argument.len()),
-        is_one_line,
-    })
-}
-
 // Add a completed region as a page if it has a valid title which hasn't already been used, with
 // the links in its content.
 fn finish_page(
@@ -654,6 +599,61 @@ fn parse_title(
             None,
         )),
     }
+}
+
+// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
+// argument is trimmed and located by its offsets within the line. An embed written on one line
+// ends with a closing run of colons after its argument.
+#[derive(Debug, Eq, PartialEq)]
+enum FenceLine {
+    Opening {
+        indentation: usize,
+        length: usize,
+        argument: (usize, usize),
+        is_one_line: bool,
+    },
+    Closing {
+        length: usize,
+    },
+}
+
+// Read a line as a fence line: optional indentation and a run of fence characters, alone for a
+// closing fence, or followed by whitespace and an argument for an opening fence, and then by
+// whitespace and another run for an embed written on one line. Any other line, including one in
+// which the run is followed directly by other text, isn't a fence line.
+fn fence_line(line: &str) -> Option<FenceLine> {
+    // Measure the indentation and the run after it, which must be long enough.
+    let indentation = line.len() - line.trim_start().len();
+    let length = line.len() - indentation - line[indentation..].trim_start_matches(':').len();
+    if length < MIN_FENCE_LENGTH {
+        return None;
+    }
+
+    // Find what follows the run, which is either nothing or whitespace and an argument.
+    let rest = &line[indentation + length..];
+    if rest.trim().is_empty() {
+        return Some(FenceLine::Closing { length });
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let argument_start = line.len() - rest.trim_start().len();
+    let argument = line[argument_start..].trim_end();
+    let before_closing_run = argument.trim_end_matches(':');
+    let is_one_line = argument.len() - before_closing_run.len() >= MIN_FENCE_LENGTH
+        && before_closing_run.ends_with(char::is_whitespace)
+        && !before_closing_run.trim().is_empty();
+    let argument = if is_one_line {
+        before_closing_run.trim_end()
+    } else {
+        argument
+    };
+    Some(FenceLine::Opening {
+        indentation,
+        length,
+        argument: (argument_start, argument_start + argument.len()),
+        is_one_line,
+    })
 }
 
 // Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
@@ -797,68 +797,6 @@ mod tests {
         assert_eq!(title_line_text("#Greeting"), None);
         assert_eq!(title_line_text("## Greeting"), None);
         assert_eq!(title_line_text(""), None);
-    }
-
-    // Recognize opening fences with a trimmed argument, including embeds written on one line, and
-    // closing fences, but not shorter runs or runs followed directly by other text.
-    #[test]
-    fn fence_lines() {
-        assert_eq!(
-            fence_line("::: [Page]  "),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 3,
-                argument: (4, 10),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(
-            fence_line("::::\t[Page]"),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 4,
-                argument: (5, 11),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(
-            fence_line(" \t::: [Page]"),
-            Some(FenceLine::Opening {
-                indentation: 2,
-                length: 3,
-                argument: (6, 12),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(
-            fence_line("::::: \t"),
-            Some(FenceLine::Closing { length: 5 }),
-        );
-        assert_eq!(
-            fence_line(":::: [Page]\t:::::  "),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 4,
-                argument: (5, 11),
-                is_one_line: true,
-            }),
-        );
-        for (line, argument_end) in [("::: [Page]:::", 13), ("::: [Page] ::", 13), ("::: :::", 7)] {
-            assert_eq!(
-                fence_line(line),
-                Some(FenceLine::Opening {
-                    indentation: 0,
-                    length: 3,
-                    argument: (4, argument_end),
-                    is_one_line: false,
-                }),
-            );
-        }
-        assert_eq!(fence_line(":: [Page]"), None);
-        assert_eq!(fence_line(":::[Page]"), None);
-        assert_eq!(fence_line(" :::[Page]"), None);
     }
 
     // Parse titles and multiline content while retaining exact source ranges. A title's range
@@ -1541,6 +1479,68 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(links[0].closing_delimiter(), Some(16));
         assert_eq!(links[3].closing_delimiter(), None);
+    }
+
+    // Recognize opening fences with a trimmed argument, including embeds written on one line, and
+    // closing fences, but not shorter runs or runs followed directly by other text.
+    #[test]
+    fn fence_lines() {
+        assert_eq!(
+            fence_line("::: [Page]  "),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 3,
+                argument: (4, 10),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(
+            fence_line("::::\t[Page]"),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 4,
+                argument: (5, 11),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(
+            fence_line(" \t::: [Page]"),
+            Some(FenceLine::Opening {
+                indentation: 2,
+                length: 3,
+                argument: (6, 12),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
+        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
+        assert_eq!(
+            fence_line("::::: \t"),
+            Some(FenceLine::Closing { length: 5 }),
+        );
+        assert_eq!(
+            fence_line(":::: [Page]\t:::::  "),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 4,
+                argument: (5, 11),
+                is_one_line: true,
+            }),
+        );
+        for (line, argument_end) in [("::: [Page]:::", 13), ("::: [Page] ::", 13), ("::: :::", 7)] {
+            assert_eq!(
+                fence_line(line),
+                Some(FenceLine::Opening {
+                    indentation: 0,
+                    length: 3,
+                    argument: (4, argument_end),
+                    is_one_line: false,
+                }),
+            );
+        }
+        assert_eq!(fence_line(":: [Page]"), None);
+        assert_eq!(fence_line(":::[Page]"), None);
+        assert_eq!(fence_line(" :::[Page]"), None);
     }
 
     // Read an embed from its opening fence through its closing fence, with the link in its opening
