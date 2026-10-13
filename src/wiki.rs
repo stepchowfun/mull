@@ -29,60 +29,6 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 pub const MIN_FENCE_LENGTH: usize = 3;
 pub const EMBED_VERB: &str = "embed";
 
-// Find the text after a title line's prefix, which is a title marker followed by a space. A line
-// that isn't a title line has none, including a bare title marker.
-pub fn title_line_text(line: &str) -> Option<&str> {
-    line.strip_prefix(TITLE_PREFIX)
-}
-
-// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, its verb
-// and argument are located by their offsets within the line, and its argument is trimmed.
-#[derive(Debug, Eq, PartialEq)]
-pub enum FenceLine<'a> {
-    Opening {
-        indentation: usize,
-        length: usize,
-        verb: &'a str,
-        argument: (usize, usize),
-    },
-    Closing {
-        length: usize,
-    },
-}
-
-// Read a line as a fence line: optional indentation and a run of fence characters, alone for a
-// closing fence, or followed by whitespace, a verb, and an argument for an opening fence. Any other
-// line, including one in which the run is followed directly by other text, isn't a fence line.
-pub fn fence_line(line: &str) -> Option<FenceLine<'_>> {
-    // Measure the indentation and the run after it, which must be long enough.
-    let indentation = line.len() - line.trim_start().len();
-    let length = line.len() - indentation - line[indentation..].trim_start_matches(':').len();
-    if length < MIN_FENCE_LENGTH {
-        return None;
-    }
-
-    // Find what follows the run, which is either nothing or whitespace and a verb.
-    let rest = &line[indentation + length..];
-    if rest.trim().is_empty() {
-        return Some(FenceLine::Closing { length });
-    }
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let verb_start = line.len() - rest.trim_start().len();
-    let verb_end = line[verb_start..]
-        .find(char::is_whitespace)
-        .map_or(line.len(), |index| verb_start + index);
-    let argument_start = line.len() - line[verb_end..].trim_start().len();
-    let argument_end = line.trim_end().len().max(argument_start);
-    Some(FenceLine::Opening {
-        indentation,
-        length,
-        verb: &line[verb_start..verb_end],
-        argument: (argument_start, argument_end),
-    })
-}
-
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
 #[derive(Clone, Debug)]
@@ -519,7 +465,7 @@ impl CodeStr for FilesystemTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{FenceLine, FilesystemTarget, PageTitle, Wiki, fence_line, title_line_text};
+    use super::{FilesystemTarget, PageTitle, Wiki};
     use crate::{
         escaping::{Context, unescape},
         line_index::LineIndex,
@@ -531,60 +477,6 @@ mod tests {
         let (wiki, errors) = parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
         wiki
-    }
-
-    // Recognize a title marker followed by a space, but not a bare title marker or other headings.
-    #[test]
-    fn title_lines() {
-        assert_eq!(title_line_text("# "), Some(""));
-        assert_eq!(title_line_text("# Greeting  "), Some("Greeting  "));
-        assert_eq!(title_line_text("#"), None);
-        assert_eq!(title_line_text("#\tGreeting"), None);
-        assert_eq!(title_line_text("#Greeting"), None);
-        assert_eq!(title_line_text("## Greeting"), None);
-        assert_eq!(title_line_text(""), None);
-    }
-
-    // Recognize opening fences with a verb and a trimmed argument, and closing fences, but not
-    // shorter runs or runs followed directly by other text.
-    #[test]
-    fn fence_lines() {
-        assert_eq!(
-            fence_line("::: embed [Page]  "),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 3,
-                verb: "embed",
-                argument: (10, 16),
-            }),
-        );
-        assert_eq!(
-            fence_line("::::\tembed"),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 4,
-                verb: "embed",
-                argument: (10, 10),
-            }),
-        );
-        assert_eq!(
-            fence_line(" \t::: embed [Page]"),
-            Some(FenceLine::Opening {
-                indentation: 2,
-                length: 3,
-                verb: "embed",
-                argument: (12, 18),
-            }),
-        );
-        assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(
-            fence_line("::::: \t"),
-            Some(FenceLine::Closing { length: 5 }),
-        );
-        assert_eq!(fence_line(":: embed [Page]"), None);
-        assert_eq!(fence_line(":::embed [Page]"), None);
-        assert_eq!(fence_line(" :::embed [Page]"), None);
     }
 
     // Render pages in traversal order, placing unreachable pages last.
