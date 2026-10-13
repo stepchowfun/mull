@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0] - 2026-10-13
+
+### Changed
+
+- Embeds no longer have a verb, so an embed is now written `::: [Page]` rather than `::: embed [Page]`. The old form is now an error. To convert a wiki, you can run `sed -i '' -E 's/^([[:space:]]*:{3,})[[:space:]]+embed[[:space:]]+/\1 /' wiki.mull` (omit `''` with GNU sed).
+
 ## [0.50.1] - 2026-10-13
 
 ### Fixed
