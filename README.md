@@ -143,9 +143,9 @@ If you're running macOS or Linux (AArch64 or x86-64), you can install Mull with 
 curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | sh
 ```
 
-The same command can be used again to update to the latest version.
-
 It first installs the binary, then it installs the extension for Visual Studio Code and/or Cursor.
+
+The same command can be used again to update to the latest version.
 
 The installation script supports the following optional environment variables:
 
