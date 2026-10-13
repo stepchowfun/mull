@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.1] - 2026-10-13
+
+### Fixed
+
+- In the VS Code extension, formatting a wiki now keeps the cursor in place within its page. Before, when formatting moved the page, the cursor stayed behind and ended up in another page.
+
 ## [0.53.0] - 2026-10-13
 
 ### Added
