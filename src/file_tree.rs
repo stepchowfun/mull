@@ -1,3 +1,30 @@
+// This module walks the file tree under a wiki's file root, where every file must be linked from
+// the wiki. Everything that validates or reads the tree shares the walk, so they all agree on
+// what's in it. It's worth recording how directories are interpreted, since several decisions
+// follow from it.
+//
+// There are two ways to think of directories:
+//
+// 1. A directory is an entity in its own right which needs a link, and it's implicitly linked if
+//    everything in it is linked.
+// 2. A directory isn't an entity which can be linked to at all. A link to a directory is shorthand
+//    for links to all the files under it.
+//
+// Under either interpretation, a directory needn't be linked if all the files in it are. That
+// matters because linking a directory covers anything added to it later, so linking each file
+// instead keeps the assurance that a stray file in it will be reported. It also follows that an
+// empty directory needs no link: under the first interpretation it's implicitly linked, since
+// everything in it is linked, and under the second it isn't anything which could be linked.
+//
+// Mull takes the second interpretation for a practical reason. The first would allow a link to an
+// empty directory, but Git has no way to represent one, so the link would break in a fresh clone.
+// Under the second, a link to a directory without any files, not counting ignored ones, is an
+// error, since a link has to match something, and the directory itself isn't anything.
+//
+// Empty directories themselves aren't reported. Neither interpretation calls for it, and an empty
+// directory has no content that the wiki could fail to account for, so reporting it would only be
+// a rule about tidiness.
+
 use crate::{
     cancellation::{CancellationFlag, Outcome},
     spelled_path::{FileRoot, SpelledPath},
