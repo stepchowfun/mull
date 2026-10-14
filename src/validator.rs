@@ -254,7 +254,8 @@ fn validate_scripts(
         .collect()
 }
 
-// Validate filesystem links and coverage, given the wiki's pages in title order.
+// Validate filesystem links and coverage, given the wiki's pages in title order. A script which a
+// script block uses counts as linked.
 fn validate_filesystem_links(
     pages: &[&Page],
     file_root: &FileRoot,
@@ -348,6 +349,22 @@ fn validate_filesystem_links(
                 } else {
                     referenced_files.insert(spelled);
                 }
+            }
+        }
+    }
+
+    // Count each script which a script block uses as linked, spelled as it was found.
+    for page in pages {
+        for block in &page.script_blocks {
+            if let Ok(script) = script_path(file_root, &block.name)
+                && let Some(name) = script
+                    .strip_prefix(file_root.path())
+                    .ok()
+                    .and_then(Path::to_str)
+                && let Ok(target) = FilesystemTarget::from_name(name, false)
+                && let Ok(spelled) = file_root.spell(&target, &mut listings)
+            {
+                referenced_files.insert(spelled);
             }
         }
     }
@@ -894,6 +911,22 @@ mod tests {
             &errors,
             "More than one script is named `tidy` in `/scripts`: `/scripts/tidy.py`, \
              `/scripts/tidy.sh`.",
+        ));
+    }
+
+    // Count a script which a script block uses as linked, but not one which none uses.
+    #[test]
+    fn used_scripts_are_linked() {
+        let directory = TestDirectory::new();
+        directory.write("scripts/sort.sh", "");
+        directory.write("scripts/unused.sh", "");
+        let wiki = parse("# Home\n::: sort :::\n").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "File `/scripts/unused.sh` isn't linked to.",
         ));
     }
 

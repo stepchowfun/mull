@@ -80,47 +80,52 @@ Mull keeps the copies synchronized. You can directly edit any of the copies, and
 
 ### Extending Mull with scripts
 
-Suppose you have a list that you want to keep sorted.
+Suppose you have a list that you want to keep sorted:
 
 ```md
-- Apple
-- Banana
-- Lemon
-- Orange
+- Garlic
+- Kosher salt
+- Miso
+- Olive oil
+- Rice
 ```
 
 With a script, you can define a `sort` command and use it as follows:
 
 ```md
 ::: sort
-- Apple
-- Banana
-- Lemon
-- Orange
+- Garlic
+- Kosher salt
+- Miso
+- Olive oil
+- Rice
 :::
 ```
 
-Then Mull can help you maintain the sorted order. To make that work, create a file called `<wiki>_files/scripts/sort.sh` and make it executable (e.g., with `chmod +x wiki_files/scripts/sort.sh`). In this case, the script might be as follows:
+Then Mull can help you maintain the sorted order. To make that work, create a file called `<wiki>_files/scripts/sort.sh` and make it executable (e.g., with `chmod +x wiki_files/scripts/sort.sh`). For sorting, you might use the following script:
 
 ```sh
 #!/bin/sh
 sort "$@"
 ```
 
-This script is defined to accept arguments, so for example you can sort in reverse order:
+That script is defined to accept arguments, so for example you can sort in reverse order with `-r`:
 
 ```md
 ::: sort -r
-- Apple
-- Banana
-- Lemon
-- Orange
+- Rice
+- Olive oil
+- Miso
+- Kosher salt
+- Garlic
 :::
 ```
 
 Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
 
-Scripts are files in `<wiki>_files`, so they need to be linked to from the wiki like any other file (e.g., `[/scripts/sort.sh]`).
+![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
+
+Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`).
 
 ### Orthography
 

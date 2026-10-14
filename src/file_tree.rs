@@ -1,7 +1,7 @@
 // This module walks the file tree under a wiki's file root, where everything must be linked from
-// the wiki. Everything that validates or reads the tree shares the walk, so they all agree on
-// what's in it. It's worth recording how directories are interpreted, since several decisions
-// follow from it.
+// the wiki, except scripts which script blocks use. Everything that validates or reads the tree
+// shares the walk, so they all agree on what's in it. It's worth recording how directories are
+// interpreted, since several decisions follow from it.
 //
 // There are two ways to think of directories: as entities in their own right, which links can name,
 // or as nothing but the paths of the files under them, so a link to a directory is shorthand for
