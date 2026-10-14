@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import {
   ExecuteCommandRequest,
   LanguageClient,
+  type ProvideCodeLensesSignature,
   type ProvideDocumentFormattingEditsSignature,
 } from 'vscode-languageclient/node';
 
@@ -142,6 +143,56 @@ async function checkActiveWiki(): Promise<void> {
     command: CHECK_WIKI_COMMAND,
     arguments: [editor.document.uri.toString()],
   });
+}
+
+// These commands run the script blocks of a wiki, through the language server commands of the same
+// names: one, named by the wiki's URI, its page's title, and its index among the page's script
+// blocks, as the language server's Run links do, or every one in the wiki being edited. Keep these
+// in sync with [group:run_script_commands].
+const RUN_SCRIPT_COMMAND = 'mull.runScript';
+const RUN_SCRIPTS_COMMAND = 'mull.runScripts';
+
+// Determine whether scripts may run, which they can't in Restricted Mode, since a wiki from someone
+// else could run any program through them. Explain why when they can't.
+async function scriptsMayRun(): Promise<boolean> {
+  if (!vscode.workspace.isTrusted) {
+    await vscode.window.showWarningMessage(
+      "Scripts don't run in Restricted Mode. Trust the workspace to run them.",
+    );
+  }
+  return vscode.workspace.isTrusted;
+}
+
+// Ask the language server to run one script block.
+async function runScript(uri: string, title: string, index: number): Promise<void> {
+  if (client === undefined || !(await scriptsMayRun())) {
+    return;
+  }
+  await client.sendRequest(ExecuteCommandRequest.type, {
+    command: RUN_SCRIPT_COMMAND,
+    arguments: [uri, title, index],
+  });
+}
+
+// Ask the language server to run every script block in the wiki being edited.
+async function runActiveWikiScripts(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (client === undefined || !isMainWikiEditor(editor) || !(await scriptsMayRun())) {
+    return;
+  }
+  await client.sendRequest(ExecuteCommandRequest.type, {
+    command: RUN_SCRIPTS_COMMAND,
+    arguments: [editor.document.uri.toString()],
+  });
+}
+
+// Offer the language server's Run links only where scripts may run.
+async function codeLensesWhereScriptsRun(
+  document: vscode.TextDocument,
+  token: vscode.CancellationToken,
+  next: ProvideCodeLensesSignature,
+): Promise<vscode.CodeLens[] | null | undefined> {
+  return vscode.workspace.isTrusted ? next(document, token) : [];
 }
 
 // This private command lets the language server reveal a source range in a document.
@@ -882,6 +933,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Expose the command that checks the wiki being edited again.
   context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
 
+  // Run script blocks through the language server, from its Run links or for a whole wiki.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(RUN_SCRIPT_COMMAND, runScript),
+    vscode.commands.registerCommand(RUN_SCRIPTS_COMMAND, runActiveWikiScripts),
+  );
+
   // Paste or drop files into saved wikis as links to them, copying them in if needed.
   context.subscriptions.push(
     vscode.languages.registerDocumentPasteEditProvider(
@@ -1011,8 +1068,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     // Let hovers use HTML, which sizes image previews.
     markdown: { supportHtml: true },
-    // Keep cursors in place within their pages when formatting moves the pages.
-    middleware: { provideDocumentFormattingEdits: formatKeepingPagePositions },
+    // Keep cursors in place within their pages when formatting moves the pages, and offer to run
+    // scripts only where they may run.
+    middleware: {
+      provideDocumentFormattingEdits: formatKeepingPagePositions,
+      provideCodeLenses: codeLensesWhereScriptsRun,
+    },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();

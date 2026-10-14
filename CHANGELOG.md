@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0] - 2026-10-14
+
+### Added
+
+- In the VS Code extension, a Run link above each script block runs its script, and the **Mull: Run Scripts** command runs every script in the wiki. Pending changes to embedded pages are propagated first, and the output is applied as an edit, which isn't applied if the wiki changed while the scripts ran. Scripts don't run in Restricted Mode.
+- Typing `:::` on a line of its own now also suggests each script in `<wiki>_files/scripts`, writing a script block for it.
+
 ## [0.55.0] - 2026-10-14
 
 ### Added

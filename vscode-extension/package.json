@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.55.0",
+  "version": "0.56.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -134,6 +134,11 @@
         "command": "mull.checkWiki",
         "title": "Check Wiki",
         "category": "Mull"
+      },
+      {
+        "command": "mull.runScripts",
+        "title": "Run Scripts",
+        "category": "Mull"
       }
     ],
     "menus": {
@@ -164,6 +169,10 @@
         },
         {
           "command": "mull.checkWiki",
+          "when": "editorLangId == mull"
+        },
+        {
+          "command": "mull.runScripts",
           "when": "editorLangId == mull"
         }
       ]
@@ -248,7 +257,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In Restricted Mode, Mull ignores the workspace's setting for its executable path, which could otherwise make the extension run any program.",
+      "description": "In Restricted Mode, Mull doesn't run scripts, and it ignores the workspace's setting for its executable path, either of which could otherwise run any program.",
       "restrictedConfigurations": [
         "mull.executablePath"
       ]

@@ -90,7 +90,7 @@ A script can compute part of a page. Put the script in `<wiki>_files/scripts`, m
 :::
 ```
 
-Running `mull run` gives each script its block's body on standard input, and replaces the body with what the script prints. Anything after the script's name is passed to it as arguments: a link to a page is passed as the page's title, a link to a file as the file's full path, and code like `` `a\d+` `` as written. Scripts run in `<wiki>_files`, with the wiki's path in `MULL_WIKI` and the page's title in `MULL_PAGE`, and `mull page Title` prints a page's content. A block written on one line, like `::: backlinks :::`, starts out empty.
+Running `mull run`, or clicking the Run link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints. The **Mull: Run Scripts** command runs every script in the wiki, and typing `:::` on a new line suggests your scripts. The editor doesn't run scripts in Restricted Mode, since a wiki from someone else could run any program through them. Anything after the script's name is passed to it as arguments: a link to a page is passed as the page's title, a link to a file as the file's full path, and code like `` `a\d+` `` as written. Scripts run in `<wiki>_files`, with the wiki's path in `MULL_WIKI` and the page's title in `MULL_PAGE`, and `mull page Title` prints a page's content. A block written on one line, like `::: backlinks :::`, starts out empty.
 
 Scripts are files in `<wiki>_files`, so they need to be linked to from the wiki like any other file.
 
