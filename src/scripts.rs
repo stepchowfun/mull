@@ -187,12 +187,12 @@ fn hash(
         hasher.update(part);
     }
     let digest = hasher.finalize();
-    let prefix = u64::from_be_bytes(
-        digest[..8]
+    let prefix = u32::from_be_bytes(
+        digest[..4]
             .try_into()
-            .expect("A SHA-256 digest should have at least 8 bytes."),
+            .expect("A SHA-256 digest should have at least 4 bytes."),
     );
-    Some(format!("{prefix:016x}"))
+    Some(format!("{prefix:08x}"))
 }
 
 // This is why a script block couldn't be run, with any underlying cause.

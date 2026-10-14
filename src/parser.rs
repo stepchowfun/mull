@@ -1644,10 +1644,10 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             }),
         );
         assert_eq!(
-            fence_line("  :::: #0a1b2c3d4e5f6789 "),
+            fence_line("  :::: #0a1b2c3d "),
             Some(FenceLine::Closing {
                 length: 4,
-                hash: Some((7, 24)),
+                hash: Some((7, 16)),
             }),
         );
         assert_eq!(
