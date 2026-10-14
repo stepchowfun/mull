@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0] - 2026-10-14
+
+### Changed
+
+- Formatting now runs a wiki's scripts. `mull format` runs them unless given `--no-scripts`, and `mull check` runs them without writing anything, failing if their output would change the wiki. In the VS Code extension, formatting runs them too, including on save, except in Restricted Mode.
+- The `mull run` subcommand and the **Mull: Run Scripts** command are gone, since formatting runs every script. The Run link above each script block still runs just that block.
+
 ## [0.57.0] - 2026-10-14
 
 ### Changed

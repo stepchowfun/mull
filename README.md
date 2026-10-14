@@ -121,7 +121,7 @@ That script is defined to accept arguments, so for example you can sort in rever
 :::
 ```
 
-Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
+Formatting the wiki, with `mull format` or in the editor (including on save), or clicking the `▶ Run` link above a block gives each script its block's body on standard input, and replaces the body with what the script prints. To format without running scripts, use `mull format --no-scripts`.
 
 ![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
 
@@ -170,8 +170,9 @@ Here are the supported command-line options:
 Usage: mull [COMMAND]
 
 Commands:
-  check            Check a wiki
-  format           Format a wiki (default)
+  check            Check that a wiki is valid and formatted, with its scripts run
+  format           Format a wiki, running its scripts (default)
+  page             Print the content of a page in a wiki
   language-server  Start the language server (editors use this)
   help             Print this message or the help of the given subcommand(s)
 

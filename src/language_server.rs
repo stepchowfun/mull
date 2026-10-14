@@ -44,11 +44,11 @@ use tower_lsp_server::{
         DocumentChangeOperation, DocumentChanges, DocumentFormattingParams, DocumentHighlight,
         DocumentHighlightKind, DocumentHighlightParams, DocumentLink, DocumentLinkOptions,
         DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-        ExecuteCommandParams, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
-        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-        InitializeParams, InitializeResult, InitializedParams, InsertTextFormat, LSPAny, Location,
-        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
-        OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
+        ExecuteCommandParams, FileSystemWatcher, FormattingProperty, GlobPattern,
+        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+        InsertTextFormat, LSPAny, Location, LocationLink, MarkupContent, MarkupKind, MessageType,
+        OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
         PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
         RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
         SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
@@ -61,11 +61,14 @@ use tower_lsp_server::{
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
-// These server commands run the script blocks of the open wiki named by their first argument: one,
-// named by its page's title and its index among the page's script blocks, or all of them. Keep
-// these in sync with [group:run_script_commands].
+// This server command runs a script block in the open wiki named by its first argument, which is
+// named by its page's title and its index among the page's script blocks. Keep this in sync with
+// [group:run_script_command].
 const RUN_SCRIPT_COMMAND: &str = "mull.runScript";
-const RUN_SCRIPTS_COMMAND: &str = "mull.runScripts";
+
+// This formatting option asks for a wiki's scripts to be run as it's formatted. Keep this in sync
+// with [group:run_scripts_option].
+const RUN_SCRIPTS_OPTION: &str = "mull.runScripts";
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -403,15 +406,15 @@ impl Backend {
         self.client.show_message(message_type, message).await;
     }
 
-    // Run the script blocks of an open wiki, or only one, then apply the result as an edit of the
-    // snapshot which was run, which the editor rejects if the wiki changed since. The scripts run
-    // on a thread which may block, and failures are reported as notifications.
-    async fn run_scripts(&self, snapshot: Arc<Snapshot>, only: Option<(PageTitle, usize)>) {
-        // Run the scripts.
+    // Run a script block of an open wiki, then apply the result as an edit of the snapshot which
+    // was run, which the editor rejects if the wiki changed since. The script runs on a thread
+    // which may block, and a failure is reported as a notification.
+    async fn run_script(&self, snapshot: Arc<Snapshot>, block: (PageTitle, usize)) {
+        // Run the script.
         let baseline = baseline(&self.documents, &snapshot.uri);
         let run_snapshot = Arc::clone(&snapshot);
         let result = tokio::task::spawn_blocking(move || {
-            run_scripts_for_document(&run_snapshot, &baseline, only.as_ref())
+            run_scripts_for_document(&run_snapshot, &baseline, Some(&block))
         })
         .await
         .unwrap_or_else(|error| {
@@ -699,7 +702,7 @@ impl LanguageServer for Backend {
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
         // Reject commands this server doesn't provide.
         let command = params.command.as_str();
-        if ![CHECK_WIKI_COMMAND, RUN_SCRIPT_COMMAND, RUN_SCRIPTS_COMMAND].contains(&command) {
+        if ![CHECK_WIKI_COMMAND, RUN_SCRIPT_COMMAND].contains(&command) {
             return Err(JsonRpcError::invalid_params(format!(
                 "Unknown command {}.",
                 command.code_str(),
@@ -723,16 +726,14 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        // Recheck the wiki, or run its script blocks: the one named by its page's title and its
-        // index among the page's script blocks, or all of them.
-        match command {
-            RUN_SCRIPT_COMMAND => {
-                let title = command_argument::<PageTitle>(arguments.next(), "a page's title")?;
-                let index = command_argument::<usize>(arguments.next(), "a script block's index")?;
-                self.run_scripts(snapshot, Some((title, index))).await;
-            }
-            RUN_SCRIPTS_COMMAND => self.run_scripts(snapshot, None).await,
-            _ => self.check_wiki(snapshot).await,
+        // Recheck the wiki, or run the script block named by its page's title and its index among
+        // the page's script blocks.
+        if command == RUN_SCRIPT_COMMAND {
+            let title = command_argument::<PageTitle>(arguments.next(), "a page's title")?;
+            let index = command_argument::<usize>(arguments.next(), "a script block's index")?;
+            self.run_script(snapshot, (title, index)).await;
+        } else {
+            self.check_wiki(snapshot).await;
         }
         Ok(None)
     }
@@ -839,12 +840,29 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         // Render the latest synchronized editor snapshot, propagating changes to embedded pages and
-        // leaving contents which can't be rendered unchanged.
+        // leaving contents which can't be rendered unchanged. Run the wiki's scripts as well if the
+        // editor asks, reporting any which fail.
         let baseline = baseline(&self.documents, &params.text_document.uri);
-        self.respond(&params.text_document.uri, move |snapshot| {
-            Ok(formatting_for_document(snapshot, &baseline))
+        if !matches!(
+            params.options.properties.get(RUN_SCRIPTS_OPTION),
+            Some(FormattingProperty::Bool(true)),
+        ) {
+            return self
+                .respond(&params.text_document.uri, move |snapshot| {
+                    Ok(formatting_for_document(snapshot, &baseline))
+                })
+                .await;
+        }
+        let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let (edits, failures) = tokio::task::spawn_blocking(move || {
+            formatting_with_scripts_for_document(&snapshot, &baseline)
         })
         .await
+        .map_err(|_| JsonRpcError::internal_error())?;
+        self.report_script_errors(&failures).await;
+        Ok(edits)
     }
 
     async fn document_symbol(
@@ -2360,18 +2378,37 @@ fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<V
         baseline,
     )
     .ok()?;
+    Some(whole_document_edits(snapshot, rendered_wiki))
+}
 
-    // A successful request returns either one whole-document edit or an empty edit list.
-    if snapshot.contents == rendered_wiki {
-        Some(Vec::new())
+// Format a wiki as formatting_for_document does, running its scripts once their blocks are
+// formatted, and return the edits along with an error for each script which failed. An unsaved
+// wiki has no scripts to run, so it's only formatted.
+fn formatting_with_scripts_for_document(
+    snapshot: &Snapshot,
+    baseline: &Baseline,
+) -> (Option<Vec<TextEdit>>, Vec<Error>) {
+    if snapshot.path.is_none() {
+        return (formatting_for_document(snapshot, baseline), Vec::new());
+    }
+    match run_scripts_for_document(snapshot, baseline, None) {
+        Ok((contents, failures)) => (Some(whole_document_edits(snapshot, contents)), failures),
+        Err(_errors) => (None, Vec::new()),
+    }
+}
+
+// Replace the whole document with new contents, which is either one edit or none at all.
+fn whole_document_edits(snapshot: &Snapshot, contents: String) -> Vec<TextEdit> {
+    if snapshot.contents == contents {
+        Vec::new()
     } else {
-        Some(vec![TextEdit::new(
+        vec![TextEdit::new(
             Range::new(
                 Position::new(0, 0),
                 snapshot.position(snapshot.contents.len()),
             ),
-            rendered_wiki,
-        )])
+            contents,
+        )]
     }
 }
 
@@ -3035,8 +3072,6 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use super::run_scripts_for_document;
     use super::{
         AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
         MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
@@ -3048,6 +3083,8 @@ mod tests {
         minimal_replacement, prepare_rename_for_document, references_for_document,
         rename_for_document,
     };
+    #[cfg(unix)]
+    use super::{formatting_with_scripts_for_document, run_scripts_for_document};
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
         lsp_position::LspPosition, parser, propagation::Baseline, wiki::PageTitle,
@@ -5377,6 +5414,42 @@ mod tests {
                 Range::new(Position::new(2, 4), Position::new(2, 14)),
             ],
         );
+    }
+
+    // Run a saved wiki's scripts as it's formatted, reporting those which fail, and only format an
+    // unsaved wiki, which has no scripts.
+    #[cfg(unix)]
+    #[test]
+    fn formatting_runs_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = "# Home\n\n::: sort\n- b\n- a\n:::\n\n::: fail :::\n";
+        let wiki = TestWiki::new(source);
+        let scripts = wiki.directory().join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for (name, contents) in [
+            ("sort.sh", "#!/bin/sh\nsort\n"),
+            ("fail.sh", "#!/bin/sh\nexit 1\n"),
+        ] {
+            fs::write(scripts.join(name), contents).unwrap();
+            fs::set_permissions(scripts.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let (edits, failures) = formatting_with_scripts_for_document(
+            &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+            &Baseline::new(),
+        );
+        assert_eq!(
+            edits.unwrap()[0].new_text,
+            "# Home\n\n::: sort\n- a\n- b\n:::\n\n::: fail :::\n",
+        );
+        assert_eq!(failures.len(), 1);
+        let (edits, failures) = formatting_with_scripts_for_document(
+            &snapshot(&untitled_uri(), source),
+            &Baseline::new(),
+        );
+        assert_eq!(edits, Some(Vec::new()));
+        assert!(failures.is_empty());
     }
 
     #[test]

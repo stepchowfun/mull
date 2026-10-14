@@ -59,14 +59,11 @@ struct Cli {
 // These are the operations the program can perform.
 #[derive(ClapSubcommand)]
 enum Subcommand {
-    #[command(about = "Check a wiki")]
-    Check(WikiArgs),
+    #[command(about = "Check that a wiki is valid and formatted, with its scripts run")]
+    Check(FormatArgs),
 
-    #[command(about = "Format a wiki (default)")]
-    Format(WikiArgs),
-
-    #[command(about = "Run the scripts which compute blocks in a wiki, then format it")]
-    Run(WikiArgs),
+    #[command(about = "Format a wiki, running its scripts (default)")]
+    Format(FormatArgs),
 
     #[command(about = "Print the content of a page in a wiki")]
     Page(PageArgs),
@@ -83,6 +80,17 @@ struct WikiArgs {
     path: Option<PathBuf>,
 }
 
+// These are the arguments for checking and formatting a wiki, which runs its scripts unless asked
+// not to.
+#[derive(Args, Default)]
+struct FormatArgs {
+    #[arg(long, help = "Don't run the wiki's scripts")]
+    no_scripts: bool,
+
+    #[command(flatten)]
+    wiki_args: WikiArgs,
+}
+
 // These are the arguments for printing a page.
 #[derive(Args)]
 struct PageArgs {
@@ -93,11 +101,11 @@ struct PageArgs {
     wiki_args: WikiArgs,
 }
 
-// These are the operations which act on a wiki once it's loaded.
+// These are the operations which act on a wiki once it's loaded. Checking and formatting note
+// whether to run the wiki's scripts.
 enum Operation {
-    Check,
-    Format,
-    Run,
+    Check(bool),
+    Format(bool),
     Page(String),
 }
 
@@ -123,11 +131,16 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Start the language server without requiring a wiki, or select the requested wiki operation.
     let (operation, WikiArgs { path }) = match cli
         .command
-        .unwrap_or(Subcommand::Format(WikiArgs::default()))
+        .unwrap_or(Subcommand::Format(FormatArgs::default()))
     {
-        Subcommand::Check(wiki_args) => (Operation::Check, wiki_args),
-        Subcommand::Format(wiki_args) => (Operation::Format, wiki_args),
-        Subcommand::Run(wiki_args) => (Operation::Run, wiki_args),
+        Subcommand::Check(FormatArgs {
+            no_scripts,
+            wiki_args,
+        }) => (Operation::Check(!no_scripts), wiki_args),
+        Subcommand::Format(FormatArgs {
+            no_scripts,
+            wiki_args,
+        }) => (Operation::Format(!no_scripts), wiki_args),
         Subcommand::Page(PageArgs { title, wiki_args }) => (Operation::Page(title), wiki_args),
         Subcommand::LanguageServer => {
             language_server::run().await;
@@ -174,45 +187,37 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
-    // Print a page, or run the scripts and save the result, reporting any scripts which failed.
-    match operation {
+    // Print a page, or note whether to run the scripts while checking or formatting.
+    let (run_scripts, should_format) = match operation {
         Operation::Page(title) => return print_page(&wiki_path, &wiki_contents, &title),
-        Operation::Run => {
-            let (run_contents, failures) = scripts::run(&wiki_path, &wiki_contents)?;
-            if run_contents != wiki_contents {
-                fs::write(&wiki_path, run_contents).map_err(|error| {
-                    vec![Error::new(
-                        "Unable to write the wiki.",
-                        Some(&wiki_path),
-                        None,
-                        Some(Arc::new(error)),
-                        None,
-                    )]
-                })?;
-            }
-            if !failures.is_empty() {
-                return Err(failures);
-            }
-            println!("Ran the scripts in {}.", wiki_path.code_str());
-            return Ok(());
-        }
-        Operation::Check | Operation::Format => {}
-    }
+        Operation::Check(run_scripts) => (run_scripts, false),
+        Operation::Format(run_scripts) => (run_scripts, true),
+    };
 
-    // Analyze and render the wiki. The command line has nothing to cancel, so the analysis always
-    // runs to completion.
-    let rendered_wiki = analyze(
-        Some(&wiki_path),
-        &wiki_contents,
-        &CancellationFlag::default(),
-    )
-    .assume_completed()?
-    .to_string();
+    // Analyze and render the wiki, running its scripts if asked and noting any which failed. The
+    // command line has nothing to cancel, so the analysis always runs to completion.
+    let (rendered_wiki, mut errors) = if run_scripts {
+        scripts::run(&wiki_path, &wiki_contents)?
+    } else {
+        (
+            analyze(
+                Some(&wiki_path),
+                &wiki_contents,
+                &CancellationFlag::default(),
+            )
+            .assume_completed()?
+            .to_string(),
+            Vec::new(),
+        )
+    };
 
-    // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff.
+    // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff,
+    // reporting any scripts which failed either way.
     if wiki_contents == rendered_wiki {
-        println!("Wiki {} looks good.", wiki_path.code_str());
-    } else if matches!(operation, Operation::Format) {
+        if errors.is_empty() {
+            println!("Wiki {} looks good.", wiki_path.code_str());
+        }
+    } else if should_format {
         fs::write(&wiki_path, rendered_wiki).map_err(|error| {
             vec![Error::new(
                 "Unable to write the wiki.",
@@ -226,7 +231,7 @@ async fn entry() -> Result<(), Vec<Error>> {
         // Report that the wiki was formatted.
         println!("Formatted {}.", wiki_path.code_str());
     } else {
-        return Err(vec![Error::new(
+        errors.push(Error::new(
             &format!(
                 "The wiki isn't formatted correctly. Run {} to format it.\n\n{}",
                 "mull format".code_str(),
@@ -238,11 +243,13 @@ async fn entry() -> Result<(), Vec<Error>> {
             None,
             None,
             None,
-        )]);
+        ));
     }
-
-    // Everything succeeded.
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 // Find the nearest wiki in the current directory or one of its ancestors.
@@ -369,7 +376,7 @@ fn print_page(wiki_path: &Path, wiki_contents: &str, title: &str) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, PageArgs, Subcommand, WikiArgs};
+    use super::{Cli, FormatArgs, PageArgs, Subcommand, WikiArgs};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -389,10 +396,6 @@ mod tests {
             Cli::try_parse_from(["mull", "format"]).unwrap().command,
             Some(Subcommand::Format(_)),
         ));
-        assert!(matches!(
-            Cli::try_parse_from(["mull", "run"]).unwrap().command,
-            Some(Subcommand::Run(_)),
-        ));
         let Some(Subcommand::Page(PageArgs { title, .. })) =
             Cli::try_parse_from(["mull", "page", "Home"])
                 .unwrap()
@@ -409,21 +412,28 @@ mod tests {
         ));
     }
 
-    // Accept an explicit wiki path after the subcommand that acts on the wiki.
+    // Accept an explicit wiki path, and a request not to run scripts, after the subcommands that
+    // check or format the wiki.
     #[test]
-    fn parse_path() {
-        for subcommand in ["check", "format", "run"] {
+    fn parse_format_args() {
+        for subcommand in ["check", "format"] {
             let Some(
-                Subcommand::Check(WikiArgs { path })
-                | Subcommand::Format(WikiArgs { path })
-                | Subcommand::Run(WikiArgs { path }),
-            ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull"])
+                Subcommand::Check(FormatArgs {
+                    no_scripts,
+                    wiki_args: WikiArgs { path },
+                })
+                | Subcommand::Format(FormatArgs {
+                    no_scripts,
+                    wiki_args: WikiArgs { path },
+                }),
+            ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull", "--no-scripts"])
                 .unwrap()
                 .command
             else {
                 panic!("The {subcommand} subcommand should be parsed.");
             };
             assert_eq!(path, Some(PathBuf::from("notes.mull")));
+            assert!(no_scripts);
         }
     }
 }
