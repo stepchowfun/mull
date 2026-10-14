@@ -316,16 +316,18 @@ Rinse short-grain and jasmine rice until the water runs clear. Don't rinse arbor
 
 # Pantry
 
-Ingredients I keep stocked, because almost every recipe uses one of them, kept in order by [/scripts/sort.sh]:
+Ingredients I keep stocked, because almost every recipe uses one of them, kept in order by [/scripts/sort.js]:
 
 ::: sort
 - [Garlic]
 - [Kosher salt]
 - [Miso]
 - [Olive oil]
+  - A cheap one for cooking and a good one for finishing
 - [Parmesan]
 - [Rice]
-::: #ba93706756e9
+  - Short-grain, arborio, and jasmine
+::: #00c1da945a6e
 
 Also always on hand: canned tomatoes, onions, lemons, soy sauce, eggs, butter, flour, and dried pasta.
 
