@@ -115,7 +115,7 @@ Mull will then sort the list automatically whenever the wiki is formatted. A `â–
 
 ![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
 
-That script is defined to accept arguments, so you can sort in reverse order with `-r`:
+That sorting script is defined to accept arguments, so you can sort in reverse order with `-r`:
 
 ```md
 ::: sort -r
