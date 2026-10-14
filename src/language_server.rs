@@ -1,6 +1,6 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
-    error::{Error, Fix, SourceRange, format_errors},
+    error::{Error, Fix, SourceRange},
     escaping::{Context, escape, unescape},
     file_tree::file_tree_walker,
     format::CodeStr,
@@ -386,7 +386,7 @@ impl Backend {
 
     // Run the script blocks of an open wiki, or only one, then apply the result as an edit of the
     // snapshot which was run, which the editor rejects if the wiki changed since. The scripts run
-    // on a thread which may block, and failures are reported as messages.
+    // on a thread which may block, and failures are reported as notifications.
     async fn run_scripts(&self, snapshot: Arc<Snapshot>, only: Option<(PageTitle, usize)>) {
         // Run the scripts.
         let baseline = baseline(&self.documents, &snapshot.uri);
@@ -409,9 +409,7 @@ impl Backend {
         let (contents, failures) = match result {
             Ok(result) => result,
             Err(errors) => {
-                self.client
-                    .show_message(MessageType::ERROR, format_errors(&errors))
-                    .await;
+                self.report_script_errors(&errors).await;
                 return;
             }
         };
@@ -445,9 +443,26 @@ impl Backend {
                     .await;
             }
         }
-        if !failures.is_empty() {
+        self.report_script_errors(&failures).await;
+    }
+
+    // Report errors from running scripts. A notification shows only the first paragraph of each
+    // message, since notifications don't keep line breaks, and points to the output, where the
+    // whole error is logged, if there's more to it, such as what the script printed as errors.
+    async fn report_script_errors(&self, errors: &[Error]) {
+        for error in errors {
             self.client
-                .show_message(MessageType::ERROR, format_errors(&failures))
+                .log_message(MessageType::ERROR, error.to_string())
+                .await;
+            let message = error.message();
+            let summary = message.split("\n\n").next().unwrap_or(message);
+            let notification = if summary.len() < message.len() || error.reason().is_some() {
+                format!("{summary} See the Mull output for details.")
+            } else {
+                summary.to_owned()
+            };
+            self.client
+                .show_message(MessageType::ERROR, notification)
                 .await;
         }
     }
