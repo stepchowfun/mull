@@ -39,7 +39,7 @@
     "code": {
       "patterns": [
         {
-          "name": "markup.inline.raw.mull",
+          "name": "markup.inline.raw.mull markup.raw.inline.mull",
           "match": "(`{1,2})(?!`).*?(?<!`)\\1(?!`)"
         },
         {

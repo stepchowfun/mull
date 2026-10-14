@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - In the VS Code extension, a block written on one line, like `::: [Page] :::`, no longer highlights the rest of its page as if it were inside the block.
+- In the VS Code extension, inline code is now highlighted in themes which style only `markup.raw`, like Monokai Pro, as well as those which style `markup.inline.raw`.
 
 ## [0.59.0] - 2026-10-14
 
