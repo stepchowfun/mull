@@ -61,10 +61,6 @@ use tower_lsp_server::{
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
-// This formatting option asks for a wiki's scripts to be run as it's formatted. Keep this in sync
-// with [group:run_scripts_option].
-const RUN_SCRIPTS_OPTION: &str = "mull.runScripts";
-
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
@@ -81,6 +77,10 @@ const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 // into its file root, under what names, and how to link to them. Keep this in sync with
 // [ref:attach_files_request_client].
 const ATTACH_FILES_REQUEST: &str = "mull/attachFiles"; // [tag:attach_files_request_server]
+
+// This formatting option asks for a wiki's scripts to be run as it's formatted. Keep this in sync
+// with [group:run_scripts_option].
+const RUN_SCRIPTS_OPTION: &str = "mull.runScripts";
 
 // Wait briefly after edits so filesystem validation doesn't run on every keystroke.
 const CHECK_DELAY: Duration = Duration::from_millis(250);
@@ -5176,6 +5176,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn formatting_rejects_unparsable_source() {
+        let source = "# Home\n😀 ]";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
+    }
+
+    // Refuse to format a wiki whose recovered form would omit some of its source, like a duplicate
+    // page.
+    #[test]
+    fn formatting_rejects_source_it_would_lose() {
+        let source = "# Home\n\n# Home\n\nThis would be lost.\n";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
+    }
+
+    // Format wikis that parse but fail validation, such as one without a home page.
+    #[test]
+    fn formatting_supports_invalid_wikis() {
+        let source = "# Zulu\n\n# Elsewhere";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+        let edits = formatting_for_document(&snapshot(&uri, source), &Baseline::new()).unwrap();
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "# Elsewhere\n\n# Zulu\n");
+    }
+
+    // Format a new editor buffer without requiring a filesystem path.
+    #[test]
+    fn formatting_supports_untitled_wikis() {
+        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let edits =
+            formatting_for_document(&snapshot(&untitled_uri(), source), &Baseline::new()).unwrap();
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
+    }
+
+    #[test]
+    fn formatting_differences_are_not_diagnostics() {
+        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let wiki = TestWiki::new(source);
+        let uri = Uri::from_file_path(wiki.path()).unwrap();
+
+        assert_eq!(diagnostics(&uri, source), Vec::<Diagnostic>::new());
+    }
+
     // Run a saved wiki's scripts as it's formatted, reporting those which fail, and only format an
     // unsaved wiki, which has no scripts.
     #[cfg(unix)]
@@ -5245,58 +5297,6 @@ mod tests {
                 "# Other\n\n::: sort\n- c\n- d\n- e\n:::\n",
             ),
         );
-    }
-
-    #[test]
-    fn formatting_rejects_unparsable_source() {
-        let source = "# Home\n😀 ]";
-        let wiki = TestWiki::new(source);
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
-    }
-
-    // Refuse to format a wiki whose recovered form would omit some of its source, like a duplicate
-    // page.
-    #[test]
-    fn formatting_rejects_source_it_would_lose() {
-        let source = "# Home\n\n# Home\n\nThis would be lost.\n";
-        let wiki = TestWiki::new(source);
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        assert!(formatting_for_document(&snapshot(&uri, source), &Baseline::new()).is_none());
-    }
-
-    // Format wikis that parse but fail validation, such as one without a home page.
-    #[test]
-    fn formatting_supports_invalid_wikis() {
-        let source = "# Zulu\n\n# Elsewhere";
-        let wiki = TestWiki::new(source);
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let edits = formatting_for_document(&snapshot(&uri, source), &Baseline::new()).unwrap();
-
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].new_text, "# Elsewhere\n\n# Zulu\n");
-    }
-
-    // Format a new editor buffer without requiring a filesystem path.
-    #[test]
-    fn formatting_supports_untitled_wikis() {
-        let source = "# Zulu\n\n# Home\n\n[Zulu]";
-        let edits =
-            formatting_for_document(&snapshot(&untitled_uri(), source), &Baseline::new()).unwrap();
-
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
-    }
-
-    #[test]
-    fn formatting_differences_are_not_diagnostics() {
-        let source = "# Zulu\n\n# Home\n\n[Zulu]";
-        let wiki = TestWiki::new(source);
-        let uri = Uri::from_file_path(wiki.path()).unwrap();
-
-        assert_eq!(diagnostics(&uri, source), Vec::<Diagnostic>::new());
     }
 
     // Keep the outline of a wiki with syntax errors.
