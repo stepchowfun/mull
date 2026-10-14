@@ -120,7 +120,7 @@ This script is defined to accept arguments, so for example you can sort in rever
 
 Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
 
-Scripts are files in `<wiki>_files`, so they need to be linked to from the wiki like any other file (e.g., `[/scripts/sort.sh]`).
+Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. A script that no block uses still needs a link (e.g., `[/scripts/sort.sh]`).
 
 ### Orthography
 

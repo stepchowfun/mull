@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0] - 2026-10-14
+
+### Changed
+
+- A script which a script block uses now counts as linked, so it doesn't need a link from the wiki like other files in `<wiki>_files`. A script which no block uses still needs one.
+
 ## [0.56.1] - 2026-10-14
 
 ### Changed
