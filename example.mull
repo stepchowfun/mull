@@ -316,14 +316,16 @@ Rinse short-grain and jasmine rice until the water runs clear. Don't rinse arbor
 
 # Pantry
 
-Ingredients I keep stocked, because almost every recipe uses one of them:
+Ingredients I keep stocked, because almost every recipe uses one of them, kept in order by [/scripts/sort.sh]:
 
+::: sort
 - [Garlic]
+- [Kosher salt]
 - [Miso]
 - [Olive oil]
-- [Kosher salt]
 - [Parmesan]
 - [Rice]
+:::
 
 Also always on hand: canned tomatoes, onions, lemons, soy sauce, eggs, butter, flour, and dried pasta.
 
@@ -633,7 +635,20 @@ Principles:
 
 Current goal: the [Half marathon]. [Priya] and I run together on Saturdays.
 
-After every run, do the [Stretching routine].
+After every run, do the stretching routine:
+
+::: [Stretching routine]
+Ten minutes after every run, from a physical therapist after a sore knee last year.
+
+1. Standing calf stretch, 30 seconds per side
+2. Standing quad stretch, 30 seconds per side
+3. Hamstring stretch, lying down with a strap, 30 seconds per side
+4. Hip flexor lunge stretch, 30 seconds per side
+5. Figure-four glute stretch, 30 seconds per side
+6. Foam roll the outside of the thighs, one minute per side
+
+Skipping this is the fastest way to get hurt during [Half marathon] training.
+:::
 
 # Sleep
 
