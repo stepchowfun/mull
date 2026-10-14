@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-const fs = require('node:fs');
+import { readFileSync } from 'node:fs';
 
 // Group each top-level bullet with the nested lines beneath it, so they move together, and drop
 // empty lines.
 const items = [];
-for (const line of fs.readFileSync(0, 'utf8').split('\n')) {
+for (const line of readFileSync(0, 'utf8').split('\n')) {
   if (line.trim() === '') {
     continue;
   }
