@@ -5,7 +5,7 @@ use crate::{
     escaping::Context,
     format::CodeStr,
     line_index::LineIndex,
-    parser,
+    parser::{self, backtick_run_length},
     spelled_path::{FileRoot, code_file_path},
     wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
 };
@@ -324,11 +324,6 @@ fn arguments(
     }
     arguments.extend(argument);
     arguments
-}
-
-// Count the backticks at the start of some text.
-fn backtick_run_length(text: &str) -> usize {
-    text.len() - text.trim_start_matches('`').len()
 }
 
 // Run a script with arguments in the file root, with an input on its standard input and the

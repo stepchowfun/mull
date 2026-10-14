@@ -772,7 +772,7 @@ fn parse_link(
 }
 
 // Count the backticks at the start of some text.
-fn backtick_run_length(text: &str) -> usize {
+pub fn backtick_run_length(text: &str) -> usize {
     text.len() - text.trim_start_matches('`').len()
 }
 
