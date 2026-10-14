@@ -97,7 +97,7 @@ Mull can help with this; you just have to teach it about sorting. Create a file 
 sort "$@"
 ```
 
-Then make it executable, e.g., with `chmod +x wiki_files/scripts/sort.sh`.
+Then make it executable with `chmod +x <wiki>_files/scripts/sort.sh`.
 
 Now you can wrap your list in a `sort` block:
 
@@ -111,9 +111,7 @@ Now you can wrap your list in a `sort` block:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted. A `▶ Run` link will appear in the editor that you can use to run it manually.
-
-![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
+Mull will then sort the list automatically whenever the wiki is formatted.
 
 That sorting script is defined to accept arguments, so you can sort in reverse order with `-r`:
 

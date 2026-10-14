@@ -6,7 +6,6 @@ import {
   DocumentFormattingRequest,
   ExecuteCommandRequest,
   LanguageClient,
-  type ProvideCodeLensesSignature,
   type ProvideDocumentFormattingEditsSignature,
 } from 'vscode-languageclient/node';
 
@@ -144,42 +143,6 @@ async function checkActiveWiki(): Promise<void> {
     command: CHECK_WIKI_COMMAND,
     arguments: [editor.document.uri.toString()],
   });
-}
-
-// This command runs a script block, named by the wiki's URI, its page's title, and its index among
-// the page's script blocks, as the language server's Run links do, through the language server
-// command of the same name. Keep this in sync with [group:run_script_command].
-const RUN_SCRIPT_COMMAND = 'mull.runScript';
-
-// Determine whether scripts may run, which they can't in Restricted Mode, since a wiki from someone
-// else could run any program through them. Explain why when they can't.
-async function scriptsMayRun(): Promise<boolean> {
-  if (!vscode.workspace.isTrusted) {
-    await vscode.window.showWarningMessage(
-      "Scripts don't run in Restricted Mode. Trust the workspace to run them.",
-    );
-  }
-  return vscode.workspace.isTrusted;
-}
-
-// Ask the language server to run one script block.
-async function runScript(uri: string, title: string, index: number): Promise<void> {
-  if (client === undefined || !(await scriptsMayRun())) {
-    return;
-  }
-  await client.sendRequest(ExecuteCommandRequest.type, {
-    command: RUN_SCRIPT_COMMAND,
-    arguments: [uri, title, index],
-  });
-}
-
-// Offer the language server's Run links only where scripts may run.
-async function codeLensesWhereScriptsRun(
-  document: vscode.TextDocument,
-  token: vscode.CancellationToken,
-  next: ProvideCodeLensesSignature,
-): Promise<vscode.CodeLens[] | null | undefined> {
-  return vscode.workspace.isTrusted ? next(document, token) : [];
 }
 
 // This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
@@ -952,9 +915,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Expose the command that checks the wiki being edited again.
   context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
 
-  // Run script blocks through the language server from its Run links.
-  context.subscriptions.push(vscode.commands.registerCommand(RUN_SCRIPT_COMMAND, runScript));
-
   // Paste or drop files into saved wikis as links to them, copying them in if needed.
   context.subscriptions.push(
     vscode.languages.registerDocumentPasteEditProvider(
@@ -1084,12 +1044,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     // Let hovers use HTML, which sizes image previews.
     markdown: { supportHtml: true },
-    // Keep cursors in place within their pages when formatting moves the pages, and offer to run
-    // scripts only where they may run.
-    middleware: {
-      provideDocumentFormattingEdits: formatKeepingPagePositions,
-      provideCodeLenses: codeLensesWhereScriptsRun,
-    },
+    // Run scripts when formatting where they may run, and keep cursors in place within their
+    // pages when formatting moves the pages.
+    middleware: { provideDocumentFormattingEdits: formatKeepingPagePositions },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();

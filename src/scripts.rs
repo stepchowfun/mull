@@ -7,7 +7,7 @@ use crate::{
     line_index::LineIndex,
     parser,
     spelled_path::{FileRoot, code_file_path},
-    wiki::{Link, MIN_FENCE_LENGTH, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki},
+    wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
 };
 use std::{
     collections::HashMap,
@@ -39,15 +39,13 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
     )
     .assume_completed()?
     .to_string();
-    run_formatted(wiki_path, &formatted_contents, None)
+    run_formatted(wiki_path, &formatted_contents)
 }
 
-// Run the script blocks outside other blocks in a formatted wiki, as `run` does: all of them, or
-// only the one at an index among a page's script blocks.
+// Run the script blocks outside other blocks in a formatted wiki, as `run` does.
 pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
-    only: Option<(&PageTitle, usize)>,
 ) -> Result<(String, Vec<Error>), Vec<Error>> {
     // Read the wiki, whose blocks' bodies are already in their canonical form.
     let line_index = LineIndex::new(formatted_contents);
@@ -64,10 +62,7 @@ pub fn run_formatted(
     let mut replacements = Vec::new();
     let mut failures = Vec::new();
     for page in pages {
-        for (index, block) in page.script_blocks.iter().enumerate() {
-            if only.is_some_and(|(title, only_index)| *title != page.title || only_index != index) {
-                continue;
-            }
+        for block in &page.script_blocks {
             match run_block(
                 formatted_contents,
                 &wiki,
