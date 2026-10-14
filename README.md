@@ -113,8 +113,6 @@ Now you can wrap your list in a `sort` block:
 
 Mull will then sort the list automatically whenever the wiki is formatted.
 
-After running a script, Mull adds a hash to the end of the block (e.g., `::: #3f9a0c2b1e8d`). The hash covers the script, its arguments, and the contents of the block, so Mull only runs the script again when one of those changes. A script which reads anything else, such as another page, won't automatically rerun when that changes. To rerun every script anyway, use `mull format --rerun-scripts`.
-
 That sorting script is defined to accept arguments, so you can sort in reverse order with `-r`:
 
 ```md
