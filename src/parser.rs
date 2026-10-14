@@ -778,7 +778,7 @@ pub fn backtick_run_length(text: &str) -> usize {
 
 // Find the end of the run of exactly the given number of backticks which closes code whose text
 // starts at an offset, searching only the rest of the line for a run of one or two backticks.
-fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
+pub fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
     let end = if length < MIN_MULTILINE_CODE_LENGTH {
         source[start..]
             .find('\n')

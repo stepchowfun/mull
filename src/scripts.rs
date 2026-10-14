@@ -5,7 +5,7 @@ use crate::{
     escaping::Context,
     format::CodeStr,
     line_index::LineIndex,
-    parser::{self, backtick_run_length},
+    parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
     wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
 };
@@ -295,24 +295,18 @@ fn arguments(
             arguments.extend(argument.take());
             position += character.len_utf8();
         } else if character == '`' {
-            // Code ends at the next run of exactly as many backticks.
+            // Code ends at the next run of exactly as many backticks, or else with the arguments.
             let length = backtick_run_length(rest);
-            let code = &rest[length..];
-            let mut code_end = code.len();
-            let mut closing_length = 0;
-            let mut search_start = 0;
-            while let Some(index) = code[search_start..].find('`') {
-                let run_start = search_start + index;
-                let run_length = backtick_run_length(&code[run_start..]);
-                if run_length == length {
-                    code_end = run_start;
-                    closing_length = run_length;
-                    break;
-                }
-                search_start = run_start + run_length;
-            }
-            argument.get_or_insert_default().push_str(&code[..code_end]);
-            position += length + code_end + closing_length;
+            let code_start = position + length;
+            let (code_end, code_run_end) = closing_run_end(source_contents, code_start, length)
+                .filter(|&run_end| run_end <= source_range.end)
+                .map_or((source_range.end, source_range.end), |run_end| {
+                    (run_end - length, run_end)
+                });
+            argument
+                .get_or_insert_default()
+                .push_str(&source_contents[code_start..code_end]);
+            position = code_run_end;
         } else if character == '\\' {
             let escaped = rest[1..].chars().next().unwrap_or('\\');
             argument.get_or_insert_default().push(escaped);
