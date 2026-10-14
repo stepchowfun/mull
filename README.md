@@ -111,7 +111,7 @@ Now you can wrap your list in a `sort` block:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted. A `▶ Run` link will appear in the editor that you can use to run it manually.
+Mull will then sort the list automatically whenever the wiki is formatted.
 
 ![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
 

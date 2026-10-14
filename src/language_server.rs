@@ -35,20 +35,20 @@ use tower_lsp_server::{
     jsonrpc::{Error as JsonRpcError, Result},
     ls_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions,
-        CodeLensParams, Command, CompletionItem, CompletionItemKind, CompletionList,
-        CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, DeleteFile,
-        DeleteFileOptions, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
-        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-        DocumentChangeOperation, DocumentChanges, DocumentFormattingParams, DocumentHighlight,
-        DocumentHighlightKind, DocumentHighlightParams, DocumentLink, DocumentLinkOptions,
-        DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-        ExecuteCommandParams, FileSystemWatcher, FormattingProperty, GlobPattern,
-        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-        InsertTextFormat, LSPAny, Location, LocationLink, MarkupContent, MarkupKind, MessageType,
-        OneOf, OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
+        CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem,
+        CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
+        CompletionResponse, CompletionTextEdit, DeleteFile, DeleteFileOptions, Diagnostic,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+        DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
+        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
+        DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
+        DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
+        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
+        FileSystemWatcher, FormattingProperty, GlobPattern, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+        InitializeParams, InitializeResult, InitializedParams, InsertTextFormat, LSPAny, Location,
+        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
+        OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
         PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
         RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
         SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
@@ -60,11 +60,6 @@ use tower_lsp_server::{
 // This server command rechecks the open wiki named by its argument, as when the filesystem changed
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
-
-// This server command runs a script block in the open wiki named by its first argument, which is
-// named by its page's title and its index among the page's script blocks. Keep this in sync with
-// [group:run_script_command].
-const RUN_SCRIPT_COMMAND: &str = "mull.runScript";
 
 // This formatting option asks for a wiki's scripts to be run as it's formatted. Keep this in sync
 // with [group:run_scripts_option].
@@ -406,68 +401,6 @@ impl Backend {
         self.client.show_message(message_type, message).await;
     }
 
-    // Run a script block of an open wiki, then apply the result as an edit of the snapshot which
-    // was run, which the editor rejects if the wiki changed since. The script runs on a thread
-    // which may block, and a failure is reported as a notification.
-    async fn run_script(&self, snapshot: Arc<Snapshot>, block: (PageTitle, usize)) {
-        // Run the script.
-        let baseline = baseline(&self.documents, &snapshot.uri);
-        let run_snapshot = Arc::clone(&snapshot);
-        let result = tokio::task::spawn_blocking(move || {
-            run_scripts_for_document(&run_snapshot, &baseline, Some(&block))
-        })
-        .await
-        .unwrap_or_else(|error| {
-            Err(vec![Error::new(
-                &format!("Mull was unable to run the scripts: {error}."),
-                None,
-                None,
-                None,
-                None,
-            )])
-        });
-
-        // Apply the result, then report any failures.
-        let (contents, failures) = match result {
-            Ok(result) => result,
-            Err(errors) => {
-                self.report_script_errors(&errors).await;
-                return;
-            }
-        };
-        if contents != snapshot.contents {
-            let (source_range, new_text) = minimal_replacement(&snapshot.contents, &contents);
-            let edit = WorkspaceEdit {
-                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri: snapshot.uri.clone(),
-                        version: Some(snapshot.version),
-                    },
-                    edits: vec![OneOf::Left(TextEdit::new(
-                        snapshot.range(source_range),
-                        new_text.to_owned(),
-                    ))],
-                }])),
-                ..WorkspaceEdit::default()
-            };
-            if !self
-                .client
-                .apply_edit(edit)
-                .await
-                .is_ok_and(|response| response.applied)
-            {
-                self.client
-                    .show_message(
-                        MessageType::WARNING,
-                        "The wiki changed while its scripts ran, so their output wasn't applied. \
-                         Run them again.",
-                    )
-                    .await;
-            }
-        }
-        self.report_script_errors(&failures).await;
-    }
-
     // Report errors from running scripts. A notification shows only the first paragraph of each
     // message, since notifications don't keep line breaks, and points to the output, where the
     // whole error is logged, if there's more to it, such as what the script printed as errors.
@@ -571,9 +504,6 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-                code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: Some(false),
-                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -702,23 +632,28 @@ impl LanguageServer for Backend {
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
         // Reject commands this server doesn't provide.
         let command = params.command.as_str();
-        if ![CHECK_WIKI_COMMAND, RUN_SCRIPT_COMMAND].contains(&command) {
+        if command != CHECK_WIKI_COMMAND {
             return Err(JsonRpcError::invalid_params(format!(
                 "Unknown command {}.",
                 command.code_str(),
             )));
         }
 
-        // Find the open wiki named by the first argument.
-        let mut arguments = params.arguments.into_iter();
-        let uri = command_argument::<Uri>(arguments.next(), "the URI of a document")?;
+        // Find the open wiki named by the argument.
+        let Some(argument) = params.arguments.into_iter().next() else {
+            return Err(JsonRpcError::invalid_params(
+                "The command requires the URI of a document to check.",
+            ));
+        };
+        let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
+            JsonRpcError::invalid_params(format!("The argument must be a document URI: {error}."))
+        })?;
         let Some(snapshot) = self.snapshot(&uri) else {
             self.client
                 .show_message(
                     MessageType::WARNING,
                     format!(
-                        "Unable to run {}, since {} isn't open.",
-                        command.code_str(),
+                        "Unable to check {}, since it isn't open.",
                         uri.as_str().code_str(),
                     ),
                 )
@@ -726,15 +661,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        // Recheck the wiki, or run the script block named by its page's title and its index among
-        // the page's script blocks.
-        if command == RUN_SCRIPT_COMMAND {
-            let title = command_argument::<PageTitle>(arguments.next(), "a page's title")?;
-            let index = command_argument::<usize>(arguments.next(), "a script block's index")?;
-            self.run_script(snapshot, (title, index)).await;
-        } else {
-            self.check_wiki(snapshot).await;
-        }
+        // Recheck the wiki.
+        self.check_wiki(snapshot).await;
         Ok(None)
     }
 
@@ -887,14 +815,6 @@ impl LanguageServer for Backend {
         let diagnostics = params.context.diagnostics;
         self.respond(&params.text_document.uri, move |snapshot| {
             Ok(code_action_for_document(snapshot, &diagnostics))
-        })
-        .await
-    }
-
-    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        // Offer to run each script block in the latest synchronized editor snapshot.
-        self.respond(&params.text_document.uri, |snapshot| {
-            Ok(Some(code_lens_for_document(snapshot)))
         })
         .await
     }
@@ -1120,78 +1040,6 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
         data: fix.map(|fix| serde_json::to_value(fix).expect("A fix should serialize to JSON.")),
         ..Diagnostic::default()
     }
-}
-
-// Read an argument of a server command.
-fn command_argument<T: serde::de::DeserializeOwned>(
-    argument: Option<LSPAny>,
-    description: &str,
-) -> Result<T> {
-    let argument = argument.ok_or_else(|| {
-        JsonRpcError::invalid_params(format!("The command requires {description}."))
-    })?;
-    serde_json::from_value(argument).map_err(|error| {
-        JsonRpcError::invalid_params(format!("The command requires {description}: {error}."))
-    })
-}
-
-// Run the script blocks of a saved wiki, or only one, after formatting it with the changes to its
-// embedded pages propagated, as formatting does in the editor.
-fn run_scripts_for_document(
-    snapshot: &Snapshot,
-    baseline: &Baseline,
-    only: Option<&(PageTitle, usize)>,
-) -> std::result::Result<(String, Vec<Error>), Vec<Error>> {
-    let error = |message: &str| vec![Error::new(message, None, None, None, None)];
-    let wiki_path = snapshot
-        .path
-        .as_deref()
-        .ok_or_else(|| error("Save the wiki to run its scripts."))?;
-    let instances = snapshot
-        .instances()
-        .ok_or_else(|| error("Fix the wiki's syntax errors to run its scripts."))?;
-    let formatted_contents = propagation::format(
-        snapshot.wiki(),
-        Some(wiki_path),
-        &snapshot.contents,
-        snapshot.line_index(),
-        instances,
-        baseline,
-    )?;
-    scripts::run_formatted(
-        wiki_path,
-        &formatted_contents,
-        only.map(|(title, index)| (title, *index)),
-    )
-}
-
-// Find the smallest part of a text which, replaced, turns it into another text, so an edit leaves
-// the rest, and any cursor in it, alone. Return its source range and its replacement.
-fn minimal_replacement<'a>(old: &str, new: &'a str) -> (SourceRange, &'a str) {
-    let mut prefix_length = old
-        .bytes()
-        .zip(new.bytes())
-        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
-        .count();
-    while !old.is_char_boundary(prefix_length) {
-        prefix_length -= 1;
-    }
-    let mut suffix_length = old[prefix_length..]
-        .bytes()
-        .rev()
-        .zip(new[prefix_length..].bytes().rev())
-        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
-        .count();
-    while !old.is_char_boundary(old.len() - suffix_length) {
-        suffix_length -= 1;
-    }
-    (
-        SourceRange {
-            start: prefix_length,
-            end: old.len() - suffix_length,
-        },
-        &new[prefix_length..new.len() - suffix_length],
-    )
 }
 
 // Complete an embed or a script block at an editor position, or the target of the link there with
@@ -2388,10 +2236,27 @@ fn formatting_with_scripts_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
 ) -> (Option<Vec<TextEdit>>, Vec<Error>) {
-    if snapshot.path.is_none() {
+    // Format an unsaved wiki as usual.
+    let Some(wiki_path) = snapshot.path.as_deref() else {
         return (formatting_for_document(snapshot, baseline), Vec::new());
-    }
-    match run_scripts_for_document(snapshot, baseline, None) {
+    };
+
+    // Format the wiki with the changes to its embedded pages propagated, then run its scripts,
+    // leaving it as it is if it can't be formatted, which diagnostics already cover.
+    let Some(formatted_contents) = snapshot.instances().and_then(|instances| {
+        propagation::format(
+            snapshot.wiki(),
+            Some(wiki_path),
+            &snapshot.contents,
+            snapshot.line_index(),
+            instances,
+            baseline,
+        )
+        .ok()
+    }) else {
+        return (None, Vec::new());
+    };
+    match scripts::run_formatted(wiki_path, &formatted_contents) {
         Ok((contents, failures)) => (Some(whole_document_edits(snapshot, contents)), failures),
         Err(_errors) => (None, Vec::new()),
     }
@@ -2650,46 +2515,6 @@ fn reveal_range_arguments(
         range.end.character.into(),
         (reveal_type as u8).into(),
     ]
-}
-
-// Offer to run each script block outside other blocks, at the script's name, in source order. The
-// title starts with a triangle, followed by a selector which asks for it to be drawn as text
-// rather than as an emoji.
-fn code_lens_for_document(snapshot: &Snapshot) -> Vec<CodeLens> {
-    let mut code_lenses = snapshot
-        .wiki()
-        .pages
-        .values()
-        .flat_map(|page| {
-            page.script_blocks
-                .iter()
-                .enumerate()
-                .map(move |(index, block)| (page, index, block))
-        })
-        .map(|(page, index, block)| {
-            (
-                block.name_source_range.start,
-                CodeLens {
-                    range: snapshot.range(block.name_source_range),
-                    command: Some(Command {
-                        title: "\u{25b6}\u{fe0e} Run".to_owned(),
-                        command: RUN_SCRIPT_COMMAND.to_owned(),
-                        arguments: Some(vec![
-                            serde_json::json!(snapshot.uri.as_str()),
-                            serde_json::json!(page.title.text(Context::Verbatim)),
-                            serde_json::json!(index),
-                        ]),
-                    }),
-                    data: None,
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    code_lenses.sort_by_key(|(start, _code_lens)| *start);
-    code_lenses
-        .into_iter()
-        .map(|(_start, code_lens)| code_lens)
-        .collect()
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
@@ -3072,19 +2897,18 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::formatting_with_scripts_for_document;
     use super::{
         AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
         MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
         RevealType, Snapshot, attach_files_for_document, code_action_for_document,
-        code_block_language, code_lens_for_document, completion_for_document,
-        diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
-        document_link_for_document, document_symbol_for_document, formatting_for_document,
-        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
-        minimal_replacement, prepare_rename_for_document, references_for_document,
-        rename_for_document,
+        code_block_language, completion_for_document, diagnostic_from_error,
+        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
+        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
+        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
+        references_for_document, rename_for_document,
     };
-    #[cfg(unix)]
-    use super::{formatting_with_scripts_for_document, run_scripts_for_document};
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
         lsp_position::LspPosition, parser, propagation::Baseline, wiki::PageTitle,
@@ -3297,70 +3121,6 @@ mod tests {
             diagnostic.range,
             Range::new(Position::new(0, 0), Position::new(1, 2)),
         );
-    }
-
-    // Run a wiki's script blocks after formatting it with the changes to its embedded pages
-    // propagated, or only the one named by its page's title and its index among the page's
-    // blocks, and ask for an unsaved wiki to be saved first.
-    #[cfg(unix)]
-    #[test]
-    fn running_scripts() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let source = concat!(
-            "# Home\n\n[/scripts/]\n\n::: sort\n- b\n- a\n:::\n\n",
-            ":::: [Other]\n::: sort\n- d\n- c\n- e\n:::\n::::\n\n",
-            "# Other\n\n::: sort\n- d\n- c\n:::\n",
-        );
-        let wiki = TestWiki::new(source);
-        let script = wiki.directory().join("scripts").join("sort.sh");
-        fs::create_dir_all(script.parent().unwrap()).unwrap();
-        fs::write(&script, "#!/bin/sh\nsort\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let snapshot = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
-        let baseline = Baseline::from([(
-            PageTitle::parse("Other").unwrap(),
-            Arc::from("::: sort\n- d\n- c\n:::"),
-        )]);
-
-        let (contents, failures) = run_scripts_for_document(&snapshot, &baseline, None).unwrap();
-        assert!(failures.is_empty());
-        assert_eq!(
-            contents,
-            concat!(
-                "# Home\n\n[/scripts/]\n\n::: sort\n- a\n- b\n:::\n\n",
-                ":::: [Other]\n::: sort\n- c\n- d\n- e\n:::\n::::\n\n",
-                "# Other\n\n::: sort\n- c\n- d\n- e\n:::\n",
-            ),
-        );
-        let only = (PageTitle::parse("Other").unwrap(), 0);
-        let (contents, _failures) =
-            run_scripts_for_document(&snapshot, &baseline, Some(&only)).unwrap();
-        assert!(contents.starts_with("# Home\n\n[/scripts/]\n\n::: sort\n- b\n- a\n:::\n"));
-        assert!(contents.ends_with("# Other\n\n::: sort\n- c\n- d\n- e\n:::\n"));
-        assert!(
-            run_scripts_for_document(&self::snapshot(&untitled_uri(), source), &baseline, None)
-                .unwrap_err()[0]
-                .to_string()
-                .contains("Save the wiki to run its scripts."),
-        );
-    }
-
-    // Replace only the part of a text which differs from another, keeping whole characters.
-    #[test]
-    fn minimal_replacements() {
-        fn replace<'a>(old: &'a str, new: &str) -> (&'a str, String) {
-            let (source_range, new_text) = minimal_replacement(old, new);
-            (
-                &old[source_range.start..source_range.end],
-                new_text.to_owned(),
-            )
-        }
-
-        assert_eq!(replace("abcdef", "abXYef"), ("cd", "XY".to_owned()));
-        assert_eq!(replace("same", "same"), ("", String::new()));
-        assert_eq!(replace("aé", "aè"), ("é", "è".to_owned()));
-        assert_eq!(replace("abc", "abcd"), ("", "d".to_owned()));
     }
 
     // Summarize each completion by its label, replacement range, and inserted text.
@@ -5452,6 +5212,41 @@ mod tests {
         assert!(failures.is_empty());
     }
 
+    // Propagate the changes to embedded pages before running scripts, so a change to a copy reaches
+    // its page's script, whose output then fills in the copy.
+    #[cfg(unix)]
+    #[test]
+    fn formatting_propagates_before_running_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = concat!(
+            "# Home\n\n:::: [Other]\n::: sort\n- d\n- c\n- e\n:::\n::::\n\n",
+            "# Other\n\n::: sort\n- d\n- c\n:::\n",
+        );
+        let wiki = TestWiki::new(source);
+        let script = wiki.directory().join("scripts").join("sort.sh");
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        fs::write(&script, "#!/bin/sh\nsort\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let baseline = Baseline::from([(
+            PageTitle::parse("Other").unwrap(),
+            Arc::from("::: sort\n- d\n- c\n:::"),
+        )]);
+
+        let (edits, failures) = formatting_with_scripts_for_document(
+            &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+            &baseline,
+        );
+        assert!(failures.is_empty());
+        assert_eq!(
+            edits.unwrap()[0].new_text,
+            concat!(
+                "# Home\n\n:::: [Other]\n::: sort\n- c\n- d\n- e\n:::\n::::\n\n",
+                "# Other\n\n::: sort\n- c\n- d\n- e\n:::\n",
+            ),
+        );
+    }
+
     #[test]
     fn formatting_rejects_unparsable_source() {
         let source = "# Home\n😀 ]";
@@ -5837,45 +5632,6 @@ mod tests {
         assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
         assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
         assert!(code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics).is_none());
-    }
-
-    // Offer to run each script block outside other blocks, at the script's name, in source order,
-    // with its page's title and its index among the page's script blocks.
-    #[test]
-    fn code_lenses_run_script_blocks() {
-        let source =
-            "# Other\n::: tidy\n:::\n# Home\n::: sort -f :::\n::: tidy\n::: [Other]\n:::\n:::";
-        let code_lenses = code_lens_for_document(&snapshot(&untitled_uri(), source));
-
-        assert_eq!(
-            code_lenses
-                .iter()
-                .map(|code_lens| {
-                    let command = code_lens.command.as_ref().unwrap();
-                    (
-                        code_lens.range,
-                        command.title.as_str(),
-                        command.command.as_str(),
-                        command.arguments.clone().unwrap(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            [(1, "Other", 0_usize), (4, "Home", 0), (5, "Home", 1)]
-                .into_iter()
-                .map(|(line, title, index)| {
-                    (
-                        Range::new(Position::new(line, 4), Position::new(line, 8)),
-                        "\u{25b6}\u{fe0e} Run",
-                        "mull.runScript",
-                        vec![
-                            serde_json::json!(untitled_uri().as_str()),
-                            serde_json::json!(title),
-                            serde_json::json!(index),
-                        ],
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
     }
 
     // Keep filesystem links clickable in a wiki with syntax errors.
