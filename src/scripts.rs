@@ -167,7 +167,8 @@ pub fn hide_hashes(contents: &str) -> String {
 }
 
 // Hash a script block's script, its arguments as written, and its body, so it needn't run again
-// while they stay the same. A block whose script can't be read has no hash.
+// while they stay the same. The hash is the first 48 bits of their SHA-256 hash, in hexadecimal. A
+// block whose script can't be read has no hash.
 fn hash(
     source_contents: &str,
     wiki: &Wiki,
@@ -187,12 +188,9 @@ fn hash(
         hasher.update(part);
     }
     let digest = hasher.finalize();
-    let prefix = u32::from_be_bytes(
-        digest[..4]
-            .try_into()
-            .expect("A SHA-256 digest should have at least 4 bytes."),
-    );
-    Some(format!("{prefix:08x}"))
+    let mut prefix = [0; 8];
+    prefix[2..].copy_from_slice(&digest[..6]);
+    Some(format!("{:012x}", u64::from_be_bytes(prefix)))
 }
 
 // This is why a script block couldn't be run, with any underlying cause.

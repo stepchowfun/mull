@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- After running a script, Mull adds a hash after the closing fence of its block, like `::: #3f9a0c2b`. The hash covers the script, its arguments, and the contents of the block, and formatting skips a block whose hash still matches, so a wiki with many scripts formats quickly. `mull format --rerun-scripts` and `mull check --rerun-scripts` run every script anyway.
+- After running a script, Mull adds a hash after the closing fence of its block, like `::: #3f9a0c2b1e8d`. The hash covers the script, its arguments, and the contents of the block, and formatting skips a block whose hash still matches, so a wiki with many scripts formats quickly. `mull format --rerun-scripts` and `mull check --rerun-scripts` run every script anyway.
 
 ## [0.59.1] - 2026-10-14
 
