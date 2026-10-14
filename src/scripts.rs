@@ -525,31 +525,6 @@ mod tests {
         }
     }
 
-    // Take links to pages as their titles and links to files as their paths, code as written, and
-    // the rest split on whitespace with its escapes resolved, joining pieces which aren't
-    // separated.
-    #[test]
-    fn script_arguments() {
-        let source =
-            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] :::";
-        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
-        assert!(errors.is_empty());
-        let page = wiki.page("Home");
-
-        assert_eq!(
-            arguments(source, page, &page.script_blocks[0], Path::new("/root")),
-            vec![
-                "Home",
-                &Path::new("/root").join("notes.txt").to_string_lossy(),
-                "a\\d b",
-                "x]y",
-                "two",
-                "words",
-                "--page=Home",
-            ],
-        );
-    }
-
     // Replace each block's body with its script's output, indented like the block and within
     // fences longer than any in it, filling in a block written on one line.
     #[cfg(unix)]
@@ -613,6 +588,31 @@ mod tests {
         ));
         assert!(
             messages[2].contains("The script `/scripts/plain.txt` failed. It isn't executable."),
+        );
+    }
+
+    // Take links to pages as their titles and links to files as their paths, code as written, and
+    // the rest split on whitespace with its escapes resolved, joining pieces which aren't
+    // separated.
+    #[test]
+    fn script_arguments() {
+        let source =
+            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] :::";
+        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
+        assert!(errors.is_empty());
+        let page = wiki.page("Home");
+
+        assert_eq!(
+            arguments(source, page, &page.script_blocks[0], Path::new("/root")),
+            vec![
+                "Home",
+                &Path::new("/root").join("notes.txt").to_string_lossy(),
+                "a\\d b",
+                "x]y",
+                "two",
+                "words",
+                "--page=Home",
+            ],
         );
     }
 

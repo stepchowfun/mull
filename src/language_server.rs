@@ -354,6 +354,25 @@ impl Backend {
             .map(|document| Arc::clone(&document.snapshot))
     }
 
+    // Respond to a language feature request using the latest synchronized snapshot of an open
+    // document. The response is computed on a thread which may block, so parsing a large wiki
+    // doesn't stall the asynchronous executor.
+    async fn respond<T, F>(&self, uri: &Uri, respond: F) -> Result<Option<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Snapshot) -> Result<Option<T>> + Send + 'static,
+    {
+        // Report nothing for a document which isn't open.
+        let Some(snapshot) = self.snapshot(uri) else {
+            return Ok(None);
+        };
+
+        // Compute the response, and report a panic as an internal error.
+        tokio::task::spawn_blocking(move || respond(&snapshot))
+            .await
+            .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
+    }
+
     // Recheck an open wiki right away.
     async fn check_wiki(&self, snapshot: Arc<Snapshot>) {
         // Check the wiki without waiting for further edits.
@@ -465,25 +484,6 @@ impl Backend {
                 .show_message(MessageType::ERROR, notification)
                 .await;
         }
-    }
-
-    // Respond to a language feature request using the latest synchronized snapshot of an open
-    // document. The response is computed on a thread which may block, so parsing a large wiki
-    // doesn't stall the asynchronous executor.
-    async fn respond<T, F>(&self, uri: &Uri, respond: F) -> Result<Option<T>>
-    where
-        T: Send + 'static,
-        F: FnOnce(&Snapshot) -> Result<Option<T>> + Send + 'static,
-    {
-        // Report nothing for a document which isn't open.
-        let Some(snapshot) = self.snapshot(uri) else {
-            return Ok(None);
-        };
-
-        // Compute the response, and report a panic as an internal error.
-        tokio::task::spawn_blocking(move || respond(&snapshot))
-            .await
-            .unwrap_or_else(|_| Err(JsonRpcError::internal_error()))
     }
 
     // Plan attaching files to the latest synchronized editor snapshot.
@@ -3262,23 +3262,6 @@ mod tests {
         );
     }
 
-    // Replace only the part of a text which differs from another, keeping whole characters.
-    #[test]
-    fn minimal_replacements() {
-        fn replace<'a>(old: &'a str, new: &str) -> (&'a str, String) {
-            let (source_range, new_text) = minimal_replacement(old, new);
-            (
-                &old[source_range.start..source_range.end],
-                new_text.to_owned(),
-            )
-        }
-
-        assert_eq!(replace("abcdef", "abXYef"), ("cd", "XY".to_owned()));
-        assert_eq!(replace("same", "same"), ("", String::new()));
-        assert_eq!(replace("aé", "aè"), ("é", "è".to_owned()));
-        assert_eq!(replace("abc", "abcd"), ("", "d".to_owned()));
-    }
-
     // Run a wiki's script blocks after formatting it with the changes to its embedded pages
     // propagated, or only the one named by its page's title and its index among the page's
     // blocks, and ask for an unsaved wiki to be saved first.
@@ -3324,6 +3307,23 @@ mod tests {
                 .to_string()
                 .contains("Save the wiki to run its scripts."),
         );
+    }
+
+    // Replace only the part of a text which differs from another, keeping whole characters.
+    #[test]
+    fn minimal_replacements() {
+        fn replace<'a>(old: &'a str, new: &str) -> (&'a str, String) {
+            let (source_range, new_text) = minimal_replacement(old, new);
+            (
+                &old[source_range.start..source_range.end],
+                new_text.to_owned(),
+            )
+        }
+
+        assert_eq!(replace("abcdef", "abXYef"), ("cd", "XY".to_owned()));
+        assert_eq!(replace("same", "same"), ("", String::new()));
+        assert_eq!(replace("aé", "aè"), ("é", "è".to_owned()));
+        assert_eq!(replace("abc", "abcd"), ("", "d".to_owned()));
     }
 
     // Summarize each completion by its label, replacement range, and inserted text.

@@ -871,6 +871,42 @@ mod tests {
         );
     }
 
+    // Require each script block's name to identify exactly one script, whatever its extension.
+    #[test]
+    fn scripts() {
+        let directory = TestDirectory::new();
+        directory.write("scripts/sort.sh", "");
+        directory.write("scripts/tidy.py", "");
+        directory.write("scripts/tidy.sh", "");
+        let wiki = parse(concat!(
+            "# Home\n[/scripts/]\n",
+            "::: sort -f\n:::\n::: tidy :::\n::: missing :::\n",
+        ))
+        .unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "No script named `missing` in `/scripts`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "More than one script is named `tidy` in `/scripts`: `/scripts/tidy.py`, \
+             `/scripts/tidy.sh`.",
+        ));
+    }
+
+    // Ask for an unsaved wiki to be saved before finding its scripts.
+    #[test]
+    fn untitled_scripts() {
+        let wiki = parse("# Home\n::: sort :::").unwrap();
+
+        let errors = validate_untitled(&wiki).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message(), "Save the wiki to find this script.");
+    }
+
     // Accept a wiki without a file root, which contains no files, even when other
     // files sit beside the wiki.
     #[test]
@@ -1128,42 +1164,6 @@ mod tests {
                 .iter()
                 .all(|error| error.to_string().contains("File `/unreferenced-")),
         );
-    }
-
-    // Require each script block's name to identify exactly one script, whatever its extension.
-    #[test]
-    fn scripts() {
-        let directory = TestDirectory::new();
-        directory.write("scripts/sort.sh", "");
-        directory.write("scripts/tidy.py", "");
-        directory.write("scripts/tidy.sh", "");
-        let wiki = parse(concat!(
-            "# Home\n[/scripts/]\n",
-            "::: sort -f\n:::\n::: tidy :::\n::: missing :::\n",
-        ))
-        .unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(contains_error(
-            &errors,
-            "No script named `missing` in `/scripts`.",
-        ));
-        assert!(contains_error(
-            &errors,
-            "More than one script is named `tidy` in `/scripts`: `/scripts/tidy.py`, \
-             `/scripts/tidy.sh`.",
-        ));
-    }
-
-    // Ask for an unsaved wiki to be saved before finding its scripts.
-    #[test]
-    fn untitled_scripts() {
-        let wiki = parse("# Home\n::: sort :::").unwrap();
-
-        let errors = validate_untitled(&wiki).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].message(), "Save the wiki to find this script.");
     }
 
     // Accept a directory without a link when all the files in it are linked.
