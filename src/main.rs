@@ -245,35 +245,6 @@ async fn entry() -> Result<(), Vec<Error>> {
     Ok(())
 }
 
-// Print a page's content as formatting would write it, for scripts to read.
-fn print_page(wiki_path: &Path, wiki_contents: &str, title: &str) -> Result<(), Vec<Error>> {
-    // Read the wiki without validating it, which needs only its syntax.
-    let (wiki, errors) = parser::parse(
-        Some(wiki_path),
-        wiki_contents,
-        &LineIndex::new(wiki_contents),
-    );
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    // Find the page.
-    let page = PageTitle::parse(title)
-        .ok()
-        .and_then(|title| wiki.pages.get(&title))
-        .ok_or_else(|| {
-            vec![Error::new(
-                &format!("Page {} not found.", title.code_str()),
-                Some(wiki_path),
-                None,
-                None,
-                None,
-            )]
-        })?;
-    println!("{}", wiki.page_content(page));
-    Ok(())
-}
-
 // Find the nearest wiki in the current directory or one of its ancestors.
 fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
     // Search each directory from nearest to farthest, choosing files deterministically.
@@ -365,6 +336,35 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
         None,
         None,
     ))
+}
+
+// Print a page's content as formatting would write it, for scripts to read.
+fn print_page(wiki_path: &Path, wiki_contents: &str, title: &str) -> Result<(), Vec<Error>> {
+    // Read the wiki without validating it, which needs only its syntax.
+    let (wiki, errors) = parser::parse(
+        Some(wiki_path),
+        wiki_contents,
+        &LineIndex::new(wiki_contents),
+    );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Find the page.
+    let page = PageTitle::parse(title)
+        .ok()
+        .and_then(|title| wiki.pages.get(&title))
+        .ok_or_else(|| {
+            vec![Error::new(
+                &format!("Page {} not found.", title.code_str()),
+                Some(wiki_path),
+                None,
+                None,
+                None,
+            )]
+        })?;
+    println!("{}", wiki.page_content(page));
+    Ok(())
 }
 
 #[cfg(test)]
