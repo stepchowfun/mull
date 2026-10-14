@@ -97,7 +97,7 @@ Mull can help with this; you just have to teach it about sorting. Create a file 
 sort "$@"
 ```
 
-Then make it executable, e.g., with `chmod +x wiki_files/scripts/sort.sh`.
+Then make it executable with `chmod +x <wiki>_files/scripts/sort.sh`.
 
 Now you can wrap your list in a `sort` block:
 
