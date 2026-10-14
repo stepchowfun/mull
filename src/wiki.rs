@@ -270,13 +270,16 @@ pub struct Embed {
 }
 
 // This struct represents a block whose body is computed by a script, which reads the body and
-// writes its replacement. The script is named in the opening fence, followed by its arguments.
+// writes its replacement. The script is named in the opening fence, followed by its arguments. The
+// closing fence can be followed by a hash of the script, the arguments, and the body, which notes
+// that the body is the script's output, so the script needn't run again until one of them changes.
 #[derive(Clone, Debug)]
 pub struct ScriptBlock {
     pub name: String,
     pub source_range: SourceRange, // From the opening fence's colons through the closing fence
     pub name_source_range: SourceRange, // The script's name in the opening fence
     pub arguments_source_range: SourceRange, // The trimmed text after the name
+    pub hash: Option<String>,      // After the `#` following the closing fence, if any
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not

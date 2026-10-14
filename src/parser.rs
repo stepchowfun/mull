@@ -57,12 +57,13 @@ struct OpenLink {
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
 // run of colons, after any indentation, is a fence. An opening fence starts a block: it embeds the
 // page named by the link after it, or names the script which computes the block's body, followed by
-// the script's arguments. A closing fence consists of colons alone and closes the innermost open
-// block with a fence of the same length. A block can also be written on one line, closed by a run
-// of colons after its argument, for formatting or its script to fill in. The wiki retains as much
-// of the source as possible so it can still be validated and navigated, but it omits the content of
-// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
-// if there are any syntax errors. The line index locates syntax errors in their source listings.
+// the script's arguments. A closing fence consists of colons, followed by a hash only for a script
+// block, and closes the innermost open block with a fence of the same length. A block can also be
+// written on one line, closed by a run of colons after its argument, for formatting or its script
+// to fill in. The wiki retains as much of the source as possible so it can still be validated and
+// navigated, but it omits the content of duplicate pages, invalid titles, and anything before the
+// first title, so it mustn't be rendered if there are any syntax errors. The line index locates
+// syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
@@ -181,17 +182,27 @@ pub fn parse(
         }
     };
 
-    // Close the block at an index among those open, reporting any open within it, and keep it if
-    // it isn't within another and is either an embed which names a page or a script block with a
-    // valid name.
+    // Close the block at an index among those open, reporting any open within it and a hash on
+    // its closing fence unless it's a script block, and keep it if it isn't within another and is
+    // either an embed which names a page or a script block with a valid name.
     let close_block = |open_blocks: &mut Vec<OpenBlock>,
                        index: usize,
                        end: usize,
+                       hash_source_range: Option<SourceRange>,
                        pending_page: &mut PendingPage,
                        errors: &mut Vec<Error>| {
         let mut inner_blocks = open_blocks.split_off(index);
         let open_block = inner_blocks.remove(0);
         report_unclosed_blocks(&mut inner_blocks, errors);
+        if let Some(hash_source_range) = hash_source_range
+            && !matches!(open_block.kind, OpenBlockKind::Script(_))
+        {
+            errors.push(syntax_error(
+                "Only a script block's closing fence can have a hash.",
+                hash_source_range,
+                None,
+            ));
+        }
         if index > 0 {
             return;
         }
@@ -213,6 +224,11 @@ pub fn parse(
                     source_range,
                     name_source_range,
                     arguments_source_range,
+                    hash: hash_source_range.map(|hash_source_range| {
+                        source_contents
+                            [hash_source_range.start + '#'.len_utf8()..hash_source_range.end]
+                            .to_owned()
+                    }),
                 });
             }
             OpenBlockKind::Embed(None) | OpenBlockKind::Script(None) => {}
@@ -236,6 +252,7 @@ pub fn parse(
                 open_blocks,
                 open_blocks.len() - 1,
                 end,
+                None,
                 pending_page,
                 errors,
             );
@@ -297,7 +314,8 @@ pub fn parse(
             // Read a fence line within a page. An opening fence starts a block, either an embed
             // or a script block, whose argument is read as usual from where it starts, and which
             // ends with the line if it's written on one line. A closing fence ends the innermost
-            // open block with a fence of the same length, and any open within it.
+            // open block with a fence of the same length, and any open within it, noting any hash
+            // after it.
             if !can_report_content_before_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
@@ -359,7 +377,7 @@ pub fn parse(
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
                     }
-                    FenceLine::Closing { length } => {
+                    FenceLine::Closing { length, hash } => {
                         if let Some(index) = open_blocks
                             .iter()
                             .rposition(|open_block| open_block.fence_length == length)
@@ -368,6 +386,10 @@ pub fn parse(
                                 &mut open_blocks,
                                 index,
                                 line_source_range.end,
+                                hash.map(|(start, end)| SourceRange {
+                                    start: position + start,
+                                    end: position + end,
+                                }),
                                 &mut pending_page,
                                 &mut errors,
                             );
@@ -682,7 +704,8 @@ fn parse_title(
 
 // These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
 // argument is trimmed and located by its offsets within the line. An embed written on one line
-// ends with a closing run of colons after its argument.
+// ends with a closing run of colons after its argument. A closing fence can be followed by a hash,
+// which is located by its offsets within the line, including its `#`.
 #[derive(Debug, Eq, PartialEq)]
 enum FenceLine {
     Opening {
@@ -693,13 +716,15 @@ enum FenceLine {
     },
     Closing {
         length: usize,
+        hash: Option<(usize, usize)>,
     },
 }
 
-// Read a line as a fence line: optional indentation and a run of fence characters, alone for a
-// closing fence, or followed by whitespace and an argument for an opening fence, and then by
-// whitespace and another run for an embed written on one line. Any other line, including one in
-// which the run is followed directly by other text, isn't a fence line.
+// Read a line as a fence line: optional indentation and a run of fence characters, alone or
+// followed by whitespace and a hash for a closing fence, or followed by whitespace and an argument
+// for an opening fence, and then by whitespace and another run for a block written on one line. A
+// hash is `#` followed by anything but whitespace. Any other line, including one in which the run
+// is followed directly by other text, isn't a fence line.
 fn fence_line(line: &str) -> Option<FenceLine> {
     // Measure the indentation and the run after it, which must be long enough.
     let indentation = line.len() - line.trim_start().len();
@@ -711,12 +736,18 @@ fn fence_line(line: &str) -> Option<FenceLine> {
     // Find what follows the run, which is either nothing or whitespace and an argument.
     let rest = &line[indentation + length..];
     if rest.trim().is_empty() {
-        return Some(FenceLine::Closing { length });
+        return Some(FenceLine::Closing { length, hash: None });
     }
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
     let argument_start = line.len() - rest.trim_start().len();
+    if rest.trim().starts_with('#') && !rest.trim().contains(char::is_whitespace) {
+        return Some(FenceLine::Closing {
+            length,
+            hash: Some((argument_start, argument_start + rest.trim().len())),
+        });
+    }
     let argument = line[argument_start..].trim_end();
     let before_closing_run = argument.trim_end_matches(':');
     let is_one_line = argument.len() - before_closing_run.len() >= MIN_FENCE_LENGTH
@@ -1591,11 +1622,33 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 is_one_line: false,
             }),
         );
-        assert_eq!(fence_line("  :::"), Some(FenceLine::Closing { length: 3 }));
-        assert_eq!(fence_line(":::"), Some(FenceLine::Closing { length: 3 }));
+        assert_eq!(
+            fence_line("  :::"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: None,
+            }),
+        );
+        assert_eq!(
+            fence_line(":::"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: None,
+            }),
+        );
         assert_eq!(
             fence_line("::::: \t"),
-            Some(FenceLine::Closing { length: 5 }),
+            Some(FenceLine::Closing {
+                length: 5,
+                hash: None,
+            }),
+        );
+        assert_eq!(
+            fence_line("  :::: #0a1b2c3d4e5f "),
+            Some(FenceLine::Closing {
+                length: 4,
+                hash: Some((7, 20)),
+            }),
         );
         assert_eq!(
             fence_line(":::: [Page]\t:::::  "),
@@ -1619,6 +1672,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         }
         assert_eq!(fence_line(":: [Page]"), None);
         assert_eq!(fence_line(":::[Page]"), None);
+        assert_eq!(fence_line(":::#0a1b"), None);
         assert_eq!(fence_line(" :::[Page]"), None);
     }
 
@@ -1737,14 +1791,15 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Read a script block from its opening fence through its closing fence, with its name and the
-    // arguments after it, whose links are among the page's links. Blocks within it aren't kept,
-    // since they're part of its body. A script block can also be written on one line.
+    // Read a script block from its opening fence through its closing fence, with its name, the
+    // arguments after it, whose links are among the page's links, and any hash after it. Blocks
+    // within it aren't kept, since they're part of its body. A script block can also be written on
+    // one line.
     #[test]
     fn script_blocks() {
         let source = concat!(
             "# Home\n",
-            "  ::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  :::\n",
+            "  ::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b\n",
             "::: back-links_2.0 :::\n",
             "# Other",
         );
@@ -1761,21 +1816,24 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                         &source[block.name_source_range.start..block.name_source_range.end],
                         &source
                             [block.arguments_source_range.start..block.arguments_source_range.end],
+                        block.hash.as_deref(),
                     )
                 })
                 .collect::<Vec<_>>(),
             vec![
                 (
                     "sort",
-                    "::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  :::",
+                    "::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b",
                     "sort",
                     "-f [Other] `x`",
+                    Some("0a1b"),
                 ),
                 (
                     "back-links_2.0",
                     "::: back-links_2.0 :::",
                     "back-links_2.0",
                     "",
+                    None,
                 ),
             ],
         );
@@ -1798,8 +1856,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert!(errors[0].to_string().contains("2 │ ::: so(rt) -f"));
     }
 
-    // Reject closing fences which don't close a block, and blocks which aren't closed by the end
-    // of their pages.
+    // Reject closing fences which don't close a block or which have a hash but don't close a
+    // script block, and blocks which aren't closed by the end of their pages.
     #[test]
     fn invalid_fences() {
         assert_fails!(
@@ -1809,6 +1867,10 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_fails!(
             parse_test("# Home\n::: [Other]\n# Other"),
             "Unclosed block.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [Other]\n::: #0a1b\n# Other"),
+            "Only a script block's closing fence can have a hash.",
         );
     }
 }

@@ -9,6 +9,7 @@ use crate::{
     spelled_path::{FileRoot, code_file_path},
     wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     ffi::OsStr,
@@ -27,11 +28,17 @@ pub const SCRIPTS_DIRECTORY: &str = "scripts";
 // A script which runs longer than this is stopped, and its block is left as it was.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-// Run every script block outside other blocks in a wiki without errors, in source order, after
-// formatting the wiki, then format the result. Return the wiki's new contents, along with an error
-// for each script block which failed, which is left as it was. The errors locate the blocks in the
+// Run the script blocks outside other blocks in a wiki without errors, in source order, after
+// formatting the wiki, then format the result. A block whose hash shows that its body is already
+// its script's output for its arguments is skipped unless every block is to be rerun, and each
+// block which runs is given a new hash. Return the wiki's new contents, along with an error for
+// each script block which failed, which is left as it was. The errors locate the blocks in the
 // formatted wiki.
-pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error>), Vec<Error>> {
+pub fn run(
+    wiki_path: &Path,
+    source_contents: &str,
+    rerun: bool,
+) -> Result<(String, Vec<Error>), Vec<Error>> {
     let formatted_contents = analyze(
         Some(wiki_path),
         source_contents,
@@ -39,13 +46,14 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
     )
     .assume_completed()?
     .to_string();
-    run_formatted(wiki_path, &formatted_contents)
+    run_formatted(wiki_path, &formatted_contents, rerun)
 }
 
 // Run the script blocks outside other blocks in a formatted wiki, as `run` does.
 pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
+    rerun: bool,
 ) -> Result<(String, Vec<Error>), Vec<Error>> {
     // Read the wiki, whose blocks' bodies are already in their canonical form.
     let line_index = LineIndex::new(formatted_contents);
@@ -56,13 +64,21 @@ pub fn run_formatted(
     let file_root = FileRoot::new(wiki_path)
         .map_err(|message| vec![Error::new(&message, None, None, None, None)])?;
 
-    // Run each block, noting its replacement or why it failed.
+    // Run each block which needs it, noting its replacement or why it failed. The blocks which ran
+    // are noted by their pages and their positions among the pages' blocks, which don't change.
     let mut pages = wiki.pages.values().collect::<Vec<_>>();
     pages.sort_by_key(|page| page.source_range.start);
     let mut replacements = Vec::new();
+    let mut ran = Vec::new();
     let mut failures = Vec::new();
     for page in pages {
-        for block in &page.script_blocks {
+        for (index, block) in page.script_blocks.iter().enumerate() {
+            if !rerun
+                && block.hash.is_some()
+                && block.hash == hash(formatted_contents, &wiki, block, &file_root)
+            {
+                continue;
+            }
             match run_block(
                 formatted_contents,
                 &wiki,
@@ -71,7 +87,10 @@ pub fn run_formatted(
                 &file_root,
                 wiki_path,
             ) {
-                Ok(replacement) => replacements.push((block.source_range, replacement)),
+                Ok(replacement) => {
+                    replacements.push((block.source_range, replacement));
+                    ran.push((&page.title, index));
+                }
                 Err((message, reason)) => failures.push(Error::new(
                     &message,
                     Some(wiki_path),
@@ -88,13 +107,90 @@ pub fn run_formatted(
     for (source_range, replacement) in replacements.into_iter().rev() {
         run_contents.replace_range(source_range.start..source_range.end, &replacement);
     }
+    let run_contents = format(wiki_path, &run_contents)?;
+
+    // Follow each block which ran with its hash, which is computed once the block is formatted so
+    // it still matches when the wiki is next formatted, and format the result again so the copies
+    // of the blocks' pages have the hashes too.
     let run_line_index = LineIndex::new(&run_contents);
     let (run_wiki, errors) = parser::parse(Some(wiki_path), &run_contents, &run_line_index);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut hashes = ran
+        .into_iter()
+        .filter_map(|(title, index)| {
+            let block = &run_wiki.pages.get(title)?.script_blocks[index];
+            Some((
+                block.source_range.end,
+                hash(&run_contents, &run_wiki, block, &file_root)?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    hashes.sort_by_key(|(end, _hash)| *end);
+    let mut hashed_contents = run_contents.clone();
+    for (end, hash) in hashes.into_iter().rev() {
+        hashed_contents.insert_str(end, &format!(" #{hash}"));
+    }
+    Ok((format(wiki_path, &hashed_contents)?, failures))
+}
+
+// Format a wiki without syntax errors.
+fn format(wiki_path: &Path, contents: &str) -> Result<String, Vec<Error>> {
+    let line_index = LineIndex::new(contents);
+    let (wiki, errors) = parser::parse(Some(wiki_path), contents, &line_index);
     if errors.is_empty() {
-        Ok((run_wiki.to_string(), failures))
+        Ok(wiki.to_string())
     } else {
         Err(errors)
     }
+}
+
+// Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes.
+#[cfg(all(test, unix))]
+pub fn hide_hashes(contents: &str) -> String {
+    contents
+        .split_inclusive('\n')
+        .map(|line| match line.split_once(" #") {
+            Some((fence, _hash))
+                if fence.trim_start().starts_with(':')
+                    && fence.trim_start().trim_start_matches(':').is_empty() =>
+            {
+                format!(
+                    "{fence} #hash{}",
+                    if line.ends_with('\n') { "\n" } else { "" },
+                )
+            }
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+// Hash a script block's script, its arguments as written, and its body, so it needn't run again
+// while they stay the same. The hash is the first 48 bits of their SHA-256 hash, in hexadecimal. A
+// block whose script can't be read has no hash.
+fn hash(
+    source_contents: &str,
+    wiki: &Wiki,
+    block: &ScriptBlock,
+    file_root: &FileRoot,
+) -> Option<String> {
+    let script = fs::read(script_path(file_root, &block.name).ok()?).ok()?;
+    let arguments =
+        &source_contents[block.arguments_source_range.start..block.arguments_source_range.end];
+    let body = wiki
+        .body(block.source_range)
+        .map(|(body, _line_starts)| body)
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    for part in [script.as_slice(), arguments.as_bytes(), body.as_bytes()] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let mut prefix = [0; 8];
+    prefix[2..].copy_from_slice(&digest[..6]);
+    Some(format!("{:012x}", u64::from_be_bytes(prefix)))
 }
 
 // This is why a script block couldn't be run, with any underlying cause.
@@ -450,7 +546,7 @@ mod tests {
     use std::path::Path;
     #[cfg(unix)]
     use {
-        super::{execute, run},
+        super::{execute, hide_hashes, run},
         crate::error::Error,
         std::{
             env, fs,
@@ -495,9 +591,31 @@ mod tests {
             self.0.join("wiki.mull")
         }
 
-        // Run the wiki's scripts.
+        // Run the wiki's scripts, with the hashes after closing fences hidden.
         fn run(&self) -> Result<(String, Vec<Error>), Vec<Error>> {
-            run(&self.path(), &fs::read_to_string(self.path()).unwrap())
+            run(
+                &self.path(),
+                &fs::read_to_string(self.path()).unwrap(),
+                false,
+            )
+            .map(|(contents, failures)| (hide_hashes(&contents), failures))
+        }
+
+        // Run the wiki's scripts and save the result, returning how many times a script which
+        // counts its runs has run.
+        fn run_and_save(&self, rerun: bool) -> usize {
+            let (contents, failures) = run(
+                &self.path(),
+                &fs::read_to_string(self.path()).unwrap(),
+                rerun,
+            )
+            .unwrap();
+            assert!(failures.is_empty(), "{failures:?}");
+            fs::write(self.path(), contents).unwrap();
+            fs::read_to_string(self.0.join("wiki_files/runs"))
+                .unwrap_or_default()
+                .lines()
+                .count()
         }
     }
 
@@ -510,7 +628,7 @@ mod tests {
     }
 
     // Replace each block's body with its script's output, indented like the block and within
-    // fences longer than any in it, filling in a block written on one line.
+    // fences longer than any in it and followed by a hash, filling in a block written on one line.
     #[cfg(unix)]
     #[test]
     fn runs_replace_bodies() {
@@ -536,8 +654,8 @@ mod tests {
             contents,
             concat!(
                 "# Home\n\n[/scripts/] [Other]\n\n",
-                "- List:\n  ::: sort\n  - a\n  - b\n  :::\n\n",
-                ":::: fence\nHome\n::: [Other] :::\n::::\n\n",
+                "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
+                ":::: fence\nHome\n::: [Other] :::\n:::: #hash\n\n",
                 "# Other\n",
             ),
         );
@@ -573,6 +691,32 @@ mod tests {
         assert!(
             messages[2].contains("The script `/scripts/plain.txt` failed. It isn't executable."),
         );
+    }
+
+    // Skip a block whose hash matches its script, its arguments, and its body, unless every block
+    // is to be rerun, and run it again once any of them changes.
+    #[cfg(unix)]
+    #[test]
+    fn runs_skip_unchanged_blocks() {
+        let wiki = TestWiki::new(
+            "# Home\n\n[/runs] [/scripts/]\n\n::: count a\n- b\n:::\n",
+            &[("count.sh", "#!/bin/sh\necho run >> runs\ncat\n")],
+        );
+        fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
+
+        assert_eq!(wiki.run_and_save(false), 1);
+        assert_eq!(wiki.run_and_save(false), 1);
+        assert_eq!(wiki.run_and_save(true), 2);
+        let source = fs::read_to_string(wiki.path()).unwrap();
+        fs::write(wiki.path(), source.replace("- b", "- c")).unwrap();
+        assert_eq!(wiki.run_and_save(false), 3);
+        let source = fs::read_to_string(wiki.path()).unwrap();
+        fs::write(wiki.path(), source.replace("count a", "count b")).unwrap();
+        assert_eq!(wiki.run_and_save(false), 4);
+        let script = wiki.0.join("wiki_files/scripts/count.sh");
+        fs::write(&script, "#!/bin/sh\necho run >> runs\ncat\ntrue\n").unwrap();
+        assert_eq!(wiki.run_and_save(false), 5);
+        assert_eq!(wiki.run_and_save(false), 5);
     }
 
     // Take links to pages as their titles and links to files as their paths, code as written, and

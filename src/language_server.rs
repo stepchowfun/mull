@@ -2256,7 +2256,7 @@ fn formatting_with_scripts_for_document(
     }) else {
         return (None, Vec::new());
     };
-    match scripts::run_formatted(wiki_path, &formatted_contents) {
+    match scripts::run_formatted(wiki_path, &formatted_contents, false) {
         Ok((contents, failures)) => (Some(whole_document_edits(snapshot, contents)), failures),
         Err(_errors) => (None, Vec::new()),
     }
@@ -2897,8 +2897,6 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use super::formatting_with_scripts_for_document;
     use super::{
         AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
         MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
@@ -2931,6 +2929,8 @@ mod tests {
         GotoDefinitionResponse, HoverContents, InsertTextFormat, MarkupKind, OneOf, Position,
         PrepareRenameResponse, Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
     };
+    #[cfg(unix)]
+    use {super::formatting_with_scripts_for_document, crate::scripts::hide_hashes};
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -5252,8 +5252,8 @@ mod tests {
             &Baseline::new(),
         );
         assert_eq!(
-            edits.unwrap()[0].new_text,
-            "# Home\n\n::: sort\n- a\n- b\n:::\n\n::: fail :::\n",
+            hide_hashes(&edits.unwrap()[0].new_text),
+            "# Home\n\n::: sort\n- a\n- b\n::: #hash\n\n::: fail :::\n",
         );
         assert_eq!(failures.len(), 1);
         let (edits, failures) = formatting_with_scripts_for_document(
@@ -5291,10 +5291,10 @@ mod tests {
         );
         assert!(failures.is_empty());
         assert_eq!(
-            edits.unwrap()[0].new_text,
+            hide_hashes(&edits.unwrap()[0].new_text),
             concat!(
-                "# Home\n\n:::: [Other]\n::: sort\n- c\n- d\n- e\n:::\n::::\n\n",
-                "# Other\n\n::: sort\n- c\n- d\n- e\n:::\n",
+                "# Home\n\n:::: [Other]\n::: sort\n- c\n- d\n- e\n::: #hash\n::::\n\n",
+                "# Other\n\n::: sort\n- c\n- d\n- e\n::: #hash\n",
             ),
         );
     }

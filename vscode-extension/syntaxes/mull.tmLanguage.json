@@ -544,7 +544,7 @@
       "patterns": [
         {
           "name": "meta.block.mull",
-          "match": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]+(:{3,})[ \\t]*$",
+          "match": "^[ \\t]*(:{3,})[ \\t]+([^ \\t#].*?)[ \\t]+(:{3,})[ \\t]*$",
           "captures": {
             "1": {
               "name": "punctuation.definition.block.begin.mull"
@@ -564,7 +564,7 @@
         },
         {
           "name": "meta.block.mull",
-          "begin": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]*$",
+          "begin": "^[ \\t]*(:{3,})[ \\t]+([^ \\t#].*?)[ \\t]*$",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.block.begin.mull"
@@ -578,9 +578,12 @@
               ]
             }
           },
-          "end": "^[ \\t]*(\\1)[ \\t]*$|^(?=# )",
+          "end": "^[ \\t]*(\\1)(?:[ \\t]+(#[^ \\t]*))?[ \\t]*$|^(?=# )",
           "endCaptures": {
             "1": {
+              "name": "punctuation.definition.block.end.mull"
+            },
+            "2": {
               "name": "punctuation.definition.block.end.mull"
             }
           },
