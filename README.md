@@ -78,21 +78,49 @@ Mull keeps the copies synchronized. You can directly edit any of the copies, and
 
 ![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
 
-### Computing a block with a script
+### Extending Mull with scripts
 
-A script can compute part of a page. Put the script in `<wiki>_files/scripts`, make it executable, and name it at the start of a block:
+Suppose you have a list that you want to keep sorted.
 
 ```md
-::: sort --ignore-case
-- Oranges
-- [Lemons]
-- apples
+- Apple
+- Banana
+- Lemon
+- Orange
+```
+
+With a script, you can define a `sort` command and use it as follows:
+
+```md
+::: sort
+- Apple
+- Banana
+- Lemon
+- Orange
 :::
 ```
 
-Running `mull run`, or clicking the Run link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints. The **Mull: Run Scripts** command runs every script in the wiki, and typing `:::` on a new line suggests your scripts. The editor doesn't run scripts in Restricted Mode, since a wiki from someone else could run any program through them. Anything after the script's name is passed to it as arguments: a link to a page is passed as the page's title, a link to a file as the file's full path, and code like `` `a\d+` `` as written. Scripts run in `<wiki>_files`, with the wiki's path in `MULL_WIKI` and the page's title in `MULL_PAGE`, and `mull page Title` prints a page's content. A block written on one line, like `::: backlinks :::`, starts out empty.
+Then Mull can help you maintain the sorted order. To make that work, create a file called `<wiki>_files/scripts/sort.sh` and make it executable (e.g., with `chmod +x wiki_files/scripts/sort.sh`). In this case, the script might be as follows:
 
-Scripts are files in `<wiki>_files`, so they need to be linked to from the wiki like any other file.
+```sh
+#!/bin/sh
+sort "$@"
+```
+
+This script is defined to accept arguments, so for example you can sort in reverse order:
+
+```md
+::: sort -r
+- Apple
+- Banana
+- Lemon
+- Orange
+:::
+```
+
+Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
+
+Scripts are files in `<wiki>_files`, so they need to be linked to from the wiki like any other file (e.g., `[/scripts/sort.sh]`).
 
 ### Orthography
 
