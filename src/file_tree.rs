@@ -56,10 +56,11 @@ pub fn file_tree_walker(file_root: &Path) -> WalkBuilder {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Visibility {
     // The walk reaches the path.
-    Visible,
+    Reached,
 
-    // The walk never reaches the path, because an ignore rule excludes it or one of its ancestors.
-    Ignored,
+    // The walk never reaches the path, because it doesn't exist, an ignore rule excludes it or one
+    // of its ancestors, or a directory along the way can't be read.
+    Unreached,
 }
 
 // Determine whether a walk of the file tree reaches a path. The walk descends only along the path,
@@ -87,8 +88,8 @@ pub fn visibility(
 
         // Stop once the walk reaches the target.
         if file_root.entry_path(&entry) == *target {
-            return Outcome::Completed(Visibility::Visible);
+            return Outcome::Completed(Visibility::Reached);
         }
     }
-    Outcome::Completed(Visibility::Ignored)
+    Outcome::Completed(Visibility::Unreached)
 }

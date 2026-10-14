@@ -392,7 +392,8 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
 }
 
 // Explain why a walk of the file tree doesn't reach a filesystem link's target, where `spelled` is
-// the target's spelling on disk.
+// the target's spelling on disk. The target is known to exist, so an ignore rule must exclude it,
+// unless a directory along the way can't be read.
 fn visibility_error(
     file_root: &FileRoot,
     wiki_path: &Path,
@@ -403,8 +404,8 @@ fn visibility_error(
 ) -> Outcome<Option<Error>> {
     visibility(file_root, spelled, cancellation).map(|visibility| {
         let message = match visibility {
-            Visibility::Visible => return None,
-            Visibility::Ignored => format!("{} is ignored.", target.code_str()),
+            Visibility::Reached => return None,
+            Visibility::Unreached => format!("{} is ignored.", target.code_str()),
         };
         Some(Error::new(
             &message,
