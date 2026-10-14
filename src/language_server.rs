@@ -9,6 +9,7 @@ use crate::{
     parser,
     propagation::{self, Baseline, Instances},
     scoring::traversal_order,
+    scripts,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
@@ -34,31 +35,37 @@ use tower_lsp_server::{
     jsonrpc::{Error as JsonRpcError, Result},
     ls_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem,
-        CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
-        CompletionResponse, CompletionTextEdit, DeleteFile, DeleteFileOptions, Diagnostic,
-        DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-        DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentChangeOperation,
-        DocumentChanges, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
-        DocumentHighlightParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
-        DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
-        FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, InsertTextFormat, LSPAny, Location, LocationLink, MarkupContent,
-        MarkupKind, MessageType, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
-        PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, Registration,
-        RenameFile, RenameOptions, RenameParams, ResourceOp, ResourceOperationKind,
-        ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit,
-        TextDocumentIdentifier, TextDocumentPositionParams, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions,
-        WorkspaceEdit,
+        CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions,
+        CodeLensParams, Command, CompletionItem, CompletionItemKind, CompletionList,
+        CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, DeleteFile,
+        DeleteFileOptions, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+        DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
+        DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+        DocumentChangeOperation, DocumentChanges, DocumentFormattingParams, DocumentHighlight,
+        DocumentHighlightKind, DocumentHighlightParams, DocumentLink, DocumentLinkOptions,
+        DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+        ExecuteCommandParams, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+        InitializeParams, InitializeResult, InitializedParams, InsertTextFormat, LSPAny, Location,
+        LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
+        OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
+        PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
+        RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
+        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
+        TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 
 // This server command rechecks the open wiki named by its argument, as when the filesystem changed
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
+
+// These server commands run the script blocks of the open wiki named by their first argument: one,
+// named by its page's title and its index among the page's script blocks, or all of them. Keep
+// these in sync with [group:run_script_commands].
+const RUN_SCRIPT_COMMAND: &str = "mull.runScript";
+const RUN_SCRIPTS_COMMAND: &str = "mull.runScripts";
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -347,6 +354,119 @@ impl Backend {
             .map(|document| Arc::clone(&document.snapshot))
     }
 
+    // Recheck an open wiki right away.
+    async fn check_wiki(&self, snapshot: Arc<Snapshot>) {
+        // Check the wiki without waiting for further edits.
+        let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
+
+        // Report the result once it's published, or that a newer check superseded it, without
+        // claiming a result which isn't shown in the editor.
+        let name = snapshot
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(
+                || snapshot.uri.as_str().code_str(),
+                |name| name.to_string_lossy().code_str(),
+            );
+        let (message_type, message) = match result.await.map(|check| check.diagnostic_count) {
+            Ok(0) => (MessageType::INFO, format!("{name} looks good.")),
+            Ok(1) => (MessageType::INFO, format!("{name} has 1 problem.")),
+            Ok(count) => (MessageType::INFO, format!("{name} has {count} problems.")),
+            Err(_) => (
+                MessageType::WARNING,
+                format!(
+                    "The check of {name} was interrupted by a newer change. Its diagnostics will \
+                     update when the newer check finishes.",
+                ),
+            ),
+        };
+        self.client.show_message(message_type, message).await;
+    }
+
+    // Run the script blocks of an open wiki, or only one, then apply the result as an edit of the
+    // snapshot which was run, which the editor rejects if the wiki changed since. The scripts run
+    // on a thread which may block, and failures are reported as notifications.
+    async fn run_scripts(&self, snapshot: Arc<Snapshot>, only: Option<(PageTitle, usize)>) {
+        // Run the scripts.
+        let baseline = baseline(&self.documents, &snapshot.uri);
+        let run_snapshot = Arc::clone(&snapshot);
+        let result = tokio::task::spawn_blocking(move || {
+            run_scripts_for_document(&run_snapshot, &baseline, only.as_ref())
+        })
+        .await
+        .unwrap_or_else(|error| {
+            Err(vec![Error::new(
+                &format!("Mull was unable to run the scripts: {error}."),
+                None,
+                None,
+                None,
+                None,
+            )])
+        });
+
+        // Apply the result, then report any failures.
+        let (contents, failures) = match result {
+            Ok(result) => result,
+            Err(errors) => {
+                self.report_script_errors(&errors).await;
+                return;
+            }
+        };
+        if contents != snapshot.contents {
+            let (source_range, new_text) = minimal_replacement(&snapshot.contents, &contents);
+            let edit = WorkspaceEdit {
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri: snapshot.uri.clone(),
+                        version: Some(snapshot.version),
+                    },
+                    edits: vec![OneOf::Left(TextEdit::new(
+                        snapshot.range(source_range),
+                        new_text.to_owned(),
+                    ))],
+                }])),
+                ..WorkspaceEdit::default()
+            };
+            if !self
+                .client
+                .apply_edit(edit)
+                .await
+                .is_ok_and(|response| response.applied)
+            {
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        "The wiki changed while its scripts ran, so their output wasn't applied. \
+                         Run them again.",
+                    )
+                    .await;
+            }
+        }
+        self.report_script_errors(&failures).await;
+    }
+
+    // Report errors from running scripts. A notification shows only the first paragraph of each
+    // message, since notifications don't keep line breaks, and points to the output, where the
+    // whole error is logged, if there's more to it, such as what the script printed as errors.
+    async fn report_script_errors(&self, errors: &[Error]) {
+        for error in errors {
+            self.client
+                .log_message(MessageType::ERROR, error.to_string())
+                .await;
+            let message = error.message();
+            let summary = message.split("\n\n").next().unwrap_or(message);
+            let notification = if summary.len() < message.len() || error.reason().is_some() {
+                format!("{summary} See the Mull output for details.")
+            } else {
+                summary.to_owned()
+            };
+            self.client
+                .show_message(MessageType::ERROR, notification)
+                .await;
+        }
+    }
+
     // Respond to a language feature request using the latest synchronized snapshot of an open
     // document. The response is computed on a thread which may block, so parsing a large wiki
     // doesn't stall the asynchronous executor.
@@ -448,6 +568,9 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
@@ -575,64 +698,48 @@ impl LanguageServer for Backend {
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
         // Reject commands this server doesn't provide.
-        if params.command != CHECK_WIKI_COMMAND {
+        let command = params.command.as_str();
+        if ![CHECK_WIKI_COMMAND, RUN_SCRIPT_COMMAND, RUN_SCRIPTS_COMMAND].contains(&command) {
             return Err(JsonRpcError::invalid_params(format!(
                 "Unknown command {}.",
-                params.command.code_str(),
+                command.code_str(),
             )));
         }
 
-        // Recheck the named wiki right away.
-        let Some(argument) = params.arguments.into_iter().next() else {
-            return Err(JsonRpcError::invalid_params(
-                "The command requires the URI of a document to check.",
-            ));
-        };
-        let uri = serde_json::from_value::<Uri>(argument).map_err(|error| {
-            JsonRpcError::invalid_params(format!("The argument must be a document URI: {error}."))
-        })?;
+        // Find the open wiki named by the first argument.
+        let mut arguments = params.arguments.into_iter();
+        let uri = command_argument::<Uri>(arguments.next(), "the URI of a document")?;
         let Some(snapshot) = self.snapshot(&uri) else {
             self.client
                 .show_message(
                     MessageType::WARNING,
                     format!(
-                        "Unable to check {}, since it isn't open.",
+                        "Unable to run {}, since {} isn't open.",
+                        command.code_str(),
                         uri.as_str().code_str(),
                     ),
                 )
                 .await;
             return Ok(None);
         };
-        let result = self.store_and_check_document(Arc::clone(&snapshot), Duration::ZERO);
 
-        // Report the result once it's published, or that a newer check superseded it, without
-        // claiming a result which isn't shown in the editor.
-        let name = snapshot
-            .path
-            .as_deref()
-            .and_then(Path::file_name)
-            .map_or_else(
-                || snapshot.uri.as_str().code_str(),
-                |name| name.to_string_lossy().code_str(),
-            );
-        let (message_type, message) = match result.await.map(|check| check.diagnostic_count) {
-            Ok(0) => (MessageType::INFO, format!("{name} looks good.")),
-            Ok(1) => (MessageType::INFO, format!("{name} has 1 problem.")),
-            Ok(count) => (MessageType::INFO, format!("{name} has {count} problems.")),
-            Err(_) => (
-                MessageType::WARNING,
-                format!(
-                    "The check of {name} was interrupted by a newer change. Its diagnostics will \
-                     update when the newer check finishes.",
-                ),
-            ),
-        };
-        self.client.show_message(message_type, message).await;
+        // Recheck the wiki, or run its script blocks: the one named by its page's title and its
+        // index among the page's script blocks, or all of them.
+        match command {
+            RUN_SCRIPT_COMMAND => {
+                let title = command_argument::<PageTitle>(arguments.next(), "a page's title")?;
+                let index = command_argument::<usize>(arguments.next(), "a script block's index")?;
+                self.run_scripts(snapshot, Some((title, index))).await;
+            }
+            RUN_SCRIPTS_COMMAND => self.run_scripts(snapshot, None).await,
+            _ => self.check_wiki(snapshot).await,
+        }
         Ok(None)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        // Complete links and embeds against the latest synchronized editor snapshot.
+        // Complete links, embeds, and script blocks against the latest synchronized editor
+        // snapshot.
         let position = params.text_document_position.position;
         self.respond(
             &params.text_document_position.text_document.uri,
@@ -762,6 +869,14 @@ impl LanguageServer for Backend {
         let diagnostics = params.context.diagnostics;
         self.respond(&params.text_document.uri, move |snapshot| {
             Ok(code_action_for_document(snapshot, &diagnostics))
+        })
+        .await
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        // Offer to run each script block in the latest synchronized editor snapshot.
+        self.respond(&params.text_document.uri, |snapshot| {
+            Ok(Some(code_lens_for_document(snapshot)))
         })
         .await
     }
@@ -989,15 +1104,87 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     }
 }
 
-// Complete an embed at an editor position, or the target of the link there with page titles or
-// filesystem paths.
+// Read an argument of a server command.
+fn command_argument<T: serde::de::DeserializeOwned>(
+    argument: Option<LSPAny>,
+    description: &str,
+) -> Result<T> {
+    let argument = argument.ok_or_else(|| {
+        JsonRpcError::invalid_params(format!("The command requires {description}."))
+    })?;
+    serde_json::from_value(argument).map_err(|error| {
+        JsonRpcError::invalid_params(format!("The command requires {description}: {error}."))
+    })
+}
+
+// Run the script blocks of a saved wiki, or only one, after formatting it with the changes to its
+// embedded pages propagated, as formatting does in the editor.
+fn run_scripts_for_document(
+    snapshot: &Snapshot,
+    baseline: &Baseline,
+    only: Option<&(PageTitle, usize)>,
+) -> std::result::Result<(String, Vec<Error>), Vec<Error>> {
+    let error = |message: &str| vec![Error::new(message, None, None, None, None)];
+    let wiki_path = snapshot
+        .path
+        .as_deref()
+        .ok_or_else(|| error("Save the wiki to run its scripts."))?;
+    let instances = snapshot
+        .instances()
+        .ok_or_else(|| error("Fix the wiki's syntax errors to run its scripts."))?;
+    let formatted_contents = propagation::format(
+        snapshot.wiki(),
+        Some(wiki_path),
+        &snapshot.contents,
+        snapshot.line_index(),
+        instances,
+        baseline,
+    )?;
+    scripts::run_formatted(
+        wiki_path,
+        &formatted_contents,
+        only.map(|(title, index)| (title, *index)),
+    )
+}
+
+// Find the smallest part of a text which, replaced, turns it into another text, so an edit leaves
+// the rest, and any cursor in it, alone. Return its source range and its replacement.
+fn minimal_replacement<'a>(old: &str, new: &'a str) -> (SourceRange, &'a str) {
+    let mut prefix_length = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
+        .count();
+    while !old.is_char_boundary(prefix_length) {
+        prefix_length -= 1;
+    }
+    let mut suffix_length = old[prefix_length..]
+        .bytes()
+        .rev()
+        .zip(new[prefix_length..].bytes().rev())
+        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
+        .count();
+    while !old.is_char_boundary(old.len() - suffix_length) {
+        suffix_length -= 1;
+    }
+    (
+        SourceRange {
+            start: prefix_length,
+            end: old.len() - suffix_length,
+        },
+        &new[prefix_length..new.len() - suffix_length],
+    )
+}
+
+// Complete an embed or a script block at an editor position, or the target of the link there with
+// page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
-    // Offer to embed a page after the colons which start a fence.
+    // Offer to embed a page or run a script after the colons which start a fence.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    if let Some(completion) = embed_completion(snapshot, cursor_offset) {
+    if let Some(items) = fence_completions(snapshot, cursor_offset) {
         return Some(CompletionList {
             is_incomplete: false,
-            items: vec![completion],
+            items,
         });
     }
 
@@ -1050,11 +1237,12 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     ))
 }
 
-// Offer to embed a page in place of the colons before the cursor, if they're the only text on their
-// line and the parser reports them as an unexpected closing fence, so they don't close an embed and
-// aren't in code. The embed is written on one line with the cursor in its link, where titles are
-// suggested next.
-fn embed_completion(snapshot: &Snapshot, cursor: usize) -> Option<CompletionItem> {
+// Offer to embed a page, or to run each script in a saved wiki, in place of the colons before the
+// cursor, if they're the only text on their line and the parser reports them as an unexpected
+// closing fence, so they don't close a block and aren't in code. An embed is written on one line
+// with the cursor in its link, where titles are suggested next, and a script block is written with
+// the cursor after the script's name, for its arguments, and an empty body.
+fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<CompletionItem>> {
     // Find the colons and the rest of their line.
     let contents = &snapshot.contents;
     let fence = ":".repeat(MIN_FENCE_LENGTH);
@@ -1078,17 +1266,19 @@ fn embed_completion(snapshot: &Snapshot, cursor: usize) -> Option<CompletionItem
         return None;
     }
 
-    // Write the embed as a snippet with a tab stop in its link.
-    Some(CompletionItem {
+    // Write the embed, then each script block, as a snippet, keeping the embed first.
+    let range = snapshot.range(SourceRange {
+        start: fence_start,
+        end: cursor,
+    });
+    let mut completions = vec![CompletionItem {
         label: "Embed a page".to_owned(),
         kind: Some(CompletionItemKind::SNIPPET),
+        sort_text: Some("0".to_owned()),
         filter_text: Some(fence.clone()),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-            snapshot.range(SourceRange {
-                start: fence_start,
-                end: cursor,
-            }),
+            range,
             format!("{fence} [$1] {fence}"),
         ))),
         command: Some(Command {
@@ -1097,7 +1287,30 @@ fn embed_completion(snapshot: &Snapshot, cursor: usize) -> Option<CompletionItem
             arguments: None,
         }),
         ..CompletionItem::default()
-    })
+    }];
+    let file_root = snapshot
+        .path
+        .as_deref()
+        .and_then(|wiki_path| FileRoot::new(wiki_path).ok());
+    for name in file_root
+        .map(|file_root| scripts::script_names(&file_root))
+        .unwrap_or_default()
+    {
+        completions.push(CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Run a script".to_owned()),
+            sort_text: Some(format!("1{name}")),
+            filter_text: Some(fence.clone()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                range,
+                format!("{fence} {name}$1\n$0\n{fence}"),
+            ))),
+            ..CompletionItem::default()
+        });
+    }
+    Some(completions)
 }
 
 // Complete the next component of a filesystem link's typed path, which ends at the cursor, from
@@ -2402,6 +2615,44 @@ fn reveal_range_arguments(
     ]
 }
 
+// Offer to run each script block outside other blocks, at the script's name, in source order.
+fn code_lens_for_document(snapshot: &Snapshot) -> Vec<CodeLens> {
+    let mut code_lenses = snapshot
+        .wiki()
+        .pages
+        .values()
+        .flat_map(|page| {
+            page.script_blocks
+                .iter()
+                .enumerate()
+                .map(move |(index, block)| (page, index, block))
+        })
+        .map(|(page, index, block)| {
+            (
+                block.name_source_range.start,
+                CodeLens {
+                    range: snapshot.range(block.name_source_range),
+                    command: Some(Command {
+                        title: "Run".to_owned(),
+                        command: RUN_SCRIPT_COMMAND.to_owned(),
+                        arguments: Some(vec![
+                            serde_json::json!(snapshot.uri.as_str()),
+                            serde_json::json!(page.title.text(Context::Verbatim)),
+                            serde_json::json!(index),
+                        ]),
+                    }),
+                    data: None,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    code_lenses.sort_by_key(|(start, _code_lens)| *start);
+    code_lenses
+        .into_iter()
+        .map(|(_start, code_lens)| code_lens)
+        .collect()
+}
+
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
 // directory is revealed in the explorer.
 fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> {
@@ -2782,15 +3033,18 @@ fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::run_scripts_for_document;
     use super::{
         AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
         MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
         RevealType, Snapshot, attach_files_for_document, code_action_for_document,
-        code_block_language, completion_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
-        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        code_block_language, code_lens_for_document, completion_for_document,
+        diagnostic_from_error, diagnostics_for_document, document_highlight_for_document,
+        document_link_for_document, document_symbol_for_document, formatting_for_document,
+        goto_definition_for_document, hover_for_document, image_preview_size, is_subsequence,
+        minimal_replacement, prepare_rename_for_document, references_for_document,
+        rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -3006,6 +3260,70 @@ mod tests {
         );
     }
 
+    // Replace only the part of a text which differs from another, keeping whole characters.
+    #[test]
+    fn minimal_replacements() {
+        fn replace<'a>(old: &'a str, new: &str) -> (&'a str, String) {
+            let (source_range, new_text) = minimal_replacement(old, new);
+            (
+                &old[source_range.start..source_range.end],
+                new_text.to_owned(),
+            )
+        }
+
+        assert_eq!(replace("abcdef", "abXYef"), ("cd", "XY".to_owned()));
+        assert_eq!(replace("same", "same"), ("", String::new()));
+        assert_eq!(replace("aé", "aè"), ("é", "è".to_owned()));
+        assert_eq!(replace("abc", "abcd"), ("", "d".to_owned()));
+    }
+
+    // Run a wiki's script blocks after formatting it with the changes to its embedded pages
+    // propagated, or only the one named by its page's title and its index among the page's
+    // blocks, and ask for an unsaved wiki to be saved first.
+    #[cfg(unix)]
+    #[test]
+    fn running_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = concat!(
+            "# Home\n\n[/scripts/]\n\n::: sort\n- b\n- a\n:::\n\n",
+            ":::: [Other]\n::: sort\n- d\n- c\n- e\n:::\n::::\n\n",
+            "# Other\n\n::: sort\n- d\n- c\n:::\n",
+        );
+        let wiki = TestWiki::new(source);
+        let script = wiki.directory().join("scripts").join("sort.sh");
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        fs::write(&script, "#!/bin/sh\nsort\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let snapshot = snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source);
+        let baseline = Baseline::from([(
+            PageTitle::parse("Other").unwrap(),
+            Arc::from("::: sort\n- d\n- c\n:::"),
+        )]);
+
+        let (contents, failures) = run_scripts_for_document(&snapshot, &baseline, None).unwrap();
+        assert!(failures.is_empty());
+        assert_eq!(
+            contents,
+            concat!(
+                "# Home\n\n[/scripts/]\n\n::: sort\n- a\n- b\n:::\n\n",
+                ":::: [Other]\n::: sort\n- c\n- d\n- e\n:::\n::::\n\n",
+                "# Other\n\n::: sort\n- c\n- d\n- e\n:::\n",
+            ),
+        );
+        let only = (PageTitle::parse("Other").unwrap(), 0);
+        let (contents, _failures) =
+            run_scripts_for_document(&snapshot, &baseline, Some(&only)).unwrap();
+        assert!(contents.starts_with("# Home\n\n[/scripts/]\n\n::: sort\n- b\n- a\n:::\n"));
+        assert!(contents.ends_with("# Other\n\n::: sort\n- c\n- d\n- e\n:::\n"));
+        assert!(
+            run_scripts_for_document(&self::snapshot(&untitled_uri(), source), &baseline, None)
+                .unwrap_err()[0]
+                .to_string()
+                .contains("Save the wiki to run its scripts."),
+        );
+    }
+
     // Summarize each completion by its label, replacement range, and inserted text.
     fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
         completions
@@ -3063,6 +3381,40 @@ mod tests {
             .map(|completion| completion.label.as_str())
             .collect::<Vec<_>>(),
             vec!["Home", "Other"],
+        );
+    }
+
+    // Offer to run each script in a saved wiki after the colons which start a fence, writing a
+    // script block with the cursor after the script's name and an empty body, after the embed.
+    #[test]
+    fn completions_offer_scripts() {
+        let source = "# Home\n\n:::";
+        let wiki = TestWiki::new(source);
+        let scripts = wiki.directory().join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("tidy.py"), "").unwrap();
+        fs::write(scripts.join("sort.sh"), "").unwrap();
+        fs::write(scripts.join("sort.py"), "").unwrap();
+        let completions = completion_for_document(
+            &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+            Position::new(2, 3),
+        )
+        .unwrap()
+        .items;
+
+        let fence = Range::new(Position::new(2, 0), Position::new(2, 3));
+        assert_eq!(
+            completion_edits(&completions),
+            vec![
+                ("Embed a page", fence, "::: [$1] :::"),
+                ("sort", fence, "::: sort$1\n$0\n:::"),
+                ("tidy", fence, "::: tidy$1\n$0\n:::"),
+            ],
+        );
+        assert!(
+            completions
+                .iter()
+                .all(|completion| completion.sort_text.is_some()),
         );
     }
 
@@ -5410,6 +5762,45 @@ mod tests {
         assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
         assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
         assert!(code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics).is_none());
+    }
+
+    // Offer to run each script block outside other blocks, at the script's name, in source order,
+    // with its page's title and its index among the page's script blocks.
+    #[test]
+    fn code_lenses_run_script_blocks() {
+        let source =
+            "# Other\n::: tidy\n:::\n# Home\n::: sort -f :::\n::: tidy\n::: [Other]\n:::\n:::";
+        let code_lenses = code_lens_for_document(&snapshot(&untitled_uri(), source));
+
+        assert_eq!(
+            code_lenses
+                .iter()
+                .map(|code_lens| {
+                    let command = code_lens.command.as_ref().unwrap();
+                    (
+                        code_lens.range,
+                        command.title.as_str(),
+                        command.command.as_str(),
+                        command.arguments.clone().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [(1, "Other", 0_usize), (4, "Home", 0), (5, "Home", 1)]
+                .into_iter()
+                .map(|(line, title, index)| {
+                    (
+                        Range::new(Position::new(line, 4), Position::new(line, 8)),
+                        "Run",
+                        "mull.runScript",
+                        vec![
+                            serde_json::json!(untitled_uri().as_str()),
+                            serde_json::json!(title),
+                            serde_json::json!(index),
+                        ],
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
     }
 
     // Keep filesystem links clickable in a wiki with syntax errors.

@@ -7,7 +7,7 @@ use crate::{
     line_index::LineIndex,
     parser,
     spelled_path::{FileRoot, code_file_path},
-    wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
+    wiki::{Link, MIN_FENCE_LENGTH, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki},
 };
 use std::{
     collections::HashMap,
@@ -32,7 +32,6 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 // for each script block which failed, which is left as it was. The errors locate the blocks in the
 // formatted wiki.
 pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error>), Vec<Error>> {
-    // Format the wiki, so each block's body is already in its canonical form.
     let formatted_contents = analyze(
         Some(wiki_path),
         source_contents,
@@ -40,8 +39,19 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
     )
     .assume_completed()?
     .to_string();
-    let line_index = LineIndex::new(&formatted_contents);
-    let (wiki, errors) = parser::parse(Some(wiki_path), &formatted_contents, &line_index);
+    run_formatted(wiki_path, &formatted_contents, None)
+}
+
+// Run the script blocks outside other blocks in a formatted wiki, as `run` does: all of them, or
+// only the one at an index among a page's script blocks.
+pub fn run_formatted(
+    wiki_path: &Path,
+    formatted_contents: &str,
+    only: Option<(&PageTitle, usize)>,
+) -> Result<(String, Vec<Error>), Vec<Error>> {
+    // Read the wiki, whose blocks' bodies are already in their canonical form.
+    let line_index = LineIndex::new(formatted_contents);
+    let (wiki, errors) = parser::parse(Some(wiki_path), formatted_contents, &line_index);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -54,9 +64,12 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
     let mut replacements = Vec::new();
     let mut failures = Vec::new();
     for page in pages {
-        for block in &page.script_blocks {
+        for (index, block) in page.script_blocks.iter().enumerate() {
+            if only.is_some_and(|(title, only_index)| *title != page.title || only_index != index) {
+                continue;
+            }
             match run_block(
-                &formatted_contents,
+                formatted_contents,
                 &wiki,
                 page,
                 block,
@@ -67,7 +80,7 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
                 Err((message, reason)) => failures.push(Error::new(
                     &message,
                     Some(wiki_path),
-                    Some((&formatted_contents, &line_index, block.name_source_range)),
+                    Some((formatted_contents, &line_index, block.name_source_range)),
                     reason,
                     None,
                 )),
@@ -76,7 +89,7 @@ pub fn run(wiki_path: &Path, source_contents: &str) -> Result<(String, Vec<Error
     }
 
     // Replace the blocks, from the end so earlier offsets stay valid, and format the result.
-    let mut run_contents = formatted_contents.clone();
+    let mut run_contents = formatted_contents.to_owned();
     for (source_range, replacement) in replacements.into_iter().rev() {
         run_contents.replace_range(source_range.start..source_range.end, &replacement);
     }
@@ -216,6 +229,21 @@ pub fn script_path(file_root: &FileRoot, name: &str) -> Result<PathBuf, String> 
                 .join(", "),
         )),
     }
+}
+
+// List the names of the scripts in the file root's scripts directory, without duplicates.
+pub fn script_names(file_root: &FileRoot) -> Vec<String> {
+    let mut names = fs::read_dir(file_root.path().join(SCRIPTS_DIRECTORY))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
 }
 
 // Format a script's path as a link to it would be written.
