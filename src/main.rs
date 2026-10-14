@@ -80,15 +80,35 @@ struct WikiArgs {
     path: Option<PathBuf>,
 }
 
-// These are the arguments for checking and formatting a wiki, which runs its scripts unless asked
-// not to.
+// These are the arguments for checking and formatting a wiki, which runs the scripts whose blocks
+// have changed unless asked to run none or all of them.
 #[derive(Args, Default)]
 struct FormatArgs {
     #[arg(long, help = "Don't run the wiki's scripts")]
     no_scripts: bool,
 
+    #[arg(
+        long,
+        conflicts_with = "no_scripts",
+        help = "Run all the wiki's scripts, even those whose blocks haven't changed"
+    )]
+    rerun_scripts: bool,
+
     #[command(flatten)]
     wiki_args: WikiArgs,
+}
+
+impl FormatArgs {
+    // Determine which scripts to run.
+    fn scripts(&self) -> Scripts {
+        if self.no_scripts {
+            Scripts::Skip
+        } else if self.rerun_scripts {
+            Scripts::Rerun
+        } else {
+            Scripts::Run
+        }
+    }
 }
 
 // These are the arguments for printing a page.
@@ -102,11 +122,20 @@ struct PageArgs {
 }
 
 // These are the operations which act on a wiki once it's loaded. Checking and formatting note
-// whether to run the wiki's scripts.
+// which of the wiki's scripts to run.
 enum Operation {
-    Check(bool),
-    Format(bool),
+    Check(Scripts),
+    Format(Scripts),
     Page(String),
+}
+
+// These are the ways to treat a wiki's scripts: running none, running those whose blocks have
+// changed, or running all of them.
+#[derive(Clone, Copy)]
+enum Scripts {
+    Skip,
+    Run,
+    Rerun,
 }
 
 // Let the fun begin!
@@ -133,14 +162,14 @@ async fn entry() -> Result<(), Vec<Error>> {
         .command
         .unwrap_or(Subcommand::Format(FormatArgs::default()))
     {
-        Subcommand::Check(FormatArgs {
-            no_scripts,
-            wiki_args,
-        }) => (Operation::Check(!no_scripts), wiki_args),
-        Subcommand::Format(FormatArgs {
-            no_scripts,
-            wiki_args,
-        }) => (Operation::Format(!no_scripts), wiki_args),
+        Subcommand::Check(format_args) => (
+            Operation::Check(format_args.scripts()),
+            format_args.wiki_args,
+        ),
+        Subcommand::Format(format_args) => (
+            Operation::Format(format_args.scripts()),
+            format_args.wiki_args,
+        ),
         Subcommand::Page(PageArgs { title, wiki_args }) => (Operation::Page(title), wiki_args),
         Subcommand::LanguageServer => {
             language_server::run().await;
@@ -187,19 +216,17 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
-    // Print a page, or note whether to run the scripts while checking or formatting.
-    let (run_scripts, should_format) = match operation {
+    // Print a page, or note which scripts to run while checking or formatting.
+    let (scripts_to_run, should_format) = match operation {
         Operation::Page(title) => return print_page(&wiki_path, &wiki_contents, &title),
-        Operation::Check(run_scripts) => (run_scripts, false),
-        Operation::Format(run_scripts) => (run_scripts, true),
+        Operation::Check(scripts_to_run) => (scripts_to_run, false),
+        Operation::Format(scripts_to_run) => (scripts_to_run, true),
     };
 
-    // Analyze and render the wiki, running its scripts if asked and noting any which failed. The
+    // Analyze and render the wiki, running its scripts as asked and noting any which failed. The
     // command line has nothing to cancel, so the analysis always runs to completion.
-    let (rendered_wiki, mut errors) = if run_scripts {
-        scripts::run(&wiki_path, &wiki_contents)?
-    } else {
-        (
+    let (rendered_wiki, mut errors) = match scripts_to_run {
+        Scripts::Skip => (
             analyze(
                 Some(&wiki_path),
                 &wiki_contents,
@@ -208,7 +235,9 @@ async fn entry() -> Result<(), Vec<Error>> {
             .assume_completed()?
             .to_string(),
             Vec::new(),
-        )
+        ),
+        Scripts::Run => scripts::run(&wiki_path, &wiki_contents, false)?,
+        Scripts::Rerun => scripts::run(&wiki_path, &wiki_contents, true)?,
     };
 
     // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff,
@@ -413,7 +442,7 @@ mod tests {
     }
 
     // Accept an explicit wiki path, and a request not to run scripts, after the subcommands that
-    // check or format the wiki.
+    // check or format the wiki, but not a request both to run none and to run all of them.
     #[test]
     fn parse_format_args() {
         for subcommand in ["check", "format"] {
@@ -421,10 +450,12 @@ mod tests {
                 Subcommand::Check(FormatArgs {
                     no_scripts,
                     wiki_args: WikiArgs { path },
+                    ..
                 })
                 | Subcommand::Format(FormatArgs {
                     no_scripts,
                     wiki_args: WikiArgs { path },
+                    ..
                 }),
             ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull", "--no-scripts"])
                 .unwrap()
@@ -434,6 +465,10 @@ mod tests {
             };
             assert_eq!(path, Some(PathBuf::from("notes.mull")));
             assert!(no_scripts);
+            assert!(
+                Cli::try_parse_from(["mull", subcommand, "--no-scripts", "--rerun-scripts"])
+                    .is_err(),
+            );
         }
     }
 }
