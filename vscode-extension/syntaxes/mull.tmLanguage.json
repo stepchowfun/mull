@@ -544,10 +544,56 @@
       "patterns": [
         {
           "name": "meta.embed.mull",
-          "begin": "^[ \\t]*(:{3,})(?=[ \\t]+[^ \\t])",
+          "match": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]+(:{3,})[ \\t]*$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.embed.begin.mull"
+            },
+            "2": {
+              "name": "punctuation.definition.embed.begin.mull",
+              "patterns": [
+                {
+                  "include": "#code"
+                },
+                {
+                  "include": "#escapes"
+                },
+                {
+                  "include": "#closed-links"
+                },
+                {
+                  "include": "#unclosed-links"
+                }
+              ]
+            },
+            "3": {
+              "name": "punctuation.definition.embed.end.mull"
+            }
+          }
+        },
+        {
+          "name": "meta.embed.mull",
+          "begin": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]*$",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.embed.begin.mull"
+            },
+            "2": {
+              "name": "punctuation.definition.embed.begin.mull",
+              "patterns": [
+                {
+                  "include": "#code"
+                },
+                {
+                  "include": "#escapes"
+                },
+                {
+                  "include": "#closed-links"
+                },
+                {
+                  "include": "#unclosed-links"
+                }
+              ]
             }
           },
           "end": "^[ \\t]*(\\1)[ \\t]*$|^(?=# )",
