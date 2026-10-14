@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0] - 2026-10-14
+
+### Added
+
+- After running a script, Mull adds a hash after the closing fence of its block, like `::: #3f9a0c2b`. The hash covers the script, its arguments, and the contents of the block, and formatting skips a block whose hash still matches, so a wiki with many scripts formats quickly. `mull format --rerun-scripts` and `mull check --rerun-scripts` run every script anyway.
+
 ## [0.59.1] - 2026-10-14
 
 ### Changed
