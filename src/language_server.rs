@@ -2615,7 +2615,9 @@ fn reveal_range_arguments(
     ]
 }
 
-// Offer to run each script block outside other blocks, at the script's name, in source order.
+// Offer to run each script block outside other blocks, at the script's name, in source order. The
+// title starts with a triangle, followed by a selector which asks for it to be drawn as text
+// rather than as an emoji.
 fn code_lens_for_document(snapshot: &Snapshot) -> Vec<CodeLens> {
     let mut code_lenses = snapshot
         .wiki()
@@ -2633,7 +2635,7 @@ fn code_lens_for_document(snapshot: &Snapshot) -> Vec<CodeLens> {
                 CodeLens {
                     range: snapshot.range(block.name_source_range),
                     command: Some(Command {
-                        title: "Run".to_owned(),
+                        title: "\u{25b6}\u{fe0e} Run".to_owned(),
                         command: RUN_SCRIPT_COMMAND.to_owned(),
                         arguments: Some(vec![
                             serde_json::json!(snapshot.uri.as_str()),
@@ -5790,7 +5792,7 @@ mod tests {
                 .map(|(line, title, index)| {
                     (
                         Range::new(Position::new(line, 4), Position::new(line, 8)),
-                        "Run",
+                        "\u{25b6}\u{fe0e} Run",
                         "mull.runScript",
                         vec![
                             serde_json::json!(untitled_uri().as_str()),
