@@ -83,20 +83,22 @@ Mull keeps the copies synchronized. You can directly edit any of the copies, and
 Suppose you have a list that you want to keep sorted.
 
 ```md
-- Apple
-- Banana
-- Lemon
-- Orange
+- Garlic
+- Kosher salt
+- Miso
+- Olive oil
+- Rice
 ```
 
 With a script, you can define a `sort` command and use it as follows:
 
 ```md
 ::: sort
-- Apple
-- Banana
-- Lemon
-- Orange
+- Garlic
+- Kosher salt
+- Miso
+- Olive oil
+- Rice
 :::
 ```
 
@@ -111,14 +113,17 @@ This script is defined to accept arguments, so for example you can sort in rever
 
 ```md
 ::: sort -r
-- Apple
-- Banana
-- Lemon
-- Orange
+- Rice
+- Olive oil
+- Miso
+- Kosher salt
+- Garlic
 :::
 ```
 
 Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
+
+![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
 
 Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. A script that no block uses still needs a link (e.g., `[/scripts/sort.sh]`).
 
