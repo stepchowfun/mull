@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0] - 2026-10-14
+
+### Added
+
+- A block can now be computed by a script. Put the script in `<wiki>_files/scripts`, make it executable, and name it at the start of a block, like `::: sort --ignore-case`. `mull run` runs each script with its block's body on standard input, and replaces the body with what the script prints. Arguments after the name are passed to the script, with links to pages passed as their titles, links to files as their full paths, and code as written. A script that fails, isn't executable, prints something that isn't valid Mull, or runs longer than 30 seconds is reported, and its block is left as it was.
+- `mull page Title` prints the content of a page, for scripts to read.
+- When no wiki path is given, every subcommand uses the wiki in `MULL_WIKI`, which is set for scripts, before looking for one.
+
+### Changed
+
+- An opening fence whose argument doesn't start with a link, like `::: Other`, is now a script block rather than a malformed embed. The "Unclosed embed." error is now "Unclosed block.", since it applies to script blocks too.
+
 ## [0.54.0] - 2026-10-13
 
 ### Changed

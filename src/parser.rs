@@ -6,7 +6,7 @@ use crate::{
     scoring::populate_traversal_order,
     wiki::{
         Embed, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
-        TITLE_PREFIX, Wiki,
+        ScriptBlock, TITLE_PREFIX, Wiki,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -15,22 +15,31 @@ use std::{collections::HashSet, path::Path};
 const MIN_MULTILINE_CODE_LENGTH: usize = 3;
 
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
-// a valid one which hasn't been used, where it starts, and the links and embeds in its content.
+// a valid one which hasn't been used, where it starts, and the links, embeds, and script blocks in
+// its content.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
     links: Vec<Link>,
     embeds: Vec<Embed>,
+    script_blocks: Vec<ScriptBlock>,
 }
 
-// This struct tracks an embed which has been opened but not yet closed. Its title is known once the
-// link in its opening fence has been read, if that link names a page.
-struct OpenEmbed {
+// This struct tracks a block which has been opened but not yet closed.
+struct OpenBlock {
     fence_length: usize,
-    start: usize,                           // The offset of its opening fence's colons
-    argument_source_range: SourceRange,     // The trimmed text after the colons
-    link: Option<(PageTitle, SourceRange)>, // The page named in the opening fence
-    one_line_end: Option<usize>,            // The end of the line of an embed written on one line
+    start: usize,                       // The offset of its opening fence's colons
+    argument_source_range: SourceRange, // The trimmed text after the colons
+    kind: OpenBlockKind,
+    one_line_end: Option<usize>, // The end of the line of a block written on one line
+}
+
+// These are the kinds of blocks. An embed's page is known once the link in its opening fence has
+// been read, if that link names a page. A script block's name is known if it's valid, along with
+// where it and the arguments after it are.
+enum OpenBlockKind {
+    Embed(Option<(PageTitle, SourceRange)>),
+    Script(Option<(String, SourceRange, SourceRange)>),
 }
 
 // This struct tracks a link which has been opened but not yet closed.
@@ -46,13 +55,14 @@ struct OpenLink {
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
 // plain characters in it. Outside code and title lines, a backslash escapes the next character, as
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
-// run of colons, after any indentation, is a fence: an opening fence embeds the page named by the
-// link after it, while a closing fence consists of colons alone and closes the innermost open embed
-// with a fence of the same length. An embed can also be written on one line, closed by a run of
-// colons after its link, for formatting to fill in. The wiki retains as much of the source as
-// possible so it can still be validated and navigated, but it omits the content of duplicate pages,
-// invalid titles, and anything before the first title, so it mustn't be rendered if there are any
-// syntax errors. The line index locates syntax errors in their source listings.
+// run of colons, after any indentation, is a fence. An opening fence starts a block: it embeds the
+// page named by the link after it, or names the script which computes the block's body, followed by
+// the script's arguments. A closing fence consists of colons alone and closes the innermost open
+// block with a fence of the same length. A block can also be written on one line, closed by a run
+// of colons after its argument, for formatting or its script to fill in. The wiki retains as much
+// of the source as possible so it can still be validated and navigated, but it omits the content of
+// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
+// if there are any syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
@@ -72,10 +82,11 @@ pub fn parse(
         source_start: 0,
         links: Vec::new(),
         embeds: Vec::new(),
+        script_blocks: Vec::new(),
     };
     let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
-    let mut open_embeds = Vec::<OpenEmbed>::new();
+    let mut open_blocks = Vec::<OpenBlock>::new();
     let mut opening_fence_links_before = None::<usize>; // Links before the fence whose line is read
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
@@ -113,14 +124,14 @@ pub fn parse(
             ));
         };
 
-    // Once an opening fence's line has been read, find the page named by the link which makes up
+    // Once an embed's opening fence has been read, find the page named by the link which makes up
     // its argument, which must be the only link read since the fence started.
-    let read_opening_fence = |open_embed: &mut OpenEmbed,
+    let read_opening_fence = |open_block: &mut OpenBlock,
                               links: &[Link],
                               links_before: usize,
                               errors: &mut Vec<Error>| {
         let new_links = &links[links_before..];
-        let argument_source_range = open_embed.argument_source_range;
+        let argument_source_range = open_block.argument_source_range;
         match new_links {
             [
                 Link::Text {
@@ -128,7 +139,7 @@ pub fn parse(
                     source_range,
                 },
             ] if *source_range == argument_source_range => {
-                open_embed.link = Some((title.clone(), *source_range));
+                open_block.kind = OpenBlockKind::Embed(Some((title.clone(), *source_range)));
             }
             [Link::Malformed { .. }] => {}
             [Link::Filesystem { source_range, .. }] if *source_range == argument_source_range => {
@@ -145,7 +156,7 @@ pub fn parse(
                 ),
                 if argument_source_range.start == argument_source_range.end {
                     SourceRange {
-                        start: open_embed.start,
+                        start: open_block.start,
                         end: argument_source_range.end,
                     }
                 } else {
@@ -156,60 +167,76 @@ pub fn parse(
         }
     };
 
-    // Report each embed which is still open at the end of its page at its opening fence.
-    let report_unclosed_embeds = |open_embeds: &mut Vec<OpenEmbed>, errors: &mut Vec<Error>| {
-        for open_embed in open_embeds.drain(..) {
+    // Report each block which is still open at the end of its page at its opening fence.
+    let report_unclosed_blocks = |open_blocks: &mut Vec<OpenBlock>, errors: &mut Vec<Error>| {
+        for open_block in open_blocks.drain(..) {
             errors.push(syntax_error(
-                "Unclosed embed.",
+                "Unclosed block.",
                 SourceRange {
-                    start: open_embed.start,
-                    end: open_embed.start + open_embed.fence_length,
+                    start: open_block.start,
+                    end: open_block.start + open_block.fence_length,
                 },
                 None,
             ));
         }
     };
 
-    // Close the embed at an index among those open, reporting any open within it, and keep it if
-    // it isn't within another and names a page.
-    let close_embed = |open_embeds: &mut Vec<OpenEmbed>,
+    // Close the block at an index among those open, reporting any open within it, and keep it if
+    // it isn't within another and is either an embed which names a page or a script block with a
+    // valid name.
+    let close_block = |open_blocks: &mut Vec<OpenBlock>,
                        index: usize,
                        end: usize,
-                       embeds: &mut Vec<Embed>,
+                       pending_page: &mut PendingPage,
                        errors: &mut Vec<Error>| {
-        let mut inner_embeds = open_embeds.split_off(index);
-        let open_embed = inner_embeds.remove(0);
-        report_unclosed_embeds(&mut inner_embeds, errors);
-        if let Some((title, link_source_range)) = open_embed.link
-            && index == 0
-        {
-            embeds.push(Embed {
-                title,
-                source_range: SourceRange {
-                    start: open_embed.start,
-                    end,
-                },
-                link_source_range,
-            });
+        let mut inner_blocks = open_blocks.split_off(index);
+        let open_block = inner_blocks.remove(0);
+        report_unclosed_blocks(&mut inner_blocks, errors);
+        if index > 0 {
+            return;
+        }
+        let source_range = SourceRange {
+            start: open_block.start,
+            end,
+        };
+        match open_block.kind {
+            OpenBlockKind::Embed(Some((title, link_source_range))) => {
+                pending_page.embeds.push(Embed {
+                    title,
+                    source_range,
+                    link_source_range,
+                });
+            }
+            OpenBlockKind::Script(Some((name, name_source_range, arguments_source_range))) => {
+                pending_page.script_blocks.push(ScriptBlock {
+                    name,
+                    source_range,
+                    name_source_range,
+                    arguments_source_range,
+                });
+            }
+            OpenBlockKind::Embed(None) | OpenBlockKind::Script(None) => {}
         }
     };
 
-    // Once an opening fence's line has been read, find the page it names, and close the embed if
-    // it's written on one line.
-    let finish_opening_fence = |open_embeds: &mut Vec<OpenEmbed>,
+    // Once an opening fence's line has been read, find the page an embed names, and close the
+    // block if it's written on one line.
+    let finish_opening_fence = |open_blocks: &mut Vec<OpenBlock>,
                                 pending_page: &mut PendingPage,
                                 links_before: usize,
                                 errors: &mut Vec<Error>| {
-        let Some(open_embed) = open_embeds.last_mut() else {
+        let Some(open_block) = open_blocks.last_mut() else {
             return;
         };
-        read_opening_fence(open_embed, &pending_page.links, links_before, errors);
-        if let Some(end) = open_embed.one_line_end {
-            close_embed(
-                open_embeds,
-                open_embeds.len() - 1,
+        if matches!(open_block.kind, OpenBlockKind::Embed(_)) {
+            read_opening_fence(open_block, &pending_page.links, links_before, errors);
+        }
+        if let Some(end) = open_block.one_line_end {
+            close_block(
+                open_blocks,
+                open_blocks.len() - 1,
                 end,
-                &mut pending_page.embeds,
+                pending_page,
                 errors,
             );
         }
@@ -233,7 +260,7 @@ pub fn parse(
                 // Finish the preceding region, then start one which belongs to a page if its
                 // title is valid and hasn't been used. Content after a title line is in a region.
                 can_report_content_before_title = false;
-                report_unclosed_embeds(&mut open_embeds, &mut errors);
+                report_unclosed_blocks(&mut open_blocks, &mut errors);
                 finish_page(&mut wiki, pending_page, position, source_contents);
                 let title = match parse_title(
                     raw_title,
@@ -261,15 +288,16 @@ pub fn parse(
                     source_start: position,
                     links: Vec::new(),
                     embeds: Vec::new(),
+                    script_blocks: Vec::new(),
                 };
                 position = line_end;
                 continue;
             }
 
-            // Read a fence line within a page. An opening fence starts an embed, whose link is read
-            // as usual from where its argument starts, and which ends with the line if it's
-            // written on one line. A closing fence ends the innermost open embed with a fence of
-            // the same length, and any open within it.
+            // Read a fence line within a page. An opening fence starts a block, either an embed
+            // or a script block, whose argument is read as usual from where it starts, and which
+            // ends with the line if it's written on one line. A closing fence ends the innermost
+            // open block with a fence of the same length, and any open within it.
             if !can_report_content_before_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
@@ -278,29 +306,69 @@ pub fn parse(
                         argument: (argument_start, argument_end),
                         is_one_line,
                     } => {
-                        open_embeds.push(OpenEmbed {
+                        // An argument which starts with a link is an embed's. Otherwise, it's a
+                        // script block's: the script's name, which must be valid, and then its
+                        // arguments.
+                        let argument = &line[argument_start..argument_end];
+                        let kind = if argument.starts_with('[') {
+                            OpenBlockKind::Embed(None)
+                        } else {
+                            let name_end =
+                                argument.find(char::is_whitespace).unwrap_or(argument.len());
+                            let name = &argument[..name_end];
+                            let name_source_range = SourceRange {
+                                start: position + argument_start,
+                                end: position + argument_start + name_end,
+                            };
+                            if is_script_name(name) {
+                                let script_arguments_start = argument_start + argument.len()
+                                    - argument[name_end..].trim_start().len();
+                                OpenBlockKind::Script(Some((
+                                    name.to_owned(),
+                                    name_source_range,
+                                    SourceRange {
+                                        start: position + script_arguments_start,
+                                        end: position + argument_end,
+                                    },
+                                )))
+                            } else {
+                                errors.push(syntax_error(
+                                    &format!(
+                                        "A script's name can only contain letters, digits, {}, \
+                                         {}, and {}.",
+                                        "-".code_str(),
+                                        "_".code_str(),
+                                        ".".code_str(),
+                                    ),
+                                    name_source_range,
+                                    None,
+                                ));
+                                OpenBlockKind::Script(None)
+                            }
+                        };
+                        open_blocks.push(OpenBlock {
                             fence_length: length,
                             start: position + indentation,
                             argument_source_range: SourceRange {
                                 start: position + argument_start,
                                 end: position + argument_end,
                             },
-                            link: None,
+                            kind,
                             one_line_end: is_one_line.then_some(position + line.trim_end().len()),
                         });
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
                     }
                     FenceLine::Closing { length } => {
-                        if let Some(index) = open_embeds
+                        if let Some(index) = open_blocks
                             .iter()
-                            .rposition(|open_embed| open_embed.fence_length == length)
+                            .rposition(|open_block| open_block.fence_length == length)
                         {
-                            close_embed(
-                                &mut open_embeds,
+                            close_block(
+                                &mut open_blocks,
                                 index,
                                 line_source_range.end,
-                                &mut pending_page.embeds,
+                                &mut pending_page,
                                 &mut errors,
                             );
                         } else {
@@ -372,7 +440,7 @@ pub fn parse(
                 }
                 if let Some(links_before) = opening_fence_links_before.take() {
                     finish_opening_fence(
-                        &mut open_embeds,
+                        &mut open_blocks,
                         &mut pending_page,
                         links_before,
                         &mut errors,
@@ -492,13 +560,13 @@ pub fn parse(
     }
     if let Some(links_before) = opening_fence_links_before {
         finish_opening_fence(
-            &mut open_embeds,
+            &mut open_blocks,
             &mut pending_page,
             links_before,
             &mut errors,
         );
     }
-    report_unclosed_embeds(&mut open_embeds, &mut errors);
+    report_unclosed_blocks(&mut open_blocks, &mut errors);
     finish_page(
         &mut wiki,
         pending_page,
@@ -519,6 +587,15 @@ fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
 
+// Determine whether a script's name is valid: letters, digits, `-`, `_`, and `.`, which need no
+// escaping and can't be confused with the arguments after them.
+fn is_script_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_alphanumeric() || "-_.".contains(character))
+}
+
 // Add a completed region as a page if it has a valid title which hasn't already been used, with
 // the links in its content.
 fn finish_page(
@@ -532,6 +609,7 @@ fn finish_page(
         source_start,
         links,
         embeds,
+        script_blocks,
     } = pending_page;
     if let Some((title, title_source_range)) = title {
         wiki.pages.insert(
@@ -540,6 +618,7 @@ fn finish_page(
                 title,
                 links,
                 embeds,
+                script_blocks,
                 traversal_index: None,
                 source_range: trim_source_range(
                     source_contents,
@@ -1634,20 +1713,16 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert!(wiki.page("Home").links.is_empty());
     }
 
-    // Reject an embed which doesn't name a page with a single link in its opening fence, including
-    // one written with the former `embed` verb, but still match its closing fence.
+    // Reject an embed which doesn't name a page with a single link in its opening fence, but still
+    // match its closing fence.
     #[test]
     fn invalid_embed_links() {
         assert_fails!(
-            parse_test("# Home\n::: Other\n:::"),
-            "An embed names the page to embed with a link, like `::: [Page]`.",
-        );
-        assert_fails!(
-            parse_test("# Home\n::: embed [Other]\n:::\n# Other"),
+            parse_test("# Home\n::: [Other] more\n:::\n# Other"),
             "An embed names the page to embed with a link, like `::: [Page]`.",
         );
         assert_eq!(
-            parse_test("# Home\n::: embed [Other]\n:::\n# Other")
+            parse_test("# Home\n::: [Other] more\n:::\n# Other")
                 .unwrap_err()
                 .len(),
             1,
@@ -1662,7 +1737,68 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Reject closing fences which don't close an embed, and embeds which aren't closed by the end
+    // Read a script block from its opening fence through its closing fence, with its name and the
+    // arguments after it, whose links are among the page's links. Blocks within it aren't kept,
+    // since they're part of its body. A script block can also be written on one line.
+    #[test]
+    fn script_blocks() {
+        let source = concat!(
+            "# Home\n",
+            "  ::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  :::\n",
+            "::: back-links_2.0 :::\n",
+            "# Other",
+        );
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.script_blocks
+                .iter()
+                .map(|block| {
+                    (
+                        block.name.as_str(),
+                        &source[block.source_range.start..block.source_range.end],
+                        &source[block.name_source_range.start..block.name_source_range.end],
+                        &source
+                            [block.arguments_source_range.start..block.arguments_source_range.end],
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "sort",
+                    "::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  :::",
+                    "sort",
+                    "-f [Other] `x`",
+                ),
+                (
+                    "back-links_2.0",
+                    "::: back-links_2.0 :::",
+                    "back-links_2.0",
+                    "",
+                ),
+            ],
+        );
+        assert!(home.embeds.is_empty());
+        assert_eq!(link_targets(&home.links), vec!["text:Other", "text:Other"]);
+    }
+
+    // Reject a script's name with characters other than letters, digits, `-`, `_`, and `.`, but
+    // still match its closing fence.
+    #[test]
+    fn invalid_script_names() {
+        let errors = parse_test("# Home\n::: so(rt) -f\n:::").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A script's name can only contain letters, digits, `-`, `_`, and `.`."),
+        );
+        assert!(errors[0].to_string().contains("2 │ ::: so(rt) -f"));
+    }
+
+    // Reject closing fences which don't close a block, and blocks which aren't closed by the end
     // of their pages.
     #[test]
     fn invalid_fences() {
@@ -1672,7 +1808,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_fails!(
             parse_test("# Home\n::: [Other]\n# Other"),
-            "Unclosed embed.",
+            "Unclosed block.",
         );
     }
 }

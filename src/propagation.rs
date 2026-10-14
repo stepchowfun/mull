@@ -62,7 +62,7 @@ fn collect_copies(
     let Some(page) = wiki.pages.get(&embed.title) else {
         return;
     };
-    let Some((copy, line_starts)) = embedding_wiki.copy(embed) else {
+    let Some((copy, line_starts)) = embedding_wiki.body(embed.source_range) else {
         return;
     };
     let source_range = copy_map.map_or(embed.link_source_range, |copy_map| SourceRange {
