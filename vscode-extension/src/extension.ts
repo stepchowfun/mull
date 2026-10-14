@@ -145,37 +145,6 @@ async function checkActiveWiki(): Promise<void> {
   });
 }
 
-// This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
-// this in sync with [group:run_scripts_option].
-const RUN_SCRIPTS_OPTION = 'mull.runScripts';
-
-// Format a wiki, running its scripts as well if scripts may run, which they can't in Restricted
-// Mode. The language client sends only the standard formatting options, so the request is sent
-// directly to add the option which runs scripts.
-async function formatRunningScripts(
-  document: vscode.TextDocument,
-  options: vscode.FormattingOptions,
-  token: vscode.CancellationToken,
-  next: ProvideDocumentFormattingEditsSignature,
-): Promise<vscode.TextEdit[] | null | undefined> {
-  if (client === undefined || !vscode.workspace.isTrusted) {
-    return next(document, options, token);
-  }
-  const edits = await client.sendRequest(
-    DocumentFormattingRequest.type,
-    {
-      textDocument: client.code2ProtocolConverter.asTextDocumentIdentifier(document),
-      options: {
-        tabSize: options.tabSize,
-        insertSpaces: options.insertSpaces,
-        [RUN_SCRIPTS_OPTION]: true,
-      },
-    },
-    token,
-  );
-  return client.protocol2CodeConverter.asTextEdits(edits, token);
-}
-
 // This private command lets the language server reveal a source range in a document.
 // [group:reveal_range_command]
 const REVEAL_RANGE_COMMAND = 'mull.revealRange';
@@ -788,6 +757,37 @@ async function dropFiles(
   const edit = new vscode.DocumentDropEdit(attachment.text, ATTACH_FILES_TITLE, ATTACH_FILES_KIND);
   edit.additionalEdit = attachment.additionalEdit;
   return edit;
+}
+
+// This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
+// this in sync with [group:run_scripts_option].
+const RUN_SCRIPTS_OPTION = 'mull.runScripts';
+
+// Format a wiki, running its scripts as well if scripts may run, which they can't in Restricted
+// Mode. The language client sends only the standard formatting options, so the request is sent
+// directly to add the option which runs scripts.
+async function formatRunningScripts(
+  document: vscode.TextDocument,
+  options: vscode.FormattingOptions,
+  token: vscode.CancellationToken,
+  next: ProvideDocumentFormattingEditsSignature,
+): Promise<vscode.TextEdit[] | null | undefined> {
+  if (client === undefined || !vscode.workspace.isTrusted) {
+    return next(document, options, token);
+  }
+  const edits = await client.sendRequest(
+    DocumentFormattingRequest.type,
+    {
+      textDocument: client.code2ProtocolConverter.asTextDocumentIdentifier(document),
+      options: {
+        tabSize: options.tabSize,
+        insertSpaces: options.insertSpaces,
+        [RUN_SCRIPTS_OPTION]: true,
+      },
+    },
+    token,
+  );
+  return client.protocol2CodeConverter.asTextEdits(edits, token);
 }
 
 // This is where an editor's cursor is in a page, as its title and the number of characters before
