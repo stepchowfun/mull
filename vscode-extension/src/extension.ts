@@ -186,26 +186,13 @@ async function runActiveWikiScripts(): Promise<void> {
   });
 }
 
-// Offer the language server's Run links only where scripts may run, with a play icon before each
-// title. Only VS Code draws such icons, so the language server writes plain titles.
-async function runLinks(
+// Offer the language server's Run links only where scripts may run.
+async function codeLensesWhereScriptsRun(
   document: vscode.TextDocument,
   token: vscode.CancellationToken,
   next: ProvideCodeLensesSignature,
 ): Promise<vscode.CodeLens[] | null | undefined> {
-  if (!vscode.workspace.isTrusted) {
-    return [];
-  }
-  const codeLenses = await next(document, token);
-  return (codeLenses ?? []).map((codeLens) =>
-    codeLens.command === undefined || codeLens.command.command !== RUN_SCRIPT_COMMAND
-      ? codeLens
-      : new vscode.CodeLens(codeLens.range, {
-          title: `$(play) ${codeLens.command.title}`,
-          command: codeLens.command.command,
-          arguments: codeLens.command.arguments,
-        }),
-  );
+  return vscode.workspace.isTrusted ? next(document, token) : [];
 }
 
 // This private command lets the language server reveal a source range in a document.
@@ -1085,7 +1072,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // scripts only where they may run.
     middleware: {
       provideDocumentFormattingEdits: formatKeepingPagePositions,
-      provideCodeLenses: runLinks,
+      provideCodeLenses: codeLensesWhereScriptsRun,
     },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
