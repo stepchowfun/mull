@@ -39,7 +39,7 @@
     "code": {
       "patterns": [
         {
-          "name": "markup.inline.raw.mull",
+          "name": "markup.inline.raw.mull markup.raw.inline.mull",
           "match": "(`{1,2})(?!`).*?(?<!`)\\1(?!`)"
         },
         {
@@ -543,17 +543,45 @@
     "fences": {
       "patterns": [
         {
-          "name": "meta.embed.mull",
-          "begin": "^[ \\t]*(:{3,})(?=[ \\t]+[^ \\t])",
+          "name": "meta.block.mull",
+          "match": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]+(:{3,})[ \\t]*$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.block.begin.mull"
+            },
+            "2": {
+              "name": "punctuation.definition.block.begin.mull",
+              "patterns": [
+                {
+                  "include": "#text"
+                }
+              ]
+            },
+            "3": {
+              "name": "punctuation.definition.block.end.mull"
+            }
+          }
+        },
+        {
+          "name": "meta.block.mull",
+          "begin": "^[ \\t]*(:{3,})[ \\t]+([^ \\t].*?)[ \\t]*$",
           "beginCaptures": {
             "1": {
-              "name": "punctuation.definition.embed.begin.mull"
+              "name": "punctuation.definition.block.begin.mull"
+            },
+            "2": {
+              "name": "punctuation.definition.block.begin.mull",
+              "patterns": [
+                {
+                  "include": "#text"
+                }
+              ]
             }
           },
           "end": "^[ \\t]*(\\1)[ \\t]*$|^(?=# )",
           "endCaptures": {
             "1": {
-              "name": "punctuation.definition.embed.end.mull"
+              "name": "punctuation.definition.block.end.mull"
             }
           },
           "patterns": [

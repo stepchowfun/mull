@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.1] - 2026-10-14
+
+### Changed
+
+- In the VS Code extension, the name and arguments of a script block are highlighted like the colons of its opening fence, rather than like ordinary text.
+
+### Fixed
+
+- In the VS Code extension, a block written on one line, like `::: [Page] :::`, no longer highlights the rest of its page as if it were inside the block.
+- In the VS Code extension, inline code is now highlighted in themes which style only `markup.raw`, like Monokai Pro, as well as those which style `markup.inline.raw`.
+
 ## [0.59.0] - 2026-10-14
 
 ### Removed
