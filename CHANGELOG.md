@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0] - 2026-10-13
+
+### Changed
+
+- An empty directory in `<wiki>_files` now needs a link of its own, like a file, unless a directory containing it is linked. Only the outermost such directory is reported, and an empty `<wiki>_files` needs the link `[/]`. Links to directories without files are now allowed, so linking to an empty directory keeps it deliberately. Note that Git can't store empty directories, so in a fresh clone, an empty directory is missing and a link to it is broken.
+- In the VS Code extension, completion and directory previews now include empty directories, and renaming a file no longer deletes a directory it leaves empty if a link names that directory.
+
 ## [0.53.1] - 2026-10-13
 
 ### Fixed

@@ -49,7 +49,7 @@ If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with
 
 Autocomplete will help you enter the names of files and directories. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
 
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it. An empty directory needs a link of its own.
 
 ### Embedding a page inside another
 

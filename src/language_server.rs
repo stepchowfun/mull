@@ -2,7 +2,7 @@ use crate::{
     cancellation::{CancellationFlag, Outcome},
     error::{Error, Fix, SourceRange},
     escaping::{Context, escape, unescape},
-    file_tree::{Visibility, file_tree_walker, visibility},
+    file_tree::file_tree_walker,
     format::CodeStr,
     line_index::LineIndex,
     lsp_position::LspPosition,
@@ -20,7 +20,7 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsStr,
     fs::{self, File},
     io::{BufReader, Read},
@@ -1854,13 +1854,17 @@ fn rename_filesystem_entry_for_document(
         ]
     };
 
-    // Finally, delete the directories the rename leaves empty. VS Code validates a run of deletions
-    // before performing any of them, so a nested empty directory would block deleting its parent.
-    // Instead, one recursive deletion removes the outermost directory, which contains only empty
-    // directories once the renamed entry has moved.
+    // Finally, delete the directories the rename leaves empty, except those which links name.
+    // VS Code validates a run of deletions before performing any of them, so a nested empty
+    // directory would block deleting its parent. Instead, one recursive deletion removes the
+    // outermost directory, which contains only empty directories once the renamed entry has moved.
     if file_operation_support.delete
-        && let Some(directory) =
-            outermost_directory_emptied_by_rename(&file_root, &old_path, &new_ancestor)
+        && let Some(directory) = outermost_directory_emptied_by_rename(
+            snapshot.wiki(),
+            &file_root,
+            &old_path,
+            &new_ancestor,
+        )
     {
         operations.push(DocumentChangeOperation::Op(ResourceOp::Delete(
             DeleteFile {
@@ -2071,14 +2075,23 @@ fn rename_operation(old_path: &Path, new_path: &Path) -> DocumentChangeOperation
 // directories whose only entry leads to it. Any other entry keeps a directory, even an empty
 // directory or an ignored file. A directory is also kept if it will contain the new path, which,
 // since it exists, is when the new path's deepest existing ancestor leads into it, even through a
-// symlink, or if that can't be determined. It isn't kept merely because a directory link names
-// it, since such a link only stands for the files within the directory. The search never reaches
-// the file root itself.
+// symlink, or if that can't be determined, and if a directory link in the wiki names it, since a
+// link to an empty directory is valid. The search never reaches the file root itself.
 fn outermost_directory_emptied_by_rename(
+    wiki: &Wiki,
     file_root: &FileRoot,
     old_path: &SpelledPath,
     new_ancestor: &SpelledPath,
 ) -> Option<SpelledPath> {
+    // Find the directories which links name.
+    let linked_directories = wiki
+        .links()
+        .filter_map(|link| match link {
+            Link::Filesystem { target, .. } if target.is_directory() => Some(target.path()),
+            Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => None,
+        })
+        .collect::<HashSet<_>>();
+
     // Ascend while each directory contains nothing but the entry being moved or deleted from it.
     let new_ancestor_absolute_path = file_root.resolve(new_ancestor);
     let mut emptied_directory = None;
@@ -2088,7 +2101,9 @@ fn outermost_directory_emptied_by_rename(
         .filter(|directory| !directory.is_file_root())
     {
         let absolute_directory = file_root.resolve(&directory);
-        if resolves_within(&new_ancestor_absolute_path, &absolute_directory).unwrap_or(true) {
+        if linked_directories.contains(directory.as_path())
+            || resolves_within(&new_ancestor_absolute_path, &absolute_directory).unwrap_or(true)
+        {
             break;
         }
         let Ok(mut entries) = fs::read_dir(absolute_directory) else {
@@ -2668,7 +2683,7 @@ struct VisibleChild {
 
 // List the entries of a directory in the file tree which a link could name, sorted by name. The
 // walk descends only along the directory, so large subtrees are read only once they're named.
-// Ignored entries, names which aren't UTF-8, and directories without files are left out.
+// Ignored entries and names which aren't UTF-8 are left out.
 fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild> {
     // Keep only the directory's ancestors and children.
     let mut walker_builder = file_tree_walker(file_root.path());
@@ -2696,16 +2711,6 @@ fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild>
             continue;
         };
         if path.as_path().parent() != Some(directory) {
-            continue;
-        }
-
-        // Omit a directory which a link couldn't name because it contains no files.
-        if is_directory
-            && !matches!(
-                visibility(file_root, &path, &CancellationFlag::default()).assume_completed(),
-                Visibility::Visible,
-            )
-        {
             continue;
         }
         children.push(VisibleChild {
@@ -3162,7 +3167,7 @@ mod tests {
     }
 
     // Complete the children of the directory named by an unfinished link, replacing only the
-    // component being typed and omitting directories without files.
+    // component being typed, including directories without files.
     #[test]
     fn completions_list_nested_directories() {
         let source = "# Home\n\n[/images/r";
@@ -3183,6 +3188,7 @@ mod tests {
             vec![
                 ("photo.jpg", typed_component, "photo.jpg]"),
                 ("raw/", typed_component, "raw/"),
+                ("rejected/", typed_component, "rejected/"),
             ],
         );
         assert_eq!(completions[1].filter_text.as_deref(), Some("raw"));
@@ -3681,7 +3687,7 @@ mod tests {
     }
 
     // List a directory's visible entries as links, with directories first, leaving out ignored
-    // entries and directories without files. A missing directory has no preview.
+    // entries. A missing directory has no preview.
     #[test]
     fn hovers_preview_directories() {
         let source = "# Home\n\n[/] [/b/] [/missing/]";
@@ -3697,7 +3703,7 @@ mod tests {
 
         assert_eq!(
             hover_markdown(&uri, source, Position::new(2, 1)).unwrap(),
-            "```mull\n[/b/]\n[/.gitignore]\n[/a.txt]\n```",
+            "```mull\n[/b/]\n[/empty/]\n[/.gitignore]\n[/a.txt]\n```",
         );
         assert_eq!(
             hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
@@ -4755,10 +4761,11 @@ mod tests {
             vec![directory_uri("a/b")],
         );
 
-        // Delete a directory even if a link names it, since the link only stands for its files.
+        // Keep a directory which a link names, since a link to an empty directory is valid, and
+        // delete only the empty directories within it.
         assert_eq!(
             deleted_uris(46, "h.txt", ALL_FILE_OPERATIONS),
-            vec![directory_uri("f")],
+            vec![directory_uri("f/g")],
         );
 
         // Skip deletions when the client can't perform them.

@@ -1,29 +1,23 @@
-// This module walks the file tree under a wiki's file root, where every file must be linked from
+// This module walks the file tree under a wiki's file root, where everything must be linked from
 // the wiki. Everything that validates or reads the tree shares the walk, so they all agree on
 // what's in it. It's worth recording how directories are interpreted, since several decisions
 // follow from it.
 //
-// There are two ways to think of directories:
+// There are two ways to think of directories: as entities in their own right, which links can name,
+// or as nothing but the paths of the files under them, so a link to a directory is shorthand for
+// links to those files. Mull takes the first view, since it lets an empty directory be kept
+// deliberately, by linking to it, while an empty directory which isn't linked can be reported as
+// clutter.
 //
-// 1. A directory is an entity in its own right which needs a link, and it's implicitly linked if
-//    everything in it is linked.
-// 2. A directory isn't an entity which can be linked to at all. A link to a directory is shorthand
-//    for links to all the files under it.
+// A directory needs a link unless something in it is linked, whether a file or another directory.
+// Linking a directory covers everything in it, including anything added to it later, so linking the
+// things in it instead keeps the assurance that a stray file added to it will be reported. An empty
+// directory has nothing in it to link, so it needs a link of its own. Only the outermost directory
+// which needs a link is reported, since linking it covers the directories in it. The file root is
+// no exception: it needs the link `[/]` if nothing in it is linked.
 //
-// Under either interpretation, a directory needn't be linked if all the files in it are. That
-// matters because linking a directory covers anything added to it later, so linking each file
-// instead keeps the assurance that a stray file in it will be reported. It also follows that an
-// empty directory needs no link: under the first interpretation it's implicitly linked, since
-// everything in it is linked, and under the second it isn't anything which could be linked.
-//
-// Mull takes the second interpretation for a practical reason. The first would allow a link to an
-// empty directory, but Git has no way to represent one, so the link would break in a fresh clone.
-// Under the second, a link to a directory without any files, not counting ignored ones, is an
-// error, since a link has to match something, and the directory itself isn't anything.
-//
-// Empty directories themselves aren't reported. Neither interpretation calls for it, and an empty
-// directory has no content that the wiki could fail to account for, so reporting it would only be
-// a rule about tidiness.
+// The cost of this view is that Git has no way to represent an empty directory, so in a fresh clone
+// of a wiki kept in Git, an empty directory is missing, and a link to it is broken.
 
 use crate::{
     cancellation::{CancellationFlag, Outcome},
@@ -61,63 +55,40 @@ pub fn file_tree_walker(file_root: &Path) -> WalkBuilder {
 // This describes whether a walk of the file tree reaches a path.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Visibility {
-    // The walk reaches the file, or a file within the directory.
+    // The walk reaches the path.
     Visible,
-
-    // The walk reaches the directory but no file within it.
-    Empty,
 
     // The walk never reaches the path, because an ignore rule excludes it or one of its ancestors.
     Ignored,
 }
 
-// Determine whether a walk of the file tree reaches a path. The walk descends only along the
-// path and into its target, stopping at the first file it finds there, so it applies every ignore
-// rule without reading unrelated subtrees.
+// Determine whether a walk of the file tree reaches a path. The walk descends only along the path,
+// so it applies every ignore rule without reading unrelated subtrees.
 pub fn visibility(
     file_root: &FileRoot,
     target: &SpelledPath,
     cancellation: &CancellationFlag,
 ) -> Outcome<Visibility> {
-    // Keep only the ancestors of the target and the entries within it.
+    // Keep only the target and its ancestors.
     let mut walker_builder = file_tree_walker(file_root.path());
     walker_builder.filter_entry({
         let file_root = file_root.clone();
         let target = target.clone();
-        move |entry| {
-            let path = file_root.entry_path(entry);
-            target.starts_with(&path) || path.starts_with(&target)
-        }
+        move |entry| target.starts_with(&file_root.entry_path(entry))
     });
 
     // Disregard walk failures, such as broken symlinks, since the filter never sees them, so they
     // may concern unrelated entries.
-    let mut reached = false;
     for entry in walker_builder.build().flatten() {
-        // Stop between entries so a superseded check doesn't walk the rest of the target.
+        // Stop between entries so a superseded check doesn't keep walking.
         if cancellation.is_cancelled() {
             return Outcome::Cancelled;
         }
 
-        // Note reaching the target, and stop at the first file at or within it.
-        let path = file_root.entry_path(&entry);
-        if path == *target {
-            reached = true;
-        }
-        if path.starts_with(target)
-            && entry
-                .file_type()
-                .expect("Only standard input lacks a file type.")
-                .is_file()
-        {
+        // Stop once the walk reaches the target.
+        if file_root.entry_path(&entry) == *target {
             return Outcome::Completed(Visibility::Visible);
         }
     }
-
-    // Distinguish a directory without files from a path that the walk never reached.
-    Outcome::Completed(if reached {
-        Visibility::Empty
-    } else {
-        Visibility::Ignored
-    })
+    Outcome::Completed(Visibility::Ignored)
 }

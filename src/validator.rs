@@ -9,7 +9,8 @@ use crate::{
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
-// Limit diagnostics for unreferenced files so pathological directories remain manageable.
+// Limit diagnostics for unreferenced files and directories so pathological directories remain
+// manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
 // Check text links, embeds, reachability, filesystem links, and filesystem coverage.
@@ -289,8 +290,8 @@ fn validate_filesystem_links(
                 continue;
             }
 
-            // Require the target to be a file which isn't ignored, or a directory containing such a
-            // file. Skip this if the path's spelling wasn't confirmed, which was already reported.
+            // Require the target not to be ignored. Skip this if the path's spelling wasn't
+            // confirmed, which was already reported.
             if let Some(spelled) = &spelled {
                 match visibility_error(
                     file_root,
@@ -305,7 +306,7 @@ fn validate_filesystem_links(
                 }
             }
 
-            // Track the target so the walk for unreferenced files accounts for it.
+            // Track the target so the walk for unreferenced entries accounts for it.
             if let Some(spelled) = spelled {
                 if target.is_directory() {
                     referenced_directories.insert(spelled);
@@ -390,8 +391,8 @@ fn wrong_target_type_message(target: &FilesystemTarget, metadata: &fs::Metadata)
     }
 }
 
-// Explain why a walk of the file tree doesn't reach a filesystem link's target, or a file
-// within it, where `spelled` is the target's spelling on disk.
+// Explain why a walk of the file tree doesn't reach a filesystem link's target, where `spelled` is
+// the target's spelling on disk.
 fn visibility_error(
     file_root: &FileRoot,
     wiki_path: &Path,
@@ -403,10 +404,6 @@ fn visibility_error(
     visibility(file_root, spelled, cancellation).map(|visibility| {
         let message = match visibility {
             Visibility::Visible => return None,
-            Visibility::Empty => format!(
-                "{} doesn't contain any files that aren't ignored.",
-                target.code_str(),
-            ),
             Visibility::Ignored => format!("{} is ignored.", target.code_str()),
         };
         Some(Error::new(
@@ -419,8 +416,14 @@ fn visibility_error(
     })
 }
 
-// Find unreferenced files, up to a limit so pathological directories remain manageable, while
-// pruning covered directories.
+// Find unreferenced files and directories, up to a limit so pathological directories remain
+// manageable, while pruning covered directories. A directory needs a link of its own unless it
+// contains a file or a linked directory, and only the outermost of those needing one is reported.
+#[allow(
+    clippy::too_many_lines,
+    reason = "The function walks the file tree once, noting what each directory contains as it \
+              reports unreferenced files."
+)]
 fn find_unreferenced_filesystem_links(
     file_root: &FileRoot,
     wiki_path: &Path,
@@ -469,8 +472,27 @@ fn find_unreferenced_filesystem_links(
         move |entry| !referenced_directories.contains(&file_root.entry_path(entry))
     });
 
-    // Stop traversing once the error limit is reached.
+    // Note the directories walked, those with any entries, and those containing a file or a linked
+    // directory, which the walk skips.
+    let mut directories = Vec::<SpelledPath>::new();
+    let mut listed_directories = HashSet::<SpelledPath>::new();
+    let mut occupied_directories = HashSet::<SpelledPath>::new();
+    let occupy = |path: &SpelledPath, occupied_directories: &mut HashSet<SpelledPath>| {
+        let mut ancestor = path.parent();
+        while let Some(directory) = ancestor
+            && occupied_directories.insert(directory.clone())
+        {
+            ancestor = directory.parent();
+        }
+    };
+    for directory in referenced_directories {
+        occupy(directory, &mut occupied_directories);
+    }
+
+    // Stop traversing once the error limit is reached, or a directory can't be read, after which
+    // which directories are empty isn't known.
     let mut errors = Vec::<Error>::new();
+    let mut is_complete = true;
     for result in walker_builder.build() {
         // Stop between entries so a superseded check doesn't walk the rest of the tree.
         if cancellation.is_cancelled() {
@@ -487,21 +509,61 @@ fn find_unreferenced_filesystem_links(
                     Some(Arc::new(error)),
                     None,
                 ));
+                is_complete = false;
                 if errors.len() >= MAX_FILESYSTEM_ERRORS {
                     break;
                 }
                 continue;
             }
         };
+
+        // Record the entry, and report a file which isn't linked.
         let path = file_root.entry_path(&entry);
+        if let Some(parent) = path.parent() {
+            listed_directories.insert(parent);
+        }
         if entry
             .file_type()
             .expect("Only standard input lacks a file type.")
-            .is_file()
-            && !referenced_files.contains(&path)
+            .is_dir()
         {
+            directories.push(path);
+            continue;
+        }
+        occupy(&path, &mut occupied_directories);
+        if !referenced_files.contains(&path) {
             errors.push(Error::new(
                 &format!("File {} isn't linked to.", path.code_str()),
+                Some(wiki_path),
+                None,
+                None,
+                None,
+            ));
+            if errors.len() >= MAX_FILESYSTEM_ERRORS {
+                is_complete = false;
+                break;
+            }
+        }
+    }
+
+    // Report the outermost directories which contain nothing linked, once the whole tree has been
+    // walked. Linking everything in a directory covers it, unless there's nothing in it.
+    if is_complete {
+        for directory in directories {
+            if occupied_directories.contains(&directory)
+                || directory
+                    .parent()
+                    .is_some_and(|parent| !occupied_directories.contains(&parent))
+            {
+                continue;
+            }
+            let fix = if listed_directories.contains(&directory) {
+                "Link to it or to everything in it, or delete it."
+            } else {
+                "Link to it, or delete it."
+            };
+            errors.push(Error::new(
+                &format!("Directory {} isn't linked to. {fix}", directory.code_str()),
                 Some(wiki_path),
                 None,
                 None,
@@ -985,13 +1047,15 @@ mod tests {
         ));
     }
 
-    // Report every broken filesystem link, since the limit applies only to unreferenced files.
+    // Report every broken filesystem link, since the limit applies only to unreferenced files and
+    // directories.
     #[test]
     fn filesystem_link_errors_are_unlimited() {
         let directory = TestDirectory::new();
         directory.create_dir("");
         let links = (0..=MAX_FILESYSTEM_ERRORS)
             .map(|index| format!("[/missing-{index}.txt]"))
+            .chain(["[/]".to_owned()])
             .collect::<Vec<_>>()
             .join(" ");
         let wiki = parse(&format!("# Home\n{links}")).unwrap();
@@ -1004,13 +1068,15 @@ mod tests {
         }));
     }
 
-    // Limit diagnostics for unreferenced files regardless of any link errors.
+    // Limit diagnostics for unreferenced files regardless of any link errors, and leave out empty
+    // directories once the limit stops the walk.
     #[test]
     fn unreferenced_file_error_limit() {
         let directory = TestDirectory::new();
         for index in 0..=MAX_FILESYSTEM_ERRORS {
             directory.write(&format!("unreferenced-{index}.txt"), "");
         }
+        directory.create_dir("empty");
         let wiki = parse("# Home\n[/missing.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
@@ -1039,14 +1105,49 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Accept empty directories, which contain no files that need links.
+    // Report each outermost directory with nothing linked in it, suggesting linking everything in
+    // it only if it has anything in it. A directory containing a linked directory, or within a
+    // linked directory, needs no link.
     #[test]
     fn empty_directories() {
         let directory = TestDirectory::new();
+        directory.write("notes.txt", "notes");
+        directory.create_dir("bare");
         directory.create_dir("empty/nested");
-        let wiki = parse("# Home").unwrap();
+        directory.create_dir("outer/inner");
+        directory.create_dir("linked/inside");
+        let wiki = parse("# Home\n[/notes.txt] [/outer/inner/] [/linked/]").unwrap();
 
-        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "Directory `/bare` isn't linked to. Link to it, or delete it.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Directory `/empty` isn't linked to. Link to it or to everything in it, or delete it.",
+        ));
+    }
+
+    // Treat the file root like any other directory, reporting it alone if nothing in it is linked.
+    #[test]
+    fn empty_file_root() {
+        let directory = TestDirectory::new();
+        directory.create_dir("");
+
+        assert!(contains_error(
+            &validate(&parse("# Home").unwrap(), &directory.wiki_path()).unwrap_err(),
+            "Directory `/` isn't linked to. Link to it, or delete it.",
+        ));
+        assert!(validate(&parse("# Home\n[/]").unwrap(), &directory.wiki_path()).is_ok());
+        directory.create_dir("empty");
+        let errors = validate(&parse("# Home").unwrap(), &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "Directory `/` isn't linked to. Link to it or to everything in it, or delete it.",
+        ));
     }
 
     // Preserve symlink aliases as distinct filesystem paths while following their targets.
@@ -1200,7 +1301,7 @@ mod tests {
         }
     }
 
-    // Require a directory link's target to contain a file which isn't ignored, however deeply.
+    // Accept a link to a directory without files, including one whose files are all ignored.
     #[test]
     fn directory_without_files() {
         let directory = TestDirectory::new();
@@ -1210,16 +1311,7 @@ mod tests {
         directory.write("deep/nested/file.txt", "file");
         let wiki = parse("# Home\n[/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
 
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 2);
-        assert!(contains_error(
-            &errors,
-            "`/empty` doesn't contain any files that aren't ignored.",
-        ));
-        assert!(contains_error(
-            &errors,
-            "`/logs` doesn't contain any files that aren't ignored.",
-        ));
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
     // Reject links to ignored files and directories, including those within ignored directories.
