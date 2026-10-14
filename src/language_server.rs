@@ -2930,7 +2930,10 @@ mod tests {
         PrepareRenameResponse, Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
     };
     #[cfg(unix)]
-    use {super::formatting_with_scripts_for_document, crate::scripts::hide_hashes};
+    use {
+        super::formatting_with_scripts_for_document,
+        crate::scripts::{hide_hashes, lock_script_tests},
+    };
 
     // Assign each formatting fixture a distinct directory when tests run concurrently.
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -5235,6 +5238,7 @@ mod tests {
     fn formatting_runs_scripts() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _lock = lock_script_tests();
         let source = "# Home\n\n::: sort\n- b\n- a\n:::\n\n::: fail :::\n";
         let wiki = TestWiki::new(source);
         let scripts = wiki.directory().join("scripts");
@@ -5271,6 +5275,7 @@ mod tests {
     fn formatting_propagates_before_running_scripts() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _lock = lock_script_tests();
         let source = concat!(
             "# Home\n\n:::: [Other]\n::: sort\n- d\n- c\n- e\n:::\n::::\n\n",
             "# Other\n\n::: sort\n- d\n- c\n:::\n",

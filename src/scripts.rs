@@ -166,6 +166,16 @@ pub fn hide_hashes(contents: &str) -> String {
         .collect()
 }
 
+// Keep tests which write and run scripts from running at the same time. Linux won't run a file
+// which is open for writing, as a script being written by one test can be in a process which
+// another test forked to run its own script.
+#[cfg(all(test, unix))]
+pub fn lock_script_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // Hash a script block's script, its arguments as written, and its body, so it needn't run again
 // while they stay the same. The hash is the first 48 bits of their SHA-256 hash, in hexadecimal. A
 // block whose script can't be read has no hash.
@@ -546,7 +556,7 @@ mod tests {
     use std::path::Path;
     #[cfg(unix)]
     use {
-        super::{execute, hide_hashes, run},
+        super::{execute, hide_hashes, lock_script_tests, run},
         crate::error::Error,
         std::{
             env, fs,
@@ -632,6 +642,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runs_replace_bodies() {
+        let _lock = lock_script_tests();
         let wiki = TestWiki::new(
             concat!(
                 "# Home\n\n[/scripts/] [Other]\n\n",
@@ -666,6 +677,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_runs() {
+        let _lock = lock_script_tests();
         let wiki = TestWiki::new(
             "# Home\n\n[/scripts/]\n\n::: fail :::\n\n::: bracket :::\n\n::: plain :::\n",
             &[
@@ -698,6 +710,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runs_skip_unchanged_blocks() {
+        let _lock = lock_script_tests();
         let wiki = TestWiki::new(
             "# Home\n\n[/runs] [/scripts/]\n\n::: count a\n- b\n:::\n",
             &[("count.sh", "#!/bin/sh\necho run >> runs\ncat\n")],
@@ -748,6 +761,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runs_time_out() {
+        let _lock = lock_script_tests();
         let wiki = TestWiki::new("# Home\n", &[("slow.sh", "#!/bin/sh\nsleep 5\n")]);
 
         let (message, _reason) = execute(
