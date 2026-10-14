@@ -4,6 +4,7 @@ use crate::{
     file_tree::{Visibility, file_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
+    scripts::script_path,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
     wiki::{Embed, FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
 };
@@ -13,7 +14,7 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 // manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
-// Check text links, embeds, reachability, filesystem links, and filesystem coverage.
+// Check text links, embeds, reachability, scripts, filesystem links, and filesystem coverage.
 pub fn validate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -35,6 +36,7 @@ pub fn validate(
             source_contents,
             line_index,
         ));
+        errors.extend(validate_scripts(&pages, None, source_contents, line_index));
         return Outcome::Completed(errors_to_result(errors));
     };
 
@@ -51,6 +53,12 @@ pub fn validate(
             return Outcome::Completed(errors_to_result(errors));
         }
     };
+    errors.extend(validate_scripts(
+        &pages,
+        Some((&file_root, wiki_path)),
+        source_contents,
+        line_index,
+    ));
     validate_filesystem_links(
         &pages,
         &file_root,
@@ -215,6 +223,33 @@ fn validate_untitled_filesystem_links(
                 None,
             )),
             Link::Text { .. } | Link::Malformed { .. } => None,
+        })
+        .collect()
+}
+
+// Require each script block's name to identify exactly one script, given the wiki's pages in
+// title order. Scripts can only be found in a saved wiki's file root.
+fn validate_scripts(
+    pages: &[&Page],
+    file_root: Option<(&FileRoot, &Path)>,
+    source_contents: &str,
+    line_index: &LineIndex,
+) -> Vec<Error> {
+    pages
+        .iter()
+        .flat_map(|page| &page.script_blocks)
+        .filter_map(|block| {
+            let message = match file_root {
+                Some((file_root, _wiki_path)) => script_path(file_root, &block.name).err()?,
+                None => "Save the wiki to find this script.".to_owned(),
+            };
+            Some(Error::new(
+                &message,
+                file_root.map(|(_file_root, wiki_path)| wiki_path),
+                Some((source_contents, line_index, block.name_source_range)),
+                None,
+                None,
+            ))
         })
         .collect()
 }
@@ -1093,6 +1128,42 @@ mod tests {
                 .iter()
                 .all(|error| error.to_string().contains("File `/unreferenced-")),
         );
+    }
+
+    // Require each script block's name to identify exactly one script, whatever its extension.
+    #[test]
+    fn scripts() {
+        let directory = TestDirectory::new();
+        directory.write("scripts/sort.sh", "");
+        directory.write("scripts/tidy.py", "");
+        directory.write("scripts/tidy.sh", "");
+        let wiki = parse(concat!(
+            "# Home\n[/scripts/]\n",
+            "::: sort -f\n:::\n::: tidy :::\n::: missing :::\n",
+        ))
+        .unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(contains_error(
+            &errors,
+            "No script named `missing` in `/scripts`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "More than one script is named `tidy` in `/scripts`: `/scripts/tidy.py`, \
+             `/scripts/tidy.sh`.",
+        ));
+    }
+
+    // Ask for an unsaved wiki to be saved before finding its scripts.
+    #[test]
+    fn untitled_scripts() {
+        let wiki = parse("# Home\n::: sort :::").unwrap();
+
+        let errors = validate_untitled(&wiki).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message(), "Save the wiki to find this script.");
     }
 
     // Accept a directory without a link when all the files in it are linked.

@@ -24,7 +24,8 @@ pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names the page it embeds, and a closing fence consists of colons alone.
+// fence names the page it embeds or the script which computes its body, and a closing fence
+// consists of colons alone.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
@@ -62,6 +63,11 @@ impl Wiki {
         title: &PageTitle,
     ) -> (bool, Option<usize>, &PageTitle) {
         (traversal_index.is_none(), traversal_index, title)
+    }
+
+    // Render a page's content in its canonical form, with each embed refreshed.
+    pub fn page_content(&self, page: &Page) -> String {
+        self.rendered_content(page, &mut Vec::new())
     }
 
     // Render a page's content from the source in its canonical form, with each embed refreshed. The
@@ -116,7 +122,7 @@ impl Wiki {
                 continue;
             };
             self.copy_links(page, copied_through, embed.source_range.start, &mut content);
-            let indentation = self.indentation(embed);
+            let indentation = self.indentation(embed.source_range.start);
             let longest_run = body
                 .lines()
                 .map(str::trim_start)
@@ -178,37 +184,36 @@ impl Wiki {
         content.push_str(&self.source[copied_through..end]);
     }
 
-    // Find the copy an embed shows, with the indentation of its opening fence removed from each
-    // line, along with where each line of the copy starts in it and in the source. An embed written
-    // on one line has no copy, since formatting fills it in.
-    pub fn copy(&self, embed: &Embed) -> Option<(String, Vec<(usize, usize)>)> {
-        let embed_source = &self.source[embed.source_range.start..embed.source_range.end];
-        let body_start = embed_source.find('\n')? + '\n'.len_utf8();
-        let body_end = embed_source.rfind('\n')? + '\n'.len_utf8();
-        let indentation = self.indentation(embed);
-        let mut copy = String::new();
+    // Find the body of a block, such as the copy an embed shows, with the indentation of its
+    // opening fence removed from each line, along with where each line of the body starts in it and
+    // in the source. A block written on one line has no body.
+    pub fn body(&self, block: SourceRange) -> Option<(String, Vec<(usize, usize)>)> {
+        let block_source = &self.source[block.start..block.end];
+        let body_start = block_source.find('\n')? + '\n'.len_utf8();
+        let body_end = block_source.rfind('\n')? + '\n'.len_utf8();
+        let indentation = self.indentation(block.start);
+        let mut body = String::new();
         let mut line_starts = Vec::new();
-        let mut line_source_start = embed.source_range.start + body_start;
-        for line in embed_source[body_start..body_end].split_inclusive('\n') {
+        let mut line_source_start = block.start + body_start;
+        for line in block_source[body_start..body_end].split_inclusive('\n') {
             let unindented_line = line
                 .strip_prefix(indentation)
                 .unwrap_or_else(|| line.trim_start_matches([' ', '\t']));
             line_starts.push((
-                copy.len(),
+                body.len(),
                 line_source_start + line.len() - unindented_line.len(),
             ));
-            copy.push_str(unindented_line);
+            body.push_str(unindented_line);
             line_source_start += line.len();
         }
-        Some((copy, line_starts))
+        Some((body, line_starts))
     }
 
-    // Find the indentation of an embed's opening fence.
-    fn indentation(&self, embed: &Embed) -> &str {
-        &self.source[self.source[..embed.source_range.start]
+    // Find the indentation of the opening fence of a block which starts at an offset.
+    pub fn indentation(&self, block_start: usize) -> &str {
+        &self.source[self.source[..block_start]
             .rfind('\n')
-            .map_or(0, |index| index + '\n'.len_utf8())
-            ..embed.source_range.start]
+            .map_or(0, |index| index + '\n'.len_utf8())..block_start]
     }
 }
 
@@ -229,7 +234,7 @@ impl fmt::Display for Wiki {
                 writeln!(formatter)?;
             }
             let title = page.title.text(Context::Verbatim);
-            let content = self.rendered_content(page, &mut Vec::new());
+            let content = self.page_content(page);
             if content.is_empty() {
                 writeln!(formatter, "{TITLE_PREFIX}{title}")?;
             } else {
@@ -248,6 +253,7 @@ pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
     pub embeds: Vec<Embed>, // In source order, excluding embeds within the copies made by others
+    pub script_blocks: Vec<ScriptBlock>, // In source order, excluding those within other blocks
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange, // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
@@ -261,6 +267,16 @@ pub struct Embed {
     pub title: PageTitle,
     pub source_range: SourceRange, // From the opening fence's colons through the closing fence
     pub link_source_range: SourceRange, // The link in the opening fence which names the page
+}
+
+// This struct represents a block whose body is computed by a script, which reads the body and
+// writes its replacement. The script is named in the opening fence, followed by its arguments.
+#[derive(Clone, Debug)]
+pub struct ScriptBlock {
+    pub name: String,
+    pub source_range: SourceRange, // From the opening fence's colons through the closing fence
+    pub name_source_range: SourceRange, // The script's name in the opening fence
+    pub arguments_source_range: SourceRange, // The trimmed text after the name
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -635,17 +651,17 @@ mod tests {
         );
     }
 
-    // Find the copy an embed shows without its indentation, with where each line starts in the copy
-    // and in the source. A line indented less than the opening fence loses its indentation, and an
-    // embed written on one line has no copy.
+    // Find a block's body without its indentation, with where each line starts in the body and in
+    // the source. A line indented less than the opening fence loses its indentation, and a block
+    // written on one line has no body.
     #[test]
-    fn copies() {
+    fn bodies() {
         let source = "# Home\n  ::: [Other]\n  First\n\n Second\n  :::\n::: [Other] :::\n# Other";
         let wiki = parse_wiki(source);
         let embeds = &wiki.pages[&PageTitle::parse("Home").unwrap()].embeds;
 
         assert_eq!(
-            wiki.copy(&embeds[0]),
+            wiki.body(embeds[0].source_range),
             Some((
                 "First\n\nSecond\n".to_owned(),
                 vec![(0, 23), (6, 29), (7, 31)],
@@ -653,7 +669,7 @@ mod tests {
         );
         assert_eq!(&source[23..28], "First");
         assert_eq!(&source[31..37], "Second");
-        assert_eq!(wiki.copy(&embeds[1]), None);
+        assert_eq!(wiki.body(embeds[1].source_range), None);
     }
 
     // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.

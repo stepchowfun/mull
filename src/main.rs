@@ -12,6 +12,7 @@ mod parser;
 mod path_util;
 mod propagation;
 mod scoring;
+mod scripts;
 mod spelled_path;
 mod validator;
 mod wiki;
@@ -21,8 +22,9 @@ use crate::{
     cancellation::CancellationFlag,
     error::{Error, format_errors},
     format::CodeStr,
+    line_index::LineIndex,
     path_util::relative_path,
-    wiki::WIKI_EXTENSION,
+    wiki::{PageTitle, WIKI_EXTENSION},
 };
 use clap::{ArgAction, Args, Parser, Subcommand as ClapSubcommand};
 use similar::TextDiff;
@@ -63,15 +65,40 @@ enum Subcommand {
     #[command(about = "Format a wiki (default)")]
     Format(WikiArgs),
 
+    #[command(about = "Run the scripts which compute blocks in a wiki, then format it")]
+    Run(WikiArgs),
+
+    #[command(about = "Print the content of a page in a wiki")]
+    Page(PageArgs),
+
     #[command(about = "Start the language server (editors use this)")]
     LanguageServer,
 }
 
-// These are the arguments for the operations that act on a wiki.
+// These are the arguments for the operations that act on a wiki. Without a path, the wiki is the
+// one a script is running in, if any, or else the nearest one.
 #[derive(Args, Default)]
 struct WikiArgs {
     #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
     path: Option<PathBuf>,
+}
+
+// These are the arguments for printing a page.
+#[derive(Args)]
+struct PageArgs {
+    #[arg(help = "The page's title")]
+    title: String,
+
+    #[command(flatten)]
+    wiki_args: WikiArgs,
+}
+
+// These are the operations which act on a wiki once it's loaded.
+enum Operation {
+    Check,
+    Format,
+    Run,
+    Page(String),
 }
 
 // Let the fun begin!
@@ -85,17 +112,23 @@ async fn main() {
 }
 
 // Run the requested operation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "The function dispatches each subcommand once the wiki they share is loaded."
+)]
 async fn entry() -> Result<(), Vec<Error>> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
 
     // Start the language server without requiring a wiki, or select the requested wiki operation.
-    let (should_format, WikiArgs { path }) = match cli
+    let (operation, WikiArgs { path }) = match cli
         .command
         .unwrap_or(Subcommand::Format(WikiArgs::default()))
     {
-        Subcommand::Check(wiki_args) => (false, wiki_args),
-        Subcommand::Format(wiki_args) => (true, wiki_args),
+        Subcommand::Check(wiki_args) => (Operation::Check, wiki_args),
+        Subcommand::Format(wiki_args) => (Operation::Format, wiki_args),
+        Subcommand::Run(wiki_args) => (Operation::Run, wiki_args),
+        Subcommand::Page(PageArgs { title, wiki_args }) => (Operation::Page(title), wiki_args),
         Subcommand::LanguageServer => {
             language_server::run().await;
             return Ok(());
@@ -115,6 +148,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     let wiki_path = relative_path(
         &current_directory,
         &path
+            .or_else(|| env::var_os("MULL_WIKI").map(PathBuf::from))
             .map_or_else(|| find_wiki(&current_directory), Ok)
             .map_err(|error| vec![error])?,
     )
@@ -140,6 +174,31 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
+    // Print a page, or run the scripts and save the result, reporting any scripts which failed.
+    match operation {
+        Operation::Page(title) => return print_page(&wiki_path, &wiki_contents, &title),
+        Operation::Run => {
+            let (run_contents, failures) = scripts::run(&wiki_path, &wiki_contents)?;
+            if run_contents != wiki_contents {
+                fs::write(&wiki_path, run_contents).map_err(|error| {
+                    vec![Error::new(
+                        "Unable to write the wiki.",
+                        Some(&wiki_path),
+                        None,
+                        Some(Arc::new(error)),
+                        None,
+                    )]
+                })?;
+            }
+            if !failures.is_empty() {
+                return Err(failures);
+            }
+            println!("Ran the scripts in {}.", wiki_path.code_str());
+            return Ok(());
+        }
+        Operation::Check | Operation::Format => {}
+    }
+
     // Analyze and render the wiki. The command line has nothing to cancel, so the analysis always
     // runs to completion.
     let rendered_wiki = analyze(
@@ -153,7 +212,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff.
     if wiki_contents == rendered_wiki {
         println!("Wiki {} looks good.", wiki_path.code_str());
-    } else if should_format {
+    } else if matches!(operation, Operation::Format) {
         fs::write(&wiki_path, rendered_wiki).map_err(|error| {
             vec![Error::new(
                 "Unable to write the wiki.",
@@ -183,6 +242,35 @@ async fn entry() -> Result<(), Vec<Error>> {
     }
 
     // Everything succeeded.
+    Ok(())
+}
+
+// Print a page's content as formatting would write it, for scripts to read.
+fn print_page(wiki_path: &Path, wiki_contents: &str, title: &str) -> Result<(), Vec<Error>> {
+    // Read the wiki without validating it, which needs only its syntax.
+    let (wiki, errors) = parser::parse(
+        Some(wiki_path),
+        wiki_contents,
+        &LineIndex::new(wiki_contents),
+    );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Find the page.
+    let page = PageTitle::parse(title)
+        .ok()
+        .and_then(|title| wiki.pages.get(&title))
+        .ok_or_else(|| {
+            vec![Error::new(
+                &format!("Page {} not found.", title.code_str()),
+                Some(wiki_path),
+                None,
+                None,
+                None,
+            )]
+        })?;
+    println!("{}", wiki.page_content(page));
     Ok(())
 }
 
@@ -281,7 +369,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Subcommand, WikiArgs};
+    use super::{Cli, PageArgs, Subcommand, WikiArgs};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -302,6 +390,18 @@ mod tests {
             Some(Subcommand::Format(_)),
         ));
         assert!(matches!(
+            Cli::try_parse_from(["mull", "run"]).unwrap().command,
+            Some(Subcommand::Run(_)),
+        ));
+        let Some(Subcommand::Page(PageArgs { title, .. })) =
+            Cli::try_parse_from(["mull", "page", "Home"])
+                .unwrap()
+                .command
+        else {
+            panic!("The page subcommand should be parsed.");
+        };
+        assert_eq!(title, "Home");
+        assert!(matches!(
             Cli::try_parse_from(["mull", "language-server"])
                 .unwrap()
                 .command,
@@ -312,11 +412,14 @@ mod tests {
     // Accept an explicit wiki path after the subcommand that acts on the wiki.
     #[test]
     fn parse_path() {
-        for subcommand in ["check", "format"] {
-            let Some(Subcommand::Check(WikiArgs { path }) | Subcommand::Format(WikiArgs { path })) =
-                Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull"])
-                    .unwrap()
-                    .command
+        for subcommand in ["check", "format", "run"] {
+            let Some(
+                Subcommand::Check(WikiArgs { path })
+                | Subcommand::Format(WikiArgs { path })
+                | Subcommand::Run(WikiArgs { path }),
+            ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull"])
+                .unwrap()
+                .command
             else {
                 panic!("The {subcommand} subcommand should be parsed.");
             };
