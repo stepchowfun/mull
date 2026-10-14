@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import {
+  DocumentFormattingRequest,
   ExecuteCommandRequest,
   LanguageClient,
   type ProvideCodeLensesSignature,
@@ -145,12 +146,10 @@ async function checkActiveWiki(): Promise<void> {
   });
 }
 
-// These commands run the script blocks of a wiki, through the language server commands of the same
-// names: one, named by the wiki's URI, its page's title, and its index among the page's script
-// blocks, as the language server's Run links do, or every one in the wiki being edited. Keep these
-// in sync with [group:run_script_commands].
+// This command runs a script block, named by the wiki's URI, its page's title, and its index among
+// the page's script blocks, as the language server's Run links do, through the language server
+// command of the same name. Keep this in sync with [group:run_script_command].
 const RUN_SCRIPT_COMMAND = 'mull.runScript';
-const RUN_SCRIPTS_COMMAND = 'mull.runScripts';
 
 // Determine whether scripts may run, which they can't in Restricted Mode, since a wiki from someone
 // else could run any program through them. Explain why when they can't.
@@ -174,18 +173,6 @@ async function runScript(uri: string, title: string, index: number): Promise<voi
   });
 }
 
-// Ask the language server to run every script block in the wiki being edited.
-async function runActiveWikiScripts(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (client === undefined || !isMainWikiEditor(editor) || !(await scriptsMayRun())) {
-    return;
-  }
-  await client.sendRequest(ExecuteCommandRequest.type, {
-    command: RUN_SCRIPTS_COMMAND,
-    arguments: [editor.document.uri.toString()],
-  });
-}
-
 // Offer the language server's Run links only where scripts may run.
 async function codeLensesWhereScriptsRun(
   document: vscode.TextDocument,
@@ -193,6 +180,37 @@ async function codeLensesWhereScriptsRun(
   next: ProvideCodeLensesSignature,
 ): Promise<vscode.CodeLens[] | null | undefined> {
   return vscode.workspace.isTrusted ? next(document, token) : [];
+}
+
+// This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
+// this in sync with [group:run_scripts_option].
+const RUN_SCRIPTS_OPTION = 'mull.runScripts';
+
+// Format a wiki, running its scripts as well if scripts may run, which they can't in Restricted
+// Mode. The language client sends only the standard formatting options, so the request is sent
+// directly to add the option which runs scripts.
+async function formatRunningScripts(
+  document: vscode.TextDocument,
+  options: vscode.FormattingOptions,
+  token: vscode.CancellationToken,
+  next: ProvideDocumentFormattingEditsSignature,
+): Promise<vscode.TextEdit[] | null | undefined> {
+  if (client === undefined || !vscode.workspace.isTrusted) {
+    return next(document, options, token);
+  }
+  const edits = await client.sendRequest(
+    DocumentFormattingRequest.type,
+    {
+      textDocument: client.code2ProtocolConverter.asTextDocumentIdentifier(document),
+      options: {
+        tabSize: options.tabSize,
+        insertSpaces: options.insertSpaces,
+        [RUN_SCRIPTS_OPTION]: true,
+      },
+    },
+    token,
+  );
+  return client.protocol2CodeConverter.asTextEdits(edits, token);
 }
 
 // This private command lets the language server reveal a source range in a document.
@@ -883,10 +901,11 @@ async function restorePagePositions(
   }
 }
 
-// Format a wiki, keeping each editor's cursor where it was in its page, even if formatting moves
-// the page. The editor keeps a cursor in place only if the text around it doesn't change, so the
-// cursors are moved back once the formatting edits are applied. A later change to the wiki, as
-// when the edits are discarded because it changed while being formatted, cancels this.
+// Format a wiki, running its scripts if they may run, and keep each editor's cursor where it was in
+// its page, even if formatting moves the page. The editor keeps a cursor in place only if the text
+// around it doesn't change, so the cursors are moved back once the formatting edits are applied. A
+// later change to the wiki, as when the edits are discarded because it changed while being
+// formatted, cancels this.
 async function formatKeepingPagePositions(
   document: vscode.TextDocument,
   options: vscode.FormattingOptions,
@@ -895,7 +914,7 @@ async function formatKeepingPagePositions(
 ): Promise<vscode.TextEdit[] | null | undefined> {
   // Note the cursors, then format.
   const positions = await pagePositions(document);
-  const edits = await next(document, options, token);
+  const edits = await formatRunningScripts(document, options, token, next);
   if (edits === null || edits === undefined || edits.length === 0 || positions.length === 0) {
     return edits;
   }
@@ -933,11 +952,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Expose the command that checks the wiki being edited again.
   context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
 
-  // Run script blocks through the language server, from its Run links or for a whole wiki.
-  context.subscriptions.push(
-    vscode.commands.registerCommand(RUN_SCRIPT_COMMAND, runScript),
-    vscode.commands.registerCommand(RUN_SCRIPTS_COMMAND, runActiveWikiScripts),
-  );
+  // Run script blocks through the language server from its Run links.
+  context.subscriptions.push(vscode.commands.registerCommand(RUN_SCRIPT_COMMAND, runScript));
 
   // Paste or drop files into saved wikis as links to them, copying them in if needed.
   context.subscriptions.push(

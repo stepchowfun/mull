@@ -61,7 +61,7 @@ This is my favorite breakfast:
 ::: [Pancakes] :::
 ```
 
-When the wiki is formatted, that line will be expanded into a copy of the page:
+When the wiki is formatted (e.g., on save), that line will be expanded into a copy of the page:
 
 ```md
 This is my favorite breakfast:
@@ -90,7 +90,16 @@ Suppose you have a list that you want to keep sorted:
 - Rice
 ```
 
-With a script, you can define a `sort` command and use it as follows:
+Mull can help with this; you just have to teach it about sorting. Create a file called `<wiki>_files/scripts/sort.sh` with the following contents:
+
+```sh
+#!/bin/sh
+sort "$@"
+```
+
+Then make it executable, e.g., with `chmod +x wiki_files/scripts/sort.sh`.
+
+Now you can wrap your list in a `sort` block:
 
 ```md
 ::: sort
@@ -102,14 +111,11 @@ With a script, you can define a `sort` command and use it as follows:
 :::
 ```
 
-Then Mull can help you maintain the sorted order. To make that work, create a file called `<wiki>_files/scripts/sort.sh` and make it executable (e.g., with `chmod +x wiki_files/scripts/sort.sh`). For sorting, you might use the following script:
+Mull will then sort the list automatically whenever the wiki is formatted. A `▶ Run` link will appear in the editor that you can use to run it manually.
 
-```sh
-#!/bin/sh
-sort "$@"
-```
+![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
 
-That script is defined to accept arguments, so for example you can sort in reverse order with `-r`:
+That sorting script is defined to accept arguments, so you can sort in reverse order with `-r`:
 
 ```md
 ::: sort -r
@@ -121,11 +127,7 @@ That script is defined to accept arguments, so for example you can sort in rever
 :::
 ```
 
-Running `mull run`, using the **Mull: Run Scripts** command, or clicking the `▶ Run` link above a block in the editor, gives each script its block's body on standard input, and replaces the body with what the script prints.
-
-![A computed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/computed_block.png)
-
-Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`).
+Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`) somewhere in the wiki.
 
 ### Orthography
 
@@ -170,8 +172,9 @@ Here are the supported command-line options:
 Usage: mull [COMMAND]
 
 Commands:
-  check            Check a wiki
-  format           Format a wiki (default)
+  check            Check that a wiki is valid and formatted, with its scripts run
+  format           Format a wiki, running its scripts (default)
+  page             Print the content of a page in a wiki
   language-server  Start the language server (editors use this)
   help             Print this message or the help of the given subcommand(s)
 
