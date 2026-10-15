@@ -41,7 +41,7 @@ Every wiki starts with a `Home` page. Mull requires that **every other page is *
 
 ### Linking to files and directories
 
-You can link to files like receipts, spreadsheets, videos, or any other type of file. Mull then checks that the files actually exist, and you can preview them without leaving the editor.
+You can link to files like photos, spreadsheets, or any other types of files. Mull then checks that the files actually exist, and you can preview them without leaving the editor.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
@@ -53,7 +53,7 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 
 ### Embedding a page inside another
 
-You can embed a page inside other pages. For example, you can embed a page called `Pancakes` as follows:
+A page can be embedded inside other pages, and Mull keeps all the copies in sync. For example, if you have a page called `Pancakes`, you can embed it into another page as follows:
 
 ```md
 This is my favorite breakfast:
@@ -74,9 +74,7 @@ This is my favorite breakfast:
 :::
 ```
 
-Mull keeps the copies synchronized. You can directly edit any of the copies, and formatting will propagate your edits to all the other copies, including the original.
-
-![An embed block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/embed_block.png)
+You can directly edit any of the copies, and formatting will propagate your edits to all the other copies, including the original.
 
 ### Extending Mull with scripts
 
@@ -129,9 +127,26 @@ Using a script in a block counts as linking to it, so it doesn't need to be link
 
 ### Orthography
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages. No escaping is necessary inside page titles or code.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
-![A fenced code block.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/code_block.png)
+````md
+# Home
+
+I'm learning Python, currently working on [Greeting script].
+
+# Greeting script
+
+```python
+def greet(name: str) -> str:
+    # Build a friendly message
+    return f"Hello, {name}!"
+
+for person in ["Ada", "Grace", "Linus"]:
+    print(greet(person))
+```
+````
+
+No escaping is necessary inside page titles or code.
 
 ## Keyboard shortcuts
 
