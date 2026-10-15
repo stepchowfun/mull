@@ -360,6 +360,70 @@ class PageFocus implements vscode.Disposable {
   }
 }
 
+// This dims the fences around blocks, including the hashes after closing fences, so a block's
+// contents stand out from its fences in each main editor showing a wiki. Fences inside fenced code
+// are code, so they're left alone.
+class FenceDimming implements vscode.Disposable {
+  // Dim the fences enough to recede like punctuation, while keeping them readable.
+  private readonly decorationType = vscode.window.createTextEditorDecorationType({
+    opacity: '0.5',
+  });
+
+  // Find an editor's fences and dim them.
+  public dim(editor: vscode.TextEditor): void {
+    const ranges: vscode.Range[] = [];
+    let codeFenceLength: number | undefined = undefined;
+    for (let line = 0; line < editor.document.lineCount; line += 1) {
+      const text = editor.document.lineAt(line).text;
+
+      // Skip fenced code, which starts and ends with lines starting with runs of the same number of
+      // backticks.
+      const codeFence = /^\s*(`{3,})/u.exec(text);
+      if (codeFence !== null) {
+        const length = codeFence[1].length;
+        if (codeFenceLength === undefined) {
+          codeFenceLength = length;
+        } else if (length === codeFenceLength) {
+          codeFenceLength = undefined;
+        }
+        continue;
+      }
+      if (codeFenceLength !== undefined) {
+        continue;
+      }
+
+      // Dim the run of colons starting a fence, and what ends it after any argument: the run of
+      // colons ending a block written on one line, or the hash after a closing fence.
+      const fence = /^(\s*)(:{3,})(.*?)((?:\s:{3,})?(?:\s#[0-9a-f]{12})?)\s*$/u.exec(text);
+      if (fence === null) {
+        continue;
+      }
+      const [, indentation, opening, argument, ending] = fence;
+      const openingEnd = indentation.length + opening.length;
+      const endingStart = openingEnd + argument.length;
+      ranges.push(new vscode.Range(line, indentation.length, line, openingEnd));
+      if (ending !== '') {
+        ranges.push(new vscode.Range(line, endingStart, line, endingStart + ending.length));
+      }
+    }
+    editor.setDecorations(this.decorationType, ranges);
+  }
+
+  // Dim the fences in every main editor showing a wiki.
+  public dimVisible(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (isMainWikiEditor(editor)) {
+        this.dim(editor);
+      }
+    }
+  }
+
+  // Release the decoration type, which removes the dimming.
+  public dispose(): void {
+    this.decorationType.dispose();
+  }
+}
+
 // These commands move through the pages visited in a wiki, like a browser's back and forward
 // buttons.
 const GO_BACK_COMMAND = 'mull.goBack';
@@ -978,6 +1042,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
   );
+
+  // Dim the fences around blocks, following edits and the visible editors.
+  const fenceDimming = new FenceDimming();
+  context.subscriptions.push(
+    fenceDimming,
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.languageId === 'mull') {
+        fenceDimming.dimVisible();
+      }
+    }),
+    vscode.window.onDidChangeVisibleTextEditors(() => {
+      fenceDimming.dimVisible();
+    }),
+  );
+  fenceDimming.dimVisible();
 
   // Keep a trail of the pages visited in each wiki, shown as a link back to the previous page, and
   // expose the commands that move along it. The trail follows the pages found above.
