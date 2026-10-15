@@ -31,14 +31,14 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 // Run the script blocks outside other blocks in a wiki without errors, in source order, after
 // formatting the wiki, then format the result. A block whose hash shows that its body is already
 // its script's output for its arguments is skipped unless every block is to be rerun, and each
-// block which runs is given a new hash. Return the wiki's new contents, along with an error for
-// each script block which failed, which is left as it was. The errors locate the blocks in the
-// formatted wiki.
+// block which runs is given a new hash. Return the wiki's new contents, along with a failure for
+// each script block which couldn't be run, which is left as it was. The failures' errors locate the
+// blocks in the formatted wiki.
 pub fn run(
     wiki_path: &Path,
     source_contents: &str,
     rerun: bool,
-) -> Result<(String, Vec<Error>), Vec<Error>> {
+) -> Result<(String, Vec<ScriptFailure>), Vec<Error>> {
     let formatted_contents = analyze(
         Some(wiki_path),
         source_contents,
@@ -54,7 +54,7 @@ pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
     rerun: bool,
-) -> Result<(String, Vec<Error>), Vec<Error>> {
+) -> Result<(String, Vec<ScriptFailure>), Vec<Error>> {
     // Read the wiki, whose blocks' bodies are already in their canonical form.
     let line_index = LineIndex::new(formatted_contents);
     let (wiki, errors) = parser::parse(Some(wiki_path), formatted_contents, &line_index);
@@ -91,13 +91,16 @@ pub fn run_formatted(
                     replacements.push((block.source_range, replacement));
                     ran.push((&page.title, index));
                 }
-                Err((message, reason)) => failures.push(Error::new(
-                    &message,
-                    Some(wiki_path),
-                    Some((formatted_contents, &line_index, block.name_source_range)),
-                    reason,
-                    None,
-                )),
+                Err(failure) => failures.push(ScriptFailure {
+                    error: Error::new(
+                        &failure.message,
+                        Some(wiki_path),
+                        Some((formatted_contents, &line_index, block.name_source_range)),
+                        failure.reason,
+                        None,
+                    ),
+                    notification: failure.notification,
+                }),
             }
         }
     }
@@ -203,8 +206,33 @@ fn hash(
     Some(format!("{:012x}", u64::from_be_bytes(prefix)))
 }
 
-// This is why a script block couldn't be run, with any underlying cause.
-type Failure = (String, Option<Arc<dyn std::error::Error + Send + Sync>>);
+// This is a script block which couldn't be run. The notification is a short message for an editor
+// to show instead of the error's own, for a script which itself failed: what it printed as errors,
+// or a plain statement that it failed if it printed none.
+#[derive(Debug)]
+pub struct ScriptFailure {
+    pub error: Error,
+    pub notification: Option<String>,
+}
+
+// This is why a script block couldn't be run, with any underlying cause and any notification to
+// show for it, as for a `ScriptFailure`.
+struct Failure {
+    message: String,
+    reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    notification: Option<String>,
+}
+
+impl Failure {
+    // Explain why a script block couldn't be run, with any underlying cause.
+    fn new(message: String, reason: Option<Arc<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self {
+            message,
+            reason,
+            notification: None,
+        }
+    }
+}
 
 // Run a script block, and write it anew with the script's output as its body, indented like its
 // opening fence and within fences longer than any in it.
@@ -218,15 +246,16 @@ fn run_block(
 ) -> Result<String, Failure> {
     // Run the script on the block's body. Paths are made absolute, since the script runs in the
     // file root rather than the current directory.
-    let script = script_path(file_root, &block.name).map_err(|message| (message, None))?;
+    let script =
+        script_path(file_root, &block.name).map_err(|message| Failure::new(message, None))?;
     let absolute_script = path::absolute(&script).map_err(|error| {
-        (
+        Failure::new(
             "Its path couldn't be found.".to_owned(),
             Some(Arc::new(error) as _),
         )
     })?;
     let absolute_file_root = path::absolute(file_root.path()).map_err(|error| {
-        (
+        Failure::new(
             "The file root couldn't be found.".to_owned(),
             Some(Arc::new(error) as _),
         )
@@ -245,14 +274,19 @@ fn run_block(
         &page.title.text(Context::Verbatim),
         SCRIPT_TIMEOUT,
     )
-    .map_err(|(message, reason)| {
-        (
-            format!(
-                "The script {} failed. {message}",
-                script_display(file_root, &script),
-            ),
-            reason,
-        )
+    .map_err(|failure| {
+        let display = script_display(file_root, &script);
+        Failure {
+            message: format!("The script {display} failed. {}", failure.message),
+            reason: failure.reason,
+            notification: failure.notification.map(|errors| {
+                if errors.is_empty() {
+                    format!("The script {display} failed.")
+                } else {
+                    errors
+                }
+            }),
+        }
     })?;
 
     // Require the output to be readable as a page's content.
@@ -263,7 +297,7 @@ fn run_block(
     let (output_wiki, errors) =
         parser::parse(None, &output_source, &LineIndex::new(&output_source));
     if !errors.is_empty() || output_wiki.pages.len() != 1 {
-        return Err((
+        return Err(Failure::new(
             format!(
                 "The output of {} can't be read as the content of a page.{}",
                 script_display(file_root, &script),
@@ -466,7 +500,7 @@ fn execute(
             } else {
                 "It couldn't be started.".to_owned()
             };
-            (message, Some(Arc::new(error) as _))
+            Failure::new(message, Some(Arc::new(error) as _))
         })?;
 
     // Feed the input and collect the output on separate threads, so neither can block the other.
@@ -493,7 +527,7 @@ fn execute(
     let start = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| {
-            (
+            Failure::new(
                 "It couldn't be awaited.".to_owned(),
                 Some(Arc::new(error) as _),
             )
@@ -504,7 +538,7 @@ fn execute(
             // Don't wait for the output, which a process the script started may hold open.
             let _ = child.kill();
             let _ = child.wait();
-            return Err((
+            return Err(Failure::new(
                 format!("It ran for longer than {} seconds.", timeout.as_secs_f64()),
                 None,
             ));
@@ -523,16 +557,21 @@ fn execute(
         }
     };
 
-    // Report a failure, or return the output.
+    // Report a failure, with what the script printed as errors for a notification if the script
+    // itself failed, or return the output.
     if !status.success() {
         let message = status.code().map_or_else(
             || "It was stopped by a signal.".to_owned(),
             |code| format!("It exited with status {code}."),
         );
-        return Err((with_errors(message), None));
+        return Err(Failure {
+            message: with_errors(message),
+            reason: None,
+            notification: Some(stderr.clone()),
+        });
     }
     String::from_utf8(stdout).map_err(|_| {
-        (
+        Failure::new(
             with_errors("Its output isn't valid UTF-8.".to_owned()),
             None,
         )
@@ -556,7 +595,7 @@ mod tests {
     use std::path::Path;
     #[cfg(unix)]
     use {
-        super::{execute, hide_hashes, lock_script_tests, run},
+        super::{ScriptFailure, execute, hide_hashes, lock_script_tests, run},
         crate::error::Error,
         std::{
             env, fs,
@@ -602,7 +641,7 @@ mod tests {
         }
 
         // Run the wiki's scripts, with the hashes after closing fences hidden.
-        fn run(&self) -> Result<(String, Vec<Error>), Vec<Error>> {
+        fn run(&self) -> Result<(String, Vec<ScriptFailure>), Vec<Error>> {
             run(
                 &self.path(),
                 &fs::read_to_string(self.path()).unwrap(),
@@ -673,15 +712,20 @@ mod tests {
     }
 
     // Report a script which fails, isn't executable, or prints something which isn't a page's
-    // content, at its name, leaving its block as it was.
+    // content, at its name, leaving its block as it was. A script which fails is summarized by what
+    // it printed as errors, or by a plain statement that it failed if it printed none.
     #[cfg(unix)]
     #[test]
     fn failed_runs() {
         let _lock = lock_script_tests();
         let wiki = TestWiki::new(
-            "# Home\n\n[/scripts/]\n\n::: fail :::\n\n::: bracket :::\n\n::: plain :::\n",
+            concat!(
+                "# Home\n\n[/scripts/]\n\n",
+                "::: fail :::\n\n::: bracket :::\n\n::: plain :::\n\n::: quiet :::\n",
+            ),
             &[
                 ("fail.sh", "#!/bin/sh\necho nope >&2\nexit 3\n"),
+                ("quiet.sh", "#!/bin/sh\nexit 1\n"),
                 ("bracket.sh", "#!/bin/sh\necho ]\n"),
                 ("plain.txt", "Not a script."),
             ],
@@ -691,8 +735,11 @@ mod tests {
 
         let (contents, failures) = wiki.run().unwrap();
         assert_eq!(contents, fs::read_to_string(wiki.path()).unwrap());
-        let messages = failures.iter().map(ToString::to_string).collect::<Vec<_>>();
-        assert_eq!(messages.len(), 3);
+        let messages = failures
+            .iter()
+            .map(|failure| failure.error.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 4);
         assert!(
             messages[0]
                 .contains("The script `/scripts/fail.sh` failed. It exited with status 3.\n\nnope"),
@@ -702,6 +749,21 @@ mod tests {
         ));
         assert!(
             messages[2].contains("The script `/scripts/plain.txt` failed. It isn't executable."),
+        );
+        assert!(
+            messages[3].contains("The script `/scripts/quiet.sh` failed. It exited with status 1."),
+        );
+        assert_eq!(
+            failures
+                .iter()
+                .map(|failure| failure.notification.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("nope"),
+                None,
+                None,
+                Some("The script `/scripts/quiet.sh` failed."),
+            ],
         );
     }
 
@@ -764,7 +826,7 @@ mod tests {
         let _lock = lock_script_tests();
         let wiki = TestWiki::new("# Home\n", &[("slow.sh", "#!/bin/sh\nsleep 5\n")]);
 
-        let (message, _reason) = execute(
+        let failure = execute(
             &wiki.0.join("wiki_files/scripts/slow.sh"),
             &[],
             "",
@@ -774,6 +836,6 @@ mod tests {
             Duration::from_millis(100),
         )
         .unwrap_err();
-        assert_eq!(message, "It ran for longer than 0.1 seconds.");
+        assert_eq!(failure.message, "It ran for longer than 0.1 seconds.");
     }
 }

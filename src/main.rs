@@ -236,8 +236,17 @@ async fn entry() -> Result<(), Vec<Error>> {
             .to_string(),
             Vec::new(),
         ),
-        Scripts::Run => scripts::run(&wiki_path, &wiki_contents, false)?,
-        Scripts::Rerun => scripts::run(&wiki_path, &wiki_contents, true)?,
+        Scripts::Run | Scripts::Rerun => {
+            let (rendered_wiki, failures) = scripts::run(
+                &wiki_path,
+                &wiki_contents,
+                matches!(scripts_to_run, Scripts::Rerun),
+            )?;
+            (
+                rendered_wiki,
+                failures.into_iter().map(|failure| failure.error).collect(),
+            )
+        }
     };
 
     // Accept a canonical wiki, then either format a noncanonical one or reject it with a diff,
