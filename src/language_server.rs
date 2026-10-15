@@ -401,21 +401,28 @@ impl Backend {
         self.client.show_message(message_type, message).await;
     }
 
-    // Report errors from running scripts. A notification shows only the first paragraph of each
-    // message, since notifications don't keep line breaks, and points to the output, where the
-    // whole error is logged, if there's more to it, such as what the script printed as errors.
-    async fn report_script_errors(&self, errors: &[Error]) {
-        for error in errors {
+    // Report the script blocks which couldn't be run, logging each whole error to the output. A
+    // script which itself failed is shown as just what it printed as errors, or as a plain
+    // statement that it failed. Otherwise, a notification shows only the first paragraph of the
+    // error, since notifications don't keep line breaks, and points to the output if there's more.
+    async fn report_script_errors(&self, failures: &[scripts::ScriptFailure]) {
+        for scripts::ScriptFailure {
+            error,
+            notification,
+        } in failures
+        {
             self.client
                 .log_message(MessageType::ERROR, error.to_string())
                 .await;
             let message = error.message();
             let summary = message.split("\n\n").next().unwrap_or(message);
-            let notification = if summary.len() < message.len() || error.reason().is_some() {
-                format!("{summary} See the Mull output for details.")
-            } else {
-                summary.to_owned()
-            };
+            let notification = notification.clone().unwrap_or_else(|| {
+                if summary.len() < message.len() || error.reason().is_some() {
+                    format!("{summary} See the Mull output for details.")
+                } else {
+                    summary.to_owned()
+                }
+            });
             self.client
                 .show_message(MessageType::ERROR, notification)
                 .await;
@@ -2230,12 +2237,12 @@ fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<V
 }
 
 // Format a wiki as formatting_for_document does, running its scripts once their blocks are
-// formatted, and return the edits along with an error for each script which failed. An unsaved
-// wiki has no scripts to run, so it's only formatted.
+// formatted, and return the edits along with a failure for each script block which couldn't be run.
+// An unsaved wiki has no scripts to run, so it's only formatted.
 fn formatting_with_scripts_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
-) -> (Option<Vec<TextEdit>>, Vec<Error>) {
+) -> (Option<Vec<TextEdit>>, Vec<scripts::ScriptFailure>) {
     // Format an unsaved wiki as usual.
     let Some(wiki_path) = snapshot.path.as_deref() else {
         return (formatting_for_document(snapshot, baseline), Vec::new());
@@ -5259,7 +5266,13 @@ mod tests {
             hide_hashes(&edits.unwrap()[0].new_text),
             "# Home\n\n::: sort\n- a\n- b\n::: #hash\n\n::: fail :::\n",
         );
-        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures
+                .iter()
+                .map(|failure| failure.notification.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("The script `/scripts/fail.sh` failed.")],
+        );
         let (edits, failures) = formatting_with_scripts_for_document(
             &snapshot(&untitled_uri(), source),
             &Baseline::new(),
