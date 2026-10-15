@@ -113,7 +113,7 @@ The contents of my pantry:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can for example sort in reverse order with `::: sort -r`.
+Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
 
 Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`) somewhere in the wiki.
 
