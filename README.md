@@ -17,7 +17,7 @@ A *wiki* is a text file with a `.mull` extension. It contains *pages* which link
 ```md
 # Home
 
-Try my [Pancakes] with fresh [Lemons].
+My go-to breakfast is [Pancakes] with fresh [Lemons].
 
 # Lemons
 
