@@ -118,6 +118,8 @@ Mull will then sort the list automatically whenever the wiki is formatted (e.g.,
 That sorting script accepts arguments, so you can sort in reverse order with `-r`:
 
 ```md
+The contents of my pantry:
+
 ::: sort -r
 - Rice
 - Olive oil
