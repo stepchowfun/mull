@@ -41,13 +41,13 @@ Every wiki starts with a `Home` page. Mull requires that **every other page is *
 
 ### Linking to files and directories
 
-If you've got receipts, spreadsheets, or any other kinds of external files you want to track, you can link to them from the wiki. Such files go in a directory next to the wiki which has the name of the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`.
-
-If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`. Mull will check that those things actually exist, and you can preview them without leaving the editor.
+You can link to files like receipts, spreadsheets, videos, or any other type of file. Mull then checks that the files actually exist, and you can preview them without leaving the editor.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Autocomplete will help you enter the names of files and directories. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor, and they'll get copied into `<wiki>_files` and linked to automatically.
+Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`.
+
+Autocomplete can help you enter the names of files and directories when linking to them. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor.
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it. An empty directory needs a link of its own.
 
