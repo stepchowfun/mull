@@ -138,17 +138,18 @@ To use a special symbol like `[` or `]` literally, put a backslash before it, li
 ````md
 # Home
 
-I'm learning Python, currently working on [Greeting script].
+I'm learning Python, currently working on a [Dice game].
 
-# Greeting script
+# Dice game
 
 ```python
-def greet(name: str) -> str:
-    # Build a friendly message
-    return f"Hello, {name}!"
+import random
 
-for person in ["Ada", "Grace", "Linus"]:
-    print(greet(person))
+for turn in range(3):
+    roll = random.randint(1, 6)
+    print(f"Roll {turn + 1}: {roll}")
+
+print("Thanks for playing!")
 ```
 ````
 
