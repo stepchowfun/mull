@@ -15,10 +15,12 @@ for (const line of readFileSync(0, 'utf8').split('\n')) {
   }
 }
 
-// Sort the items by their top-level lines, in descending order with `desc`.
+// Sort the items by their top-level lines, ignoring any leading characters which aren't letters or
+// digits, such as a bullet or a link's opening bracket, in descending order with `desc`.
 const direction = process.argv.includes('desc') ? -1 : 1;
 const collator = new Intl.Collator();
-items.sort((a, b) => direction * collator.compare(a[0], b[0]));
+const key = (line) => line.replace(/^[^\p{L}\p{N}]+/u, '');
+items.sort((a, b) => direction * collator.compare(key(a[0]), key(b[0])));
 
 // Print each item with its nested lines.
 for (const item of items) {

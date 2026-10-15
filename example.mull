@@ -168,6 +168,14 @@ The important terms:
 - The landlord handles appliance repairs. I handle light bulbs and smoke detector batteries.
 - Balcony planters are allowed as long as nothing drains onto the unit below.
 
+Key dates, kept in order by [/scripts/chrono.js]:
+
+::: chrono
+- 2025-09-01: The lease starts
+- 2026-07-02: Renewal notice due
+- 2026-08-31: The lease ends
+::: #7527ec7139ae
+
 Rent is the biggest line in the [Budget]. The landlord is responsive, but requests go through the building's portal rather than email.
 
 # Cooking
@@ -327,7 +335,7 @@ Ingredients I keep stocked, because almost every recipe uses one of them, kept i
 - [Parmesan]
 - [Rice]
   - Short-grain, arborio, and jasmine
-::: #e0d9fec947a3
+::: #57b4d3f06a45
 
 Also always on hand: canned tomatoes, onions, lemons, soy sauce, eggs, butter, flour, and dried pasta.
 
