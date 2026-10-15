@@ -35,9 +35,9 @@ Each page starts with a `# Title`, followed by the contents of the page. To link
 
 ![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-Mull formats the wiki when you save the file, or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
+Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
 
-Every wiki starts with a `Home` page. Mull requires that **every other page is *reachable* (directly or indirectly) by following links, starting from `Home`.** This rule promotes a basic form of organization that doesn't involve any hierarchical structure. In computer jargon, pages serve the roles traditionally filled by both files and directories.
+Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
 
 ### Linking to files and directories
 
