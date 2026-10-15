@@ -17,7 +17,7 @@ A *wiki* is a text file with a `.mull` extension. It contains *pages* which link
 ```md
 # Home
 
-Try my [Pancakes] with fresh [Lemons].
+My go-to breakfast is [Pancakes] with fresh [Lemons].
 
 # Lemons
 
@@ -113,21 +113,7 @@ The contents of my pantry:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save).
-
-That sorting script accepts arguments, so you can sort in reverse order with `-r`:
-
-```md
-The contents of my pantry:
-
-::: sort -r
-- Rice
-- Olive oil
-- Miso
-- Kosher salt
-- Garlic
-:::
-```
+Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
 
 Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`) somewhere in the wiki.
 
@@ -138,17 +124,18 @@ To use a special symbol like `[` or `]` literally, put a backslash before it, li
 ````md
 # Home
 
-I'm learning Python, currently working on [Greeting script].
+I'm learning Python, currently working on a [Dice game].
 
-# Greeting script
+# Dice game
 
 ```python
-def greet(name: str) -> str:
-    # Build a friendly message
-    return f"Hello, {name}!"
+import random
 
-for person in ["Ada", "Grace", "Linus"]:
-    print(greet(person))
+for turn in range(3):
+    roll = random.randint(1, 6)
+    print(f"Roll {turn + 1}: {roll}")
+
+print("Thanks for playing!")
 ```
 ````
 
