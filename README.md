@@ -41,19 +41,19 @@ Every wiki starts with a `Home` page. Mull requires that **every other page is *
 
 ### Linking to files and directories
 
-You can link to files like photos, spreadsheets, or any other types of files. Mull then checks that the files actually exist, and you can preview them without leaving the editor.
+You can link to files like photos, spreadsheets, or anything else. Mull checks that the linked files actually exist, and you can preview them without leaving the editor.
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to subdirectories like `[/photos/]`.
+Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to directories like `[/photos/]`.
 
-Autocomplete can help you enter the names of files and directories when linking to them. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor.
+Autocomplete helps you enter the names of files and directories when linking to them. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor.
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it. An empty directory needs a link of its own.
 
 ### Embedding a page inside another
 
-A page can be embedded inside other pages, and Mull keeps all the copies in sync. For example, if you have a page called `Pancakes`, you can embed it into another page as follows:
+A page can be embedded inside other pages, and Mull keeps all the copies in sync. For example, if you have a page called `Pancakes`, you can embed it into another page like this:
 
 ```md
 This is my favorite breakfast:
@@ -81,6 +81,8 @@ You can directly edit any of the copies, and formatting will propagate your edit
 Suppose you have a list that you want to keep sorted:
 
 ```md
+The contents of my pantry:
+
 - Garlic
 - Kosher salt
 - Miso
@@ -95,11 +97,13 @@ Mull can help with this; you just have to teach it about sorting. Create a file 
 sort "$@"
 ```
 
-Then make it executable with `chmod +x <wiki>_files/scripts/sort.sh`.
+Make it executable with `chmod +x <wiki>_files/scripts/sort.sh`.
 
-Now you can wrap your list in a `sort` block:
+Now you can put the list in a `sort` block:
 
 ```md
+The contents of my pantry:
+
 ::: sort
 - Garlic
 - Kosher salt
@@ -109,9 +113,9 @@ Now you can wrap your list in a `sort` block:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted.
+Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save).
 
-That sorting script is defined to accept arguments, so you can sort in reverse order with `-r`:
+That sorting script accepts arguments, so you can sort in reverse order with `-r`:
 
 ```md
 ::: sort -r
@@ -125,7 +129,7 @@ That sorting script is defined to accept arguments, so you can sort in reverse o
 
 Using a script in a block counts as linking to it, so it doesn't need to be linked to from the wiki like other files in `<wiki>_files`. An unused script still needs a link (e.g., `[/scripts/sort.sh]`) somewhere in the wiki.
 
-### Orthography
+### Escaping and code
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
