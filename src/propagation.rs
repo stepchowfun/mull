@@ -565,13 +565,13 @@ mod tests {
     // pages.
     #[test]
     fn changes_which_put_pages_in_themselves() {
-        for opened_title in ["Pancakes", "Syrup"] {
+        for shown_title in ["Pancakes", "Syrup"] {
             let source = format!(
                 concat!(
                     "# Home\n\n::: [Pancakes]\n::: [{}] :::\n\nMix.\n:::\n\n",
                     "# Pancakes\n\nMix.\n\n# Syrup\n\n::: [Pancakes]\nMix.\n:::\n",
                 ),
-                opened_title,
+                shown_title,
             );
             let errors = format_test(&source, &[("Pancakes", "Mix.")]).unwrap_err();
 

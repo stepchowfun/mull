@@ -78,8 +78,8 @@ impl Wiki {
         let content = self.canonical_content(page, |portal| {
             self.pages
                 .get(&portal.title)
-                .filter(|opened_page| !enclosing_pages.contains(&opened_page.title))
-                .map(|opened_page| self.rendered_content(opened_page, enclosing_pages))
+                .filter(|shown_page| !enclosing_pages.contains(&shown_page.title))
+                .map(|shown_page| self.rendered_content(shown_page, enclosing_pages))
         });
         enclosing_pages.pop();
         content
@@ -257,7 +257,7 @@ impl fmt::Display for Wiki {
 pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
-    pub portals: Vec<Portal>, // In source order, excluding portals within the copies made by others
+    pub portals: Vec<Portal>, // In source order, excluding those in copies other portals show
     pub script_blocks: Vec<ScriptBlock>, // In source order, excluding those within other blocks
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange, // The complete page without leading or trailing whitespace

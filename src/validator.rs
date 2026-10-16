@@ -198,10 +198,10 @@ fn cycle_closing_portals<'a>(wiki: &'a Wiki, pages: &[&'a Page]) -> Vec<&'a Port
             if in_progress.contains(&portal.title) {
                 cycle_closing_portals.push(portal);
             } else if !done.contains(&portal.title)
-                && let Some(opened_page) = wiki.pages.get(&portal.title)
+                && let Some(shown_page) = wiki.pages.get(&portal.title)
             {
-                in_progress.insert(&opened_page.title);
-                path.push((opened_page, 0));
+                in_progress.insert(&shown_page.title);
+                path.push((shown_page, 0));
             }
         }
     }
