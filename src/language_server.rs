@@ -1475,7 +1475,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> Option<
     Some(code_block("mull", &lines.join("\n")))
 }
 
-// Show an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
+// Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
 // size, keeping its aspect ratio. An image whose size can't be read, such as an SVG, just gets the
 // maximum width. Images are recognized by their extensions, and other files have no image preview.
 fn image_preview(path: &Path) -> Option<String> {
@@ -1488,7 +1488,7 @@ fn image_preview(path: &Path) -> Option<String> {
         return None;
     }
 
-    // Show the image, sized to fit. The editor shows an image turned as its EXIF orientation says,
+    // Embed the image, sized to fit. The editor shows an image turned as its EXIF orientation says,
     // so a quarter turn trades its width and height.
     let dimensions = match imagesize::size(path) {
         Ok(size) => {
