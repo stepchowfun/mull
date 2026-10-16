@@ -4,7 +4,7 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     parser,
-    wiki::{Embed, PageTitle, TITLE_PREFIX, Wiki},
+    wiki::{PageTitle, Portal, TITLE_PREFIX, Wiki},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -12,20 +12,20 @@ use std::{
     sync::Arc,
 };
 
-// This is the own content of each embedded page as of the last time all of its instances agreed,
-// which tells which instances have been changed since. A page without a baseline has no record of
-// agreeing, so its instances must agree already.
+// This is the own content of each page shown in portals as of the last time all of its instances
+// agreed, which tells which instances have been changed since. A page without a baseline has no
+// record of agreeing, so its instances must agree already.
 pub type Baseline = HashMap<PageTitle, Arc<str>>;
 
-// These are the instances of each embedded page, with the page itself first, along with the copies
-// which can't be read as a page's content and so can't be compared with their pages.
+// These are the instances of each page shown in portals, with the page itself first, along with the
+// copies which can't be read as a page's content and so can't be compared with their pages.
 #[derive(Debug, Default)]
 pub struct Instances {
     pages: HashMap<PageTitle, Vec<Instance>>,
     unreadable_copies: Vec<(PageTitle, SourceRange)>,
 }
 
-// This is an instance of an embedded page, which is either the page itself or a copy of it,
+// This is an instance of a page shown in portals, which is either the page itself or a copy of it,
 // possibly within another copy. Errors about it are reported at the page's title or at the link in
 // the copy's opening fence.
 #[derive(Debug)]
@@ -34,62 +34,62 @@ struct Instance {
     source_range: SourceRange,
 }
 
-// Collect the instances of each embedded page in a wiki without syntax errors.
+// Collect the instances of each page shown in portals in a wiki without syntax errors.
 pub fn instances(wiki: &Wiki) -> Instances {
     let mut instances = Instances::default();
     let mut pages = wiki.pages.values().collect::<Vec<_>>();
     pages.sort_by_key(|page| page.source_range.start);
     for page in pages {
-        for embed in &page.embeds {
-            collect_copies(wiki, wiki, None, embed, &mut instances);
+        for portal in &page.portals {
+            collect_copies(wiki, wiki, None, portal, &mut instances);
         }
     }
     instances
 }
 
-// Record the copy an embed shows in a wiki, which is either the wiki itself or a copy read as a
-// page with a map back to the wiki, and the copies within it, as instances of the pages they embed.
-// A copy of a missing page isn't an instance of anything, and an embed written on one line has no
+// Record the copy a portal shows in a wiki, which is either the wiki itself or a copy read as a
+// page with a map back to the wiki, and the copies within it, as instances of the pages they show.
+// A copy of a missing page isn't an instance of anything, and a portal written on one line has no
 // copy yet.
 fn collect_copies(
     wiki: &Wiki,
-    embedding_wiki: &Wiki,
+    containing_wiki: &Wiki,
     copy_map: Option<&CopyMap>,
-    embed: &Embed,
+    portal: &Portal,
     instances: &mut Instances,
 ) {
-    // Find the embedded page, the copy, and where to report it.
-    let Some(page) = wiki.pages.get(&embed.title) else {
+    // Find the page the portal shows, the copy, and where to report it.
+    let Some(page) = wiki.pages.get(&portal.title) else {
         return;
     };
-    let Some((copy, line_starts)) = embedding_wiki.body(embed.source_range) else {
+    let Some((copy, line_starts)) = containing_wiki.body(portal.source_range) else {
         return;
     };
-    let source_range = copy_map.map_or(embed.link_source_range, |copy_map| SourceRange {
-        start: copy_map.offset(embed.link_source_range.start),
-        end: copy_map.offset(embed.link_source_range.end),
+    let source_range = copy_map.map_or(portal.link_source_range, |copy_map| SourceRange {
+        start: copy_map.offset(portal.link_source_range.start),
+        end: copy_map.offset(portal.link_source_range.end),
     });
 
     // Read the copy as the content of a page of its own, which fails if a line in it would start
     // another page.
-    let title_line = format!("{TITLE_PREFIX}{}\n\n", embed.title.text(Context::Verbatim));
+    let title_line = format!("{TITLE_PREFIX}{}\n\n", portal.title.text(Context::Verbatim));
     let copy_source = format!("{title_line}{copy}");
     let (copy_wiki, errors) = parser::parse(None, &copy_source, &LineIndex::new(&copy_source));
     let Some(copy_page) = copy_wiki
         .pages
-        .get(&embed.title)
+        .get(&portal.title)
         .filter(|_| errors.is_empty() && copy_wiki.pages.len() == 1)
     else {
         instances
             .unreadable_copies
-            .push((embed.title.clone(), source_range));
+            .push((portal.title.clone(), source_range));
         return;
     };
 
     // Record the copy after the page itself, followed by the copies within it.
     instances
         .pages
-        .entry(embed.title.clone())
+        .entry(portal.title.clone())
         .or_insert_with(|| {
             vec![Instance {
                 content: wiki.own_content(page),
@@ -105,12 +105,12 @@ fn collect_copies(
         line_starts,
         outer: copy_map,
     };
-    for nested_embed in &copy_page.embeds {
+    for nested_portal in &copy_page.portals {
         collect_copies(
             wiki,
             &copy_wiki,
             Some(&nested_copy_map),
-            nested_embed,
+            nested_portal,
             instances,
         );
     }
@@ -139,7 +139,7 @@ impl CopyMap<'_> {
     }
 }
 
-// List the own content of each embedded page whose instances all agree, which becomes its
+// List the own content of each page shown in portals whose instances all agree, which becomes its
 // baseline.
 pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &str)> {
     let unreadable_titles = instances
@@ -159,8 +159,8 @@ pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &s
         .map(|(title, page_instances)| (title, page_instances[0].content.as_str()))
 }
 
-// Format a wiki without syntax errors, propagating the changes to each embedded page to all of its
-// instances.
+// Format a wiki without syntax errors, propagating the changes to each page shown in portals to all
+// of its instances.
 pub fn format(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -181,11 +181,11 @@ pub fn format(
     .map(|propagated_wiki| propagated_wiki.to_string())
 }
 
-// Rewrite a wiki so each embedded page has the content to propagate to all of its instances: the
-// content of the instances which differ from its baseline, if they all agree, or its own content if
-// none do. Without a baseline, all of its instances must agree. Report the instances which were
-// changed differently, changes which would make a page embed itself, and copies which can't be
-// compared with their pages.
+// Rewrite a wiki so each page shown in portals has the content to propagate to all of its
+// instances: the content of the instances which differ from its baseline, if they all agree, or its
+// own content if none do. Without a baseline, all of its instances must agree. Report the instances
+// which were changed differently, changes which would put a portal to a page inside itself, and
+// copies which can't be compared with their pages.
 pub fn propagate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -288,12 +288,12 @@ pub fn propagate(
         return Err(syntax_errors);
     }
 
-    // Report the changed instances of each page which would embed itself, directly or through
-    // other pages, once its changes were propagated. Its copies couldn't be filled in.
+    // Report the changed instances of each page which would contain a portal to itself, directly or
+    // through other pages, once its changes were propagated. Its copies couldn't be filled in.
     for (page, _content, changed_instances) in &replacements {
-        if embeds_itself(&propagated_wiki, &page.title) {
+        if has_portal_to_itself(&propagated_wiki, &page.title) {
             let message = format!(
-                "Propagating this change would make {} embed itself.",
+                "Propagating this change would put a portal to {} inside itself.",
                 page.title.code_str(),
             );
             errors.extend(
@@ -311,21 +311,21 @@ pub fn propagate(
     }
 }
 
-// Determine whether a page embeds itself, directly or through other pages.
-fn embeds_itself(wiki: &Wiki, title: &PageTitle) -> bool {
+// Determine whether a page contains a portal to itself, directly or through other pages.
+fn has_portal_to_itself(wiki: &Wiki, title: &PageTitle) -> bool {
     let mut visited_titles = HashSet::new();
     let mut pending_titles = vec![title];
     while let Some(pending_title) = pending_titles.pop() {
-        for embed in wiki
+        for portal in wiki
             .pages
             .get(pending_title)
-            .map_or(&[][..], |page| &page.embeds)
+            .map_or(&[][..], |page| &page.portals)
         {
-            if embed.title == *title {
+            if portal.title == *title {
                 return true;
             }
-            if visited_titles.insert(&embed.title) {
-                pending_titles.push(&embed.title);
+            if visited_titles.insert(&portal.title) {
+                pending_titles.push(&portal.title);
             }
         }
     }
@@ -384,7 +384,7 @@ mod tests {
         );
     }
 
-    // Treat a copy within another copy as an instance of the page it embeds, but not as part of the
+    // Treat a copy within another copy as an instance of the page it shows, but not as part of the
     // instance containing it.
     #[test]
     fn nested_copies() {
@@ -415,9 +415,9 @@ mod tests {
         );
     }
 
-    // Fill in an embed written on one line, which isn't an instance until then.
+    // Fill in a portal written on one line, which isn't an instance until then.
     #[test]
-    fn one_line_embeds() {
+    fn one_line_portals() {
         assert_eq!(
             format_test("# Home\n\n::: [Pancakes] :::\n\n# Pancakes\n\nMix.\n", &[]).unwrap(),
             "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.\n",
@@ -561,23 +561,24 @@ mod tests {
         );
     }
 
-    // Report a change which would make a page embed itself, directly or through other pages.
+    // Report a change which would put a portal to a page inside itself, directly or through other
+    // pages.
     #[test]
-    fn changes_which_embed_their_pages() {
-        for embedded_title in ["Pancakes", "Syrup"] {
+    fn changes_which_put_pages_in_themselves() {
+        for shown_title in ["Pancakes", "Syrup"] {
             let source = format!(
                 concat!(
                     "# Home\n\n::: [Pancakes]\n::: [{}] :::\n\nMix.\n:::\n\n",
                     "# Pancakes\n\nMix.\n\n# Syrup\n\n::: [Pancakes]\nMix.\n:::\n",
                 ),
-                embedded_title,
+                shown_title,
             );
             let errors = format_test(&source, &[("Pancakes", "Mix.")]).unwrap_err();
 
             assert_eq!(error_texts(&source, &errors), vec!["[Pancakes]"]);
             assert_fails!(
                 Err::<(), _>(errors),
-                "Propagating this change would make `Pancakes` embed itself.",
+                "Propagating this change would put a portal to `Pancakes` inside itself.",
             );
         }
     }
