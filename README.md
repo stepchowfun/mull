@@ -51,7 +51,7 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 
 ### Opening a portal to another page
 
-A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps the two in sync: edit either one, and the other follows. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
+A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
 This is my favorite breakfast:
