@@ -103,7 +103,7 @@ async function reportVersionMismatch(
 // Retain the active client so it can be stopped when the extension is deactivated.
 let client: LanguageClient | undefined;
 
-// Determine whether an editor is one of the main editors showing a wiki. Other editors, such as
+// Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
 // the preview in the references view, have no view column, and are left alone.
 function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
   return (

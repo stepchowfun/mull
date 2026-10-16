@@ -59,7 +59,7 @@
           },
           "patterns": [
             {
-              "include": "#code-languages"
+              "include": "#embedded-code"
             }
           ]
         },
@@ -69,7 +69,7 @@
         }
       ]
     },
-    "code-languages": {
+    "embedded-code": {
       "patterns": [
         {
           "contentName": "meta.embedded.block.bat.mull",
