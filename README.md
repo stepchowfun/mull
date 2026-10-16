@@ -6,8 +6,6 @@
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
-Since Mull runs in Visual Studio Code or Cursor, you can use it with your favorite settings and extensions. The screenshot above features the [Berkeley Mono](https://usgraphics.com/products/berkeley-mono) typeface with the [Monokai Pro (Filter Spectrum)](https://monokai.pro/) color theme.
-
 ## A quick tour
 
 ### Pages and links
