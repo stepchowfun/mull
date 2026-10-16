@@ -49,9 +49,9 @@ Autocomplete helps you enter the names of files and directories when linking to 
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it. An empty directory needs a link of its own.
 
-### Embedding a page inside another
+### Opening a portal to another page
 
-A page can be embedded inside other pages, and Mull keeps all the copies in sync. For example, if you have a page called `Pancakes`, you can embed it into another page like this:
+A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps the two in sync: edit either one, and the other follows. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
 This is my favorite breakfast:
@@ -72,7 +72,7 @@ This is my favorite breakfast:
 :::
 ```
 
-You can directly edit any of the copies, and formatting will propagate your edits to all the other copies, including the original.
+You can edit the page or any of its portals, and formatting will propagate your edits to the rest.
 
 ### Extending Mull with scripts
 

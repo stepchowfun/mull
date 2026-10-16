@@ -5,7 +5,7 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        Embed, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle, Portal,
         ScriptBlock, TITLE_PREFIX, Wiki,
     },
 };
@@ -15,13 +15,13 @@ use std::{collections::HashSet, path::Path};
 const MIN_MULTILINE_CODE_LENGTH: usize = 3;
 
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
-// a valid one which hasn't been used, where it starts, and the links, embeds, and script blocks in
+// a valid one which hasn't been used, where it starts, and the links, portals, and script blocks in
 // its content.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
     links: Vec<Link>,
-    embeds: Vec<Embed>,
+    portals: Vec<Portal>,
     script_blocks: Vec<ScriptBlock>,
 }
 
@@ -34,11 +34,11 @@ struct OpenBlock {
     one_line_end: Option<usize>, // The end of the line of a block written on one line
 }
 
-// These are the kinds of blocks. An embed's page is known once the link in its opening fence has
+// These are the kinds of blocks. A portal's page is known once the link in its opening fence has
 // been read, if that link names a page. A script block's name is known if it's valid, along with
 // where it and the arguments after it are.
 enum OpenBlockKind {
-    Embed(Option<(PageTitle, SourceRange)>),
+    Portal(Option<(PageTitle, SourceRange)>),
     Script(Option<(String, SourceRange, SourceRange)>),
 }
 
@@ -51,23 +51,23 @@ struct OpenLink {
 // Parse source contents into a scored wiki in a single pass, with source ranges for every page and
 // link, along with any syntax errors in source order. A title line starts a region, which is a page
 // if its title is valid. In the content, code starts with a run of backticks and ends at the next
-// run of exactly as many backticks, on the same line for a run of one or two, and its text is
-// taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
-// plain characters in it. Outside code and title lines, a backslash escapes the next character, as
+// run of exactly as many backticks, on the same line for a run of one or two, and its text is taken
+// as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
+// characters in it. Outside code and title lines, a backslash escapes the next character, as
 // allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
-// run of colons, after any indentation, is a fence. An opening fence starts a block: it embeds the
-// page named by the link after it, or names the script which computes the block's body, followed by
-// the script's arguments. A closing fence consists of colons, followed by a hash only for a script
-// block, and closes the innermost open block with a fence of the same length. A block can also be
-// written on one line, closed by a run of colons after its argument, for formatting or its script
-// to fill in. The wiki retains as much of the source as possible so it can still be validated and
-// navigated, but it omits the content of duplicate pages, invalid titles, and anything before the
-// first title, so it mustn't be rendered if there are any syntax errors. The line index locates
-// syntax errors in their source listings.
+// run of colons, after any indentation, is a fence. An opening fence starts a block: it's a portal
+// to the page named by the link after it, or names the script which computes the block's body,
+// followed by the script's arguments. A closing fence consists of colons, followed by a hash only
+// for a script block, and closes the innermost open block with a fence of the same length. A block
+// can also be written on one line, closed by a run of colons after its argument, for formatting or
+// its script to fill in. The wiki retains as much of the source as possible so it can still be
+// validated and navigated, but it omits the content of duplicate pages, invalid titles, and
+// anything before the first title, so it mustn't be rendered if there are any syntax errors. The
+// line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
-              embeds, and line being read."
+              portals, and line being read."
 )]
 pub fn parse(
     source_path: Option<&Path>,
@@ -82,7 +82,7 @@ pub fn parse(
         title: None,
         source_start: 0,
         links: Vec::new(),
-        embeds: Vec::new(),
+        portals: Vec::new(),
         script_blocks: Vec::new(),
     };
     let mut can_report_content_before_title = true;
@@ -125,7 +125,7 @@ pub fn parse(
             ));
         };
 
-    // Once an embed's opening fence has been read, find the page named by the link which makes up
+    // Once a portal's opening fence has been read, find the page named by the link which makes up
     // its argument, which must be the only link read since the fence started.
     let read_opening_fence = |open_block: &mut OpenBlock,
                               links: &[Link],
@@ -140,19 +140,19 @@ pub fn parse(
                     source_range,
                 },
             ] if *source_range == argument_source_range => {
-                open_block.kind = OpenBlockKind::Embed(Some((title.clone(), *source_range)));
+                open_block.kind = OpenBlockKind::Portal(Some((title.clone(), *source_range)));
             }
             [Link::Malformed { .. }] => {}
             [Link::Filesystem { source_range, .. }] if *source_range == argument_source_range => {
                 errors.push(syntax_error(
-                    "Only pages can be embedded.",
+                    "A portal can only show a page.",
                     *source_range,
                     None,
                 ));
             }
             _ => errors.push(syntax_error(
                 &format!(
-                    "An embed names the page to embed with a link, like {}.",
+                    "A portal names the page it shows with a link, like {}.",
                     "::: [Page]".code_str(),
                 ),
                 if argument_source_range.start == argument_source_range.end {
@@ -184,7 +184,7 @@ pub fn parse(
 
     // Close the block at an index among those open, reporting any open within it and a hash on
     // its closing fence unless it's a script block, and keep it if it isn't within another and is
-    // either an embed which names a page or a script block with a valid name.
+    // either a portal which names a page or a script block with a valid name.
     let close_block = |open_blocks: &mut Vec<OpenBlock>,
                        index: usize,
                        end: usize,
@@ -211,8 +211,8 @@ pub fn parse(
             end,
         };
         match open_block.kind {
-            OpenBlockKind::Embed(Some((title, link_source_range))) => {
-                pending_page.embeds.push(Embed {
+            OpenBlockKind::Portal(Some((title, link_source_range))) => {
+                pending_page.portals.push(Portal {
                     title,
                     source_range,
                     link_source_range,
@@ -231,11 +231,11 @@ pub fn parse(
                     }),
                 });
             }
-            OpenBlockKind::Embed(None) | OpenBlockKind::Script(None) => {}
+            OpenBlockKind::Portal(None) | OpenBlockKind::Script(None) => {}
         }
     };
 
-    // Once an opening fence's line has been read, find the page an embed names, and close the
+    // Once an opening fence's line has been read, find the page a portal names, and close the
     // block if it's written on one line.
     let finish_opening_fence = |open_blocks: &mut Vec<OpenBlock>,
                                 pending_page: &mut PendingPage,
@@ -244,7 +244,7 @@ pub fn parse(
         let Some(open_block) = open_blocks.last_mut() else {
             return;
         };
-        if matches!(open_block.kind, OpenBlockKind::Embed(_)) {
+        if matches!(open_block.kind, OpenBlockKind::Portal(_)) {
             read_opening_fence(open_block, &pending_page.links, links_before, errors);
         }
         if let Some(end) = open_block.one_line_end {
@@ -304,14 +304,14 @@ pub fn parse(
                     title,
                     source_start: position,
                     links: Vec::new(),
-                    embeds: Vec::new(),
+                    portals: Vec::new(),
                     script_blocks: Vec::new(),
                 };
                 position = line_end;
                 continue;
             }
 
-            // Read a fence line within a page. An opening fence starts a block, either an embed
+            // Read a fence line within a page. An opening fence starts a block, either a portal
             // or a script block, whose argument is read as usual from where it starts, and which
             // ends with the line if it's written on one line. A closing fence ends the innermost
             // open block with a fence of the same length, and any open within it, noting any hash
@@ -324,12 +324,12 @@ pub fn parse(
                         argument: (argument_start, argument_end),
                         is_one_line,
                     } => {
-                        // An argument which starts with a link is an embed's. Otherwise, it's a
+                        // An argument which starts with a link is a portal's. Otherwise, it's a
                         // script block's: the script's name, which must be valid, and then its
                         // arguments.
                         let argument = &line[argument_start..argument_end];
                         let kind = if argument.starts_with('[') {
-                            OpenBlockKind::Embed(None)
+                            OpenBlockKind::Portal(None)
                         } else {
                             let name_end =
                                 argument.find(char::is_whitespace).unwrap_or(argument.len());
@@ -630,7 +630,7 @@ fn finish_page(
         title,
         source_start,
         links,
-        embeds,
+        portals,
         script_blocks,
     } = pending_page;
     if let Some((title, title_source_range)) = title {
@@ -639,7 +639,7 @@ fn finish_page(
             Page {
                 title,
                 links,
-                embeds,
+                portals,
                 script_blocks,
                 traversal_index: None,
                 source_range: trim_source_range(
@@ -703,7 +703,7 @@ fn parse_title(
 }
 
 // These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
-// argument is trimmed and located by its offsets within the line. An embed written on one line
+// argument is trimmed and located by its offsets within the line. A portal written on one line
 // ends with a closing run of colons after its argument. A closing fence can be followed by a hash,
 // which is located by its offsets within the line, including its `#`.
 #[derive(Debug, Eq, PartialEq)]
@@ -1591,7 +1591,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(links[3].closing_delimiter(), None);
     }
 
-    // Recognize opening fences with a trimmed argument, including embeds written on one line, and
+    // Recognize opening fences with a trimmed argument, including portals written on one line, and
     // closing fences, but not shorter runs or runs followed directly by other text.
     #[test]
     fn fence_lines() {
@@ -1676,11 +1676,11 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(fence_line(" :::[Page]"), None);
     }
 
-    // Read an embed from its opening fence through its closing fence, with the link in its opening
-    // fence among the page's links. The embeds within it aren't kept, since they're part of its
-    // copy of the embedded page's content.
+    // Read a portal from its opening fence through its closing fence, with the link in its opening
+    // fence among the page's links. The portals within it aren't kept, since they're part of its
+    // copy of the content of the page it shows.
     #[test]
-    fn embeds() {
+    fn portals() {
         let source = concat!(
             "# Home\n\n:::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::\n\n",
             "# Other\n# Last",
@@ -1693,13 +1693,13 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             vec!["text:Other", "text:Last", "text:Last"],
         );
         assert_eq!(
-            home.embeds
+            home.portals
                 .iter()
-                .map(|embed| {
+                .map(|portal| {
                     (
-                        embed.title.text(Context::Verbatim),
-                        &source[embed.source_range.start..embed.source_range.end],
-                        &source[embed.link_source_range.start..embed.link_source_range.end],
+                        portal.title.text(Context::Verbatim),
+                        &source[portal.source_range.start..portal.source_range.end],
+                        &source[portal.link_source_range.start..portal.link_source_range.end],
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -1711,19 +1711,19 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Read an embed written on one line, which ends with its line, including within another embed
+    // Read a portal written on one line, which ends with its line, including within another portal
     // and at the end of the wiki.
     #[test]
-    fn one_line_embeds() {
+    fn one_line_portals() {
         let source =
             "# Home\n:::: [Other]\n::: [Last] :::\n::::\n::: [ Last ] :::  \n# Other\n# Last\n";
         let wiki = parse_test(source).unwrap();
         let home = wiki.page("Home");
 
         assert_eq!(
-            home.embeds
+            home.portals
                 .iter()
-                .map(|embed| &source[embed.source_range.start..embed.source_range.end])
+                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
                 .collect::<Vec<_>>(),
             vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::"],
         );
@@ -1735,24 +1735,24 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             parse_test("# Home\n::: [Home] :::")
                 .unwrap()
                 .page("Home")
-                .embeds
+                .portals
                 .len(),
             1,
         );
     }
 
-    // Read an indented embed from the colons of its opening fence, closing it with a fence of the
+    // Read an indented portal from the colons of its opening fence, closing it with a fence of the
     // same length regardless of the closing fence's indentation.
     #[test]
-    fn indented_embeds() {
+    fn indented_portals() {
         let source = "# Home\n- Item\n  ::: [Other]\n\t:::\n# Other";
         let wiki = parse_test(source).unwrap();
         let home = wiki.page("Home");
 
         assert_eq!(
-            home.embeds
+            home.portals
                 .iter()
-                .map(|embed| &source[embed.source_range.start..embed.source_range.end])
+                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
                 .collect::<Vec<_>>(),
             vec!["::: [Other]\n\t:::"],
         );
@@ -1763,17 +1763,17 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     fn text_resembling_fences() {
         let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n:::x\n").unwrap();
 
-        assert!(wiki.page("Home").embeds.is_empty());
+        assert!(wiki.page("Home").portals.is_empty());
         assert!(wiki.page("Home").links.is_empty());
     }
 
-    // Reject an embed which doesn't name a page with a single link in its opening fence, but still
+    // Reject a portal which doesn't name a page with a single link in its opening fence, but still
     // match its closing fence.
     #[test]
-    fn invalid_embed_links() {
+    fn invalid_portal_links() {
         assert_fails!(
             parse_test("# Home\n::: [Other] more\n:::\n# Other"),
-            "An embed names the page to embed with a link, like `::: [Page]`.",
+            "A portal names the page it shows with a link, like `::: [Page]`.",
         );
         assert_eq!(
             parse_test("# Home\n::: [Other] more\n:::\n# Other")
@@ -1783,11 +1783,11 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_fails!(
             parse_test("# Home\n::: [Other] [Last]\n:::"),
-            "An embed names the page to embed with a link, like `::: [Page]`.",
+            "A portal names the page it shows with a link, like `::: [Page]`.",
         );
         assert_fails!(
             parse_test("# Home\n::: [/notes.txt]\n:::"),
-            "Only pages can be embedded.",
+            "A portal can only show a page.",
         );
     }
 
@@ -1837,7 +1837,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 ),
             ],
         );
-        assert!(home.embeds.is_empty());
+        assert!(home.portals.is_empty());
         assert_eq!(link_targets(&home.links), vec!["text:Other", "text:Other"]);
     }
 

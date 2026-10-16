@@ -6,7 +6,7 @@ use crate::{
     line_index::LineIndex,
     scripts::script_path,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
-    wiki::{Embed, FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Portal, Wiki},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -14,7 +14,7 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 // manageable.
 const MAX_FILESYSTEM_ERRORS: usize = 50;
 
-// Check text links, embeds, reachability, scripts, filesystem links, and filesystem coverage.
+// Check text links, portals, reachability, scripts, filesystem links, and filesystem coverage.
 pub fn validate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -73,8 +73,8 @@ pub fn validate(
     })
 }
 
-// Validate text-link targets, the absence of cycles of embeds, and reachability from the home page,
-// given the wiki's pages in title order.
+// Validate text-link targets, the absence of cycles of portals, and reachability from the home
+// page, given the wiki's pages in title order.
 fn validate_text_links(
     wiki: &Wiki,
     pages: &[&Page],
@@ -122,20 +122,24 @@ fn validate_text_links(
         }
     }
 
-    // Reject embeds which close cycles of embeds, since there's no finite copy of the content of
+    // Reject portals which close cycles of portals, since there's no finite copy of the content of
     // the pages in a cycle.
-    errors.extend(cycle_closing_embeds(wiki, pages).into_iter().map(|embed| {
-        Error::new(
-            &format!(
-                "Embedding page {} here creates a cycle of embeds.",
-                embed.title.code_str(),
-            ),
-            source_path,
-            Some((source_contents, line_index, embed.link_source_range)),
-            None,
-            None,
-        )
-    }));
+    errors.extend(
+        cycle_closing_portals(wiki, pages)
+            .into_iter()
+            .map(|portal| {
+                Error::new(
+                    &format!(
+                        "A portal to {} here creates a cycle of portals.",
+                        portal.title.code_str(),
+                    ),
+                    source_path,
+                    Some((source_contents, line_index, portal.link_source_range)),
+                    None,
+                    None,
+                )
+            }),
+    );
 
     // Reject every page outside the graph rooted at the home page.
     if has_home {
@@ -162,46 +166,46 @@ fn validate_text_links(
     errors
 }
 
-// Find embeds which close cycles of embeds with a depth-first search over embeds, starting from
-// each page in title order. An embed of a page whose search is still in progress closes a cycle.
-// Every cycle has such an embed, and without them there would be no cycles.
-fn cycle_closing_embeds<'a>(wiki: &'a Wiki, pages: &[&'a Page]) -> Vec<&'a Embed> {
-    let mut cycle_closing_embeds = Vec::new();
+// Find portals which close cycles of portals with a depth-first search over portals, starting from
+// each page in title order. A portal to a page whose search is still in progress closes a cycle.
+// Every cycle has such a portal, and without them there would be no cycles.
+fn cycle_closing_portals<'a>(wiki: &'a Wiki, pages: &[&'a Page]) -> Vec<&'a Portal> {
+    let mut cycle_closing_portals = Vec::new();
     let mut in_progress = HashSet::new();
     let mut done = HashSet::new();
     for &start in pages {
         // Search from a page which hasn't been searched, keeping each page on the current path
-        // along with the index of its next embed to follow.
+        // along with the index of its next portal to follow.
         if done.contains(&start.title) {
             continue;
         }
         in_progress.insert(&start.title);
         let mut path = vec![(start, 0)];
-        while let Some((page, next_embed)) = path.last_mut() {
+        while let Some((page, next_portal)) = path.last_mut() {
             let page = *page;
 
-            // Finish a page once all of its embeds have been followed.
-            let Some(embed) = page.embeds.get(*next_embed) else {
+            // Finish a page once all of its portals have been followed.
+            let Some(portal) = page.portals.get(*next_portal) else {
                 in_progress.remove(&page.title);
                 done.insert(&page.title);
                 path.pop();
                 continue;
             };
 
-            // Follow the next embed, unless it closes a cycle or leads to a page which has been
+            // Follow the next portal, unless it closes a cycle or leads to a page which has been
             // searched or doesn't exist.
-            *next_embed += 1;
-            if in_progress.contains(&embed.title) {
-                cycle_closing_embeds.push(embed);
-            } else if !done.contains(&embed.title)
-                && let Some(embedded_page) = wiki.pages.get(&embed.title)
+            *next_portal += 1;
+            if in_progress.contains(&portal.title) {
+                cycle_closing_portals.push(portal);
+            } else if !done.contains(&portal.title)
+                && let Some(opened_page) = wiki.pages.get(&portal.title)
             {
-                in_progress.insert(&embedded_page.title);
-                path.push((embedded_page, 0));
+                in_progress.insert(&opened_page.title);
+                path.push((opened_page, 0));
             }
         }
     }
-    cycle_closing_embeds
+    cycle_closing_portals
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
@@ -828,11 +832,11 @@ mod tests {
         ));
     }
 
-    // Reject an embed which closes each cycle of embeds, including a page embedding itself, at the
-    // link in its opening fence. The search for cycles starts from pages in title order. Pages
-    // embedded along several paths without a cycle are fine.
+    // Reject a portal which closes each cycle of portals, including a portal to the page it's in,
+    // at the link in its opening fence. The search for cycles starts from pages in title order.
+    // Pages shown through several paths without a cycle are fine.
     #[test]
-    fn embed_cycles() {
+    fn portal_cycles() {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
             "# Home\n[Middle] [Self] [Top]\n",
@@ -851,7 +855,7 @@ mod tests {
         for title in ["Last", "Self"] {
             assert!(contains_error(
                 &errors,
-                &format!("Embedding page `{title}` here creates a cycle of embeds."),
+                &format!("A portal to `{title}` here creates a cycle of portals."),
             ));
         }
     }

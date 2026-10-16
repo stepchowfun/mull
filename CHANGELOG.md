@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0] - 2026-10-16
+
+### Changed
+
+- Embeds are now called *portals*. A portal is a window into another page: it holds a copy of the page's contents, and Mull keeps the two in sync. The old name suggested the page lived inside the page embedding it. The syntax is unchanged, while error messages, the editor's completion ("Open a portal to a page"), and the documentation now say "portal".
+
 ## [0.60.5] - 2026-10-15
 
 ### Changed

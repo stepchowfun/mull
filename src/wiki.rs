@@ -24,7 +24,7 @@ pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names the page it embeds or the script which computes its body, and a closing fence
+// fence names the page a portal shows or the script which computes its body, and a closing fence
 // consists of colons alone.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
@@ -65,40 +65,40 @@ impl Wiki {
         (traversal_index.is_none(), traversal_index, title)
     }
 
-    // Render a page's content in its canonical form, with each embed refreshed.
+    // Render a page's content in its canonical form, with each portal refreshed.
     pub fn page_content(&self, page: &Page) -> String {
         self.rendered_content(page, &mut Vec::new())
     }
 
-    // Render a page's content from the source in its canonical form, with each embed refreshed. The
-    // pages being rendered, which embed this one, are listed so a cycle of embeds is left as
-    // written.
-    fn rendered_content(&self, page: &Page, embedding_pages: &mut Vec<PageTitle>) -> String {
-        embedding_pages.push(page.title.clone());
-        let content = self.canonical_content(page, |embed| {
+    // Render a page's content from the source in its canonical form, with each portal refreshed.
+    // The pages being rendered, which show this one in portals, are listed so a cycle of portals is
+    // left as written.
+    fn rendered_content(&self, page: &Page, enclosing_pages: &mut Vec<PageTitle>) -> String {
+        enclosing_pages.push(page.title.clone());
+        let content = self.canonical_content(page, |portal| {
             self.pages
-                .get(&embed.title)
-                .filter(|embedded_page| !embedding_pages.contains(&embedded_page.title))
-                .map(|embedded_page| self.rendered_content(embedded_page, embedding_pages))
+                .get(&portal.title)
+                .filter(|opened_page| !enclosing_pages.contains(&opened_page.title))
+                .map(|opened_page| self.rendered_content(opened_page, enclosing_pages))
         });
-        embedding_pages.pop();
+        enclosing_pages.pop();
         content
     }
 
-    // Render a page's own content in its canonical form, leaving out the copies its embeds show,
-    // which belong to the embedded pages. Instances of a page with the same own content differ
-    // only in ways formatting erases.
+    // Render a page's own content in its canonical form, leaving out the copies its portals show,
+    // which belong to the pages shown in portals. Instances of a page with the same own content
+    // differ only in ways formatting erases.
     pub fn own_content(&self, page: &Page) -> String {
-        self.canonical_content(page, |_embed| Some(String::new()))
+        self.canonical_content(page, |_portal| Some(String::new()))
     }
 
     // Render a page's content from the source, with each link written in its canonical form, Unix
-    // line endings, and no whitespace at the end of a line. Each embed shows the body given for it,
-    // with each line indented like its opening fence, or is copied as written if it has none.
+    // line endings, and no whitespace at the end of a line. Each portal shows the body given for
+    // it, with each line indented like its opening fence, or is copied as written if it has none.
     fn canonical_content(
         &self,
         page: &Page,
-        mut body: impl FnMut(&Embed) -> Option<String>,
+        mut body: impl FnMut(&Portal) -> Option<String>,
     ) -> String {
         // Find the content after the title line, skipping the blank lines around it but keeping the
         // indentation of its first line, so an indented line which starts with a title marker
@@ -114,15 +114,20 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, writing each embed with its body and a fence longer than any in it.
+        // Copy the content, writing each portal with its body and a fence longer than any in it.
         let mut content = String::new();
         let mut copied_through = content_start;
-        for embed in &page.embeds {
-            let Some(body) = body(embed) else {
+        for portal in &page.portals {
+            let Some(body) = body(portal) else {
                 continue;
             };
-            self.copy_links(page, copied_through, embed.source_range.start, &mut content);
-            let indentation = self.indentation(embed.source_range.start);
+            self.copy_links(
+                page,
+                copied_through,
+                portal.source_range.start,
+                &mut content,
+            );
+            let indentation = self.indentation(portal.source_range.start);
             let longest_run = body
                 .lines()
                 .map(str::trim_start)
@@ -130,7 +135,7 @@ impl Wiki {
                 .max()
                 .unwrap_or(0);
             let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
-            for part in [&fence, " [", &embed.title.text(Context::Link), "]\n"] {
+            for part in [&fence, " [", &portal.title.text(Context::Link), "]\n"] {
                 content.push_str(part);
             }
             for line in body.lines() {
@@ -140,7 +145,7 @@ impl Wiki {
             }
             content.push_str(indentation);
             content.push_str(&fence);
-            copied_through = embed.source_range.end;
+            copied_through = portal.source_range.end;
         }
         self.copy_links(page, copied_through, content_end, &mut content);
 
@@ -184,7 +189,7 @@ impl Wiki {
         content.push_str(&self.source[copied_through..end]);
     }
 
-    // Find the body of a block, such as the copy an embed shows, with the indentation of its
+    // Find the body of a block, such as the copy a portal shows, with the indentation of its
     // opening fence removed from each line, along with where each line of the body starts in it and
     // in the source. A block written on one line has no body.
     pub fn body(&self, block: SourceRange) -> Option<(String, Vec<(usize, usize)>)> {
@@ -252,18 +257,18 @@ impl fmt::Display for Wiki {
 pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
-    pub embeds: Vec<Embed>, // In source order, excluding embeds within the copies made by others
+    pub portals: Vec<Portal>, // In source order, excluding portals within the copies made by others
     pub script_blocks: Vec<ScriptBlock>, // In source order, excluding those within other blocks
     pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
     pub source_range: SourceRange, // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
 }
 
-// This struct represents a page embedded in another page's content. The embedding page shows a copy
-// of the embedded page's content, which formatting keeps in sync with the page, along with any
-// embeds within it.
+// This struct represents a portal in a page's content, which shows another page. It holds a copy
+// of the content of the page it shows, which formatting keeps in sync with the page, along with any
+// portals within it.
 #[derive(Clone, Debug)]
-pub struct Embed {
+pub struct Portal {
     pub title: PageTitle,
     pub source_range: SourceRange, // From the opening fence's colons through the closing fence
     pub link_source_range: SourceRange, // The link in the opening fence which names the page
@@ -591,11 +596,11 @@ mod tests {
         );
     }
 
-    // Refresh each embed with a copy of the embedded page's content, including the embeds in it,
-    // with a fence longer than any in the copy. An embed of a missing page or one which would
+    // Refresh each portal with a copy of the content of the page it shows, including the portals in
+    // it, with a fence longer than any in the copy. A portal to a missing page or one which would
     // complete a cycle is left as written.
     #[test]
-    fn embeds_display() {
+    fn portals_display() {
         let wiki = parse_wiki(concat!(
             "# Home\n\n::: [ Other ]\nstale\n:::\n\n",
             "::: [Missing]\nkept\n:::\n\n",
@@ -617,10 +622,10 @@ mod tests {
         );
     }
 
-    // Indent each line of an embed's copy, including its closing fence, like its opening fence,
-    // leaving blank lines empty, and indent nested embeds further.
+    // Indent each line of a portal's copy, including its closing fence, like its opening fence,
+    // leaving blank lines empty, and indent nested portals further.
     #[test]
-    fn indented_embeds_display() {
+    fn indented_portals_display() {
         let wiki = parse_wiki(concat!(
             "# Home\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
             "# Other\n\nSee:\n\n\t::: [Last]\n\t:::\n\n",
@@ -639,7 +644,7 @@ mod tests {
         );
     }
 
-    // Render a page's own content in its canonical form, leaving out the copies its embeds show.
+    // Render a page's own content in its canonical form, leaving out the copies its portals show.
     #[test]
     fn own_content() {
         let wiki = parse_wiki(concat!(
@@ -661,10 +666,10 @@ mod tests {
     fn bodies() {
         let source = "# Home\n  ::: [Other]\n  First\n\n Second\n  :::\n::: [Other] :::\n# Other";
         let wiki = parse_wiki(source);
-        let embeds = &wiki.pages[&PageTitle::parse("Home").unwrap()].embeds;
+        let portals = &wiki.pages[&PageTitle::parse("Home").unwrap()].portals;
 
         assert_eq!(
-            wiki.body(embeds[0].source_range),
+            wiki.body(portals[0].source_range),
             Some((
                 "First\n\nSecond\n".to_owned(),
                 vec![(0, 23), (6, 29), (7, 31)],
@@ -672,7 +677,7 @@ mod tests {
         );
         assert_eq!(&source[23..28], "First");
         assert_eq!(&source[31..37], "Second");
-        assert_eq!(wiki.body(embeds[1].source_range), None);
+        assert_eq!(wiki.body(portals[1].source_range), None);
     }
 
     // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.

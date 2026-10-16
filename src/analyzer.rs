@@ -21,9 +21,9 @@ pub fn analyze(
     let line_index = LineIndex::new(source_contents);
     let (wiki, mut errors) = parser::parse(source_path, source_contents, &line_index);
 
-    // Without a record of the instances of each embedded page agreeing, they must agree already,
-    // so the wiki renders the same as if its changes were propagated. Instances can only be
-    // compared without syntax errors.
+    // Without a record of the instances of each page shown in portals agreeing, they must agree
+    // already, so the wiki renders the same as if its changes were propagated. Instances can only
+    // be compared without syntax errors.
     if errors.is_empty()
         && let Err(propagation_errors) = propagation::propagate(
             &wiki,

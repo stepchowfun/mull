@@ -70,7 +70,7 @@ const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
 // This editor command reopens suggestions so the children of a completed directory, or the page for
-// a new embed, can be chosen.
+// a new portal, can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // This request plans attaching files which are pasted or dropped into a wiki: which ones to copy
@@ -670,7 +670,7 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        // Complete links, embeds, and script blocks against the latest synchronized editor
+        // Complete links, portals, and script blocks against the latest synchronized editor
         // snapshot.
         let position = params.text_document_position.position;
         self.respond(
@@ -770,9 +770,9 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        // Render the latest synchronized editor snapshot, propagating changes to embedded pages and
-        // leaving contents which can't be rendered unchanged. Run the wiki's scripts as well if the
-        // editor asks, reporting any which couldn't be run.
+        // Render the latest synchronized editor snapshot, propagating changes to pages shown in
+        // portals and leaving contents which can't be rendered unchanged. Run the wiki's scripts as
+        // well if the editor asks, reporting any which couldn't be run.
         let baseline = baseline(&self.documents, &params.text_document.uri);
         if !matches!(
             params.options.properties.get(RUN_SCRIPTS_OPTION),
@@ -835,9 +835,9 @@ impl LanguageServer for Backend {
 // This state associates the latest editor snapshot with a pending diagnostic update. The server
 // assigns the generation, which increases every time a snapshot is stored, including rechecks of
 // unchanged contents after a save, so it identifies which snapshot stale work was computed from.
-// The baseline of each embedded page is recorded along with the generation it was found in, and
-// it's kept only while the document is open. So are the script blocks which couldn't be run when
-// scripts last ran, which are reported until scripts run again.
+// The baseline of each page shown in portals is recorded along with the generation it was found in,
+// and it's kept only while the document is open. So are the script blocks which couldn't be run
+// when scripts last ran, which are reported until scripts run again.
 #[derive(Debug)]
 struct OpenDocument {
     snapshot: Arc<Snapshot>,
@@ -954,8 +954,8 @@ impl Snapshot {
         &self.parsed().0
     }
 
-    // Collect the instances of each embedded page, which can only be compared without syntax
-    // errors.
+    // Collect the instances of each page shown in portals, which can only be compared without
+    // syntax errors.
     fn instances(&self) -> Option<&Instances> {
         let (wiki, syntax_errors) = self.parsed();
         syntax_errors
@@ -965,7 +965,7 @@ impl Snapshot {
 }
 
 // Analyze an editor snapshot without checking its formatting, comparing the instances of each
-// embedded page with its baseline, and report the script blocks which couldn't be run.
+// page shown in portals with its baseline, and report the script blocks which couldn't be run.
 fn diagnostics_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
@@ -986,7 +986,7 @@ fn diagnostics_for_document(
         Outcome::Cancelled => return None,
     };
 
-    // Report changes to embedded pages which can't be propagated.
+    // Report changes to pages shown in portals which can't be propagated.
     let line_index = snapshot.line_index();
     let propagation_errors = snapshot
         .instances()
@@ -1076,10 +1076,10 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     }
 }
 
-// Complete an embed or a script block at an editor position, or the target of the link there with
+// Complete a portal or a script block at an editor position, or the target of the link there with
 // page titles or filesystem paths.
 fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
-    // Offer to embed a page or run a script after the colons which start a fence.
+    // Offer to open a portal or run a script after the colons which start a fence.
     let cursor_offset = snapshot.byte_offset(cursor)?;
     if let Some(items) = fence_completions(snapshot, cursor_offset) {
         return Some(CompletionList {
@@ -1137,11 +1137,11 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
     ))
 }
 
-// Offer to embed a page, or to run each script in a saved wiki, in place of the colons before the
-// cursor, if they're the only text on their line and the parser reports them as an unexpected
-// closing fence, so they don't close a block and aren't in code. An embed is written on one line
-// with the cursor in its link, where titles are suggested next, and a script block is written with
-// the cursor after the script's name, for its arguments, and an empty body.
+// Offer to open a portal to a page, or to run each script in a saved wiki, in place of the colons
+// before the cursor, if they're the only text on their line and the parser reports them as an
+// unexpected closing fence, so they don't close a block and aren't in code. A portal is written on
+// one line with the cursor in its link, where titles are suggested next, and a script block is
+// written with the cursor after the script's name, for its arguments, and an empty body.
 fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<CompletionItem>> {
     // Find the colons and the rest of their line.
     let contents = &snapshot.contents;
@@ -1166,13 +1166,13 @@ fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<Completio
         return None;
     }
 
-    // Write the embed, then each script block, as a snippet, keeping the embed first.
+    // Write the portal, then each script block, as a snippet, keeping the portal first.
     let range = snapshot.range(SourceRange {
         start: fence_start,
         end: cursor,
     });
     let mut completions = vec![CompletionItem {
-        label: "Embed a page".to_owned(),
+        label: "Open a portal to a page".to_owned(),
         kind: Some(CompletionItemKind::SNIPPET),
         sort_text: Some("0".to_owned()),
         filter_text: Some(fence.clone()),
@@ -1475,7 +1475,7 @@ fn directory_preview(file_root: &FileRoot, target: &FilesystemTarget) -> Option<
     Some(code_block("mull", &lines.join("\n")))
 }
 
-// Embed an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
+// Show an image as HTML, which unlike Markdown can size it. Shrink it to fit within the maximum
 // size, keeping its aspect ratio. An image whose size can't be read, such as an SVG, just gets the
 // maximum width. Images are recognized by their extensions, and other files have no image preview.
 fn image_preview(path: &Path) -> Option<String> {
@@ -1488,7 +1488,7 @@ fn image_preview(path: &Path) -> Option<String> {
         return None;
     }
 
-    // Embed the image, sized to fit. The editor shows an image turned as its EXIF orientation says,
+    // Show the image, sized to fit. The editor shows an image turned as its EXIF orientation says,
     // so a quarter turn trades its width and height.
     let dimensions = match imagesize::size(path) {
         Ok(size) => {
@@ -2247,10 +2247,10 @@ fn resolves_within(path: &Path, directory: &Path) -> Option<bool> {
 }
 
 // Produce a whole-document formatting edit for any wiki that parses, even if it's invalid, unless
-// changes to an embedded page can't be propagated.
+// changes to a page shown in portals can't be propagated.
 fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<Vec<TextEdit>> {
-    // Render the parsed wiki, propagating changes to embedded pages, without reporting syntax
-    // errors or changes which can't be propagated, which diagnostics already cover.
+    // Render the parsed wiki, propagating changes to pages shown in portals, without reporting
+    // syntax errors or changes which can't be propagated, which diagnostics already cover.
     let rendered_wiki = propagation::format(
         snapshot.wiki(),
         snapshot.path.as_deref(),
@@ -2275,8 +2275,8 @@ fn formatting_with_scripts_for_document(
         return (formatting_for_document(snapshot, baseline), Vec::new());
     };
 
-    // Format the wiki with the changes to its embedded pages propagated, then run its scripts,
-    // leaving it as it is if it can't be formatted, which diagnostics already cover.
+    // Format the wiki with the changes to its pages shown in portals propagated, then run its
+    // scripts, leaving it as it is if it can't be formatted, which diagnostics already cover.
     let Some(formatted_contents) = snapshot.instances().and_then(|instances| {
         propagation::format(
             snapshot.wiki(),
@@ -3232,10 +3232,10 @@ mod tests {
             .collect()
     }
 
-    // Offer to embed a page after the colons which start a fence, writing the embed on one line
-    // with the cursor in its link and suggesting titles there.
+    // Offer to open a portal to a page after the colons which start a fence, writing the portal on
+    // one line with the cursor in its link and suggesting titles there.
     #[test]
-    fn completions_embed_pages() {
+    fn completions_open_portals() {
         let source = "# Home\n\n- Item\n  :::\n\n# Other";
         let completions =
             completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 5))
@@ -3245,7 +3245,7 @@ mod tests {
         assert_eq!(
             completion_edits(&completions),
             vec![(
-                "Embed a page",
+                "Open a portal to a page",
                 Range::new(Position::new(3, 2), Position::new(3, 5)),
                 "::: [$1] :::",
             )],
@@ -3276,7 +3276,7 @@ mod tests {
     }
 
     // Offer to run each script in a saved wiki after the colons which start a fence, writing a
-    // script block with the cursor after the script's name and an empty body, after the embed.
+    // script block with the cursor after the script's name and an empty body, after the portal.
     #[test]
     fn completions_offer_scripts() {
         let source = "# Home\n\n:::";
@@ -3297,7 +3297,7 @@ mod tests {
         assert_eq!(
             completion_edits(&completions),
             vec![
-                ("Embed a page", fence, "::: [$1] :::"),
+                ("Open a portal to a page", fence, "::: [$1] :::"),
                 ("sort", fence, "::: sort$1\n$0\n:::"),
                 ("tidy", fence, "::: tidy$1\n$0\n:::"),
             ],
@@ -3309,10 +3309,10 @@ mod tests {
         );
     }
 
-    // Offer no embed after colons which close an embed, are in code, aren't alone on their line, or
-    // are too many to start a fence with the fewest colons.
+    // Offer no portal after colons which close a portal, are in code, aren't alone on their line,
+    // or are too many to start a fence with the fewest colons.
     #[test]
-    fn completions_decline_embeds() {
+    fn completions_decline_portals() {
         for (source, cursor) in [
             ("# Home\n\n::: [Other]\n:::\n# Other", Position::new(3, 3)),
             ("# Home\n\n```\n:::\n```", Position::new(3, 3)),
@@ -5363,8 +5363,8 @@ mod tests {
         assert!(failures.is_empty());
     }
 
-    // Propagate the changes to embedded pages before running scripts, so a change to a copy reaches
-    // its page's script, whose output then fills in the copy.
+    // Propagate the changes to pages shown in portals before running scripts, so a change to a copy
+    // reaches its page's script, whose output then fills in the copy.
     #[cfg(unix)]
     #[test]
     fn formatting_propagates_before_running_scripts() {
