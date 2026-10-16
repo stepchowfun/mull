@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.5] - 2026-10-15
+
+### Changed
+
+- In the VS Code extension, errors at the cursor are hidden while typing there, until the cursor moves away. For example, a link isn't flagged as missing its target or pointing to a page that doesn't exist while its target is still being typed.
+
 ## [0.60.4] - 2026-10-15
 
 ### Changed

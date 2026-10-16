@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import {
   DocumentFormattingRequest,
   ExecuteCommandRequest,
+  type HandleDiagnosticsSignature,
   LanguageClient,
   type ProvideDocumentFormattingEditsSignature,
 } from 'vscode-languageclient/node';
@@ -421,6 +422,107 @@ class FenceDimming implements vscode.Disposable {
   // Release the decoration type, which removes the dimming.
   public dispose(): void {
     this.decorationType.dispose();
+  }
+}
+
+// Hide the diagnostics at the cursor while the user types there, such as the error for a link whose
+// target hasn't been typed yet, until the cursor moves away from them.
+class TypingDiagnostics {
+  // Remember each document's diagnostics, including hidden ones, and how to show them.
+  private readonly diagnostics = new Map<string, vscode.Diagnostic[]>();
+  private show: HandleDiagnosticsSignature | undefined = undefined;
+
+  // Track the document being typed in, along with the ranges of its latest edit and its hidden
+  // diagnostics, which the cursor stays within while the user types.
+  private typingUri: string | undefined = undefined;
+  private edits: vscode.Range[] = [];
+  private hidden: vscode.Range[] = [];
+
+  // Show a document's diagnostics from the language server, except those hidden at the cursor.
+  public readonly handleDiagnostics = (
+    uri: vscode.Uri,
+    diagnostics: vscode.Diagnostic[],
+    next: HandleDiagnosticsSignature,
+  ): void => {
+    this.diagnostics.set(uri.toString(), diagnostics);
+    this.show = next;
+    next(uri, this.visible(uri, diagnostics));
+  };
+
+  // Start hiding the diagnostics at the cursor when the user edits there, but not for edits
+  // elsewhere, such as formatting.
+  public recordEdit(event: vscode.TextDocumentChangeEvent): void {
+    const { document } = event;
+    const editor = vscode.window.activeTextEditor;
+    if (document.languageId !== 'mull' || editor === undefined || editor.document !== document) {
+      return;
+    }
+    const edits = event.contentChanges.map(
+      (change) =>
+        new vscode.Range(
+          change.range.start,
+          document.positionAt(change.rangeOffset + change.text.length),
+        ),
+    );
+    if (!edits.some((range) => range.contains(editor.selection.active))) {
+      return;
+    }
+    if (this.typingUri !== document.uri.toString()) {
+      this.stopTyping();
+      this.typingUri = document.uri.toString();
+    }
+    this.edits = edits;
+  }
+
+  // Show the hidden diagnostics once the cursor moves away from where the user is typing.
+  public recordSelection(editor: vscode.TextEditor): void {
+    const cursor = editor.selection.active;
+    if (
+      this.typingUri === editor.document.uri.toString() &&
+      ![...this.edits, ...this.hidden].some((range) => range.contains(cursor))
+    ) {
+      this.stopTyping();
+    }
+  }
+
+  // Show the hidden diagnostics when the user switches to another editor.
+  public recordActiveEditor(editor: vscode.TextEditor | undefined): void {
+    if (editor === undefined || this.typingUri !== editor.document.uri.toString()) {
+      this.stopTyping();
+    }
+  }
+
+  // Show every diagnostic of the document being typed in again.
+  private stopTyping(): void {
+    if (this.typingUri === undefined) {
+      return;
+    }
+    const uri = this.typingUri;
+    this.typingUri = undefined;
+    this.edits = [];
+    this.hidden = [];
+    const diagnostics = this.diagnostics.get(uri);
+    if (this.show !== undefined && diagnostics !== undefined) {
+      this.show(vscode.Uri.parse(uri), diagnostics);
+    }
+  }
+
+  // Leave out the diagnostics containing the cursor in the document being typed in, remembering
+  // where they are.
+  private visible(uri: vscode.Uri, diagnostics: vscode.Diagnostic[]): vscode.Diagnostic[] {
+    const editor = vscode.window.activeTextEditor;
+    if (
+      this.typingUri !== uri.toString() ||
+      editor === undefined ||
+      editor.document.uri.toString() !== this.typingUri
+    ) {
+      return diagnostics;
+    }
+    const cursor = editor.selection.active;
+    this.hidden = diagnostics
+      .filter((diagnostic) => diagnostic.range.contains(cursor))
+      .map((diagnostic) => diagnostic.range);
+    return diagnostics.filter((diagnostic) => !diagnostic.range.contains(cursor));
   }
 }
 
@@ -1058,6 +1160,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   fenceDimming.dimVisible();
 
+  // Hide the diagnostics where the user is typing, following edits and the cursor.
+  const typingDiagnostics = new TypingDiagnostics();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      typingDiagnostics.recordEdit(event);
+    }),
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      typingDiagnostics.recordSelection(event.textEditor);
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      typingDiagnostics.recordActiveEditor(editor);
+    }),
+  );
+
   // Keep a trail of the pages visited in each wiki, shown as a link back to the previous page, and
   // expose the commands that move along it. The trail follows the pages found above.
   context.subscriptions.push(
@@ -1123,9 +1239,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     // Let hovers use HTML, which sizes image previews.
     markdown: { supportHtml: true },
-    // Run scripts when formatting where they may run, and keep cursors in place within their
-    // pages when formatting moves the pages.
-    middleware: { provideDocumentFormattingEdits: formatKeepingPagePositions },
+    // Run scripts when formatting where they may run, keep cursors in place within their pages
+    // when formatting moves the pages, and hide the diagnostics where the user is typing.
+    middleware: {
+      provideDocumentFormattingEdits: formatKeepingPagePositions,
+      handleDiagnostics: typingDiagnostics.handleDiagnostics,
+    },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
   await client.start();
