@@ -248,11 +248,13 @@ impl Backend {
                 generation: 0,
                 pending_check: None,
                 baseline: HashMap::new(),
+                script_failures: Arc::from([]),
             });
         if let Some(pending_check) = document.pending_check.take() {
             pending_check.cancel();
         }
         document.snapshot = snapshot;
+        let script_failures = Arc::clone(&document.script_failures);
         document.generation = document
             .generation
             .checked_add(1)
@@ -294,7 +296,12 @@ impl Backend {
 
                 // Publish nothing when a newer snapshot cancelled this check partway through.
                 let Some(diagnostics) = tokio::task::spawn_blocking(move || {
-                    diagnostics_for_document(&check_snapshot, &baseline, &check_cancellation)
+                    diagnostics_for_document(
+                        &check_snapshot,
+                        &baseline,
+                        &script_failures,
+                        &check_cancellation,
+                    )
                 })
                 .await
                 .unwrap_or_else(|error| {
@@ -401,31 +408,20 @@ impl Backend {
         self.client.show_message(message_type, message).await;
     }
 
-    // Report the script blocks which couldn't be run, logging each whole error to the output. A
-    // script which itself failed is shown as just what it printed as errors, or as a plain
-    // statement that it failed. Otherwise, a notification shows only the first paragraph of the
-    // error, since notifications don't keep line breaks, and points to the output if there's more.
-    async fn report_script_errors(&self, failures: &[scripts::ScriptFailure]) {
-        for scripts::ScriptFailure {
-            error,
-            notification,
-        } in failures
-        {
+    // Report the script blocks which couldn't be run, logging each whole error to the output and
+    // keeping them to report as diagnostics until scripts run again. The document is checked again
+    // now, since formatting may not change it.
+    async fn report_script_failures(&self, uri: &Uri, failures: Vec<scripts::ScriptFailure>) {
+        for failure in &failures {
             self.client
-                .log_message(MessageType::ERROR, error.to_string())
+                .log_message(MessageType::ERROR, failure.error.to_string())
                 .await;
-            let message = error.message();
-            let summary = message.split("\n\n").next().unwrap_or(message);
-            let notification = notification.clone().unwrap_or_else(|| {
-                if summary.len() < message.len() || error.reason().is_some() {
-                    format!("{summary} See the Mull output for details.")
-                } else {
-                    summary.to_owned()
-                }
-            });
-            self.client
-                .show_message(MessageType::ERROR, notification)
-                .await;
+        }
+        if let Some(document) = lock(&self.documents).get_mut(uri) {
+            document.script_failures = Arc::from(failures);
+        }
+        if let Some(snapshot) = self.snapshot(uri) {
+            self.store_and_check_document(snapshot, Duration::ZERO);
         }
     }
 
@@ -776,7 +772,7 @@ impl LanguageServer for Backend {
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         // Render the latest synchronized editor snapshot, propagating changes to embedded pages and
         // leaving contents which can't be rendered unchanged. Run the wiki's scripts as well if the
-        // editor asks, reporting any which fail.
+        // editor asks, reporting any which couldn't be run.
         let baseline = baseline(&self.documents, &params.text_document.uri);
         if !matches!(
             params.options.properties.get(RUN_SCRIPTS_OPTION),
@@ -796,7 +792,8 @@ impl LanguageServer for Backend {
         })
         .await
         .map_err(|_| JsonRpcError::internal_error())?;
-        self.report_script_errors(&failures).await;
+        self.report_script_failures(&params.text_document.uri, failures)
+            .await;
         Ok(edits)
     }
 
@@ -839,13 +836,15 @@ impl LanguageServer for Backend {
 // assigns the generation, which increases every time a snapshot is stored, including rechecks of
 // unchanged contents after a save, so it identifies which snapshot stale work was computed from.
 // The baseline of each embedded page is recorded along with the generation it was found in, and
-// it's kept only while the document is open.
+// it's kept only while the document is open. So are the script blocks which couldn't be run when
+// scripts last ran, which are reported until scripts run again.
 #[derive(Debug)]
 struct OpenDocument {
     snapshot: Arc<Snapshot>,
     generation: u64,
     pending_check: Option<PendingCheck>,
     baseline: HashMap<PageTitle, (u64, Arc<str>)>,
+    script_failures: Arc<[scripts::ScriptFailure]>,
 }
 
 // Lock the open documents, which no thread holds while panicking.
@@ -966,10 +965,11 @@ impl Snapshot {
 }
 
 // Analyze an editor snapshot without checking its formatting, comparing the instances of each
-// embedded page with its baseline.
+// embedded page with its baseline, and report the script blocks which couldn't be run.
 fn diagnostics_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
+    script_failures: &[scripts::ScriptFailure],
     cancellation: &CancellationFlag,
 ) -> Option<Vec<Diagnostic>> {
     // Validate the wiki even if it has syntax errors, so they don't hide validation errors. Report
@@ -1003,6 +1003,27 @@ fn diagnostics_for_document(
         })
         .unwrap_or_default();
 
+    // Report each script block which couldn't be run at its script's name, wherever the block is
+    // now, unless it's gone or now runs another script. A script which itself failed is explained
+    // by its summary.
+    let script_failure_diagnostics = script_failures.iter().filter_map(|failure| {
+        let block = wiki
+            .pages
+            .get(&failure.title)?
+            .script_blocks
+            .get(failure.index)?;
+        (block.name == failure.name).then(|| {
+            diagnostic(
+                line_index.range(&snapshot.contents, block.name_source_range),
+                failure
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| diagnostic_message(&failure.error)),
+                None,
+            )
+        })
+    });
+
     // Preserve independent Mull errors as independent editor diagnostics, with syntax errors first.
     Some(
         syntax_errors
@@ -1010,6 +1031,7 @@ fn diagnostics_for_document(
             .chain(&validation_errors)
             .chain(&propagation_errors)
             .map(|error| diagnostic_from_error(&snapshot.contents, line_index, error))
+            .chain(script_failure_diagnostics)
             .collect(),
     )
 }
@@ -1020,19 +1042,24 @@ fn diagnostic_from_error(
     line_index: &LineIndex,
     error: &Error,
 ) -> Diagnostic {
-    // Include an underlying reason without including terminal prefixes, paths, or source listings.
-    // An error without a source range is reported at the start of the document.
+    // Report an error without a source range at the start of the document.
     diagnostic(
         error
             .source_range()
             .map_or_else(Range::default, |source_range| {
                 line_index.range(source_contents, source_range)
             }),
-        error.reason().map_or_else(
-            || error.message().to_owned(),
-            |reason| format!("{}\n\nReason: {reason}", error.message()),
-        ),
+        diagnostic_message(error),
         error.fix(),
+    )
+}
+
+// Explain a Mull error in a diagnostic, including an underlying reason without including terminal
+// prefixes, paths, or source listings.
+fn diagnostic_message(error: &Error) -> String {
+    error.reason().map_or_else(
+        || error.message().to_owned(),
+        |reason| format!("{}\n\nReason: {reason}", error.message()),
     )
 }
 
@@ -2916,7 +2943,8 @@ mod tests {
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
-        lsp_position::LspPosition, parser, propagation::Baseline, wiki::PageTitle,
+        lsp_position::LspPosition, parser, propagation::Baseline, scripts::ScriptFailure,
+        wiki::PageTitle,
     };
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use std::{
@@ -2958,6 +2986,7 @@ mod tests {
         diagnostics_for_document(
             &snapshot(uri, source_contents),
             &Baseline::new(),
+            &[],
             &CancellationFlag::default(),
         )
         .expect("A check without cancellation should complete.")
@@ -3097,6 +3126,59 @@ mod tests {
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.source.as_deref(), Some("mull"));
         assert_eq!(diagnostic.message, "Unexpected closing link delimiter.");
+    }
+
+    // Report each script block which couldn't be run at its script's name, wherever the block is
+    // now, explained by its summary if the script itself failed. A failure is forgotten once its
+    // block is gone or runs another script.
+    #[test]
+    fn script_failures_become_diagnostics() {
+        let failure = |index: usize, name: &str, summary: Option<&str>| ScriptFailure {
+            error: crate::error::Error::new(
+                "The script `/scripts/tidy.sh` failed. It isn't executable.",
+                None,
+                None,
+                None,
+                None,
+            ),
+            summary: summary.map(str::to_owned),
+            title: PageTitle::parse("Home").unwrap(),
+            index,
+            name: name.to_owned(),
+        };
+        let source = "# Home\n\nAdded above.\n\n::: sort :::\n\n::: tidy :::\n";
+        let snapshot = snapshot(&untitled_uri(), source);
+        let check = |failures: &[ScriptFailure]| {
+            diagnostics_for_document(
+                &snapshot,
+                &Baseline::new(),
+                failures,
+                &CancellationFlag::default(),
+            )
+            .unwrap()
+        };
+        let other_diagnostics = check(&[]);
+        let diagnostics = check(&[
+            failure(0, "sort", Some("nope")),
+            failure(1, "tidy", None),
+            failure(1, "other", None),
+            failure(2, "sort", None),
+        ]);
+
+        assert_eq!(diagnostics[..other_diagnostics.len()], other_diagnostics);
+        assert_eq!(
+            diagnostics[other_diagnostics.len()..]
+                .iter()
+                .map(|diagnostic| (diagnostic.range, diagnostic.message.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Range::new(Position::new(4, 4), Position::new(4, 8)), "nope"),
+                (
+                    Range::new(Position::new(6, 4), Position::new(6, 8)),
+                    "The script `/scripts/tidy.sh` failed. It isn't executable.",
+                ),
+            ],
+        );
     }
 
     #[test]
@@ -5269,7 +5351,7 @@ mod tests {
         assert_eq!(
             failures
                 .iter()
-                .map(|failure| failure.notification.as_deref())
+                .map(|failure| failure.summary.as_deref())
                 .collect::<Vec<_>>(),
             vec![Some("The script `/scripts/fail.sh` failed.")],
         );
