@@ -7,7 +7,7 @@ use crate::{
     line_index::LineIndex,
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
-    wiki::{Link, MIN_FENCE_LENGTH, Page, ScriptBlock, TITLE_PREFIX, Wiki},
+    wiki::{Link, MIN_FENCE_LENGTH, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -99,7 +99,10 @@ pub fn run_formatted(
                         failure.reason,
                         None,
                     ),
-                    notification: failure.notification,
+                    summary: failure.summary,
+                    title: page.title.clone(),
+                    index,
+                    name: block.name.clone(),
                 }),
             }
         }
@@ -206,21 +209,26 @@ fn hash(
     Some(format!("{:012x}", u64::from_be_bytes(prefix)))
 }
 
-// This is a script block which couldn't be run. The notification is a short message for an editor
-// to show instead of the error's own, for a script which itself failed: what it printed as errors,
-// or a plain statement that it failed if it printed none.
-#[derive(Debug)]
+// This is a script block which couldn't be run, identified by its page, its position among the
+// page's script blocks, and its script's name, so it can be found again after the wiki changes. The
+// summary is a short explanation for an editor to show instead of the error's own, for a script
+// which itself failed: what it printed as errors, or a plain statement that it failed if it printed
+// none.
+#[derive(Clone, Debug)]
 pub struct ScriptFailure {
     pub error: Error,
-    pub notification: Option<String>,
+    pub summary: Option<String>,
+    pub title: PageTitle,
+    pub index: usize,
+    pub name: String,
 }
 
-// This is why a script block couldn't be run, with any underlying cause and any notification to
-// show for it, as for a `ScriptFailure`.
+// This is why a script block couldn't be run, with any underlying cause and any summary of it, as
+// for a `ScriptFailure`.
 struct Failure {
     message: String,
     reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
-    notification: Option<String>,
+    summary: Option<String>,
 }
 
 impl Failure {
@@ -229,7 +237,7 @@ impl Failure {
         Self {
             message,
             reason,
-            notification: None,
+            summary: None,
         }
     }
 }
@@ -279,7 +287,7 @@ fn run_block(
         Failure {
             message: format!("The script {display} failed. {}", failure.message),
             reason: failure.reason,
-            notification: failure.notification.map(|errors| {
+            summary: failure.summary.map(|errors| {
                 if errors.is_empty() {
                     format!("The script {display} failed.")
                 } else {
@@ -557,8 +565,8 @@ fn execute(
         }
     };
 
-    // Report a failure, with what the script printed as errors for a notification if the script
-    // itself failed, or return the output.
+    // Report a failure, summarized by what the script printed as errors if the script itself
+    // failed, or return the output.
     if !status.success() {
         let message = status.code().map_or_else(
             || "It was stopped by a signal.".to_owned(),
@@ -567,7 +575,7 @@ fn execute(
         return Err(Failure {
             message: with_errors(message),
             reason: None,
-            notification: Some(stderr.clone()),
+            summary: Some(stderr.clone()),
         });
     }
     String::from_utf8(stdout).map_err(|_| {
@@ -756,7 +764,7 @@ mod tests {
         assert_eq!(
             failures
                 .iter()
-                .map(|failure| failure.notification.as_deref())
+                .map(|failure| failure.summary.as_deref())
                 .collect::<Vec<_>>(),
             vec![
                 Some("nope"),
