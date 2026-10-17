@@ -858,10 +858,10 @@ async function dropFiles(
   return edit;
 }
 
-// This initialization option tells the language server that this extension provides the editor
-// commands it attaches to completions, quick fixes, and directory links. Keep this in sync with
-// [group:extension_commands_option].
-const EXTENSION_COMMANDS_OPTION = 'extensionCommands';
+// This initialization option tells the language server that the client is this extension, so it can
+// attach VS Code commands to completions, quick fixes, and directory links. Keep this in sync with
+// [group:vscode_extension_option].
+const VSCODE_EXTENSION_OPTION = 'vscodeExtension';
 
 // This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
 // this in sync with [group:run_scripts_option].
@@ -1171,8 +1171,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ],
     // Let hovers use HTML, which sizes image previews.
     markdown: { supportHtml: true },
-    // Let the server attach this extension's editor commands to its responses.
-    initializationOptions: { [EXTENSION_COMMANDS_OPTION]: true },
+    // Let the server attach commands that only VS Code with this extension can run.
+    initializationOptions: { [VSCODE_EXTENSION_OPTION]: true },
     // Run scripts when formatting where they may run, keep cursors in place within their pages
     // when formatting moves the pages, and hide the diagnostics where the user is typing.
     middleware: {

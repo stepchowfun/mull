@@ -63,8 +63,8 @@ const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
 // This initialization option tells the server that the client is the VS Code extension, so it can
 // run the editor commands below. Other clients get the same features without these commands, since
-// they'd fail there. Keep this in sync with [group:extension_commands_option].
-const EXTENSION_COMMANDS_OPTION: &str = "extensionCommands";
+// they'd fail there. Keep this in sync with [group:vscode_extension_option].
+const VSCODE_EXTENSION_OPTION: &str = "vscodeExtension";
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -210,7 +210,7 @@ pub async fn run() {
 struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Uri, OpenDocument>>>,
-    supports_extension_commands: AtomicBool,
+    supports_vscode_commands: AtomicBool,
     supports_file_deletes: AtomicBool,
     supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
@@ -223,7 +223,7 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(Mutex::new(HashMap::new())),
-            supports_extension_commands: AtomicBool::new(false),
+            supports_vscode_commands: AtomicBool::new(false),
             supports_file_deletes: AtomicBool::new(false),
             supports_file_renames: AtomicBool::new(false),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
@@ -449,12 +449,12 @@ impl Backend {
 )]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        // Remember whether the client provides the extension's editor commands.
-        self.supports_extension_commands.store(
+        // Remember whether the client is the VS Code extension, which can run VS Code commands.
+        self.supports_vscode_commands.store(
             params
                 .initialization_options
                 .as_ref()
-                .and_then(|options| options.get(EXTENSION_COMMANDS_OPTION))
+                .and_then(|options| options.get(VSCODE_EXTENSION_OPTION))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
             Ordering::Relaxed,
@@ -691,14 +691,12 @@ impl LanguageServer for Backend {
         // Complete links, portals, and script blocks against the latest synchronized editor
         // snapshot.
         let position = params.text_document_position.position;
-        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
+        let vscode_commands = self.supports_vscode_commands.load(Ordering::Relaxed);
         self.respond(
             &params.text_document_position.text_document.uri,
             move |snapshot| {
-                Ok(
-                    completion_for_document(snapshot, position, extension_commands)
-                        .map(CompletionResponse::List),
-                )
+                Ok(completion_for_document(snapshot, position, vscode_commands)
+                    .map(CompletionResponse::List))
             },
         )
         .await
@@ -839,12 +837,12 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         // Offer fixes for the latest synchronized editor snapshot.
         let diagnostics = params.context.diagnostics;
-        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
+        let vscode_commands = self.supports_vscode_commands.load(Ordering::Relaxed);
         self.respond(&params.text_document.uri, move |snapshot| {
             Ok(code_action_for_document(
                 snapshot,
                 &diagnostics,
-                extension_commands,
+                vscode_commands,
             ))
         })
         .await
@@ -852,9 +850,9 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         // Make the filesystem links in the latest synchronized editor snapshot clickable.
-        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
+        let vscode_commands = self.supports_vscode_commands.load(Ordering::Relaxed);
         self.respond(&params.text_document.uri, move |snapshot| {
-            Ok(document_link_for_document(snapshot, extension_commands))
+            Ok(document_link_for_document(snapshot, vscode_commands))
         })
         .await
     }
@@ -1110,11 +1108,11 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 fn completion_for_document(
     snapshot: &Snapshot,
     cursor: Position,
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<CompletionList> {
     // Offer to open a portal or run a script after the colons which start a fence.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    if let Some(items) = fence_completions(snapshot, cursor_offset, extension_commands) {
+    if let Some(items) = fence_completions(snapshot, cursor_offset, vscode_commands) {
         return Some(CompletionList {
             is_incomplete: false,
             items,
@@ -1145,7 +1143,7 @@ fn completion_for_document(
                 typed_target,
                 cursor_offset,
                 closing_delimiter,
-                extension_commands,
+                vscode_commands,
             )?,
         });
     }
@@ -1179,7 +1177,7 @@ fn completion_for_document(
 fn fence_completions(
     snapshot: &Snapshot,
     cursor: usize,
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<Vec<CompletionItem>> {
     // Find the colons and the rest of their line.
     let contents = &snapshot.contents;
@@ -1219,7 +1217,7 @@ fn fence_completions(
             range,
             format!("{fence} [$1] {fence}"),
         ))),
-        command: extension_commands.then(suggest_command),
+        command: vscode_commands.then(suggest_command),
         ..CompletionItem::default()
     }];
     let file_root = snapshot
@@ -1255,7 +1253,7 @@ fn filesystem_link_completions(
     typed_path: &str,
     cursor: usize,
     closing_delimiter: Option<usize>,
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<Vec<CompletionItem>> {
     // Resolve the typed directory as a link to it would be, declining paths which escape the file
     // tree or have a backslash which doesn't escape anything.
@@ -1281,7 +1279,7 @@ fn filesystem_link_completions(
                 CompletionItemKind::FOLDER,
                 format!("{escaped_name}/"),
                 closing_delimiter.unwrap_or(cursor),
-                extension_commands.then(suggest_command),
+                vscode_commands.then(suggest_command),
             )
         } else {
             (
@@ -2402,8 +2400,7 @@ fn document_symbol_for_document(
 }
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
-// every diagnostic it was attached to. With the extension's editor commands, a created page is
-// revealed too.
+// every diagnostic it was attached to. With VS Code commands, a created page is revealed too.
 #[allow(
     clippy::too_many_lines,
     reason = "Each kind of fix is described where the fixes are turned into code actions."
@@ -2411,7 +2408,7 @@ fn document_symbol_for_document(
 fn code_action_for_document(
     snapshot: &Snapshot,
     diagnostics: &[Diagnostic],
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<CodeActionResponse> {
     // Collect the distinct fixes, reading each from the data that `diagnostic` wrote.
     let mut fixes = BTreeMap::<Fix, Vec<Diagnostic>>::new();
@@ -2498,7 +2495,7 @@ fn code_action_for_document(
                             0,
                         )
                     };
-                    let command = extension_commands.then(|| {
+                    let command = vscode_commands.then(|| {
                         reveal_range_command(
                             format!("Reveal page {}", title.code_str()),
                             &snapshot.uri,
@@ -2595,7 +2592,7 @@ fn reveal_range_arguments(
 // directory is revealed in the explorer by the extension, or else opened like a file.
 fn document_link_for_document(
     snapshot: &Snapshot,
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<Vec<DocumentLink>> {
     // Resolve filesystem links from a saved wiki's file root, recovering from syntax
     // errors so the links remain clickable while they're fixed.
@@ -2614,7 +2611,7 @@ fn document_link_for_document(
             else {
                 return None;
             };
-            let tooltip = match (target.is_directory(), extension_commands) {
+            let tooltip = match (target.is_directory(), vscode_commands) {
                 (true, true) => "Reveal in Explorer",
                 (true, false) => "Open directory",
                 (false, _) => "Open file",
@@ -2625,7 +2622,7 @@ fn document_link_for_document(
                     &file_root,
                     target,
                     &mut listings,
-                    extension_commands,
+                    vscode_commands,
                 )?),
                 tooltip: Some(tooltip.to_owned()),
                 data: None,
@@ -2927,12 +2924,12 @@ fn filesystem_link_target(
     file_root: &FileRoot,
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
-    extension_commands: bool,
+    vscode_commands: bool,
 ) -> Option<Uri> {
     // Open a file directly, and reveal a directory through the extension, if available, by passing
     // its URI as the command's only positional argument.
     let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
-    Some(if target.is_directory() && extension_commands {
+    Some(if target.is_directory() && vscode_commands {
         command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
             .parse()
             .expect("A command URL should be a valid URI.")
@@ -3283,8 +3280,7 @@ mod tests {
     }
 
     // Offer to open a portal to a page after the colons which start a fence, writing the portal on
-    // one line with the cursor in its link and, with the extension's commands, asking for titles
-    // there.
+    // one line with the cursor in its link and, with VS Code commands, asking for titles there.
     #[test]
     fn completions_open_portals() {
         let source = "# Home\n\n- Item\n  :::\n\n# Other";
@@ -3316,7 +3312,7 @@ mod tests {
             Some("editor.action.triggerSuggest"),
         );
 
-        // Leave asking for titles to clients without the extension's commands.
+        // Leave asking for titles to clients without VS Code commands.
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
@@ -3433,7 +3429,7 @@ mod tests {
             Some("editor.action.triggerSuggest"),
         );
 
-        // Leave asking for a directory's children to clients without the extension's commands.
+        // Leave asking for a directory's children to clients without VS Code commands.
         assert!(
             completion_for_document(&snapshot(&uri, source), Position::new(2, 2), false)
                 .unwrap()
@@ -5716,9 +5712,9 @@ mod tests {
         );
     }
 
-    // Create a missing page without revealing it for clients without the extension's commands.
+    // Create a missing page without revealing it for clients without VS Code commands.
     #[test]
-    fn code_actions_create_missing_pages_without_extension_commands() {
+    fn code_actions_create_missing_pages_without_vscode_commands() {
         let source = "# Home\n\n[Greeting]";
         let uri = untitled_uri();
         let actions =
@@ -5942,8 +5938,8 @@ mod tests {
     }
 
     // Link files to themselves and directories to a command that reveals them, or to themselves
-    // without the extension's commands, skipping links whose targets are missing, of the wrong
-    // kind, or spelled differently than on disk.
+    // without VS Code commands, skipping links whose targets are missing, of the wrong kind, or
+    // spelled differently than on disk.
     #[test]
     fn document_links_open_existing_targets() {
         let source =
@@ -5991,7 +5987,7 @@ mod tests {
             Some("Reveal in Explorer"),
         );
 
-        // Open a directory like a file for clients without the extension's commands.
+        // Open a directory like a file for clients without VS Code commands.
         let links = document_link_for_document(&snapshot(&uri, source), false).unwrap();
         let [_, directory_link] = links.as_slice() else {
             panic!("Only the two links with existing targets should be clickable.");
