@@ -84,12 +84,18 @@ function evaluate(expression) {
   return value;
 }
 
-// Replace what follows the first `=` on each line with the value of the arithmetic before it,
-// rounded to 12 significant digits to hide floating-point noise, and keep other lines as written.
+// Read the lines. A block of a single line without `=` is evaluated as if it ended with one, so a
+// quick calculation needn't end with `=`.
 const lines = readFileSync(0, 'utf8').split('\n');
 if (lines.at(-1) === '') {
   lines.pop();
 }
+if (lines.length === 1 && !lines[0].includes('=')) {
+  lines[0] += ' =';
+}
+
+// Replace what follows the first `=` on each line with the value of the arithmetic before it,
+// rounded to 12 significant digits to hide floating-point noise, and keep other lines as written.
 for (const [index, line] of lines.entries()) {
   const equals = line.indexOf('=');
   if (equals === -1) {
