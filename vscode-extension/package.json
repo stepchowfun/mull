@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.61.0",
+  "version": "0.62.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -219,11 +219,6 @@
           "type": "boolean",
           "default": true,
           "description": "Dim everything except the current page."
-        },
-        "mull.snapBackToCurrentPage": {
-          "type": "boolean",
-          "default": false,
-          "description": "After scrolling the current page out of view, scroll back to it."
         }
       }
     },
