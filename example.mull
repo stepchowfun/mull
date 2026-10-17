@@ -2,6 +2,10 @@
 
 This is my personal wiki. Everything I want to remember lives here.
 
+::: calc
+3 + 5 = 8
+::: #4f4a07470700
+
 ## Areas
 
 - [Projects]: things I'm building or working toward
@@ -758,6 +762,13 @@ All parts are 3/4-inch walnut plywood unless noted. Dimensions are in inches.
 | Back panel | 1 | 71 1/4 | 35 1/4 | 1/4-inch plywood, nailed into a rabbet |
 | Face frame stile | 2 | 72 | 1 1/2 | Solid walnut |
 | Face frame rail | 2 | 32 | 1 1/2 | Solid walnut |
+
+The top, bottom, and fixed shelves fit between the sides, and the adjustable shelves are a quarter inch shorter so they slide in easily. Worked out from the overall width of 36 inches by [/scripts/calc.js]:
+
+::: calc
+36 - 2 * 0.75 = 34.5
+36 - 2 * 0.75 - 0.25 = 34.25
+::: #9c6fcfd32573
 
 Measure the actual plywood thickness before cutting the dadoes. See [Bookshelf build].
 
