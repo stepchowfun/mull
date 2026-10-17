@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.1] - 2026-10-17
+
+### Fixed
+
+- In editors other than VS Code, such as Helix, the language server no longer sends commands that only the VS Code extension can run. Creating a missing page with a quick fix no longer fails afterward trying to reveal the page, completing a directory or a portal no longer asks the editor to reopen suggestions, and a link to a directory now opens the directory itself instead of pointing to an extension command. The VS Code extension tells the server it's present with a new initialization option, so it works as before.
+
 ## [0.62.0] - 2026-10-17
 
 ### Removed
