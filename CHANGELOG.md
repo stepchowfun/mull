@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.2] - 2026-10-17
+
+### Added
+
+- The example wiki has a new script, `calc.js`, which evaluates arithmetic. On each line with an `=`, it replaces whatever follows the `=` with the value of the arithmetic before it, so `3 + 5 =` becomes `3 + 5 = 8`, and the result is recomputed whenever the line changes. A block of a single line doesn't need the `=`. It supports `+`, `-`, `*`, `/`, `^`, and parentheses, and numbers can have commas between their digits. The example wiki's bookshelf cut list uses it.
+
 ## [0.63.1] - 2026-10-17
 
 ### Fixed
