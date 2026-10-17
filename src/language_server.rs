@@ -1105,8 +1105,8 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 }
 
 // Complete a portal or a script block at an editor position, or the target of the link there with
-// page titles or filesystem paths. Where more can be chosen after a completion, the extension's
-// editor commands, if available, ask for suggestions again.
+// page titles or filesystem paths. Where more can be chosen after a completion, VS Code commands,
+// if available, ask for suggestions again.
 fn completion_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -2591,7 +2591,7 @@ fn reveal_range_arguments(
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
-// directory is revealed in the explorer by the extension, or else opened like a file.
+// directory is revealed in the explorer by the VS Code extension, or else opened like a file.
 fn document_link_for_document(
     snapshot: &Snapshot,
     vscode_commands: bool,
@@ -2919,17 +2919,17 @@ fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild>
 }
 
 // Find where following a filesystem link should lead: a file opens in the editor, and a directory
-// is revealed in the explorer by the extension, or else opened like a file. A link whose target is
-// missing, of the wrong kind, or spelled differently than on disk leads nowhere, just as the
-// checker reports it.
+// is revealed in the explorer by the VS Code extension, or else opened like a file. A link whose
+// target is missing, of the wrong kind, or spelled differently than on disk leads nowhere, just as
+// the checker reports it.
 fn filesystem_link_target(
     file_root: &FileRoot,
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
     vscode_commands: bool,
 ) -> Option<Uri> {
-    // Open a file directly, and reveal a directory through the extension, if available, by passing
-    // its URI as the command's only positional argument.
+    // Open a file directly, and reveal a directory through the VS Code extension, if available, by
+    // passing its URI as the command's only positional argument.
     let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
     Some(if target.is_directory() && vscode_commands {
         command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
