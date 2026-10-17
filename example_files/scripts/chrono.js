@@ -1,4 +1,25 @@
 #!/usr/bin/env node
+
+// Sort a list of dates in a Mull script block, like this:
+//
+//   ::: chrono
+//   - July 4, 2026: Picnic in the park
+//   - Jan 15: Car registration renewal
+//   - 2026-03: Spring cleaning
+//   :::
+//
+// Each top-level line is a bullet with a date, a colon, and some text. The dates can be written in
+// many forms, like `2026-01-01`, `1/1/2026`, `January 1, 2026`, or `Jan 2026`, and the script
+// rewrites them in a standard form, like `2026-01-01`, `2026-01`, or `2026`. A month or a year
+// comes before the days within it. Indented lines are nested under the line above them and move
+// with it. Empty lines are dropped.
+//
+// The year can be left out, like `Jan 15`, for something which happens every year. It's written
+// back without a year, like `--01-15`, and sorted as its next occurrence, counting today, so it
+// moves to the end of the list once it passes and the script runs again.
+//
+// Write `::: chrono desc` to sort in reverse order.
+
 import { readFileSync } from 'node:fs';
 
 // These are the month names, which can also be abbreviated to their first three or more letters.
