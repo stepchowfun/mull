@@ -61,10 +61,12 @@ use tower_lsp_server::{
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
-// This initialization option tells the server that the client is the VS Code extension, so it can
-// run the editor commands below. Other clients get the same features without these commands, since
-// they'd fail there. Keep this in sync with [group:vscode_extension_option].
-const VSCODE_EXTENSION_OPTION: &str = "vscodeExtension";
+// This initialization option names the client integration talking to the server. The VS Code
+// extension names itself, which tells the server it can run the editor commands below. Other
+// clients get the same features without these commands, since they'd fail there. Keep this in sync
+// with [group:client_option].
+const CLIENT_OPTION: &str = "client";
+const VSCODE_CLIENT: &str = "vscode";
 
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
@@ -454,9 +456,9 @@ impl LanguageServer for Backend {
             params
                 .initialization_options
                 .as_ref()
-                .and_then(|options| options.get(VSCODE_EXTENSION_OPTION))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+                .and_then(|options| options.get(CLIENT_OPTION))
+                .and_then(serde_json::Value::as_str)
+                == Some(VSCODE_CLIENT),
             Ordering::Relaxed,
         );
 
