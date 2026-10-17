@@ -1204,7 +1204,9 @@ fn fence_completions(
         return None;
     }
 
-    // Write the portal, then each script block, as a snippet, keeping the portal first.
+    // Write the portal, then each script block, as a snippet, keeping the portal first. Each is
+    // filtered by its name after the colons, so typing more of it narrows the list rather than
+    // emptying it.
     let range = snapshot.range(SourceRange {
         start: fence_start,
         end: cursor,
@@ -1213,7 +1215,7 @@ fn fence_completions(
         label: "Open a portal to a page".to_owned(),
         kind: Some(CompletionItemKind::SNIPPET),
         sort_text: Some("0".to_owned()),
-        filter_text: Some(fence.clone()),
+        filter_text: Some(format!("{fence} portal")),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
             range,
@@ -1235,7 +1237,7 @@ fn fence_completions(
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some("Run a script".to_owned()),
             sort_text: Some(format!("1{name}")),
-            filter_text: Some(fence.clone()),
+            filter_text: Some(format!("{fence} {name}")),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                 range,
@@ -3373,6 +3375,13 @@ mod tests {
             completions
                 .iter()
                 .all(|completion| completion.sort_text.is_some()),
+        );
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.filter_text.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("::: portal"), Some("::: sort"), Some("::: tidy")],
         );
     }
 
