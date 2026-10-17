@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Formatting writes each script block's fences in a canonical form, whether or not its script runs: a single space after the colons and between the script's name and its arguments, and the shortest fence longer than any in the body. For example, `:::    sort    desc` becomes `::: sort desc`. The arguments themselves are kept as written, so no script runs again because of this.
-- In the VS Code extension, typing after `:::` narrows the suggestions to the scripts whose names match, rather than closing the suggestions.
+- Typing after `:::` narrows the editor's suggestions to the scripts whose names match, rather than closing them.
 - Choosing a script from the suggestions after `:::` puts the cursor in the new block's body rather than after the script's name, since scripts are more often run without arguments.
 
 ## [0.62.2] - 2026-10-17
