@@ -7,6 +7,7 @@ import {
   ExecuteCommandRequest,
   type HandleDiagnosticsSignature,
   LanguageClient,
+  type ProvideCodeActionsSignature,
   type ProvideDocumentFormattingEditsSignature,
 } from 'vscode-languageclient/node';
 
@@ -359,7 +360,8 @@ class FenceDimming implements vscode.Disposable {
 }
 
 // Hide the diagnostics at the cursor while the user types there, such as the error for a link whose
-// target hasn't been typed yet, until the cursor moves away from them.
+// target hasn't been typed yet, until the cursor moves away from them or the user asks for code
+// actions.
 class TypingDiagnostics {
   // Remember each document's diagnostics, including hidden ones, and how to show them.
   private readonly diagnostics = new Map<string, vscode.Diagnostic[]>();
@@ -380,6 +382,40 @@ class TypingDiagnostics {
     this.diagnostics.set(uri.toString(), diagnostics);
     this.show = next;
     next(uri, this.visible(uri, diagnostics));
+  };
+
+  // Show the hidden diagnostics when the user asks for code actions, which means they're done
+  // typing, and include those in the requested range so their fixes are offered. Code actions
+  // requested automatically, as for the light bulb, leave them hidden.
+  public readonly provideCodeActions = (
+    document: vscode.TextDocument,
+    range: vscode.Range,
+    context: vscode.CodeActionContext,
+    token: vscode.CancellationToken,
+    next: ProvideCodeActionsSignature,
+  ): vscode.ProviderResult<(vscode.Command | vscode.CodeAction)[]> => {
+    if (
+      context.triggerKind !== vscode.CodeActionTriggerKind.Invoke ||
+      this.typingUri !== document.uri.toString()
+    ) {
+      return next(document, range, context, token);
+    }
+    const hidden = (this.diagnostics.get(this.typingUri) ?? []).filter(
+      (diagnostic) =>
+        this.hidden.some((hiddenRange) => hiddenRange.isEqual(diagnostic.range)) &&
+        diagnostic.range.intersection(range) !== undefined,
+    );
+    this.stopTyping();
+    return next(
+      document,
+      range,
+      {
+        diagnostics: [...context.diagnostics, ...hidden],
+        only: context.only,
+        triggerKind: context.triggerKind,
+      },
+      token,
+    );
   };
 
   // Start hiding the diagnostics at the cursor when the user edits there, but not for edits
@@ -1175,10 +1211,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Let the server attach commands that only VS Code with this extension can run.
     initializationOptions: { [CLIENT_OPTION]: VSCODE_CLIENT },
     // Run scripts when formatting where they may run, keep cursors in place within their pages
-    // when formatting moves the pages, and hide the diagnostics where the user is typing.
+    // when formatting moves the pages, and hide the diagnostics where the user is typing, except
+    // from code actions they ask for.
     middleware: {
       provideDocumentFormattingEdits: formatKeepingPagePositions,
       handleDiagnostics: typingDiagnostics.handleDiagnostics,
+      provideCodeActions: typingDiagnostics.provideCodeActions,
     },
   };
   client = new LanguageClient('mull', 'Mull', serverOptions, clientOptions);
