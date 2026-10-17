@@ -360,7 +360,8 @@ class FenceDimming implements vscode.Disposable {
 }
 
 // Hide the diagnostics at the cursor while the user types there, such as the error for a link whose
-// target hasn't been typed yet, until the cursor moves away from them.
+// target hasn't been typed yet, until the cursor moves away from them or the user asks for code
+// actions.
 class TypingDiagnostics {
   // Remember each document's diagnostics, including hidden ones, and how to show them.
   private readonly diagnostics = new Map<string, vscode.Diagnostic[]>();
