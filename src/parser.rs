@@ -703,7 +703,7 @@ fn parse_title(
 }
 
 // These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
-// argument is trimmed and located by its offsets within the line. A portal written on one line
+// argument is trimmed and located by its offsets within the line. A block written on one line
 // ends with a closing run of colons after its argument. A closing fence can be followed by a hash,
 // which is located by its offsets within the line, including its `#`.
 #[derive(Debug, Eq, PartialEq)]
