@@ -611,7 +611,7 @@ fn title_line_text(line: &str) -> Option<&str> {
 
 // Determine whether a script's name is valid: letters, digits, `-`, `_`, and `.`, which need no
 // escaping and can't be confused with the arguments after them.
-fn is_script_name(name: &str) -> bool {
+pub fn is_script_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()

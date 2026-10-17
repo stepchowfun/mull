@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.1] - 2026-10-17
+
+### Fixed
+
+- The suggestions after `:::` come back as you keep typing a script's name, after none matched or they were dismissed, the same way the suggestions for links do. For example, after `:::sozz` matches nothing, deleting back to `:::so` and typing `r` suggests `sort` again.
+
 ## [0.63.0] - 2026-10-17
 
 ### Added

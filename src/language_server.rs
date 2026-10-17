@@ -1172,35 +1172,58 @@ fn completion_for_document(
 }
 
 // Offer to open a portal to a page, or to run each script in a saved wiki, in place of the colons
-// before the cursor, if they're the only text on their line and the parser reports them as an
-// unexpected closing fence, so they don't close a block and aren't in code. A portal is written on
-// one line with the cursor in its link, where titles are suggested next, and a script block is
-// written with the cursor in its empty body, since a script is more often run without arguments.
+// starting the cursor's line and any part of a script's name typed after them, if that's the only
+// text on the line and the parser reports the colons alone as an unexpected closing fence, so they
+// don't close a block and aren't in code. Offering them again while a name is typed brings the
+// suggestions back after none match or they're dismissed. A portal is written on one line with the
+// cursor in its link, where titles are suggested next, and a script block is written with the
+// cursor in its empty body, since a script is more often run without arguments.
 fn fence_completions(
     snapshot: &Snapshot,
     cursor: usize,
     vscode_commands: bool,
 ) -> Option<Vec<CompletionItem>> {
-    // Find the colons and the rest of their line.
+    // Find the colons starting the line, what's typed between them and the cursor, and the rest
+    // of the line.
     let contents = &snapshot.contents;
     let fence = ":".repeat(MIN_FENCE_LENGTH);
-    let fence_start = cursor.checked_sub(fence.len())?;
     let line_start = contents[..cursor]
         .rfind('\n')
         .map_or(0, |index| index + '\n'.len_utf8());
     let line_end = contents[cursor..]
         .find('\n')
         .map_or(contents.len(), |index| cursor + index);
+    let fence_start = cursor - contents[line_start..cursor].trim_start().len();
+    let typed = contents[fence_start..cursor].strip_prefix(&fence)?;
 
-    // Require the colons to be alone on their line and unexpected as a closing fence.
-    if contents[line_start..cursor].trim_start() != fence
+    // Require the typed text to be part of a script's name, after any whitespace, and nothing to
+    // follow it on the line.
+    let typed_name = typed.trim_start();
+    if !(typed_name.is_empty() || parser::is_script_name(typed_name))
         || !contents[cursor..line_end].trim().is_empty()
-        || !snapshot.parsed().1.iter().any(|error| {
-            error
-                .source_range()
-                .is_some_and(|source_range| source_range.start == fence_start)
-        })
     {
+        return None;
+    }
+
+    // Require the colons alone to be unexpected as a closing fence, parsing the contents without
+    // the typed text if there is any.
+    let errors_without_typed;
+    let errors = if typed.is_empty() {
+        &snapshot.parsed().1
+    } else {
+        let source = format!(
+            "{}{}",
+            &contents[..fence_start + fence.len()],
+            &contents[cursor..],
+        );
+        errors_without_typed = parser::parse(None, &source, &LineIndex::new(&source)).1;
+        &errors_without_typed
+    };
+    if !errors.iter().any(|error| {
+        error
+            .source_range()
+            .is_some_and(|source_range| source_range.start == fence_start)
+    }) {
         return None;
     }
 
@@ -3385,8 +3408,49 @@ mod tests {
         );
     }
 
-    // Offer no portal after colons which close a portal, are in code, aren't alone on their line,
-    // or are too many to start a fence with the fewest colons.
+    // Offer the same completions after part of a script's name, typed after the colons with or
+    // without a space, replacing the colons and the typed text, so the suggestions return after
+    // none match or they're dismissed.
+    #[test]
+    fn completions_resume_after_partial_names() {
+        for (source, cursor, range_start) in [
+            ("# Home\n\n:::so", Position::new(2, 5), Position::new(2, 0)),
+            ("# Home\n\n::: so", Position::new(2, 6), Position::new(2, 0)),
+            (
+                "# Home\n\n- List:\n  :::so",
+                Position::new(3, 7),
+                Position::new(3, 2),
+            ),
+        ] {
+            let completions =
+                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true)
+                    .unwrap()
+                    .items;
+            assert_eq!(
+                completion_edits(&completions),
+                vec![(
+                    "Open a portal to a page",
+                    Range::new(range_start, cursor),
+                    "::: [$1] :::",
+                )],
+            );
+        }
+
+        // Decline text which isn't part of a name, and colons which would close a block or are in
+        // code.
+        for (source, cursor) in [
+            ("# Home\n\n::: so x", Position::new(2, 8)),
+            ("# Home\n\n::: [Other]\n:::so\n# Other", Position::new(3, 5)),
+            ("# Home\n\n```\n:::so\n```", Position::new(3, 5)),
+        ] {
+            assert!(
+                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true).is_none(),
+            );
+        }
+    }
+
+    // Offer no portal after colons which close a portal, are in code, are followed by other text on
+    // their line, or are too many to start a fence with the fewest colons.
     #[test]
     fn completions_decline_portals() {
         for (source, cursor) in [
