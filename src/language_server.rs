@@ -61,6 +61,11 @@ use tower_lsp_server::{
 // without the editor reporting it. Keep this in sync with [group:check_wiki_command].
 const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
 
+// This initialization option tells the server that the client is the VS Code extension, so it can
+// run the editor commands below. Other clients get the same features without these commands, since
+// they'd fail there. Keep this in sync with [group:extension_commands_option].
+const EXTENSION_COMMANDS_OPTION: &str = "extensionCommands";
+
 // This extension command reveals a source range in a document. Keep this in sync with
 // [group:reveal_range_command].
 const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
@@ -205,6 +210,7 @@ pub async fn run() {
 struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Uri, OpenDocument>>>,
+    supports_extension_commands: AtomicBool,
     supports_file_deletes: AtomicBool,
     supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
@@ -217,6 +223,7 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(Mutex::new(HashMap::new())),
+            supports_extension_commands: AtomicBool::new(false),
             supports_file_deletes: AtomicBool::new(false),
             supports_file_renames: AtomicBool::new(false),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
@@ -442,6 +449,17 @@ impl Backend {
 )]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Remember whether the client provides the extension's editor commands.
+        self.supports_extension_commands.store(
+            params
+                .initialization_options
+                .as_ref()
+                .and_then(|options| options.get(EXTENSION_COMMANDS_OPTION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+
         // Remember whether document symbols may carry separate full and selection ranges.
         self.supports_hierarchical_document_symbols.store(
             params
@@ -673,10 +691,14 @@ impl LanguageServer for Backend {
         // Complete links, portals, and script blocks against the latest synchronized editor
         // snapshot.
         let position = params.text_document_position.position;
+        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
         self.respond(
             &params.text_document_position.text_document.uri,
             move |snapshot| {
-                Ok(completion_for_document(snapshot, position).map(CompletionResponse::List))
+                Ok(
+                    completion_for_document(snapshot, position, extension_commands)
+                        .map(CompletionResponse::List),
+                )
             },
         )
         .await
@@ -817,16 +839,22 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         // Offer fixes for the latest synchronized editor snapshot.
         let diagnostics = params.context.diagnostics;
+        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
         self.respond(&params.text_document.uri, move |snapshot| {
-            Ok(code_action_for_document(snapshot, &diagnostics))
+            Ok(code_action_for_document(
+                snapshot,
+                &diagnostics,
+                extension_commands,
+            ))
         })
         .await
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         // Make the filesystem links in the latest synchronized editor snapshot clickable.
-        self.respond(&params.text_document.uri, |snapshot| {
-            Ok(document_link_for_document(snapshot))
+        let extension_commands = self.supports_extension_commands.load(Ordering::Relaxed);
+        self.respond(&params.text_document.uri, move |snapshot| {
+            Ok(document_link_for_document(snapshot, extension_commands))
         })
         .await
     }
@@ -1077,11 +1105,16 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 }
 
 // Complete a portal or a script block at an editor position, or the target of the link there with
-// page titles or filesystem paths.
-fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<CompletionList> {
+// page titles or filesystem paths. Where more can be chosen after a completion, the extension's
+// editor commands, if available, ask for suggestions again.
+fn completion_for_document(
+    snapshot: &Snapshot,
+    cursor: Position,
+    extension_commands: bool,
+) -> Option<CompletionList> {
     // Offer to open a portal or run a script after the colons which start a fence.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    if let Some(items) = fence_completions(snapshot, cursor_offset) {
+    if let Some(items) = fence_completions(snapshot, cursor_offset, extension_commands) {
         return Some(CompletionList {
             is_incomplete: false,
             items,
@@ -1112,6 +1145,7 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
                 typed_target,
                 cursor_offset,
                 closing_delimiter,
+                extension_commands,
             )?,
         });
     }
@@ -1142,7 +1176,11 @@ fn completion_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Comp
 // unexpected closing fence, so they don't close a block and aren't in code. A portal is written on
 // one line with the cursor in its link, where titles are suggested next, and a script block is
 // written with the cursor after the script's name, for its arguments, and an empty body.
-fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<CompletionItem>> {
+fn fence_completions(
+    snapshot: &Snapshot,
+    cursor: usize,
+    extension_commands: bool,
+) -> Option<Vec<CompletionItem>> {
     // Find the colons and the rest of their line.
     let contents = &snapshot.contents;
     let fence = ":".repeat(MIN_FENCE_LENGTH);
@@ -1181,11 +1219,7 @@ fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<Completio
             range,
             format!("{fence} [$1] {fence}"),
         ))),
-        command: Some(Command {
-            title: "Suggest".to_owned(),
-            command: TRIGGER_SUGGEST_COMMAND.to_owned(),
-            arguments: None,
-        }),
+        command: extension_commands.then(suggest_command),
         ..CompletionItem::default()
     }];
     let file_root = snapshot
@@ -1221,6 +1255,7 @@ fn filesystem_link_completions(
     typed_path: &str,
     cursor: usize,
     closing_delimiter: Option<usize>,
+    extension_commands: bool,
 ) -> Option<Vec<CompletionItem>> {
     // Resolve the typed directory as a link to it would be, declining paths which escape the file
     // tree or have a backslash which doesn't escape anything.
@@ -1246,11 +1281,7 @@ fn filesystem_link_completions(
                 CompletionItemKind::FOLDER,
                 format!("{escaped_name}/"),
                 closing_delimiter.unwrap_or(cursor),
-                Some(Command {
-                    title: "Suggest".to_owned(),
-                    command: TRIGGER_SUGGEST_COMMAND.to_owned(),
-                    arguments: None,
-                }),
+                extension_commands.then(suggest_command),
             )
         } else {
             (
@@ -1282,6 +1313,15 @@ fn filesystem_link_completions(
     // Present entries deterministically.
     completions.sort_by(|a, b| a.label.cmp(&b.label));
     Some(completions)
+}
+
+// Build the editor command which asks for suggestions again.
+fn suggest_command() -> Command {
+    Command {
+        title: "Suggest".to_owned(),
+        command: TRIGGER_SUGGEST_COMMAND.to_owned(),
+        arguments: None,
+    }
 }
 
 // Complete a text link with the page titles which contain the typed text's characters in order,
@@ -2362,7 +2402,8 @@ fn document_symbol_for_document(
 }
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
-// every diagnostic it was attached to.
+// every diagnostic it was attached to. With the extension's editor commands, a created page is
+// revealed too.
 #[allow(
     clippy::too_many_lines,
     reason = "Each kind of fix is described where the fixes are turned into code actions."
@@ -2370,6 +2411,7 @@ fn document_symbol_for_document(
 fn code_action_for_document(
     snapshot: &Snapshot,
     diagnostics: &[Diagnostic],
+    extension_commands: bool,
 ) -> Option<CodeActionResponse> {
     // Collect the distinct fixes, reading each from the data that `diagnostic` wrote.
     let mut fixes = BTreeMap::<Fix, Vec<Diagnostic>>::new();
@@ -2456,17 +2498,15 @@ fn code_action_for_document(
                             0,
                         )
                     };
-                    let command = reveal_range_command(
-                        format!("Reveal page {}", title.code_str()),
-                        &snapshot.uri,
-                        Range::new(cursor, cursor),
-                        RevealType::AtTop,
-                    );
-                    (
-                        format!("Create page {}", title.code_str()),
-                        edit,
-                        Some(command),
-                    )
+                    let command = extension_commands.then(|| {
+                        reveal_range_command(
+                            format!("Reveal page {}", title.code_str()),
+                            &snapshot.uri,
+                            Range::new(cursor, cursor),
+                            RevealType::AtTop,
+                        )
+                    });
+                    (format!("Create page {}", title.code_str()), edit, command)
                 }
                 Fix::EscapeBackslash(offset) => {
                     // Skip a fix from a stale diagnostic whose backslash no longer needs escaping.
@@ -2552,8 +2592,11 @@ fn reveal_range_arguments(
 }
 
 // Make each filesystem link whose target exists clickable: a file opens in the editor, and a
-// directory is revealed in the explorer.
-fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> {
+// directory is revealed in the explorer by the extension, or else opened like a file.
+fn document_link_for_document(
+    snapshot: &Snapshot,
+    extension_commands: bool,
+) -> Option<Vec<DocumentLink>> {
     // Resolve filesystem links from a saved wiki's file root, recovering from syntax
     // errors so the links remain clickable while they're fixed.
     let file_root = FileRoot::new(snapshot.path.as_deref()?).ok()?;
@@ -2571,14 +2614,19 @@ fn document_link_for_document(snapshot: &Snapshot) -> Option<Vec<DocumentLink>> 
             else {
                 return None;
             };
-            let tooltip = if target.is_directory() {
-                "Reveal in Explorer"
-            } else {
-                "Open file"
+            let tooltip = match (target.is_directory(), extension_commands) {
+                (true, true) => "Reveal in Explorer",
+                (true, false) => "Open directory",
+                (false, _) => "Open file",
             };
             Some(DocumentLink {
                 range: snapshot.range(*source_range),
-                target: Some(filesystem_link_target(&file_root, target, &mut listings)?),
+                target: Some(filesystem_link_target(
+                    &file_root,
+                    target,
+                    &mut listings,
+                    extension_commands,
+                )?),
                 tooltip: Some(tooltip.to_owned()),
                 data: None,
             })
@@ -2872,17 +2920,19 @@ fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild>
 }
 
 // Find where following a filesystem link should lead: a file opens in the editor, and a directory
-// is revealed in the explorer. A link whose target is missing, of the wrong kind, or spelled
-// differently than on disk leads nowhere, just as the checker reports it.
+// is revealed in the explorer by the extension, or else opened like a file. A link whose target is
+// missing, of the wrong kind, or spelled differently than on disk leads nowhere, just as the
+// checker reports it.
 fn filesystem_link_target(
     file_root: &FileRoot,
     target: &FilesystemTarget,
     listings: &mut DirectoryListings,
+    extension_commands: bool,
 ) -> Option<Uri> {
-    // Open a file directly, and reveal a directory through the extension by passing its URI as
-    // the command's only positional argument.
+    // Open a file directly, and reveal a directory through the extension, if available, by passing
+    // its URI as the command's only positional argument.
     let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
-    Some(if target.is_directory() {
+    Some(if target.is_directory() && extension_commands {
         command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
             .parse()
             .expect("A command URL should be a valid URI.")
@@ -3233,14 +3283,18 @@ mod tests {
     }
 
     // Offer to open a portal to a page after the colons which start a fence, writing the portal on
-    // one line with the cursor in its link and suggesting titles there.
+    // one line with the cursor in its link and, with the extension's commands, asking for titles
+    // there.
     #[test]
     fn completions_open_portals() {
         let source = "# Home\n\n- Item\n  :::\n\n# Other";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 5))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(3, 5),
+            true,
+        )
+        .unwrap()
+        .items;
 
         assert_eq!(
             completion_edits(&completions),
@@ -3261,10 +3315,24 @@ mod tests {
                 .map(|command| command.command.as_str()),
             Some("editor.action.triggerSuggest"),
         );
+
+        // Leave asking for titles to clients without the extension's commands.
+        assert!(
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(3, 5),
+                false,
+            )
+            .unwrap()
+            .items[0]
+                .command
+                .is_none(),
+        );
         assert_eq!(
             completion_for_document(
                 &snapshot(&untitled_uri(), "# Home\n\n::: [] :::\n\n# Other"),
                 Position::new(2, 5),
+                true,
             )
             .unwrap()
             .items
@@ -3289,6 +3357,7 @@ mod tests {
         let completions = completion_for_document(
             &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
             Position::new(2, 3),
+            true,
         )
         .unwrap()
         .items;
@@ -3319,7 +3388,9 @@ mod tests {
             ("# Home\n\n::: :::", Position::new(2, 3)),
             ("# Home\n\n::::", Position::new(2, 4)),
         ] {
-            assert!(completion_for_document(&snapshot(&untitled_uri(), source), cursor).is_none());
+            assert!(
+                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true).is_none(),
+            );
         }
     }
 
@@ -3335,9 +3406,10 @@ mod tests {
         fs::create_dir(directory.join("images")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
-            .unwrap()
-            .items;
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
+                .unwrap()
+                .items;
 
         // Close a file's link but leave a directory's link open for its children.
         let empty_path = Range::new(Position::new(2, 2), Position::new(2, 2));
@@ -3360,6 +3432,15 @@ mod tests {
                 .map(|command| command.command.as_str()),
             Some("editor.action.triggerSuggest"),
         );
+
+        // Leave asking for a directory's children to clients without the extension's commands.
+        assert!(
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), false)
+                .unwrap()
+                .items
+                .iter()
+                .all(|completion| completion.command.is_none()),
+        );
     }
 
     // Complete the path after the filesystem-link prefix, which the typed path includes.
@@ -3369,9 +3450,10 @@ mod tests {
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 4))
-            .unwrap()
-            .items;
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), true)
+                .unwrap()
+                .items;
 
         assert_eq!(
             completion_edits(&completions),
@@ -3392,7 +3474,7 @@ mod tests {
         fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions = || {
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
                 .unwrap()
                 .items
         };
@@ -3421,9 +3503,10 @@ mod tests {
         fs::create_dir_all(directory.join("images/rejected/nested")).unwrap();
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 10))
-            .unwrap()
-            .items;
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 10), true)
+                .unwrap()
+                .items;
 
         let typed_component = Range::new(Position::new(2, 9), Position::new(2, 10));
         assert_eq!(
@@ -3448,9 +3531,10 @@ mod tests {
         fs::write(directory.join("a[b]/c[d].txt"), "content").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 2))
-            .unwrap()
-            .items;
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
+                .unwrap()
+                .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
@@ -3460,9 +3544,10 @@ mod tests {
             )],
         );
 
-        let completions = completion_for_document(&snapshot(&uri, source), Position::new(2, 9))
-            .unwrap()
-            .items;
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 9), true)
+                .unwrap()
+                .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
@@ -3488,7 +3573,7 @@ mod tests {
             Position::new(2, 10),
         ] {
             assert!(
-                completion_for_document(&snapshot(&uri, source), cursor)
+                completion_for_document(&snapshot(&uri, source), cursor, true)
                     .is_none_or(|completions| completions.items.is_empty()),
             );
         }
@@ -3496,8 +3581,12 @@ mod tests {
         // Require a filesystem to list entries from.
         let source = "# Home\n\n[/]";
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 2),
+                true,
+            )
+            .is_none(),
         );
     }
 
@@ -3505,10 +3594,13 @@ mod tests {
     #[test]
     fn completions_replace_closed_links() {
         let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 3),
+            true,
+        )
+        .unwrap()
+        .items;
 
         assert_eq!(
             completions
@@ -3526,8 +3618,12 @@ mod tests {
 
         // Offer nothing from a cursor before the link's opening delimiter.
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 0),
+                true,
+            )
+            .is_none(),
         );
     }
 
@@ -3535,10 +3631,13 @@ mod tests {
     #[test]
     fn completions_recover_from_syntax_errors() {
         let source = "# Home\n\n[Gre\n\n# Greeting\n\nUnexpected]";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 4),
+            true,
+        )
+        .unwrap()
+        .items;
 
         assert!(
             completions
@@ -3551,10 +3650,13 @@ mod tests {
     #[test]
     fn completions_support_unfinished_links() {
         let source = "# Home\n\n[Gre\n\n# Greeting";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 4),
+            true,
+        )
+        .unwrap()
+        .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -3574,10 +3676,13 @@ mod tests {
     #[test]
     fn completions_follow_closed_links_on_the_same_line() {
         let source = "# Home\n\nSee [Home] and [Gre\n\n# Greeting";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 19))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 19),
+            true,
+        )
+        .unwrap()
+        .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -3597,9 +3702,12 @@ mod tests {
     #[test]
     fn completions_filter_titles() {
         let source = "# Home\n\n[gre\n\n# Greeting\n\n# Agree\n\n# Greek\n\n# Other";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap();
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 4),
+            true,
+        )
+        .unwrap();
 
         assert!(!completions.is_incomplete);
         assert_eq!(
@@ -3616,9 +3724,12 @@ mod tests {
     #[test]
     fn completions_filter_titles_with_escapes() {
         let source = "# Home\n\n[A\\[\n\n# A[B]\n\n# AB";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
-                .unwrap();
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 4),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             completions
@@ -3638,9 +3749,12 @@ mod tests {
         for i in 0_usize..200 {
             writeln!(source, "\n# Ax {i:03}").unwrap();
         }
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), &source), Position::new(2, 2))
-                .unwrap();
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), &source),
+            Position::new(2, 2),
+            true,
+        )
+        .unwrap();
 
         assert!(completions.is_incomplete);
         assert_eq!(completions.items.len(), MAX_TITLE_COMPLETIONS);
@@ -3659,17 +3773,26 @@ mod tests {
         let source = "# Home\n\n[";
 
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 0))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 0),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 1))
-                .is_some(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 1),
+                true,
+            )
+            .is_some(),
         );
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), "# Home\n\nx"),
                 Position::new(2, 1),
+                true,
             )
             .is_none(),
         );
@@ -3680,10 +3803,13 @@ mod tests {
     fn completions_do_not_duplicate_closing_delimiters() {
         // Model an editor that has already auto-closed the link the cursor sits inside.
         let source = "# Home\n\n[Gr]\n\n# Greeting";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 3),
+            true,
+        )
+        .unwrap()
+        .items;
         let greeting = completions
             .iter()
             .find(|completion| completion.label == "Greeting")
@@ -3704,10 +3830,13 @@ mod tests {
     #[test]
     fn completions_escape_title_delimiters() {
         let source = "# Home\n\n[]\n\n# A[B]";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 1))
-                .unwrap()
-                .items;
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 1),
+            true,
+        )
+        .unwrap()
+        .items;
         let bracketed = completions
             .iter()
             .find(|completion| completion.label == "A[B]")
@@ -3728,15 +3857,23 @@ mod tests {
         let complete = "# Home\n\n[A\\[\n\n# A[B]";
 
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), incomplete), Position::new(2, 3))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), incomplete),
+                Position::new(2, 3),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), complete), Position::new(2, 4))
-                .unwrap()
-                .items
-                .iter()
-                .any(|completion| completion.label == "A[B]"),
+            completion_for_document(
+                &snapshot(&untitled_uri(), complete),
+                Position::new(2, 4),
+                true,
+            )
+            .unwrap()
+            .items
+            .iter()
+            .any(|completion| completion.label == "A[B]"),
         );
     }
 
@@ -3746,16 +3883,28 @@ mod tests {
         let source = "# Home\n\n```\n[]\n```\n\n`[` []";
 
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(3, 1))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(3, 1),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 2))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(6, 2),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(6, 5))
-                .is_some(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(6, 5),
+                true,
+            )
+            .is_some(),
         );
     }
 
@@ -3764,9 +3913,12 @@ mod tests {
     #[test]
     fn completions_repair_unexpected_opening_delimiters() {
         let source = "# Home\n\n[a [b\n\n# a [b";
-        let completions =
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 5))
-                .unwrap();
+        let completions = completion_for_document(
+            &snapshot(&untitled_uri(), source),
+            Position::new(2, 5),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             completion_edits(&completions.items),
@@ -3784,16 +3936,28 @@ mod tests {
         let source = "# Home\n\nprose [/notes.txt]";
 
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 2))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 2),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 10))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(2, 10),
+                true,
+            )
+            .is_none(),
         );
         assert!(
-            completion_for_document(&snapshot(&untitled_uri(), source), Position::new(0, 3))
-                .is_none(),
+            completion_for_document(
+                &snapshot(&untitled_uri(), source),
+                Position::new(0, 3),
+                true,
+            )
+            .is_none(),
         );
     }
 
@@ -5531,7 +5695,7 @@ mod tests {
         let mut request_diagnostics = link_diagnostics.clone();
         request_diagnostics.push(unrelated_diagnostic);
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &request_diagnostics).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &request_diagnostics, true).unwrap();
         let [action] = actions.as_slice() else {
             panic!("A missing destination should have exactly one code action.");
         };
@@ -5552,13 +5716,30 @@ mod tests {
         );
     }
 
+    // Create a missing page without revealing it for clients without the extension's commands.
+    #[test]
+    fn code_actions_create_missing_pages_without_extension_commands() {
+        let source = "# Home\n\n[Greeting]";
+        let uri = untitled_uri();
+        let actions =
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), false)
+                .unwrap();
+        let [CodeActionOrCommand::CodeAction(code_action)] = actions.as_slice() else {
+            panic!("A missing destination should have exactly one code action.");
+        };
+        assert_eq!(code_action.title, "Create page `Greeting`");
+        assert!(code_action.edit.is_some());
+        assert!(code_action.command.is_none());
+    }
+
     // Offer to create a missing page despite a syntax error elsewhere in the wiki.
     #[test]
     fn code_actions_recover_from_syntax_errors() {
         let source = "# Home\n\n[Greeting] Unexpected]";
         let uri = untitled_uri();
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
+                .unwrap();
         let [action] = actions.as_slice() else {
             panic!("A missing destination should have exactly one code action.");
         };
@@ -5581,7 +5762,8 @@ mod tests {
         );
         let uri = untitled_uri();
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
+                .unwrap();
 
         let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
@@ -5606,7 +5788,8 @@ mod tests {
         let source = "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Zebra\n";
         let uri = untitled_uri();
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
+                .unwrap();
 
         let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
@@ -5628,7 +5811,7 @@ mod tests {
         let source = "# Home\n";
 
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &stale_diagnostics).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &stale_diagnostics, true).unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
             "# Home\n\n|# Greeting\n",
@@ -5650,6 +5833,7 @@ mod tests {
         let actions = code_action_for_document(
             &snapshot(&uri, ""),
             &[home_diagnostic.clone(), unrelated_diagnostic],
+            true,
         )
         .unwrap();
         let [action] = actions.as_slice() else {
@@ -5670,7 +5854,8 @@ mod tests {
         // Separate the home page from the pages that follow it.
         let source = "# Greeting\n";
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source)).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
+                .unwrap();
         assert_eq!(
             apply_code_action(&uri, source, &actions[0]),
             "|# Home\n\n# Greeting\n",
@@ -5684,7 +5869,8 @@ mod tests {
         let stale_diagnostics = diagnostics(&uri, "");
 
         assert!(
-            code_action_for_document(&snapshot(&uri, "# Home\n"), &stale_diagnostics).is_none(),
+            code_action_for_document(&snapshot(&uri, "# Home\n"), &stale_diagnostics, true)
+                .is_none(),
         );
     }
 
@@ -5696,7 +5882,9 @@ mod tests {
         let source_diagnostics = diagnostics(&uri, source);
         assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
 
-        assert!(code_action_for_document(&snapshot(&uri, source), &source_diagnostics).is_none());
+        assert!(
+            code_action_for_document(&snapshot(&uri, source), &source_diagnostics, true).is_none(),
+        );
     }
 
     // Offer to escape each backslash which doesn't escape anything, making the wiki valid, but not
@@ -5710,7 +5898,7 @@ mod tests {
 
         // Apply the edits from the end of the source so the earlier ones stay where they are.
         let actions =
-            code_action_for_document(&snapshot(&uri, source), &escape_diagnostics).unwrap();
+            code_action_for_document(&snapshot(&uri, source), &escape_diagnostics, true).unwrap();
         assert_eq!(actions.len(), 2);
         let mut applied = source.to_owned();
         for action in actions.iter().rev() {
@@ -5731,7 +5919,10 @@ mod tests {
         }
         assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
         assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
-        assert!(code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics).is_none());
+        assert!(
+            code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics, true)
+                .is_none(),
+        );
     }
 
     // Keep filesystem links clickable in a wiki with syntax errors.
@@ -5743,15 +5934,16 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
-            document_link_for_document(&snapshot(&uri, source))
+            document_link_for_document(&snapshot(&uri, source), true)
                 .unwrap()
                 .len(),
             1,
         );
     }
 
-    // Link files to themselves and directories to a command that reveals them, skipping links
-    // whose targets are missing, of the wrong kind, or spelled differently than on disk.
+    // Link files to themselves and directories to a command that reveals them, or to themselves
+    // without the extension's commands, skipping links whose targets are missing, of the wrong
+    // kind, or spelled differently than on disk.
     #[test]
     fn document_links_open_existing_targets() {
         let source =
@@ -5761,7 +5953,7 @@ mod tests {
         fs::write(directory.join("notes.txt"), "notes").unwrap();
         fs::create_dir(directory.join("images")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let links = document_link_for_document(&snapshot(&uri, source)).unwrap();
+        let links = document_link_for_document(&snapshot(&uri, source), true).unwrap();
 
         // Expect the file link and then the directory link.
         let [file_link, directory_link] = links.as_slice() else {
@@ -5794,8 +5986,21 @@ mod tests {
             ),
         );
 
+        assert_eq!(
+            directory_link.tooltip.as_deref(),
+            Some("Reveal in Explorer"),
+        );
+
+        // Open a directory like a file for clients without the extension's commands.
+        let links = document_link_for_document(&snapshot(&uri, source), false).unwrap();
+        let [_, directory_link] = links.as_slice() else {
+            panic!("Only the two links with existing targets should be clickable.");
+        };
+        assert_eq!(directory_link.target, Some(directory_uri));
+        assert_eq!(directory_link.tooltip.as_deref(), Some("Open directory"));
+
         // Decline to resolve links relative to an unsaved wiki.
-        assert!(document_link_for_document(&snapshot(&untitled_uri(), source)).is_none());
+        assert!(document_link_for_document(&snapshot(&untitled_uri(), source), true).is_none());
     }
 
     // Resolve filesystem links within the file root rather than beside the wiki.
@@ -5807,7 +6012,7 @@ mod tests {
         fs::write(wiki.directory().join("within.txt"), "within").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let document_links = document_link_for_document(&snapshot(&uri, source)).unwrap();
+        let document_links = document_link_for_document(&snapshot(&uri, source), true).unwrap();
         assert_eq!(document_links.len(), 1);
         assert_eq!(
             document_links[0].target,
