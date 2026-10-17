@@ -721,10 +721,9 @@ enum FenceLine {
 }
 
 // Read a line as a fence line: optional indentation and a run of fence characters, alone or
-// followed by whitespace and a hash for a closing fence, or followed by whitespace and an argument
-// for an opening fence, and then by whitespace and another run for a block written on one line. A
-// hash is `#` followed by anything but whitespace. Any other line, including one in which the run
-// is followed directly by other text, isn't a fence line.
+// followed by a hash for a closing fence, or followed by an argument for an opening fence, and then
+// by another run for a block written on one line. Whitespace between these parts is optional. A
+// hash is `#` followed by anything but whitespace. Any other line isn't a fence line.
 fn fence_line(line: &str) -> Option<FenceLine> {
     // Measure the indentation and the run after it, which must be long enough.
     let indentation = line.len() - line.trim_start().len();
@@ -733,13 +732,10 @@ fn fence_line(line: &str) -> Option<FenceLine> {
         return None;
     }
 
-    // Find what follows the run, which is either nothing or whitespace and an argument.
+    // Find what follows the run, which is nothing, a hash, or an argument.
     let rest = &line[indentation + length..];
     if rest.trim().is_empty() {
         return Some(FenceLine::Closing { length, hash: None });
-    }
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
     }
     let argument_start = line.len() - rest.trim_start().len();
     if rest.trim().starts_with('#') && !rest.trim().contains(char::is_whitespace) {
@@ -751,7 +747,6 @@ fn fence_line(line: &str) -> Option<FenceLine> {
     let argument = line[argument_start..].trim_end();
     let before_closing_run = argument.trim_end_matches(':');
     let is_one_line = argument.len() - before_closing_run.len() >= MIN_FENCE_LENGTH
-        && before_closing_run.ends_with(char::is_whitespace)
         && !before_closing_run.trim().is_empty();
     let argument = if is_one_line {
         before_closing_run.trim_end()
@@ -1592,7 +1587,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     }
 
     // Recognize opening fences with a trimmed argument, including portals written on one line, and
-    // closing fences, but not shorter runs or runs followed directly by other text.
+    // closing fences, with or without whitespace between their parts, but not shorter runs.
     #[test]
     fn fence_lines() {
         assert_eq!(
@@ -1659,7 +1654,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 is_one_line: true,
             }),
         );
-        for (line, argument_end) in [("::: [Page]:::", 13), ("::: [Page] ::", 13), ("::: :::", 7)] {
+        for (line, argument_end) in [("::: [Page] ::", 13), ("::: :::", 7)] {
             assert_eq!(
                 fence_line(line),
                 Some(FenceLine::Opening {
@@ -1671,9 +1666,40 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             );
         }
         assert_eq!(fence_line(":: [Page]"), None);
-        assert_eq!(fence_line(":::[Page]"), None);
-        assert_eq!(fence_line(":::#0a1b"), None);
-        assert_eq!(fence_line(" :::[Page]"), None);
+    }
+
+    // Recognize fence lines without whitespace between their parts: an argument right after the
+    // opening run, a closing run right after the argument, and a hash right after a closing run.
+    #[test]
+    fn fence_lines_without_whitespace() {
+        assert_eq!(
+            fence_line(" :::sort"),
+            Some(FenceLine::Opening {
+                indentation: 1,
+                length: 3,
+                argument: (4, 8),
+                is_one_line: false,
+            }),
+        );
+        for line in ["::: [Page]:::", ":::[Page]:::"] {
+            let argument_start = line.find('[').unwrap();
+            assert_eq!(
+                fence_line(line),
+                Some(FenceLine::Opening {
+                    indentation: 0,
+                    length: 3,
+                    argument: (argument_start, argument_start + "[Page]".len()),
+                    is_one_line: true,
+                }),
+            );
+        }
+        assert_eq!(
+            fence_line(":::#0a1b"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: Some((3, 8)),
+            }),
+        );
     }
 
     // Read a portal from its opening fence through its closing fence, with the link in its opening
@@ -1761,7 +1787,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Take fence lines as written in code, and take lines which only resemble fences as text.
     #[test]
     fn text_resembling_fences() {
-        let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n:::x\n").unwrap();
+        let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n").unwrap();
 
         assert!(wiki.page("Home").portals.is_empty());
         assert!(wiki.page("Home").links.is_empty());
