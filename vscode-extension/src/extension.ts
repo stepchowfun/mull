@@ -214,21 +214,8 @@ async function moveToPageBoundary(boundary: 'start' | 'end', select: boolean): P
   editor.revealRange(new vscode.Range(editor.selection.active, editor.selection.active));
 }
 
-// Wait this long after the view stops moving before settling it onto the current page. Scrolling
-// with a trackpad or with smooth scrolling changes the view every frame, so this is long enough to
-// outlast the gaps between those changes, which would otherwise settle the view while it's still
-// being scrolled, yet short enough that settling feels like a response to the scrolling.
-const SETTLE_DELAY_MILLISECONDS = 150;
-
 // This keeps the page containing the cursor, the current page, in focus in each main editor showing
-// a wiki. It dims everything outside the current page, and once the view and the cursor stop moving,
-// it brings the current page back into view, like a rubber band, if it was scrolled away.
-//
-// Settling waits for the view to stop moving, since there's no way to limit or intercept scrolling,
-// only to observe it after the fact. It reveals only the page's nearer edge, since the editor
-// reveals a range taller than the view by jumping to its start, which would make the rest of a long
-// page unreachable. Revealing a single line scrolls as little as possible, keeping the margin the
-// editor keeps around the cursor, so it doesn't fight the editor's own scrolling.
+// a wiki by dimming everything outside it.
 class PageFocus implements vscode.Disposable {
   // Dim other pages enough for the current page to stand out, while keeping them readable.
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
@@ -238,17 +225,9 @@ class PageFocus implements vscode.Disposable {
   // Remember each wiki's pages, which are found again after every edit.
   private readonly pages = new Map<string, vscode.DocumentSymbol[]>();
 
-  // Remember each editor's pending settling, which is postponed while its view keeps moving.
-  private readonly settleTimers = new Map<vscode.TextEditor, ReturnType<typeof setTimeout>>();
-
   // Determine whether the user wants other pages dimmed.
   private static dimsOtherPages(): boolean {
     return setting('mull', 'dimOtherPages', isBoolean);
-  }
-
-  // Determine whether the user wants the view to settle back toward the current page.
-  private static snapsBackToCurrentPage(): boolean {
-    return setting('mull', 'snapBackToCurrentPage', isBoolean);
   }
 
   // Dim around an editor's current page, using the pages last found in its wiki. Blank lines at the
@@ -299,49 +278,6 @@ class PageFocus implements vscode.Disposable {
     await Promise.all([...documents].map(async (document) => this.refresh(document)));
   }
 
-  // Settle an editor's view once it and the cursor stop moving, postponing any pending settling.
-  // Settling after the cursor moves pulls the current page into view when the cursor moves to
-  // another page, as when clicking a dimmed page. Otherwise it finds nothing to do, since the view
-  // already settled when it last moved.
-  public scheduleSettle(editor: vscode.TextEditor): void {
-    clearTimeout(this.settleTimers.get(editor));
-    this.settleTimers.set(
-      editor,
-      setTimeout(() => {
-        this.settleTimers.delete(editor);
-        this.settle(editor);
-      }, SETTLE_DELAY_MILLISECONDS),
-    );
-  }
-
-  // Reveal the nearer edge of an editor's current page if the page is entirely out of view, without
-  // assuming the visible ranges are in order. The page includes the blank lines after its text,
-  // which belong to it, so it ends just before the next page, or at the end of the wiki.
-  private settle(editor: vscode.TextEditor): void {
-    // Find the current page and the lines in view.
-    const pages = this.pages.get(editor.document.uri.toString()) ?? [];
-    const cursor = editor.selection.active;
-    const page = pageAt(pages, cursor);
-    let visibleRange: vscode.Range | undefined = undefined;
-    for (const range of editor.visibleRanges) {
-      visibleRange = visibleRange === undefined ? range : visibleRange.union(range);
-    }
-    if (!PageFocus.snapsBackToCurrentPage() || page === undefined || visibleRange === undefined) {
-      return;
-    }
-    const nextPage = pages.find((other) => other.range.start.isAfter(cursor));
-    const lastLine =
-      nextPage === undefined ? editor.document.lineCount - 1 : nextPage.range.start.line - 1;
-
-    // Reveal the page's first line if it's below the view, or its last line if it's above.
-    if (page.range.start.line > visibleRange.end.line) {
-      editor.revealRange(new vscode.Range(page.range.start, page.range.start));
-    } else if (lastLine < visibleRange.start.line) {
-      const end = editor.document.lineAt(lastLine).range.end;
-      editor.revealRange(new vscode.Range(end, end));
-    }
-  }
-
   // List the pages last found in a wiki.
   public pagesOf(document: vscode.TextDocument): readonly vscode.DocumentSymbol[] {
     return this.pages.get(document.uri.toString()) ?? [];
@@ -352,12 +288,9 @@ class PageFocus implements vscode.Disposable {
     this.pages.delete(document.uri.toString());
   }
 
-  // Release the decoration types, which removes the dimming, and cancel any pending settling.
+  // Release the decoration type, which removes the dimming.
   public dispose(): void {
     this.decorationType.dispose();
-    for (const timer of this.settleTimers.values()) {
-      clearTimeout(timer);
-    }
   }
 }
 
@@ -1108,8 +1041,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   }
 
-  // Keep the page containing the cursor in focus, following the cursor, edits, scrolling, the
-  // visible editors, and the settings.
+  // Keep the page containing the cursor in focus, following the cursor, edits, the visible editors,
+  // and the settings.
   const pageFocus = new PageFocus();
   const pageHistory = new PageHistory(pageFocus);
   context.subscriptions.push(
@@ -1117,7 +1050,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (isMainWikiEditor(event.textEditor)) {
         pageFocus.dim(event.textEditor);
-        pageFocus.scheduleSettle(event.textEditor);
       }
     }),
     vscode.workspace.onDidChangeTextDocument(async (event) => {
@@ -1129,11 +1061,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.onDidChangeVisibleTextEditors(async () => {
       await pageFocus.refreshVisible();
       pageHistory.recordActive();
-    }),
-    vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
-      if (isMainWikiEditor(event.textEditor)) {
-        pageFocus.scheduleSettle(event.textEditor);
-      }
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
       pageFocus.forget(document);
