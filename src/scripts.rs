@@ -7,7 +7,7 @@ use crate::{
     line_index::LineIndex,
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
-    wiki::{Link, MIN_FENCE_LENGTH, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki},
+    wiki::{Link, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki, write_block},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -320,26 +320,11 @@ fn run_block(
     }
 
     // Write the block with the output as its body.
-    let indentation = wiki.indentation(block.source_range.start);
-    let longest_run = output
-        .lines()
-        .map(str::trim_start)
-        .map(|line| line.len() - line.trim_start_matches(':').len())
-        .max()
-        .unwrap_or(0);
-    let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
-    let mut replacement = format!(
-        "{fence} {}\n",
-        &source_contents[block.name_source_range.start..block.arguments_source_range.end],
-    );
-    for line in output.lines() {
-        replacement.push_str(indentation);
-        replacement.push_str(line);
-        replacement.push('\n');
-    }
-    replacement.push_str(indentation);
-    replacement.push_str(&fence);
-    Ok(replacement)
+    Ok(write_block(
+        wiki.indentation(block.source_range.start),
+        &block.canonical_argument(source_contents),
+        &output,
+    ))
 }
 
 // Find the script with a name in the file root's scripts directory: the one file there whose name,

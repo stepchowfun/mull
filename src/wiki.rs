@@ -25,8 +25,35 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
 // fence names the page a portal shows or the script which computes its body, and a closing fence
-// consists of colons alone.
+// consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
+
+// Write a block with an argument after its opening fence and a body, indenting each line after the
+// first like the opening fence, which the caller places, within a fence longer than any in it.
+pub fn write_block(indentation: &str, argument: &str, body: &str) -> String {
+    let fence = fence_around(body);
+    let mut block = format!("{fence} {argument}\n");
+    for line in body.lines() {
+        block.push_str(indentation);
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str(indentation);
+    block.push_str(&fence);
+    block
+}
+
+// Make the fence for a block with a body: longer than any run of colons starting a line of the
+// body, so none of them closes the block, and no shorter than the shortest fence.
+fn fence_around(body: &str) -> String {
+    let longest_run = body
+        .lines()
+        .map(str::trim_start)
+        .map(|line| line.len() - line.trim_start_matches(':').len())
+        .max()
+        .unwrap_or(0);
+    ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH))
+}
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
@@ -92,9 +119,10 @@ impl Wiki {
         self.canonical_content(page, |_portal| Some(String::new()))
     }
 
-    // Render a page's content from the source, with each link written in its canonical form, Unix
-    // line endings, and no whitespace at the end of a line. Each portal shows the body given for
-    // it, with each line indented like its opening fence, or is copied as written if it has none.
+    // Render a page's content from the source, with each link and each script block's fences
+    // written in their canonical form, Unix line endings, and no whitespace at the end of a line.
+    // Each portal shows the body given for it, with each line indented like its opening fence, or
+    // is copied as written if it has none.
     fn canonical_content(
         &self,
         page: &Page,
@@ -114,38 +142,43 @@ impl Wiki {
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
 
-        // Copy the content, writing each portal with its body and a fence longer than any in it.
+        // Interleave the portals and script blocks in source order. Neither is ever within the
+        // other, since blocks within a script block's body are part of its text.
+        let mut blocks = page
+            .portals
+            .iter()
+            .map(|portal| (portal.source_range, Block::Portal(portal)))
+            .chain(
+                page.script_blocks
+                    .iter()
+                    .map(|script_block| (script_block.source_range, Block::Script(script_block))),
+            )
+            .collect::<Vec<_>>();
+        blocks.sort_by_key(|(source_range, _block)| source_range.start);
+
+        // Copy the content, writing each portal with its body, and each script block with its
+        // fences in their canonical form, each block within a fence longer than any in it.
         let mut content = String::new();
         let mut copied_through = content_start;
-        for portal in &page.portals {
-            let Some(body) = body(portal) else {
-                continue;
-            };
-            self.copy_links(
-                page,
-                copied_through,
-                portal.source_range.start,
-                &mut content,
-            );
-            let indentation = self.indentation(portal.source_range.start);
-            let longest_run = body
-                .lines()
-                .map(str::trim_start)
-                .map(|line| line.len() - line.trim_start_matches(':').len())
-                .max()
-                .unwrap_or(0);
-            let fence = ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH));
-            for part in [&fence, " [", &portal.title.text(Context::Link), "]\n"] {
-                content.push_str(part);
+        for (source_range, block) in blocks {
+            match block {
+                Block::Portal(portal) => {
+                    let Some(body) = body(portal) else {
+                        continue;
+                    };
+                    self.copy_links(page, copied_through, source_range.start, &mut content);
+                    content.push_str(&write_block(
+                        self.indentation(source_range.start),
+                        &format!("[{}]", portal.title.text(Context::Link)),
+                        &body,
+                    ));
+                }
+                Block::Script(script_block) => {
+                    self.copy_links(page, copied_through, source_range.start, &mut content);
+                    self.copy_script_block(page, script_block, &mut content);
+                }
             }
-            for line in body.lines() {
-                content.push_str(indentation);
-                content.push_str(line);
-                content.push('\n');
-            }
-            content.push_str(indentation);
-            content.push_str(&fence);
-            copied_through = portal.source_range.end;
+            copied_through = source_range.end;
         }
         self.copy_links(page, copied_through, content_end, &mut content);
 
@@ -156,6 +189,40 @@ impl Wiki {
             .map(str::trim_end)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // Copy a script block with its fences in their canonical form, keeping its body as written
+    // apart from its links. A block written on one line stays on one line.
+    fn copy_script_block(&self, page: &Page, script_block: &ScriptBlock, content: &mut String) {
+        // Find the lines which start and end the block's body, writing a block written on one line,
+        // which has no body, with the fences for an empty body.
+        let SourceRange { start, end } = script_block.source_range;
+        let block_source = &self.source[start..end];
+        let argument = script_block.canonical_argument(&self.source);
+        let (Some(opening_end), Some(closing_start)) =
+            (block_source.find('\n'), block_source.rfind('\n'))
+        else {
+            let fence = fence_around("");
+            for part in [&fence, " ", &argument, " ", &fence] {
+                content.push_str(part);
+            }
+            return;
+        };
+
+        // Write the opening fence, the body, and the closing fence with any hash after it.
+        let body_start = start + opening_end + '\n'.len_utf8();
+        let body_end = start + closing_start + '\n'.len_utf8();
+        let fence = fence_around(&self.source[body_start..body_end]);
+        for part in [&fence, " ", &argument, "\n"] {
+            content.push_str(part);
+        }
+        self.copy_links(page, body_start, body_end, content);
+        content.push_str(self.indentation(start));
+        content.push_str(&fence);
+        if let Some(hash) = &script_block.hash {
+            content.push_str(" #");
+            content.push_str(hash);
+        }
     }
 
     // Copy part of a page's content, replacing each link within it with its canonical form: a text
@@ -285,6 +352,25 @@ pub struct ScriptBlock {
     pub name_source_range: SourceRange, // The script's name in the opening fence
     pub arguments_source_range: SourceRange, // The trimmed text after the name
     pub hash: Option<String>,      // After the `#` following the closing fence, if any
+}
+
+impl ScriptBlock {
+    // Write what follows the colons of the block's opening fence in its canonical form: the
+    // script's name, then any arguments as written, after a single space.
+    pub fn canonical_argument(&self, source: &str) -> String {
+        let arguments = &source[self.arguments_source_range.start..self.arguments_source_range.end];
+        if arguments.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} {arguments}", self.name)
+        }
+    }
+}
+
+// This is a block which formatting rewrites, either a portal or a script block.
+enum Block<'a> {
+    Portal(&'a Portal),
+    Script(&'a ScriptBlock),
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -640,6 +726,29 @@ mod tests {
                 "  ::::\n\n",
                 "# Other\n\nSee:\n\n\t::: [Last]\n\tThe end.\n\t:::\n\n",
                 "# Last\n\nThe end.\n",
+            ),
+        );
+    }
+
+    // Write a script block's fences in their canonical form, with a space after the colons, a
+    // single space between the script's name and its arguments, and the shortest fence longer than
+    // any in the body, keeping the body, apart from its links, and any hash.
+    #[test]
+    fn script_blocks_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n:::sort\n- b\n:::\n\n",
+            ":::    sort    desc\n- a\n:::#0a1b2c3d4e5f\n\n",
+            ":::::: tidy\n::: [Home] :::\n::::::\n\n",
+            "- List:\n  :::sort:::\n\n  ::::: tidy   x  y\n  See [ Home ].\n  :::::\n",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n::: sort\n- b\n:::\n\n",
+                "::: sort desc\n- a\n::: #0a1b2c3d4e5f\n\n",
+                ":::: tidy\n::: [Home] :::\n::::\n\n",
+                "- List:\n  ::: sort :::\n\n  ::: tidy x  y\n  See [Home].\n  :::\n",
             ),
         );
     }

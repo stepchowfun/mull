@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0] - 2026-10-17
+
+### Added
+
+- Fences no longer need whitespace between their parts. `:::sort` opens a script block, `:::[Page]:::` is a portal written on one line, and `:::#0a1b2c3d4e5f` is a closing fence with a hash.
+
+### Changed
+
+- Formatting writes each script block's fences in a canonical form, whether or not its script runs: a single space after the colons and between the script's name and its arguments, and the shortest fence longer than any in the body. For example, `:::    sort    desc` becomes `::: sort desc`. The arguments themselves are kept as written, so no script runs again because of this.
+- Typing after `:::` narrows the editor's suggestions to the scripts whose names match, rather than closing them.
+- Choosing a script from the suggestions after `:::` puts the cursor in the new block's body rather than after the script's name, since scripts are more often run without arguments.
+
 ## [0.62.2] - 2026-10-17
 
 ### Fixed

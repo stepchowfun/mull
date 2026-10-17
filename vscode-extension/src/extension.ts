@@ -329,7 +329,7 @@ class FenceDimming implements vscode.Disposable {
 
       // Dim the run of colons starting a fence, and what ends it after any argument: the run of
       // colons ending a block written on one line, or the hash after a closing fence.
-      const fence = /^(\s*)(:{3,})(.*?)((?:\s:{3,})?(?:\s#[0-9a-f]{12})?)\s*$/u.exec(text);
+      const fence = /^(\s*)(:{3,})(.*?)((?:\s*:{3,})?(?:\s*#[0-9a-f]{12})?)\s*$/u.exec(text);
       if (fence === null) {
         continue;
       }

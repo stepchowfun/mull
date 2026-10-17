@@ -1175,7 +1175,7 @@ fn completion_for_document(
 // before the cursor, if they're the only text on their line and the parser reports them as an
 // unexpected closing fence, so they don't close a block and aren't in code. A portal is written on
 // one line with the cursor in its link, where titles are suggested next, and a script block is
-// written with the cursor after the script's name, for its arguments, and an empty body.
+// written with the cursor in its empty body, since a script is more often run without arguments.
 fn fence_completions(
     snapshot: &Snapshot,
     cursor: usize,
@@ -1204,7 +1204,9 @@ fn fence_completions(
         return None;
     }
 
-    // Write the portal, then each script block, as a snippet, keeping the portal first.
+    // Write the portal, then each script block, as a snippet, keeping the portal first. Each is
+    // filtered by its name after the colons, so typing more of it narrows the list rather than
+    // emptying it.
     let range = snapshot.range(SourceRange {
         start: fence_start,
         end: cursor,
@@ -1213,7 +1215,7 @@ fn fence_completions(
         label: "Open a portal to a page".to_owned(),
         kind: Some(CompletionItemKind::SNIPPET),
         sort_text: Some("0".to_owned()),
-        filter_text: Some(fence.clone()),
+        filter_text: Some(format!("{fence} portal")),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
             range,
@@ -1235,11 +1237,11 @@ fn fence_completions(
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some("Run a script".to_owned()),
             sort_text: Some(format!("1{name}")),
-            filter_text: Some(fence.clone()),
+            filter_text: Some(format!("{fence} {name}")),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
                 range,
-                format!("{fence} {name}$1\n$0\n{fence}"),
+                format!("{fence} {name}\n$0\n{fence}"),
             ))),
             ..CompletionItem::default()
         });
@@ -3342,7 +3344,7 @@ mod tests {
     }
 
     // Offer to run each script in a saved wiki after the colons which start a fence, writing a
-    // script block with the cursor after the script's name and an empty body, after the portal.
+    // script block with the cursor in its empty body, after the portal.
     #[test]
     fn completions_offer_scripts() {
         let source = "# Home\n\n:::";
@@ -3365,14 +3367,21 @@ mod tests {
             completion_edits(&completions),
             vec![
                 ("Open a portal to a page", fence, "::: [$1] :::"),
-                ("sort", fence, "::: sort$1\n$0\n:::"),
-                ("tidy", fence, "::: tidy$1\n$0\n:::"),
+                ("sort", fence, "::: sort\n$0\n:::"),
+                ("tidy", fence, "::: tidy\n$0\n:::"),
             ],
         );
         assert!(
             completions
                 .iter()
                 .all(|completion| completion.sort_text.is_some()),
+        );
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.filter_text.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("::: portal"), Some("::: sort"), Some("::: tidy")],
         );
     }
 
