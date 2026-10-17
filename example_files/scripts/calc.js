@@ -1,4 +1,22 @@
 #!/usr/bin/env node
+
+// Work out arithmetic in a Mull script block, like this:
+//
+//   ::: calc
+//   36 - 2 * 0.75 =
+//   (3 + 5) * 2 ^ 3 =
+//   :::
+//
+// On each line with an `=`, the script replaces whatever follows the `=` with the result of the
+// arithmetic before it, so the lines above become `36 - 2 * 0.75 = 34.5` and
+// `(3 + 5) * 2 ^ 3 = 64`. The result is worked out again each time the script runs, so it stays
+// up to date as the arithmetic changes. Other lines are kept as written. A block of a single line
+// doesn't need the `=`.
+//
+// The arithmetic can use numbers with decimals and commas between their digits, like `2,400.50`,
+// as well as `+`, `-`, `*`, `/`, `^` for powers, and parentheses. Results are rounded to 12
+// significant digits.
+
 import { readFileSync } from 'node:fs';
 
 // Report a problem with the input and stop, so Mull leaves the block as it was.

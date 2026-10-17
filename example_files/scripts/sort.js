@@ -1,4 +1,20 @@
 #!/usr/bin/env node
+
+// Sort a list in a Mull script block, like this:
+//
+//   ::: sort
+//   - Pears
+//   - Apples
+//     - Honeycrisp
+//   - Cherries
+//   :::
+//
+// Each top-level line is sorted alphabetically, ignoring any leading characters which aren't
+// letters or digits, such as a bullet or a link's opening bracket. Indented lines are nested under
+// the line above them and move with it, keeping their own order. Empty lines are dropped.
+//
+// Write `::: sort desc` to sort in reverse order.
+
 import { readFileSync } from 'node:fs';
 
 // Group each top-level bullet with the nested lines beneath it, so they move together, and drop
