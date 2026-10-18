@@ -18,11 +18,9 @@ export default defineConfig({
         specifier: 'vite-plus/oxlint-plugin',
       },
     ],
-    // Type-check with `tsc` instead, since only it applies tsconfig.json to the scripts outside this
-    // directory.
     options: {
       typeAware: true,
-      typeCheck: false,
+      typeCheck: true,
     },
     plugins: ['oxc', 'typescript', 'unicorn'],
     rules: {

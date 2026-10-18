@@ -236,7 +236,6 @@ tasks:
     dependencies:
       - fetch_crates
     input_paths:
-      - example_files/scripts
       - example_scripts
       - src
       - vscode_extension
@@ -244,8 +243,8 @@ tasks:
       - example_scripts/node_modules
       - vscode_extension/node_modules
     output_paths:
-      - example_files/scripts
       - example_scripts/package.json
+      - example_scripts/src
       - example_scripts/tsconfig.json
       - example_scripts/vite.config.ts
       - src
