@@ -46,7 +46,7 @@ function evaluate(expression: string): number {
       position += 1;
       return value;
     }
-    if (!/^[\d.]/u.test(token)) {
+    if (!/^\.?\d/u.test(token)) {
       throw new Error(`Unexpected \`${token}\`.`);
     }
     return Number(token.replaceAll(',', ''));
