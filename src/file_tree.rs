@@ -37,6 +37,12 @@ pub enum Visibility {
     Unreached,
 }
 
+// This is an entry of a directory in the file tree which a link could name.
+pub struct VisibleChild {
+    pub name: String,
+    pub is_directory: bool,
+}
+
 // Configure a walk of the file tree which follows directory symlinks, includes hidden
 // entries, and honors ignore files within the tree while excluding VCS metadata.
 pub fn file_tree_walker(file_root: &Path) -> WalkBuilder {
@@ -92,4 +98,45 @@ pub fn visibility(
         }
     }
     Outcome::Completed(Visibility::Unreached)
+}
+
+// List the entries of a directory in the file tree which a link could name, sorted by name. The
+// walk descends only along the directory, so large subtrees are read only once they're named.
+// Ignored entries and names which aren't UTF-8 are left out.
+pub fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild> {
+    // Keep only the directory's ancestors and children.
+    let mut walker_builder = file_tree_walker(file_root.path());
+    walker_builder
+        .max_depth(Some(directory.components().count() + 1))
+        .filter_entry({
+            let file_root = file_root.clone();
+            let directory = directory.to_owned();
+            move |entry| {
+                let path = file_root.entry_path(entry);
+                directory.starts_with(path.as_path())
+                    || path.as_path().parent() == Some(directory.as_path())
+            }
+        });
+
+    // Collect the children, skipping the ancestors walked to reach them.
+    let mut children = Vec::new();
+    for entry in walker_builder.build().flatten() {
+        let path = file_root.entry_path(&entry);
+        let is_directory = entry
+            .file_type()
+            .expect("Only standard input lacks a file type.")
+            .is_dir();
+        let Some(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if path.as_path().parent() != Some(directory) {
+            continue;
+        }
+        children.push(VisibleChild {
+            name: name.to_owned(),
+            is_directory,
+        });
+    }
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    children
 }

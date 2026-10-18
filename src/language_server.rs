@@ -1,8 +1,9 @@
 use crate::{
     cancellation::{CancellationFlag, Outcome},
+    code_languages::code_block_language,
     error::{Error, Fix, SourceRange},
     escaping::{Context, escape, unescape},
-    file_tree::file_tree_walker,
+    file_tree::visible_children,
     format::CodeStr,
     line_index::LineIndex,
     lsp_position::LspPosition,
@@ -110,87 +111,6 @@ const MAX_TEXT_PREVIEW_LINES: usize = 50;
 
 // These file extensions identify the images which hovering over a filesystem link previews.
 const IMAGE_EXTENSIONS: &[&str] = &["bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"];
-
-// These file names, in lowercase, have languages which editors don't recognize by the names
-// themselves, so a code block names the language instead. Editors recognize some other names, like
-// `dockerfile`.
-const FILE_NAME_LANGUAGES: &[(&str, &str)] = &[
-    (".bash_profile", "shellscript"),
-    (".bashrc", "shellscript"),
-    (".editorconfig", "properties"),
-    (".env", "dotenv"),
-    (".gitattributes", "properties"),
-    (".gitconfig", "properties"),
-    (".gitignore", "ignore"),
-    (".profile", "shellscript"),
-    (".zprofile", "shellscript"),
-    (".zshrc", "shellscript"),
-    ("brewfile", "ruby"),
-    ("gemfile", "ruby"),
-    ("gnumakefile", "makefile"),
-    ("jenkinsfile", "groovy"),
-    ("pkgbuild", "shellscript"),
-    ("podfile", "ruby"),
-    ("rakefile", "ruby"),
-    ("vagrantfile", "ruby"),
-];
-
-// These file extensions, in lowercase, have languages which editors don't recognize by the
-// extensions themselves, so a code block names the language instead. Editors recognize most other
-// extensions.
-const EXTENSION_LANGUAGES: &[(&str, &str)] = &[
-    ("bib", "bibtex"),
-    ("cc", "cpp"),
-    ("cfg", "properties"),
-    ("cjs", "javascript"),
-    ("clj", "clojure"),
-    ("cljc", "clojure"),
-    ("cljs", "clojure"),
-    ("cmd", "bat"),
-    ("conf", "properties"),
-    ("cs", "csharp"),
-    ("csx", "csharp"),
-    ("cts", "typescript"),
-    ("cu", "cuda-cpp"),
-    ("cuh", "cuda-cpp"),
-    ("cxx", "cpp"),
-    ("edn", "clojure"),
-    ("env", "dotenv"),
-    ("erb", "ruby"),
-    ("fs", "fsharp"),
-    ("fsi", "fsharp"),
-    ("fsx", "fsharp"),
-    ("gemspec", "ruby"),
-    ("gradle", "groovy"),
-    ("h", "cpp"),
-    ("hh", "cpp"),
-    ("hpp", "cpp"),
-    ("hxx", "cpp"),
-    ("jl", "julia"),
-    ("m", "objective-c"),
-    ("mak", "makefile"),
-    ("md", "markdown"),
-    ("mjs", "javascript"),
-    ("mk", "makefile"),
-    ("mm", "objective-cpp"),
-    ("mts", "typescript"),
-    ("ndjson", "jsonl"),
-    ("patch", "diff"),
-    ("pl", "perl"),
-    ("pm", "perl"),
-    ("psd1", "powershell"),
-    ("psm1", "powershell"),
-    ("pyi", "python"),
-    ("pyw", "python"),
-    ("rake", "ruby"),
-    ("rs", "rust"),
-    ("rst", "restructuredtext"),
-    ("vbs", "vb"),
-    ("xaml", "xml"),
-    ("xsd", "xml"),
-    ("xslt", "xsl"),
-    ("yml", "yaml"),
-];
 
 // This backend checks each open wiki and publishes its errors to the language client.
 #[derive(Debug)]
@@ -986,12 +906,6 @@ struct FileOperationSupport {
     delete: bool,
 }
 
-// This is an entry of a directory in the file tree which a link could name.
-struct VisibleChild {
-    name: String,
-    is_directory: bool,
-}
-
 // This is what a source offset within a page falls on.
 enum Occurrence<'a> {
     // The page's title line, from the `#` through the end of the line, including trailing
@@ -1742,44 +1656,6 @@ fn text_preview(path: &Path) -> Option<String> {
     } else {
         block
     })
-}
-
-// Name the language of a file for a code block. Editors recognize many languages by their usual
-// file extensions, like `js`, or by the names of files without extensions, like `Dockerfile`. The
-// tables give the names of other languages, like `rust` for `rs`. Editors highlight names they
-// don't recognize as plain text. A file without such a name gets plain text explicitly, since
-// editors highlight a code block without a language like the document containing it.
-fn code_block_language(path: &Path) -> String {
-    // Look up the file's name, then its extension, ignoring case.
-    let lowercase = |name: Option<&OsStr>| name?.to_str().map(str::to_ascii_lowercase);
-    let file_name = lowercase(path.file_name());
-    let extension = lowercase(path.extension());
-    let look_up = |table: &[(&str, &str)], name: &Option<String>| {
-        table
-            .iter()
-            .find(|(table_name, _)| Some(*table_name) == name.as_deref())
-            .map(|(_, language)| (*language).to_owned())
-    };
-    if let Some(language) = look_up(FILE_NAME_LANGUAGES, &file_name)
-        .or_else(|| look_up(EXTENSION_LANGUAGES, &extension))
-    {
-        return language;
-    }
-
-    // Otherwise, use the extension, or the file's name if it has no extension, if that can be a
-    // language's name.
-    let name = if path.extension().is_some() {
-        extension
-    } else {
-        file_name
-    };
-    name.filter(|name| {
-        !name.is_empty()
-            && name.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '_')
-            })
-    })
-    .unwrap_or_else(|| "text".to_owned())
 }
 
 // Locate every text link to the page at an editor position. Outside a title or link, that's the
@@ -2935,47 +2811,6 @@ fn text_link_source_ranges(wiki: &Wiki, title: &PageTitle) -> Vec<SourceRange> {
     source_ranges
 }
 
-// List the entries of a directory in the file tree which a link could name, sorted by name. The
-// walk descends only along the directory, so large subtrees are read only once they're named.
-// Ignored entries and names which aren't UTF-8 are left out.
-fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild> {
-    // Keep only the directory's ancestors and children.
-    let mut walker_builder = file_tree_walker(file_root.path());
-    walker_builder
-        .max_depth(Some(directory.components().count() + 1))
-        .filter_entry({
-            let file_root = file_root.clone();
-            let directory = directory.to_owned();
-            move |entry| {
-                let path = file_root.entry_path(entry);
-                directory.starts_with(path.as_path())
-                    || path.as_path().parent() == Some(directory.as_path())
-            }
-        });
-
-    // Collect the children, skipping the ancestors walked to reach them.
-    let mut children = Vec::new();
-    for entry in walker_builder.build().flatten() {
-        let path = file_root.entry_path(&entry);
-        let is_directory = entry
-            .file_type()
-            .expect("Only standard input lacks a file type.")
-            .is_dir();
-        let Some(name) = entry.file_name().to_str() else {
-            continue;
-        };
-        if path.as_path().parent() != Some(directory) {
-            continue;
-        }
-        children.push(VisibleChild {
-            name: name.to_owned(),
-            is_directory,
-        });
-    }
-    children.sort_by(|a, b| a.name.cmp(&b.name));
-    children
-}
-
 // Find the entry a filesystem link names, if it's spelled as it is on disk and exists as the kind
 // of entry the link names.
 fn filesystem_link_path(
@@ -3009,11 +2844,11 @@ mod tests {
         AttachedFile, FileOperationSupport, MAX_DIRECTORY_PREVIEW_ENTRIES, MAX_IMAGE_HEIGHT,
         MAX_IMAGE_WIDTH, MAX_TEXT_PREVIEW_BYTES, MAX_TEXT_PREVIEW_LINES, MAX_TITLE_COMPLETIONS,
         RevealType, Snapshot, attach_files_for_document, code_action_for_document,
-        code_block_language, completion_for_document, diagnostic_from_error,
-        diagnostics_for_document, document_highlight_for_document, document_link_for_document,
-        document_symbol_for_document, formatting_for_document, goto_definition_for_document,
-        hover_for_document, image_preview_size, is_subsequence, prepare_rename_for_document,
-        references_for_document, rename_for_document,
+        completion_for_document, diagnostic_from_error, diagnostics_for_document,
+        document_highlight_for_document, document_link_for_document, document_symbol_for_document,
+        formatting_for_document, goto_definition_for_document, hover_for_document,
+        image_preview_size, is_subsequence, prepare_rename_for_document, references_for_document,
+        rename_for_document,
     };
     use crate::{
         cancellation::CancellationFlag, error::SourceRange, line_index::LineIndex,
@@ -4505,30 +4340,6 @@ mod tests {
                 "é".repeat(MAX_TEXT_PREVIEW_BYTES / 2 - 1),
             ),
         );
-    }
-
-    // Name a file's language by the language which a table gives for its name or extension, or
-    // else by its extension or, without one, its name, ignoring case. A file without such a name is
-    // plain text.
-    #[test]
-    fn code_block_languages() {
-        for (path, language) in [
-            ("Gemfile", "ruby"),
-            (".bashrc", "shellscript"),
-            ("main.RS", "rust"),
-            ("notes.md", "markdown"),
-            ("script.JS", "js"),
-            ("archive.tar.gz", "gz"),
-            ("program.c++", "c++"),
-            ("Dockerfile", "dockerfile"),
-            (".hidden", "text"),
-            ("odd name", "text"),
-            ("notes.", "text"),
-            ("odd.a`b", "text"),
-            ("odd.a b", "text"),
-        ] {
-            assert_eq!(code_block_language(Path::new(path)), language);
-        }
     }
 
     // Find every text link from either a declaration or one of its references.
