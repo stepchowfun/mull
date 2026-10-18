@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.4] - 2026-10-17
+
+### Fixed
+
+- In the VS Code extension, formatting a wiki with Windows line endings gives it Unix line endings, as `mull format` does. Before, the editor converted the formatted text back to Windows line endings, so the wiki was saved unformatted and `mull check` reported it.
+
+### Changed
+
+- The VS Code extension gives new wikis Unix line endings by default, with the `files.eol` setting.
+
 ## [0.63.3] - 2026-10-17
 
 ### Fixed
