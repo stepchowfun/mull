@@ -40,9 +40,9 @@ const MONTHS = [
 
 // These are the parts of a date as written, each of which may be missing.
 interface Fields {
-  year: number | null;
-  month: number | null;
-  day: number | null;
+  year: number | undefined;
+  month: number | undefined;
+  day: number | undefined;
 }
 
 // This is a date with a year, how precise it is, and whether it was written without its year. A
@@ -69,12 +69,12 @@ function fail(message: string): never {
 }
 
 // Find a month from its name or an abbreviation of it, like `Sep` or `Sept`.
-function parseMonth(word: string): number | null {
+function parseMonth(word: string): number | undefined {
   if (word.length < 3) {
-    return null;
+    return undefined;
   }
   const index = MONTHS.findIndex((month) => month.startsWith(word));
-  return index === -1 ? null : index + 1;
+  return index === -1 ? undefined : index + 1;
 }
 
 // Read a date with optionally a month and a day, in any of these forms:
@@ -89,28 +89,28 @@ function parseMonth(word: string): number | null {
 // A date without a year is in the current year if it hasn't passed yet, and otherwise in the next
 // year in which it occurs, and it's marked as `yearless`. The result has a `precision` of `year`,
 // `month`, or `day`.
-function parseDate(text: string): ParsedDate | null {
+function parseDate(text: string): ParsedDate | undefined {
   const fields = readFields(text);
-  if (fields === null) {
-    return null;
+  if (fields === undefined) {
+    return undefined;
   }
   const { year, month, day } = fields;
-  if (year !== null) {
+  if (year !== undefined) {
     return checkDate(text, year, month, day, false);
   }
-  if (month === null) {
-    return null;
+  if (month === undefined) {
+    return undefined;
   }
   return checkDate(text, nextYear(month, day), month, day, true);
 }
 
 // Read a number from digits which may be missing.
-function readNumber(digits: string | undefined): number | null {
-  return digits ? Number(digits) : null;
+function readNumber(digits: string | undefined): number | undefined {
+  return digits ? Number(digits) : undefined;
 }
 
 // Read the year, month, and day written in a date, each of which may be missing.
-function readFields(text: string): Fields | null {
+function readFields(text: string): Fields | undefined {
   const normalized = text.toLowerCase().replace(/,/g, ' ').replace(/\./g, ' ').trim();
 
   // Read numeric dates, with the year first, missing, or last.
@@ -120,7 +120,7 @@ function readFields(text: string): Fields | null {
   }
   match = normalized.match(/^--(\d{1,2})(?:-(\d{1,2}))?$/);
   if (match) {
-    return { year: null, month: readNumber(match[1]), day: readNumber(match[2]) };
+    return { year: undefined, month: readNumber(match[1]), day: readNumber(match[2]) };
   }
   match = normalized.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/);
   if (match) {
@@ -128,35 +128,35 @@ function readFields(text: string): Fields | null {
   }
 
   // Read dates with a month name, ignoring weekdays and ordinal suffixes like `1st`.
-  let year: number | null = null;
-  let month: number | null = null;
-  let day: number | null = null;
+  let year: number | undefined = undefined;
+  let month: number | undefined = undefined;
+  let day: number | undefined = undefined;
   for (const word of normalized.split(/\s+/)) {
-    if (/^\d{4}$/.test(word) && year === null) {
+    if (/^\d{4}$/.test(word) && year === undefined) {
       year = Number(word);
-    } else if (/^\d{1,2}(st|nd|rd|th)?$/.test(word) && day === null) {
+    } else if (/^\d{1,2}(st|nd|rd|th)?$/.test(word) && day === undefined) {
       day = Number(word.replace(/\D/g, ''));
-    } else if (parseMonth(word) !== null && month === null) {
+    } else if (parseMonth(word) !== undefined && month === undefined) {
       month = parseMonth(word);
     } else if (!/^((mon|tue|wed|thu|fri|sat|sun)[a-z]*|the|of)$/.test(word)) {
-      return null;
+      return undefined;
     }
   }
-  return month === null ? null : { year, month, day };
+  return month === undefined ? undefined : { year, month, day };
 }
 
 // Find the year of the next occurrence of a month, or of a day in it, counting today. February 29
 // waits for a leap year. A day which never occurs gets the current year, to be rejected later.
-function nextYear(month: number, day: number | null): number {
+function nextYear(month: number, day: number | undefined): number {
   const today = new Date();
   const thisYear = today.getFullYear();
   const thisMonth = today.getMonth() + 1;
   const thisDay = today.getDate();
   for (let year = thisYear; year < thisYear + 8; year += 1) {
-    const exists = day === null || day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const exists = day === undefined || day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
     const passed =
       year === thisYear &&
-      (month < thisMonth || (month === thisMonth && day !== null && day < thisDay));
+      (month < thisMonth || (month === thisMonth && day !== undefined && day < thisDay));
     if (exists && !passed) {
       return year;
     }
@@ -168,17 +168,17 @@ function nextYear(month: number, day: number | null): number {
 function checkDate(
   text: string,
   year: number,
-  month: number | null,
-  day: number | null,
+  month: number | undefined,
+  day: number | undefined,
   yearless: boolean,
 ): ParsedDate {
-  if (month === null) {
+  if (month === undefined) {
     return { year, month: 0, day: 0, precision: 'year', yearless };
   }
   if (month < 1 || month > 12) {
     fail(`\`${text}\` has a month which doesn't exist.`);
   }
-  if (day === null) {
+  if (day === undefined) {
     return { year, month, day: 0, precision: 'month', yearless };
   }
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -220,14 +220,15 @@ for (const line of readFileSync(0, 'utf8').split('\n')) {
   }
 
   // Read the date at the start of each top-level bullet, before the first colon.
-  const match = line.match(/^- ([^:]+):\s*(.*)$/);
+  const match = line.match(/^-([^:]+):\s*(.*)$/);
   if (!match) {
     fail(`\`${line}\` should look like \`- 2026-01-01: Something to do\`.`);
   }
-  const date = parseDate(match[1]);
-  if (date === null) {
+  const dateText = match[1].trim();
+  const date = parseDate(dateText);
+  if (date === undefined) {
     fail(
-      `\`${match[1].trim()}\` isn't a date this script understands. ` +
+      `\`${dateText}\` isn't a date this script understands. ` +
         'Try a form like `2026-01-01`, `January 1, 2026`, `Jan 1`, or `Jan 2026`.',
     );
   }
