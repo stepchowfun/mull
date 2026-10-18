@@ -81,4 +81,4 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 ::: calc
 36 - 2 * 0.75 = 34.5
 (3 + 5) * 2 ^ 3 = 64
-::: #f2ef4e898003
+::: #f70671f73cf1

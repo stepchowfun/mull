@@ -9,6 +9,7 @@ function evaluate(expression) {
 	const tokens = expression.match(/\d[\d,]*(?:\.\d+)?|\.\d+|\S/gu) ?? [];
 	let position = 0;
 	function primary() {
+		if (position >= tokens.length) throw new Error("Expected a number.");
 		const token = tokens[position];
 		position += 1;
 		if (token === "(") {
@@ -17,7 +18,7 @@ function evaluate(expression) {
 			position += 1;
 			return value;
 		}
-		if (token === void 0 || !/^[\d.]/u.test(token)) throw new Error(token === void 0 ? "Expected a number." : `Unexpected \`${token}\`.`);
+		if (!/^[\d.]/u.test(token)) throw new Error(`Unexpected \`${token}\`.`);
 		return Number(token.replaceAll(",", ""));
 	}
 	function power() {

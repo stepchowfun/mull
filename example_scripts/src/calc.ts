@@ -33,6 +33,9 @@ function evaluate(expression: string): number {
 
   // Read a number or a parenthesized expression.
   function primary(): number {
+    if (position >= tokens.length) {
+      throw new Error('Expected a number.');
+    }
     const token = tokens[position];
     position += 1;
     if (token === '(') {
@@ -43,8 +46,8 @@ function evaluate(expression: string): number {
       position += 1;
       return value;
     }
-    if (token === undefined || !/^[\d.]/u.test(token)) {
-      throw new Error(token === undefined ? 'Expected a number.' : `Unexpected \`${token}\`.`);
+    if (!/^[\d.]/u.test(token)) {
+      throw new Error(`Unexpected \`${token}\`.`);
     }
     return Number(token.replaceAll(',', ''));
   }
