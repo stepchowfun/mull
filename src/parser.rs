@@ -168,14 +168,15 @@ pub fn parse(
         }
     };
 
-    // Report each block which is still open at the end of its page at its opening fence.
+    // Report each block which is still open at the end of its page at its opening fence, from its
+    // colons through its argument, so the report covers a fence still being typed.
     let report_unclosed_blocks = |open_blocks: &mut Vec<OpenBlock>, errors: &mut Vec<Error>| {
         for open_block in open_blocks.drain(..) {
             errors.push(syntax_error(
                 "Unclosed block.",
                 SourceRange {
                     start: open_block.start,
-                    end: open_block.start + open_block.fence_length,
+                    end: open_block.argument_source_range.end,
                 },
                 None,
             ));
@@ -1893,6 +1894,10 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_fails!(
             parse_test("# Home\n::: [Other]\n# Other"),
             "Unclosed block.",
+        );
+        assert_eq!(
+            parse_test("# Home\n:::sort  \n").unwrap_err()[0].source_range(),
+            Some(SourceRange { start: 7, end: 14 }),
         );
         assert_fails!(
             parse_test("# Home\n::: [Other]\n::: #0a1b\n# Other"),
