@@ -119,7 +119,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     let cli = Cli::parse();
 
     // Start the language server without requiring a wiki, or note whether to check or format the
-    // wiki and which of its scripts to run.
+    // wiki.
     let (format_args, should_format) = match cli
         .command
         .unwrap_or(Subcommand::Format(FormatArgs::default()))
@@ -131,7 +131,6 @@ async fn entry() -> Result<(), Vec<Error>> {
             return Ok(());
         }
     };
-    let scripts_to_run = format_args.scripts;
 
     // Select the wiki and make its path relative when it's contained in the current directory.
     let current_directory = env::current_dir().map_err(|error| {
@@ -174,7 +173,7 @@ async fn entry() -> Result<(), Vec<Error>> {
 
     // Analyze and render the wiki, running its scripts as asked and noting any which failed. The
     // command line has nothing to cancel, so the analysis always runs to completion.
-    let (rendered_wiki, mut errors) = match scripts_to_run {
+    let (rendered_wiki, mut errors) = match format_args.scripts {
         Scripts::None => (
             analyze(
                 Some(&wiki_path),
@@ -189,7 +188,7 @@ async fn entry() -> Result<(), Vec<Error>> {
             let (rendered_wiki, failures) = scripts::run(
                 &wiki_path,
                 &wiki_contents,
-                matches!(scripts_to_run, Scripts::All),
+                matches!(format_args.scripts, Scripts::All),
             )?;
             (
                 rendered_wiki,
