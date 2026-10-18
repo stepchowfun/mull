@@ -192,21 +192,6 @@ const EXTENSION_LANGUAGES: &[(&str, &str)] = &[
     ("yml", "yaml"),
 ];
 
-// Serve language-server requests over standard input and output until the client disconnects.
-pub async fn run() {
-    // Keep ANSI terminal escapes out of protocol diagnostics.
-    colored::control::set_override(false);
-
-    // Connect the backend, including its custom request, to the standard streams reserved for LSP
-    // messages.
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::build(Backend::new)
-        .custom_method(ATTACH_FILES_REQUEST, Backend::attach_files)
-        .finish();
-    Server::new(stdin, stdout, socket).serve(service).await;
-}
-
 // This backend checks each open wiki and publishes its errors to the language client.
 #[derive(Debug)]
 struct Backend {
@@ -875,51 +860,6 @@ struct OpenDocument {
     script_failures: Arc<[scripts::ScriptFailure]>,
 }
 
-// Lock the open documents, which no thread holds while panicking.
-fn lock(
-    documents: &Mutex<HashMap<Uri, OpenDocument>>,
-) -> MutexGuard<'_, HashMap<Uri, OpenDocument>> {
-    documents
-        .lock()
-        .expect("The open-document mutex shouldn't be poisoned.")
-}
-
-// Copy the baseline recorded for an open document, which is empty if it isn't open.
-fn baseline(documents: &Mutex<HashMap<Uri, OpenDocument>>, uri: &Uri) -> Baseline {
-    lock(documents)
-        .get(uri)
-        .map(|document| {
-            document
-                .baseline
-                .iter()
-                .map(|(title, (_generation, content))| (title.clone(), Arc::clone(content)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
-#[derive(Debug)]
-struct PendingCheck {
-    handle: JoinHandle<()>,
-    cancellation: CancellationFlag,
-}
-
-impl PendingCheck {
-    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
-    // started checking, and setting its flag stops it if it has already started.
-    fn cancel(self) {
-        self.cancellation.cancel();
-        self.handle.abort();
-    }
-}
-
-// This is the result of a check whose diagnostics were published. A check which is cancelled or
-// superseded by a newer one reports nothing.
-struct PublishedCheck {
-    diagnostic_count: usize,
-}
-
 // This is an immutable version of a document's contents, shared by the requests and checks made
 // against it so each derived structure is computed at most once, when it's first needed. The
 // client assigns the version, which changes only when the contents do and is reported back with
@@ -990,6 +930,150 @@ impl Snapshot {
             .is_empty()
             .then(|| self.instances.get_or_init(|| propagation::instances(wiki)))
     }
+}
+
+// This pairs a scheduled diagnostic task with the flag which stops its filesystem work.
+#[derive(Debug)]
+struct PendingCheck {
+    handle: JoinHandle<()>,
+    cancellation: CancellationFlag,
+}
+
+impl PendingCheck {
+    // Stop the check whether or not it has started. Aborting the task stops it if it hasn't
+    // started checking, and setting its flag stops it if it has already started.
+    fn cancel(self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
+// This is the result of a check whose diagnostics were published. A check which is cancelled or
+// superseded by a newer one reports nothing.
+struct PublishedCheck {
+    diagnostic_count: usize,
+}
+
+// These are the parameters of the request to attach files.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesParams {
+    text_document: TextDocumentIdentifier,
+    files: Vec<AttachedFile>,
+}
+
+// This is a file to attach, as it was pasted or dropped.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachedFile {
+    name: String,
+    uri: Option<Uri>, // Where the file is, unless only its data was given
+}
+
+// This plan attaches files to a wiki by copying each one which isn't already in its file root, and
+// inserting the text, which links to them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachFilesPlan {
+    copy_uris: Vec<Option<Uri>>, // Where to copy each file, in the order given, if anywhere
+    text: String,
+}
+
+// This records which file operations the client can perform within a versioned workspace edit.
+#[derive(Clone, Copy)]
+struct FileOperationSupport {
+    rename: bool,
+    delete: bool,
+}
+
+// This is an entry of a directory in the file tree which a link could name.
+struct VisibleChild {
+    name: String,
+    is_directory: bool,
+}
+
+// This is what a source offset within a page falls on.
+enum Occurrence<'a> {
+    // The page's title line, from the `#` through the end of the line, including trailing
+    // whitespace. Navigating to a page leaves the cursor before the `#`.
+    Title(&'a Page),
+
+    // A link of any kind in the page's content.
+    Link(&'a Link),
+
+    // Anything else in the page.
+    Prose(&'a Page),
+}
+
+// This describes which part of a resolved text link a caller considers relevant.
+#[derive(Clone, Copy)]
+enum LinkExtent {
+    // The complete link, including its square-bracket delimiters.
+    Whole,
+
+    // The link's inner text, which excludes its delimiters.
+    Target,
+}
+
+// This describes the filesystem entry targeted by the link at the cursor, once it's known to be
+// renamable regardless of its new name.
+struct RenamableFilesystemEntry {
+    file_root: FileRoot,
+    path_source_range: SourceRange,
+    old_target: FilesystemTarget,
+    old_path: SpelledPath,
+}
+
+// These are the ways the extension can reveal a range, numbered as in VS Code's
+// `TextEditorRevealType`.
+#[allow(
+    dead_code,
+    reason = "The type mirrors VS Code's, including the ways not chosen yet."
+)]
+#[derive(Clone, Copy)]
+enum RevealType {
+    Default = 0,
+    InCenter = 1,
+    InCenterIfOutsideViewport = 2,
+    AtTop = 3,
+}
+
+// Serve language-server requests over standard input and output until the client disconnects.
+pub async fn run() {
+    // Keep ANSI terminal escapes out of protocol diagnostics.
+    colored::control::set_override(false);
+
+    // Connect the backend, including its custom request, to the standard streams reserved for LSP
+    // messages.
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let (service, socket) = LspService::build(Backend::new)
+        .custom_method(ATTACH_FILES_REQUEST, Backend::attach_files)
+        .finish();
+    Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+// Lock the open documents, which no thread holds while panicking.
+fn lock(
+    documents: &Mutex<HashMap<Uri, OpenDocument>>,
+) -> MutexGuard<'_, HashMap<Uri, OpenDocument>> {
+    documents
+        .lock()
+        .expect("The open-document mutex shouldn't be poisoned.")
+}
+
+// Copy the baseline recorded for an open document, which is empty if it isn't open.
+fn baseline(documents: &Mutex<HashMap<Uri, OpenDocument>>, uri: &Uri) -> Baseline {
+    lock(documents)
+        .get(uri)
+        .map(|document| {
+            document
+                .baseline
+                .iter()
+                .map(|(title, (_generation, content))| (title.clone(), Arc::clone(content)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // Analyze an editor snapshot without checking its formatting, comparing the instances of each
@@ -1793,13 +1877,6 @@ fn filesystem_link_source_ranges(wiki: &Wiki, target: &FilesystemTarget) -> Vec<
         .collect()
 }
 
-// This records which file operations the client can perform within a versioned workspace edit.
-#[derive(Clone, Copy)]
-struct FileOperationSupport {
-    rename: bool,
-    delete: bool,
-}
-
 // Identify the source occurrence that should be selected before renaming a page, file, or
 // directory, or explain why the filesystem entry a link targets can't be renamed.
 fn prepare_rename_for_document(
@@ -2059,15 +2136,6 @@ fn rename_filesystem_entry_for_document(
         document_changes: Some(DocumentChanges::Operations(operations)),
         ..WorkspaceEdit::default()
     }))
-}
-
-// This describes the filesystem entry targeted by the link at the cursor, once it's known to be
-// renamable regardless of its new name.
-struct RenamableFilesystemEntry {
-    file_root: FileRoot,
-    path_source_range: SourceRange,
-    old_target: FilesystemTarget,
-    old_path: SpelledPath,
 }
 
 // Find the filesystem entry targeted by the link at the cursor and check whether it can be renamed
@@ -2570,20 +2638,6 @@ fn code_action_for_document(
     (!actions.is_empty()).then_some(actions)
 }
 
-// These are the ways the extension can reveal a range, numbered as in VS Code's
-// `TextEditorRevealType`.
-#[allow(
-    dead_code,
-    reason = "The type mirrors VS Code's, including the ways not chosen yet."
-)]
-#[derive(Clone, Copy)]
-enum RevealType {
-    Default = 0,
-    InCenter = 1,
-    InCenterIfOutsideViewport = 2,
-    AtTop = 3,
-}
-
 // Build an editor navigation command for a code action.
 fn reveal_range_command(
     title: String,
@@ -2662,29 +2716,37 @@ fn document_link_for_document(
     Some(document_links)
 }
 
-// These are the parameters of the request to attach files.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachFilesParams {
-    text_document: TextDocumentIdentifier,
-    files: Vec<AttachedFile>,
+// Find where following a filesystem link should lead: a file opens in the editor, and a directory
+// is revealed in the explorer by the VS Code extension, or else opened like a file. A link whose
+// target is missing, of the wrong kind, or spelled differently than on disk leads nowhere, just as
+// the checker reports it.
+fn filesystem_link_target(
+    file_root: &FileRoot,
+    target: &FilesystemTarget,
+    listings: &mut DirectoryListings,
+    vscode_commands: bool,
+) -> Option<Uri> {
+    // Open a file directly, and reveal a directory through the VS Code extension, if available, by
+    // passing its URI as the command's only positional argument.
+    let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
+    Some(if target.is_directory() && vscode_commands {
+        command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
+            .parse()
+            .expect("A command URL should be a valid URI.")
+    } else {
+        target_uri
+    })
 }
 
-// This is a file to attach, as it was pasted or dropped.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachedFile {
-    name: String,
-    uri: Option<Uri>, // Where the file is, unless only its data was given
-}
-
-// This plan attaches files to a wiki by copying each one which isn't already in its file root, and
-// inserting the text, which links to them.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachFilesPlan {
-    copy_uris: Vec<Option<Uri>>, // Where to copy each file, in the order given, if anywhere
-    text: String,
+// Encode a command and its positional arguments as a Markdown-safe URI.
+fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
+    format!(
+        "command:{command}?{}",
+        utf8_percent_encode(
+            &serde_json::to_string(arguments).expect("JSON values should serialize."),
+            NON_ALPHANUMERIC,
+        ),
+    )
 }
 
 // Plan attaching files to a saved wiki. A file already in the file root is linked where it is.
@@ -2781,29 +2843,6 @@ fn available_file_target(
     }
 }
 
-// This is what a source offset within a page falls on.
-enum Occurrence<'a> {
-    // The page's title line, from the `#` through the end of the line, including trailing
-    // whitespace. Navigating to a page leaves the cursor before the `#`.
-    Title(&'a Page),
-
-    // A link of any kind in the page's content.
-    Link(&'a Link),
-
-    // Anything else in the page.
-    Prose(&'a Page),
-}
-
-// This describes which part of a resolved text link a caller considers relevant.
-#[derive(Clone, Copy)]
-enum LinkExtent {
-    // The complete link, including its square-bracket delimiters.
-    Whole,
-
-    // The link's inner text, which excludes its delimiters.
-    Target,
-}
-
 // Find what a source offset falls on, if it's within a page. A page includes the offset just past
 // its end, so a cursor there still belongs to it.
 fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
@@ -2896,12 +2935,6 @@ fn text_link_source_ranges(wiki: &Wiki, title: &PageTitle) -> Vec<SourceRange> {
     source_ranges
 }
 
-// This is an entry of a directory in the file tree which a link could name.
-struct VisibleChild {
-    name: String,
-    is_directory: bool,
-}
-
 // List the entries of a directory in the file tree which a link could name, sorted by name. The
 // walk descends only along the directory, so large subtrees are read only once they're named.
 // Ignored entries and names which aren't UTF-8 are left out.
@@ -2943,28 +2976,6 @@ fn visible_children(file_root: &FileRoot, directory: &Path) -> Vec<VisibleChild>
     children
 }
 
-// Find where following a filesystem link should lead: a file opens in the editor, and a directory
-// is revealed in the explorer by the VS Code extension, or else opened like a file. A link whose
-// target is missing, of the wrong kind, or spelled differently than on disk leads nowhere, just as
-// the checker reports it.
-fn filesystem_link_target(
-    file_root: &FileRoot,
-    target: &FilesystemTarget,
-    listings: &mut DirectoryListings,
-    vscode_commands: bool,
-) -> Option<Uri> {
-    // Open a file directly, and reveal a directory through the VS Code extension, if available, by
-    // passing its URI as the command's only positional argument.
-    let target_uri = file_uri(&filesystem_link_path(file_root, target, listings)?);
-    Some(if target.is_directory() && vscode_commands {
-        command_url(REVEAL_IN_EXPLORER_COMMAND, &[target_uri.as_str().into()])
-            .parse()
-            .expect("A command URL should be a valid URI.")
-    } else {
-        target_uri
-    })
-}
-
 // Find the entry a filesystem link names, if it's spelled as it is on disk and exists as the kind
 // of entry the link names.
 fn filesystem_link_path(
@@ -2990,17 +3001,6 @@ fn local_path(uri: &Uri) -> Option<Cow<'_, Path>> {
 // Convert a path within a saved wiki's file root, which is absolute, into a file URI.
 fn file_uri(path: &Path) -> Uri {
     Uri::from_file_path(path).expect("A path within a saved wiki's file root should be absolute.")
-}
-
-// Encode a command and its positional arguments as a Markdown-safe URI.
-fn command_url(command: &str, arguments: &[serde_json::Value]) -> String {
-    format!(
-        "command:{command}?{}",
-        utf8_percent_encode(
-            &serde_json::to_string(arguments).expect("JSON values should serialize."),
-            NON_ALPHANUMERIC,
-        ),
-    )
 }
 
 #[cfg(test)]
@@ -3049,6 +3049,12 @@ mod tests {
 
     // Identify the version of every test snapshot, which renames report back.
     const TEST_VERSION: i32 = 7;
+
+    // Grant every file operation a filesystem rename can use.
+    const ALL_FILE_OPERATIONS: FileOperationSupport = FileOperationSupport {
+        rename: true,
+        delete: true,
+    };
 
     // Capture a test fixture as the snapshot of an open document.
     fn snapshot(uri: &Uri, source: &str) -> Snapshot {
@@ -3109,6 +3115,144 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
         }
+    }
+
+    // Summarize each completion by its label, replacement range, and inserted text.
+    fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
+        completions
+            .iter()
+            .map(|completion| {
+                let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
+                    panic!("A completion should replace part of the link.");
+                };
+                (
+                    completion.label.as_str(),
+                    edit.range,
+                    edit.new_text.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
+    fn hover_markdown(uri: &Uri, source: &str, position: Position) -> Option<String> {
+        let HoverContents::Markup(contents) =
+            hover_for_document(&snapshot(uri, source), position)?.contents
+        else {
+            panic!("A preview should use markup content.");
+        };
+        Some(contents.value)
+    }
+
+    // Write a JPEG file with the given size and EXIF orientation, enough for both to be read.
+    fn jpeg_with_orientation(width: u16, height: u16, orientation: u16) -> Vec<u8> {
+        // Start the image and its EXIF segment, whose little-endian directory has one entry.
+        let mut jpeg = b"\xff\xd8\xff\xe1\x00\x22Exif\x00\x00II\x2a\x00\x08\x00\x00\x00".to_vec();
+        jpeg.extend(b"\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00");
+        jpeg.extend(orientation.to_le_bytes());
+        jpeg.extend(b"\x00\x00\x00\x00\x00\x00");
+
+        // Describe the frame, whose size follows its precision.
+        jpeg.extend(b"\xff\xc0\x00\x0b\x08");
+        jpeg.extend(height.to_be_bytes());
+        jpeg.extend(width.to_be_bytes());
+        jpeg.extend(b"\x01\x01\x11\x00\xff\xd9");
+        jpeg
+    }
+
+    // Write the start of a PNG file with the given size, enough for its size to be read.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        header.extend(width.to_be_bytes());
+        header.extend(height.to_be_bytes());
+        header.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        header
+    }
+
+    // Apply a filesystem rename's text edits to a source, and return the result with the entry
+    // rename's old and new URIs and the URIs of the directories it deletes.
+    fn apply_filesystem_rename(
+        source: &str,
+        workspace_edit: WorkspaceEdit,
+    ) -> (String, Uri, Uri, Vec<Uri>) {
+        let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
+            panic!("A filesystem rename should consist of document change operations.");
+        };
+        let [
+            DocumentChangeOperation::Edit(text_document_edit),
+            DocumentChangeOperation::Op(ResourceOp::Rename(rename)),
+            deletions @ ..,
+        ] = operations.as_slice()
+        else {
+            panic!("A filesystem rename should edit the wiki and then rename one entry.");
+        };
+        assert_eq!(text_document_edit.text_document.version, Some(TEST_VERSION));
+
+        // Apply the edits from the end so earlier ranges stay valid.
+        let mut applied = source.to_owned();
+        for edit in text_document_edit.edits.iter().rev() {
+            let OneOf::Left(edit) = edit else {
+                panic!("A filesystem rename shouldn't annotate its edits.");
+            };
+            let start = byte_offset(source, edit.range.start).unwrap();
+            let end = byte_offset(source, edit.range.end).unwrap();
+            applied.replace_range(start..end, &edit.new_text);
+        }
+
+        // Require any remaining operations to delete directories along with the empty ones inside.
+        let deleted_uris = deletions
+            .iter()
+            .map(|operation| {
+                let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
+                    panic!("A filesystem rename should only delete directories after the rename.");
+                };
+                assert_eq!(
+                    deletion
+                        .options
+                        .as_ref()
+                        .and_then(|options| options.recursive),
+                    Some(true),
+                );
+                deletion.uri.clone()
+            })
+            .collect();
+        (
+            applied,
+            rename.old_uri.clone(),
+            rename.new_uri.clone(),
+            deleted_uris,
+        )
+    }
+
+    // Apply the single text edit of a code action's workspace edit to a source, then mark the
+    // cursor position that its command reveals with `|`.
+    fn apply_code_action(uri: &Uri, source: &str, action: &CodeActionOrCommand) -> String {
+        // Apply the edit.
+        let CodeActionOrCommand::CodeAction(action) = action else {
+            panic!("A code action shouldn't be a bare command.");
+        };
+        let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+        let [edit] = changes[uri].as_slice() else {
+            panic!("A code action should make exactly one edit.");
+        };
+        let start = byte_offset(source, edit.range.start).unwrap();
+        let end = byte_offset(source, edit.range.end).unwrap();
+        let mut applied = source.to_owned();
+        applied.replace_range(start..end, &edit.new_text);
+
+        // Mark the empty range that the command reveals in the edited document.
+        let command = action.command.as_ref().unwrap();
+        assert_eq!(command.command, "mull.revealRange");
+        let arguments = command.arguments.as_ref().unwrap();
+        assert_eq!(arguments[0], uri.as_str());
+        assert_eq!(arguments[1..3], arguments[3..5]);
+        assert_eq!(arguments[5], RevealType::AtTop as u8);
+        let cursor = Position::new(
+            u32::try_from(arguments[1].as_u64().unwrap()).unwrap(),
+            u32::try_from(arguments[2].as_u64().unwrap()).unwrap(),
+        );
+        applied.insert(byte_offset(&applied, cursor).unwrap(), '|');
+        applied
     }
 
     // Analyze ordinary page structure in a new editor buffer.
@@ -3287,23 +3431,6 @@ mod tests {
             diagnostic.range,
             Range::new(Position::new(0, 0), Position::new(1, 2)),
         );
-    }
-
-    // Summarize each completion by its label, replacement range, and inserted text.
-    fn completion_edits(completions: &[CompletionItem]) -> Vec<(&str, Range, &str)> {
-        completions
-            .iter()
-            .map(|completion| {
-                let Some(CompletionTextEdit::Edit(edit)) = &completion.text_edit else {
-                    panic!("A completion should replace part of the link.");
-                };
-                (
-                    completion.label.as_str(),
-                    edit.range,
-                    edit.new_text.as_str(),
-                )
-            })
-            .collect()
     }
 
     // Offer to open a portal to a page after the colons which start a fence, writing the portal on
@@ -4154,16 +4281,6 @@ mod tests {
         );
     }
 
-    // Find the Markdown which hovering over a test wiki's source at a position shows, if any.
-    fn hover_markdown(uri: &Uri, source: &str, position: Position) -> Option<String> {
-        let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(uri, source), position)?.contents
-        else {
-            panic!("A preview should use markup content.");
-        };
-        Some(contents.value)
-    }
-
     // List a directory's visible entries as links, with directories first, leaving out ignored
     // entries. A missing directory has no preview.
     #[test]
@@ -4205,31 +4322,6 @@ mod tests {
         assert_eq!(lines.len(), MAX_DIRECTORY_PREVIEW_ENTRIES + 3);
         assert_eq!(lines[1], "[/000.txt]");
         assert_eq!(lines[MAX_DIRECTORY_PREVIEW_ENTRIES + 1], "…and 2 more");
-    }
-
-    // Write a JPEG file with the given size and EXIF orientation, enough for both to be read.
-    fn jpeg_with_orientation(width: u16, height: u16, orientation: u16) -> Vec<u8> {
-        // Start the image and its EXIF segment, whose little-endian directory has one entry.
-        let mut jpeg = b"\xff\xd8\xff\xe1\x00\x22Exif\x00\x00II\x2a\x00\x08\x00\x00\x00".to_vec();
-        jpeg.extend(b"\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00");
-        jpeg.extend(orientation.to_le_bytes());
-        jpeg.extend(b"\x00\x00\x00\x00\x00\x00");
-
-        // Describe the frame, whose size follows its precision.
-        jpeg.extend(b"\xff\xc0\x00\x0b\x08");
-        jpeg.extend(height.to_be_bytes());
-        jpeg.extend(width.to_be_bytes());
-        jpeg.extend(b"\x01\x01\x11\x00\xff\xd9");
-        jpeg
-    }
-
-    // Write the start of a PNG file with the given size, enough for its size to be read.
-    fn png_header(width: u32, height: u32) -> Vec<u8> {
-        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
-        header.extend(width.to_be_bytes());
-        header.extend(height.to_be_bytes());
-        header.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
-        header
     }
 
     // Preview images which filesystem links name, but not binary files, missing images, or images
@@ -4964,67 +5056,6 @@ mod tests {
         );
     }
 
-    // Grant every file operation a filesystem rename can use.
-    const ALL_FILE_OPERATIONS: FileOperationSupport = FileOperationSupport {
-        rename: true,
-        delete: true,
-    };
-
-    // Apply a filesystem rename's text edits to a source, and return the result with the entry
-    // rename's old and new URIs and the URIs of the directories it deletes.
-    fn apply_filesystem_rename(
-        source: &str,
-        workspace_edit: WorkspaceEdit,
-    ) -> (String, Uri, Uri, Vec<Uri>) {
-        let Some(DocumentChanges::Operations(operations)) = workspace_edit.document_changes else {
-            panic!("A filesystem rename should consist of document change operations.");
-        };
-        let [
-            DocumentChangeOperation::Edit(text_document_edit),
-            DocumentChangeOperation::Op(ResourceOp::Rename(rename)),
-            deletions @ ..,
-        ] = operations.as_slice()
-        else {
-            panic!("A filesystem rename should edit the wiki and then rename one entry.");
-        };
-        assert_eq!(text_document_edit.text_document.version, Some(TEST_VERSION));
-
-        // Apply the edits from the end so earlier ranges stay valid.
-        let mut applied = source.to_owned();
-        for edit in text_document_edit.edits.iter().rev() {
-            let OneOf::Left(edit) = edit else {
-                panic!("A filesystem rename shouldn't annotate its edits.");
-            };
-            let start = byte_offset(source, edit.range.start).unwrap();
-            let end = byte_offset(source, edit.range.end).unwrap();
-            applied.replace_range(start..end, &edit.new_text);
-        }
-
-        // Require any remaining operations to delete directories along with the empty ones inside.
-        let deleted_uris = deletions
-            .iter()
-            .map(|operation| {
-                let DocumentChangeOperation::Op(ResourceOp::Delete(deletion)) = operation else {
-                    panic!("A filesystem rename should only delete directories after the rename.");
-                };
-                assert_eq!(
-                    deletion
-                        .options
-                        .as_ref()
-                        .and_then(|options| options.recursive),
-                    Some(true),
-                );
-                deletion.uri.clone()
-            })
-            .collect();
-        (
-            applied,
-            rename.old_uri.clone(),
-            rename.new_uri.clone(),
-            deleted_uris,
-        )
-    }
-
     // Rename whichever kind of target the link at the cursor names.
     #[test]
     fn rename_dispatches_by_target_kind() {
@@ -5716,37 +5747,6 @@ mod tests {
                 Range::new(Position::new(4, 0), Position::new(4, 0)),
             );
         }
-    }
-
-    // Apply the single text edit of a code action's workspace edit to a source, then mark the
-    // cursor position that its command reveals with `|`.
-    fn apply_code_action(uri: &Uri, source: &str, action: &CodeActionOrCommand) -> String {
-        // Apply the edit.
-        let CodeActionOrCommand::CodeAction(action) = action else {
-            panic!("A code action shouldn't be a bare command.");
-        };
-        let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
-        let [edit] = changes[uri].as_slice() else {
-            panic!("A code action should make exactly one edit.");
-        };
-        let start = byte_offset(source, edit.range.start).unwrap();
-        let end = byte_offset(source, edit.range.end).unwrap();
-        let mut applied = source.to_owned();
-        applied.replace_range(start..end, &edit.new_text);
-
-        // Mark the empty range that the command reveals in the edited document.
-        let command = action.command.as_ref().unwrap();
-        assert_eq!(command.command, "mull.revealRange");
-        let arguments = command.arguments.as_ref().unwrap();
-        assert_eq!(arguments[0], uri.as_str());
-        assert_eq!(arguments[1..3], arguments[3..5]);
-        assert_eq!(arguments[5], RevealType::AtTop as u8);
-        let cursor = Position::new(
-            u32::try_from(arguments[1].as_u64().unwrap()).unwrap(),
-            u32::try_from(arguments[2].as_u64().unwrap()).unwrap(),
-        );
-        applied.insert(byte_offset(&applied, cursor).unwrap(), '|');
-        applied
     }
 
     // Create the missing destination of text links, resolving every diagnostic the page would fix
