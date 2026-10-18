@@ -48,6 +48,24 @@ struct OpenLink {
     has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
 }
 
+// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
+// argument is trimmed and located by its offsets within the line. A block written on one line
+// ends with a closing run of colons after its argument. A closing fence can be followed by a hash,
+// which is located by its offsets within the line, including its `#`.
+#[derive(Debug, Eq, PartialEq)]
+enum FenceLine {
+    Opening {
+        indentation: usize,
+        length: usize,
+        argument: (usize, usize),
+        is_one_line: bool,
+    },
+    Closing {
+        length: usize,
+        hash: Option<(usize, usize)>,
+    },
+}
+
 // Parse source contents into a scored wiki in a single pass, with source ranges for every page and
 // link, along with any syntax errors in source order. A title line starts a region, which is a page
 // if its title is valid. In the content, code starts with a run of backticks and ends at the next
@@ -610,15 +628,6 @@ fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
 
-// Determine whether a script's name is valid: letters, digits, `-`, `_`, and `.`, which need no
-// escaping and can't be confused with the arguments after them.
-pub fn is_script_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_alphanumeric() || "-_.".contains(character))
-}
-
 // Add a completed region as a page if it has a valid title which hasn't already been used, with
 // the links in its content.
 fn finish_page(
@@ -703,24 +712,6 @@ fn parse_title(
     }
 }
 
-// These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
-// argument is trimmed and located by its offsets within the line. A block written on one line
-// ends with a closing run of colons after its argument. A closing fence can be followed by a hash,
-// which is located by its offsets within the line, including its `#`.
-#[derive(Debug, Eq, PartialEq)]
-enum FenceLine {
-    Opening {
-        indentation: usize,
-        length: usize,
-        argument: (usize, usize),
-        is_one_line: bool,
-    },
-    Closing {
-        length: usize,
-        hash: Option<(usize, usize)>,
-    },
-}
-
 // Read a line as a fence line: optional indentation and a run of fence characters, alone or
 // followed by a hash for a closing fence, or followed by an argument for an opening fence, and then
 // by another run for a block written on one line. Whitespace between these parts is optional. A
@@ -760,6 +751,15 @@ fn fence_line(line: &str) -> Option<FenceLine> {
         argument: (argument_start, argument_start + argument.len()),
         is_one_line,
     })
+}
+
+// Determine whether a script's name is valid: letters, digits, `-`, `_`, and `.`, which need no
+// escaping and can't be confused with the arguments after them.
+pub fn is_script_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_alphanumeric() || "-_.".contains(character))
 }
 
 // Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
@@ -1090,6 +1090,324 @@ mod tests {
             errors[0]
                 .to_string()
                 .contains("A page title can't be empty."),
+        );
+    }
+
+    // Recognize opening fences with a trimmed argument, including portals written on one line, and
+    // closing fences, with or without whitespace between their parts, but not shorter runs.
+    #[test]
+    fn fence_lines() {
+        assert_eq!(
+            fence_line("::: [Page]  "),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 3,
+                argument: (4, 10),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(
+            fence_line("::::\t[Page]"),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 4,
+                argument: (5, 11),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(
+            fence_line(" \t::: [Page]"),
+            Some(FenceLine::Opening {
+                indentation: 2,
+                length: 3,
+                argument: (6, 12),
+                is_one_line: false,
+            }),
+        );
+        assert_eq!(
+            fence_line("  :::"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: None,
+            }),
+        );
+        assert_eq!(
+            fence_line(":::"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: None,
+            }),
+        );
+        assert_eq!(
+            fence_line("::::: \t"),
+            Some(FenceLine::Closing {
+                length: 5,
+                hash: None,
+            }),
+        );
+        assert_eq!(
+            fence_line("  :::: #0a1b2c3d4e5f "),
+            Some(FenceLine::Closing {
+                length: 4,
+                hash: Some((7, 20)),
+            }),
+        );
+        assert_eq!(
+            fence_line(":::: [Page]\t:::::  "),
+            Some(FenceLine::Opening {
+                indentation: 0,
+                length: 4,
+                argument: (5, 11),
+                is_one_line: true,
+            }),
+        );
+        for (line, argument_end) in [("::: [Page] ::", 13), ("::: :::", 7)] {
+            assert_eq!(
+                fence_line(line),
+                Some(FenceLine::Opening {
+                    indentation: 0,
+                    length: 3,
+                    argument: (4, argument_end),
+                    is_one_line: false,
+                }),
+            );
+        }
+        assert_eq!(fence_line(":: [Page]"), None);
+    }
+
+    // Recognize fence lines without whitespace between their parts: an argument right after the
+    // opening run, a closing run right after the argument, and a hash right after a closing run.
+    #[test]
+    fn fence_lines_without_whitespace() {
+        assert_eq!(
+            fence_line(" :::sort"),
+            Some(FenceLine::Opening {
+                indentation: 1,
+                length: 3,
+                argument: (4, 8),
+                is_one_line: false,
+            }),
+        );
+        for line in ["::: [Page]:::", ":::[Page]:::"] {
+            let argument_start = line.find('[').unwrap();
+            assert_eq!(
+                fence_line(line),
+                Some(FenceLine::Opening {
+                    indentation: 0,
+                    length: 3,
+                    argument: (argument_start, argument_start + "[Page]".len()),
+                    is_one_line: true,
+                }),
+            );
+        }
+        assert_eq!(
+            fence_line(":::#0a1b"),
+            Some(FenceLine::Closing {
+                length: 3,
+                hash: Some((3, 8)),
+            }),
+        );
+    }
+
+    // Read a portal from its opening fence through its closing fence, with the link in its opening
+    // fence among the page's links. The portals within it aren't kept, since they're part of its
+    // copy of the content of the page it shows.
+    #[test]
+    fn portals() {
+        let source = concat!(
+            "# Home\n\n:::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::\n\n",
+            "# Other\n# Last",
+        );
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            link_targets(&home.links),
+            vec!["text:Other", "text:Last", "text:Last"],
+        );
+        assert_eq!(
+            home.portals
+                .iter()
+                .map(|portal| {
+                    (
+                        portal.title.text(Context::Verbatim),
+                        &source[portal.source_range.start..portal.source_range.end],
+                        &source[portal.link_source_range.start..portal.link_source_range.end],
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![(
+                "Other".to_owned(),
+                ":::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::",
+                "[ Other ]",
+            )],
+        );
+    }
+
+    // Read a portal written on one line, which ends with its line, including within another portal
+    // and at the end of the wiki.
+    #[test]
+    fn one_line_portals() {
+        let source =
+            "# Home\n:::: [Other]\n::: [Last] :::\n::::\n::: [ Last ] :::  \n# Other\n# Last\n";
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.portals
+                .iter()
+                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
+                .collect::<Vec<_>>(),
+            vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::"],
+        );
+        assert_eq!(
+            link_targets(&home.links),
+            vec!["text:Other", "text:Last", "text:Last"],
+        );
+        assert_eq!(
+            parse_test("# Home\n::: [Home] :::")
+                .unwrap()
+                .page("Home")
+                .portals
+                .len(),
+            1,
+        );
+    }
+
+    // Read an indented portal from the colons of its opening fence, closing it with a fence of the
+    // same length regardless of the closing fence's indentation.
+    #[test]
+    fn indented_portals() {
+        let source = "# Home\n- Item\n  ::: [Other]\n\t:::\n# Other";
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.portals
+                .iter()
+                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
+                .collect::<Vec<_>>(),
+            vec!["::: [Other]\n\t:::"],
+        );
+    }
+
+    // Take fence lines as written in code, and take lines which only resemble fences as text.
+    #[test]
+    fn text_resembling_fences() {
+        let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n").unwrap();
+
+        assert!(wiki.page("Home").portals.is_empty());
+        assert!(wiki.page("Home").links.is_empty());
+    }
+
+    // Reject a portal which doesn't name a page with a single link in its opening fence, but still
+    // match its closing fence.
+    #[test]
+    fn invalid_portal_links() {
+        assert_fails!(
+            parse_test("# Home\n::: [Other] more\n:::\n# Other"),
+            "A portal names the page it shows with a link, like `::: [Page]`.",
+        );
+        assert_eq!(
+            parse_test("# Home\n::: [Other] more\n:::\n# Other")
+                .unwrap_err()
+                .len(),
+            1,
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [Other] [Last]\n:::"),
+            "A portal names the page it shows with a link, like `::: [Page]`.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [/notes.txt]\n:::"),
+            "A portal can only show a page.",
+        );
+    }
+
+    // Read a script block from its opening fence through its closing fence, with its name, the
+    // arguments after it, whose links are among the page's links, and any hash after it. Blocks
+    // within it aren't kept, since they're part of its body. A script block can also be written on
+    // one line.
+    #[test]
+    fn script_blocks() {
+        let source = concat!(
+            "# Home\n",
+            "  ::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b\n",
+            "::: back-links_2.0 :::\n",
+            "# Other",
+        );
+        let wiki = parse_test(source).unwrap();
+        let home = wiki.page("Home");
+
+        assert_eq!(
+            home.script_blocks
+                .iter()
+                .map(|block| {
+                    (
+                        block.name.as_str(),
+                        &source[block.source_range.start..block.source_range.end],
+                        &source[block.name_source_range.start..block.name_source_range.end],
+                        &source
+                            [block.arguments_source_range.start..block.arguments_source_range.end],
+                        block.hash.as_deref(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "sort",
+                    "::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b",
+                    "sort",
+                    "-f [Other] `x`",
+                    Some("0a1b"),
+                ),
+                (
+                    "back-links_2.0",
+                    "::: back-links_2.0 :::",
+                    "back-links_2.0",
+                    "",
+                    None,
+                ),
+            ],
+        );
+        assert!(home.portals.is_empty());
+        assert_eq!(link_targets(&home.links), vec!["text:Other", "text:Other"]);
+    }
+
+    // Reject a script's name with characters other than letters, digits, `-`, `_`, and `.`, but
+    // still match its closing fence.
+    #[test]
+    fn invalid_script_names() {
+        let errors = parse_test("# Home\n::: so(rt) -f\n:::").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("A script's name can only contain letters, digits, `-`, `_`, and `.`."),
+        );
+        assert!(errors[0].to_string().contains("2 │ ::: so(rt) -f"));
+    }
+
+    // Reject closing fences which don't close a block or which have a hash but don't close a
+    // script block, and blocks which aren't closed by the end of their pages.
+    #[test]
+    fn invalid_fences() {
+        assert_fails!(
+            parse_test("# Home\n::: [Other]\n::::\n:::"),
+            "Unexpected closing fence.",
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [Other]\n# Other"),
+            "Unclosed block.",
+        );
+        assert_eq!(
+            parse_test("# Home\n:::sort  \n").unwrap_err()[0].source_range(),
+            Some(SourceRange { start: 7, end: 14 }),
+        );
+        assert_fails!(
+            parse_test("# Home\n::: [Other]\n::: #0a1b\n# Other"),
+            "Only a script block's closing fence can have a hash.",
         );
     }
 
@@ -1585,323 +1903,5 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(links[0].closing_delimiter(), Some(16));
         assert_eq!(links[3].closing_delimiter(), None);
-    }
-
-    // Recognize opening fences with a trimmed argument, including portals written on one line, and
-    // closing fences, with or without whitespace between their parts, but not shorter runs.
-    #[test]
-    fn fence_lines() {
-        assert_eq!(
-            fence_line("::: [Page]  "),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 3,
-                argument: (4, 10),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(
-            fence_line("::::\t[Page]"),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 4,
-                argument: (5, 11),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(
-            fence_line(" \t::: [Page]"),
-            Some(FenceLine::Opening {
-                indentation: 2,
-                length: 3,
-                argument: (6, 12),
-                is_one_line: false,
-            }),
-        );
-        assert_eq!(
-            fence_line("  :::"),
-            Some(FenceLine::Closing {
-                length: 3,
-                hash: None,
-            }),
-        );
-        assert_eq!(
-            fence_line(":::"),
-            Some(FenceLine::Closing {
-                length: 3,
-                hash: None,
-            }),
-        );
-        assert_eq!(
-            fence_line("::::: \t"),
-            Some(FenceLine::Closing {
-                length: 5,
-                hash: None,
-            }),
-        );
-        assert_eq!(
-            fence_line("  :::: #0a1b2c3d4e5f "),
-            Some(FenceLine::Closing {
-                length: 4,
-                hash: Some((7, 20)),
-            }),
-        );
-        assert_eq!(
-            fence_line(":::: [Page]\t:::::  "),
-            Some(FenceLine::Opening {
-                indentation: 0,
-                length: 4,
-                argument: (5, 11),
-                is_one_line: true,
-            }),
-        );
-        for (line, argument_end) in [("::: [Page] ::", 13), ("::: :::", 7)] {
-            assert_eq!(
-                fence_line(line),
-                Some(FenceLine::Opening {
-                    indentation: 0,
-                    length: 3,
-                    argument: (4, argument_end),
-                    is_one_line: false,
-                }),
-            );
-        }
-        assert_eq!(fence_line(":: [Page]"), None);
-    }
-
-    // Recognize fence lines without whitespace between their parts: an argument right after the
-    // opening run, a closing run right after the argument, and a hash right after a closing run.
-    #[test]
-    fn fence_lines_without_whitespace() {
-        assert_eq!(
-            fence_line(" :::sort"),
-            Some(FenceLine::Opening {
-                indentation: 1,
-                length: 3,
-                argument: (4, 8),
-                is_one_line: false,
-            }),
-        );
-        for line in ["::: [Page]:::", ":::[Page]:::"] {
-            let argument_start = line.find('[').unwrap();
-            assert_eq!(
-                fence_line(line),
-                Some(FenceLine::Opening {
-                    indentation: 0,
-                    length: 3,
-                    argument: (argument_start, argument_start + "[Page]".len()),
-                    is_one_line: true,
-                }),
-            );
-        }
-        assert_eq!(
-            fence_line(":::#0a1b"),
-            Some(FenceLine::Closing {
-                length: 3,
-                hash: Some((3, 8)),
-            }),
-        );
-    }
-
-    // Read a portal from its opening fence through its closing fence, with the link in its opening
-    // fence among the page's links. The portals within it aren't kept, since they're part of its
-    // copy of the content of the page it shows.
-    #[test]
-    fn portals() {
-        let source = concat!(
-            "# Home\n\n:::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::\n\n",
-            "# Other\n# Last",
-        );
-        let wiki = parse_test(source).unwrap();
-        let home = wiki.page("Home");
-
-        assert_eq!(
-            link_targets(&home.links),
-            vec!["text:Other", "text:Last", "text:Last"],
-        );
-        assert_eq!(
-            home.portals
-                .iter()
-                .map(|portal| {
-                    (
-                        portal.title.text(Context::Verbatim),
-                        &source[portal.source_range.start..portal.source_range.end],
-                        &source[portal.link_source_range.start..portal.link_source_range.end],
-                    )
-                })
-                .collect::<Vec<_>>(),
-            vec![(
-                "Other".to_owned(),
-                ":::: [ Other ]\nSee [Last].\n::: [Last]\n:::\n::::",
-                "[ Other ]",
-            )],
-        );
-    }
-
-    // Read a portal written on one line, which ends with its line, including within another portal
-    // and at the end of the wiki.
-    #[test]
-    fn one_line_portals() {
-        let source =
-            "# Home\n:::: [Other]\n::: [Last] :::\n::::\n::: [ Last ] :::  \n# Other\n# Last\n";
-        let wiki = parse_test(source).unwrap();
-        let home = wiki.page("Home");
-
-        assert_eq!(
-            home.portals
-                .iter()
-                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
-                .collect::<Vec<_>>(),
-            vec![":::: [Other]\n::: [Last] :::\n::::", "::: [ Last ] :::"],
-        );
-        assert_eq!(
-            link_targets(&home.links),
-            vec!["text:Other", "text:Last", "text:Last"],
-        );
-        assert_eq!(
-            parse_test("# Home\n::: [Home] :::")
-                .unwrap()
-                .page("Home")
-                .portals
-                .len(),
-            1,
-        );
-    }
-
-    // Read an indented portal from the colons of its opening fence, closing it with a fence of the
-    // same length regardless of the closing fence's indentation.
-    #[test]
-    fn indented_portals() {
-        let source = "# Home\n- Item\n  ::: [Other]\n\t:::\n# Other";
-        let wiki = parse_test(source).unwrap();
-        let home = wiki.page("Home");
-
-        assert_eq!(
-            home.portals
-                .iter()
-                .map(|portal| &source[portal.source_range.start..portal.source_range.end])
-                .collect::<Vec<_>>(),
-            vec!["::: [Other]\n\t:::"],
-        );
-    }
-
-    // Take fence lines as written in code, and take lines which only resemble fences as text.
-    #[test]
-    fn text_resembling_fences() {
-        let wiki = parse_test("# Home\n```\n::: [Other]\n```\n:: x\n").unwrap();
-
-        assert!(wiki.page("Home").portals.is_empty());
-        assert!(wiki.page("Home").links.is_empty());
-    }
-
-    // Reject a portal which doesn't name a page with a single link in its opening fence, but still
-    // match its closing fence.
-    #[test]
-    fn invalid_portal_links() {
-        assert_fails!(
-            parse_test("# Home\n::: [Other] more\n:::\n# Other"),
-            "A portal names the page it shows with a link, like `::: [Page]`.",
-        );
-        assert_eq!(
-            parse_test("# Home\n::: [Other] more\n:::\n# Other")
-                .unwrap_err()
-                .len(),
-            1,
-        );
-        assert_fails!(
-            parse_test("# Home\n::: [Other] [Last]\n:::"),
-            "A portal names the page it shows with a link, like `::: [Page]`.",
-        );
-        assert_fails!(
-            parse_test("# Home\n::: [/notes.txt]\n:::"),
-            "A portal can only show a page.",
-        );
-    }
-
-    // Read a script block from its opening fence through its closing fence, with its name, the
-    // arguments after it, whose links are among the page's links, and any hash after it. Blocks
-    // within it aren't kept, since they're part of its body. A script block can also be written on
-    // one line.
-    #[test]
-    fn script_blocks() {
-        let source = concat!(
-            "# Home\n",
-            "  ::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b\n",
-            "::: back-links_2.0 :::\n",
-            "# Other",
-        );
-        let wiki = parse_test(source).unwrap();
-        let home = wiki.page("Home");
-
-        assert_eq!(
-            home.script_blocks
-                .iter()
-                .map(|block| {
-                    (
-                        block.name.as_str(),
-                        &source[block.source_range.start..block.source_range.end],
-                        &source[block.name_source_range.start..block.name_source_range.end],
-                        &source
-                            [block.arguments_source_range.start..block.arguments_source_range.end],
-                        block.hash.as_deref(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            vec![
-                (
-                    "sort",
-                    "::: sort -f [Other] `x`\n  - b\n  ::: [Other]\n  :::\n  ::: #0a1b",
-                    "sort",
-                    "-f [Other] `x`",
-                    Some("0a1b"),
-                ),
-                (
-                    "back-links_2.0",
-                    "::: back-links_2.0 :::",
-                    "back-links_2.0",
-                    "",
-                    None,
-                ),
-            ],
-        );
-        assert!(home.portals.is_empty());
-        assert_eq!(link_targets(&home.links), vec!["text:Other", "text:Other"]);
-    }
-
-    // Reject a script's name with characters other than letters, digits, `-`, `_`, and `.`, but
-    // still match its closing fence.
-    #[test]
-    fn invalid_script_names() {
-        let errors = parse_test("# Home\n::: so(rt) -f\n:::").unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("A script's name can only contain letters, digits, `-`, `_`, and `.`."),
-        );
-        assert!(errors[0].to_string().contains("2 │ ::: so(rt) -f"));
-    }
-
-    // Reject closing fences which don't close a block or which have a hash but don't close a
-    // script block, and blocks which aren't closed by the end of their pages.
-    #[test]
-    fn invalid_fences() {
-        assert_fails!(
-            parse_test("# Home\n::: [Other]\n::::\n:::"),
-            "Unexpected closing fence.",
-        );
-        assert_fails!(
-            parse_test("# Home\n::: [Other]\n# Other"),
-            "Unclosed block.",
-        );
-        assert_eq!(
-            parse_test("# Home\n:::sort  \n").unwrap_err()[0].source_range(),
-            Some(SourceRange { start: 7, end: 14 }),
-        );
-        assert_fails!(
-            parse_test("# Home\n::: [Other]\n::: #0a1b\n# Other"),
-            "Only a script block's closing fence can have a hash.",
-        );
     }
 }

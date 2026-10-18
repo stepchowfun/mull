@@ -918,22 +918,6 @@ mod tests {
         ));
     }
 
-    // Count a script which a script block uses as linked, but not one which none uses.
-    #[test]
-    fn used_scripts_are_linked() {
-        let directory = TestDirectory::new();
-        directory.write("scripts/sort.sh", "");
-        directory.write("scripts/unused.sh", "");
-        let wiki = parse("# Home\n::: sort :::\n").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(contains_error(
-            &errors,
-            "File `/scripts/unused.sh` isn't linked to.",
-        ));
-    }
-
     // Ask for an unsaved wiki to be saved before finding its scripts.
     #[test]
     fn untitled_scripts() {
@@ -1141,6 +1125,130 @@ mod tests {
         ));
     }
 
+    // Report a link within a directory that can't be listed, since its spelling can't be checked.
+    // Permissions don't restrict a superuser, so skip this where the directory remains listable.
+    #[cfg(unix)]
+    #[test]
+    fn unlistable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TestDirectory::new();
+        directory.write("locked/file.txt", "file");
+        let locked = directory.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o311)).unwrap();
+        let wiki = parse("# Home\n[/locked/file.txt]").unwrap();
+
+        let listable = fs::read_dir(&locked).is_ok();
+        let result = validate(&wiki, &directory.wiki_path());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if !listable {
+            assert!(contains_error(
+                &result.unwrap_err(),
+                "Unable to list `/locked`, so the spelling of `/locked/file.txt` can't be checked.",
+            ));
+        }
+    }
+
+    // Require links to spell paths exactly as they are on disk. A filesystem that ignores case
+    // finds the target anyway, but the misspelled link doesn't cover it. A case-sensitive
+    // filesystem doesn't find the target at all.
+    #[test]
+    fn misspelled_paths() {
+        let directory = TestDirectory::new();
+        directory.write("images/photo.jpg", "photo");
+        let wiki = parse("# Home\n[/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
+
+        // Report the first misspelled name along each path.
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        if fs::metadata(directory.join("IMAGES")).is_ok() {
+            assert_eq!(errors.len(), 4);
+            for message in [
+                "`/Images` doesn't match the spelling of any name on disk.",
+                "`/images/Photo.jpg` doesn't match the spelling of any name on disk.",
+                "`/IMAGES` doesn't match the spelling of any name on disk.",
+                "File `/images/photo.jpg` isn't linked to.",
+            ] {
+                assert!(contains_error(&errors, message));
+            }
+        } else {
+            assert!(contains_error(&errors, "not found in `"));
+        }
+    }
+
+    // Reject a filesystem link whose target has the wrong type.
+    #[test]
+    fn wrong_target_type() {
+        let directory = TestDirectory::new();
+        directory.write("images/photo.jpg", "photo");
+        directory.write("notes.txt", "notes");
+        let wiki = parse("# Home\n[/images] [/notes.txt/]").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 4);
+        for message in [
+            "`/images` is a directory, so its link must end with `/`.",
+            "File `/notes.txt` isn't linked to.",
+            "`/notes.txt` is a file, so its link must not end with `/`.",
+            "File `/images/photo.jpg` isn't linked to.",
+        ] {
+            assert!(contains_error(&errors, message));
+        }
+    }
+
+    // Accept a link to a directory without files, including one whose files are all ignored.
+    #[test]
+    fn directory_without_files() {
+        let directory = TestDirectory::new();
+        directory.write(".gitignore", "*.log\n");
+        directory.create_dir("empty/nested");
+        directory.write("logs/debug.log", "debug");
+        directory.write("deep/nested/file.txt", "file");
+        let wiki = parse("# Home\n[/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
+
+        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
+    }
+
+    // Reject links to ignored files and directories, including those within ignored directories.
+    #[test]
+    fn ignored_targets() {
+        let directory = TestDirectory::new();
+        directory.write(".gitignore", "build/\nsecret.txt\n");
+        directory.write("secret.txt", "secret");
+        directory.write("build/output.txt", "output");
+        directory.write(".git/config", "config");
+        let wiki = parse(
+            "# Home\n[/.gitignore] [/secret.txt] [/build/] [/build/output.txt] [/.git/config]",
+        )
+        .unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 4);
+        for message in [
+            "`/secret.txt` is ignored.",
+            "`/build` is ignored.",
+            "`/build/output.txt` is ignored.",
+            "`/.git/config` is ignored.",
+        ] {
+            assert!(contains_error(&errors, message));
+        }
+    }
+
+    // Count a script which a script block uses as linked, but not one which none uses.
+    #[test]
+    fn used_scripts_are_linked() {
+        let directory = TestDirectory::new();
+        directory.write("scripts/sort.sh", "");
+        directory.write("scripts/unused.sh", "");
+        let wiki = parse("# Home\n::: sort :::\n").unwrap();
+
+        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "File `/scripts/unused.sh` isn't linked to.",
+        ));
+    }
+
     // Report unreferenced files within directories instead of requiring directory links.
     #[test]
     fn unreferenced_entries() {
@@ -1308,30 +1416,6 @@ mod tests {
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
 
-    // Report a link within a directory that can't be listed, since its spelling can't be checked.
-    // Permissions don't restrict a superuser, so skip this where the directory remains listable.
-    #[cfg(unix)]
-    #[test]
-    fn unlistable_directory() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = TestDirectory::new();
-        directory.write("locked/file.txt", "file");
-        let locked = directory.join("locked");
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o311)).unwrap();
-        let wiki = parse("# Home\n[/locked/file.txt]").unwrap();
-
-        let listable = fs::read_dir(&locked).is_ok();
-        let result = validate(&wiki, &directory.wiki_path());
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-        if !listable {
-            assert!(contains_error(
-                &result.unwrap_err(),
-                "Unable to list `/locked`, so the spelling of `/locked/file.txt` can't be checked.",
-            ));
-        }
-    }
-
     // Report a broken symlink because its target can't be classified.
     #[cfg(unix)]
     #[test]
@@ -1362,90 +1446,6 @@ mod tests {
             &validate(&wiki, &directory.wiki_path()).unwrap_err(),
             "Unable to walk `",
         ));
-    }
-
-    // Require links to spell paths exactly as they are on disk. A filesystem that ignores case
-    // finds the target anyway, but the misspelled link doesn't cover it. A case-sensitive
-    // filesystem doesn't find the target at all.
-    #[test]
-    fn misspelled_paths() {
-        let directory = TestDirectory::new();
-        directory.write("images/photo.jpg", "photo");
-        let wiki = parse("# Home\n[/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
-
-        // Report the first misspelled name along each path.
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        if fs::metadata(directory.join("IMAGES")).is_ok() {
-            assert_eq!(errors.len(), 4);
-            for message in [
-                "`/Images` doesn't match the spelling of any name on disk.",
-                "`/images/Photo.jpg` doesn't match the spelling of any name on disk.",
-                "`/IMAGES` doesn't match the spelling of any name on disk.",
-                "File `/images/photo.jpg` isn't linked to.",
-            ] {
-                assert!(contains_error(&errors, message));
-            }
-        } else {
-            assert!(contains_error(&errors, "not found in `"));
-        }
-    }
-
-    // Reject a filesystem link whose target has the wrong type.
-    #[test]
-    fn wrong_target_type() {
-        let directory = TestDirectory::new();
-        directory.write("images/photo.jpg", "photo");
-        directory.write("notes.txt", "notes");
-        let wiki = parse("# Home\n[/images] [/notes.txt/]").unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 4);
-        for message in [
-            "`/images` is a directory, so its link must end with `/`.",
-            "File `/notes.txt` isn't linked to.",
-            "`/notes.txt` is a file, so its link must not end with `/`.",
-            "File `/images/photo.jpg` isn't linked to.",
-        ] {
-            assert!(contains_error(&errors, message));
-        }
-    }
-
-    // Accept a link to a directory without files, including one whose files are all ignored.
-    #[test]
-    fn directory_without_files() {
-        let directory = TestDirectory::new();
-        directory.write(".gitignore", "*.log\n");
-        directory.create_dir("empty/nested");
-        directory.write("logs/debug.log", "debug");
-        directory.write("deep/nested/file.txt", "file");
-        let wiki = parse("# Home\n[/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
-
-        assert!(validate(&wiki, &directory.wiki_path()).is_ok());
-    }
-
-    // Reject links to ignored files and directories, including those within ignored directories.
-    #[test]
-    fn ignored_targets() {
-        let directory = TestDirectory::new();
-        directory.write(".gitignore", "build/\nsecret.txt\n");
-        directory.write("secret.txt", "secret");
-        directory.write("build/output.txt", "output");
-        directory.write(".git/config", "config");
-        let wiki = parse(
-            "# Home\n[/.gitignore] [/secret.txt] [/build/] [/build/output.txt] [/.git/config]",
-        )
-        .unwrap();
-
-        let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
-        assert_eq!(errors.len(), 4);
-        for message in [
-            "`/secret.txt` is ignored.",
-            "`/build` is ignored.",
-            "`/build/output.txt` is ignored.",
-            "`/.git/config` is ignored.",
-        ] {
-            assert!(contains_error(&errors, message));
-        }
     }
 
     // Report independent graph, filesystem-link, and unreferenced-entry errors together.

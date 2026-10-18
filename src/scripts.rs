@@ -28,6 +28,39 @@ pub const SCRIPTS_DIRECTORY: &str = "scripts";
 // A script which runs longer than this is stopped, and its block is left as it was.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+// This is a script block which couldn't be run, identified by its page, its position among the
+// page's script blocks, and its script's name, so it can be found again after the wiki changes. The
+// summary is a short explanation for an editor to show instead of the error's own, for a script
+// which itself failed: what it printed as errors, or a plain statement that it failed if it printed
+// none.
+#[derive(Clone, Debug)]
+pub struct ScriptFailure {
+    pub error: Error,
+    pub summary: Option<String>,
+    pub title: PageTitle,
+    pub index: usize,
+    pub name: String,
+}
+
+// This is why a script block couldn't be run, with any underlying cause and any summary of it, as
+// for a `ScriptFailure`.
+struct Failure {
+    message: String,
+    reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    summary: Option<String>,
+}
+
+impl Failure {
+    // Explain why a script block couldn't be run, with any underlying cause.
+    fn new(message: String, reason: Option<Arc<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self {
+            message,
+            reason,
+            summary: None,
+        }
+    }
+}
+
 // Run the script blocks outside other blocks in a wiki without errors, in source order, after
 // formatting the wiki, then format the result. A block whose hash shows that its body is already
 // its script's output for its arguments is skipped unless every block is to be rerun, and each
@@ -145,36 +178,6 @@ fn format(wiki_path: &Path, contents: &str) -> Result<String, Vec<Error>> {
     }
 }
 
-// Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes.
-#[cfg(all(test, unix))]
-pub fn hide_hashes(contents: &str) -> String {
-    contents
-        .split_inclusive('\n')
-        .map(|line| match line.split_once(" #") {
-            Some((fence, _hash))
-                if fence.trim_start().starts_with(':')
-                    && fence.trim_start().trim_start_matches(':').is_empty() =>
-            {
-                format!(
-                    "{fence} #hash{}",
-                    if line.ends_with('\n') { "\n" } else { "" },
-                )
-            }
-            _ => line.to_owned(),
-        })
-        .collect()
-}
-
-// Keep tests which write and run scripts from running at the same time. Linux won't run a file
-// which is open for writing, as a script being written by one test can be in a process which
-// another test forked to run its own script.
-#[cfg(all(test, unix))]
-pub fn lock_script_tests() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 // Hash a script block's script, its arguments as written, and its body, so it needn't run again
 // while they stay the same. The hash is the first 48 bits of their SHA-256 hash, in hexadecimal. A
 // block whose script can't be read has no hash.
@@ -200,39 +203,6 @@ fn hash(
     let mut prefix = [0; 8];
     prefix[2..].copy_from_slice(&digest[..6]);
     Some(format!("{:012x}", u64::from_be_bytes(prefix)))
-}
-
-// This is a script block which couldn't be run, identified by its page, its position among the
-// page's script blocks, and its script's name, so it can be found again after the wiki changes. The
-// summary is a short explanation for an editor to show instead of the error's own, for a script
-// which itself failed: what it printed as errors, or a plain statement that it failed if it printed
-// none.
-#[derive(Clone, Debug)]
-pub struct ScriptFailure {
-    pub error: Error,
-    pub summary: Option<String>,
-    pub title: PageTitle,
-    pub index: usize,
-    pub name: String,
-}
-
-// This is why a script block couldn't be run, with any underlying cause and any summary of it, as
-// for a `ScriptFailure`.
-struct Failure {
-    message: String,
-    reason: Option<Arc<dyn std::error::Error + Send + Sync>>,
-    summary: Option<String>,
-}
-
-impl Failure {
-    // Explain why a script block couldn't be run, with any underlying cause.
-    fn new(message: String, reason: Option<Arc<dyn std::error::Error + Send + Sync>>) -> Self {
-        Self {
-            message,
-            reason,
-            summary: None,
-        }
-    }
 }
 
 // Run a script block, and write it anew with the script's output as its body, indented like its
@@ -315,58 +285,6 @@ fn run_block(
         &block.canonical_argument(source_contents),
         &output,
     ))
-}
-
-// Find the script with a name in the file root's scripts directory: the one file there whose name,
-// without its extension, is the given name.
-pub fn script_path(file_root: &FileRoot, name: &str) -> Result<PathBuf, String> {
-    let directory = file_root.path().join(SCRIPTS_DIRECTORY);
-    let mut paths = fs::read_dir(&directory)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.file_stem() == Some(OsStr::new(name)))
-        .collect::<Vec<_>>();
-    paths.sort();
-    match paths.as_slice() {
-        [path] => Ok(path.clone()),
-        [] => Err(format!(
-            "No script named {} in {}.",
-            name.code_str(),
-            code_file_path(Path::new(SCRIPTS_DIRECTORY)),
-        )),
-        _ => Err(format!(
-            "More than one script is named {} in {}: {}.",
-            name.code_str(),
-            code_file_path(Path::new(SCRIPTS_DIRECTORY)),
-            paths
-                .iter()
-                .map(|path| script_display(file_root, path))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )),
-    }
-}
-
-// List the names of the scripts in the file root's scripts directory, without duplicates.
-pub fn script_names(file_root: &FileRoot) -> Vec<String> {
-    let mut names = fs::read_dir(file_root.path().join(SCRIPTS_DIRECTORY))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
-        .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    names
-}
-
-// Format a script's path as a link to it would be written.
-fn script_display(file_root: &FileRoot, script: &Path) -> String {
-    code_file_path(script.strip_prefix(file_root.path()).unwrap_or(script)).to_string()
 }
 
 // Find the values of a script block's arguments. Text outside links and code is split on
@@ -562,6 +480,88 @@ fn read_in_background<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHa
         let _ = reader.read_to_end(&mut output);
         output
     })
+}
+
+// Find the script with a name in the file root's scripts directory: the one file there whose name,
+// without its extension, is the given name.
+pub fn script_path(file_root: &FileRoot, name: &str) -> Result<PathBuf, String> {
+    let directory = file_root.path().join(SCRIPTS_DIRECTORY);
+    let mut paths = fs::read_dir(&directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.file_stem() == Some(OsStr::new(name)))
+        .collect::<Vec<_>>();
+    paths.sort();
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => Err(format!(
+            "No script named {} in {}.",
+            name.code_str(),
+            code_file_path(Path::new(SCRIPTS_DIRECTORY)),
+        )),
+        _ => Err(format!(
+            "More than one script is named {} in {}: {}.",
+            name.code_str(),
+            code_file_path(Path::new(SCRIPTS_DIRECTORY)),
+            paths
+                .iter()
+                .map(|path| script_display(file_root, path))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+    }
+}
+
+// List the names of the scripts in the file root's scripts directory, without duplicates.
+pub fn script_names(file_root: &FileRoot) -> Vec<String> {
+    let mut names = fs::read_dir(file_root.path().join(SCRIPTS_DIRECTORY))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+// Format a script's path as a link to it would be written.
+fn script_display(file_root: &FileRoot, script: &Path) -> String {
+    code_file_path(script.strip_prefix(file_root.path()).unwrap_or(script)).to_string()
+}
+
+// Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes.
+#[cfg(all(test, unix))]
+pub fn hide_hashes(contents: &str) -> String {
+    contents
+        .split_inclusive('\n')
+        .map(|line| match line.split_once(" #") {
+            Some((fence, _hash))
+                if fence.trim_start().starts_with(':')
+                    && fence.trim_start().trim_start_matches(':').is_empty() =>
+            {
+                format!(
+                    "{fence} #hash{}",
+                    if line.ends_with('\n') { "\n" } else { "" },
+                )
+            }
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+// Keep tests which write and run scripts from running at the same time. Linux won't run a file
+// which is open for writing, as a script being written by one test can be in a process which
+// another test forked to run its own script.
+#[cfg(all(test, unix))]
+pub fn lock_script_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]

@@ -28,33 +28,6 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 // consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
-// Write a block with an argument after its opening fence and a body, indenting each line after the
-// first like the opening fence, which the caller places, within a fence longer than any in it.
-pub fn write_block(indentation: &str, argument: &str, body: &str) -> String {
-    let fence = fence_around(body);
-    let mut block = format!("{fence} {argument}\n");
-    for line in body.lines() {
-        block.push_str(indentation);
-        block.push_str(line);
-        block.push('\n');
-    }
-    block.push_str(indentation);
-    block.push_str(&fence);
-    block
-}
-
-// Make the fence for a block with a body: longer than any run of colons starting a line of the
-// body, so none of them closes the block, and no shorter than the shortest fence.
-fn fence_around(body: &str) -> String {
-    let longest_run = body
-        .lines()
-        .map(str::trim_start)
-        .map(|line| line.len() - line.trim_start_matches(':').len())
-        .max()
-        .unwrap_or(0);
-    ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH))
-}
-
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
 #[derive(Clone, Debug)]
@@ -612,6 +585,33 @@ impl CodeStr for FilesystemTarget {
     fn code_str(&self) -> ColoredString {
         code_file_path(&self.path)
     }
+}
+
+// Write a block with an argument after its opening fence and a body, indenting each line after the
+// first like the opening fence, which the caller places, within a fence longer than any in it.
+pub fn write_block(indentation: &str, argument: &str, body: &str) -> String {
+    let fence = fence_around(body);
+    let mut block = format!("{fence} {argument}\n");
+    for line in body.lines() {
+        block.push_str(indentation);
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str(indentation);
+    block.push_str(&fence);
+    block
+}
+
+// Make the fence for a block with a body: longer than any run of colons starting a line of the
+// body, so none of them closes the block, and no shorter than the shortest fence.
+fn fence_around(body: &str) -> String {
+    let longest_run = body
+        .lines()
+        .map(str::trim_start)
+        .map(|line| line.len() - line.trim_start_matches(':').len())
+        .max()
+        .unwrap_or(0);
+    ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH))
 }
 
 #[cfg(test)]

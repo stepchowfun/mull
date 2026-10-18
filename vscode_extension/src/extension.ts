@@ -11,6 +11,68 @@ import {
   type ProvideDocumentFormattingEditsSignature,
 } from 'vscode-languageclient/node';
 
+// This command checks the wiki being edited again, through the language server command of the same
+// name. Keep this in sync with [group:check_wiki_command].
+const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+
+// This private command lets the language server reveal a source range in a document.
+// [group:reveal_range_command]
+const REVEAL_RANGE_COMMAND = 'mull.revealRange';
+
+// This private command lets the language server reveal a directory in the explorer, or in the
+// system's file manager.
+// [group:reveal_in_explorer_command]
+const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
+
+// These commands move the cursor to the start or end of the page containing it, optionally
+// extending the selection.
+const GO_TO_PAGE_START_COMMAND = 'mull.goToPageStart';
+const GO_TO_PAGE_END_COMMAND = 'mull.goToPageEnd';
+const SELECT_TO_PAGE_START_COMMAND = 'mull.selectToPageStart';
+const SELECT_TO_PAGE_END_COMMAND = 'mull.selectToPageEnd';
+
+// These commands move through the pages visited in a wiki, like a browser's back and forward
+// buttons.
+const GO_BACK_COMMAND = 'mull.goBack';
+const GO_FORWARD_COMMAND = 'mull.goForward';
+
+// This caps how many visits each wiki's trail remembers, forgetting the oldest first.
+const MAX_HISTORY_LENGTH = 100;
+
+// This caps how many of the latest visits the back link's tooltip lists.
+const MAX_TOOLTIP_VISITS = 10;
+
+// This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
+// with [ref:attach_files_request_server].
+const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
+
+// This kind identifies pasting or dropping files into a wiki as links to them.
+const ATTACH_FILES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'file');
+
+// This describes pasting or dropping files into a wiki to the user.
+const ATTACH_FILES_TITLE = 'Link to the files, copying them into the wiki if needed';
+
+// This initialization option names this extension as the language server's client, so the server
+// can attach VS Code commands to completions, quick fixes, and directory links. Keep this in sync
+// with [group:client_option].
+const CLIENT_OPTION = 'client';
+const VSCODE_CLIENT = 'vscode';
+
+// This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
+// this in sync with [group:run_scripts_option].
+const RUN_SCRIPTS_OPTION = 'mull.runScripts';
+
+// Link users to Mull's platform-specific installation instructions.
+const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
+const INSTALLATION_ACTION = 'View installation instructions';
+const CONFIGURATION_ACTION = 'Configure executable path';
+
+// Make executable probes compatible with the extension's asynchronous startup.
+const execFileAsync = promisify(execFile);
+
+// Retain the active client so it can be stopped when the extension is deactivated.
+let client: LanguageClient | undefined;
+
 // Determine the type of a setting's value.
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 const isString = (value: unknown): value is string => typeof value === 'string';
@@ -29,80 +91,6 @@ function setting<T>(
   }
   return value;
 }
-
-// Make executable probes compatible with the extension's asynchronous startup.
-const execFileAsync = promisify(execFile);
-
-// Link users to Mull's platform-specific installation instructions.
-const INSTALLATION_URL = 'https://github.com/stepchowfun/mull#installation-instructions';
-const INSTALLATION_ACTION = 'View installation instructions';
-const CONFIGURATION_ACTION = 'Configure executable path';
-
-// Show a notification offering the two ways to get a suitable executable, installing Mull or
-// selecting an existing executable, and perform the one the user selects.
-async function offerRecovery(isError: boolean, message: string): Promise<void> {
-  // Offer direct access to the two ways to resolve the problem [tag:recovery_actions].
-  const action = await (isError
-    ? vscode.window.showErrorMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION)
-    : vscode.window.showWarningMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION));
-
-  // Perform the selected recovery action.
-  if (action === INSTALLATION_ACTION) {
-    await vscode.env.openExternal(vscode.Uri.parse(INSTALLATION_URL));
-  } else if (action === CONFIGURATION_ACTION) {
-    await vscode.commands.executeCommand('workbench.action.openSettings', 'mull.executablePath');
-  } else if (action === undefined) {
-    // Do nothing when the user dismisses the notification.
-    return;
-  } else {
-    // VS Code returns an offered action or undefined [ref:recovery_actions].
-    throw new Error('Unexpected recovery action.');
-  }
-}
-
-// Help the user install Mull or select an existing executable.
-async function reportMissingMull(
-  outputChannel: vscode.LogOutputChannel,
-  error: unknown,
-): Promise<void> {
-  // Record both an actionable explanation and the underlying launch failure.
-  outputChannel.error(
-    `Mull couldn't be found. Install Mull or configure mull.executablePath. ${INSTALLATION_URL}`,
-  );
-  outputChannel.debug(String(error));
-
-  // Leave Mull inactive unless the user resolves the problem.
-  await offerRecovery(true, "Mull couldn't be found.");
-}
-
-// Read the version of this extension, which is the version of Mull it's released with.
-function extensionVersion(context: vscode.ExtensionContext): string {
-  const manifest: unknown = context.extension.packageJSON;
-  if (
-    typeof manifest === 'object' &&
-    manifest !== null &&
-    'version' in manifest &&
-    typeof manifest.version === 'string'
-  ) {
-    return manifest.version;
-  }
-  throw new Error('The extension manifest should specify a version.');
-}
-
-// Warn that the executable isn't the version of Mull this extension was released with, as when
-// only one of them was upgraded. Reinstalling Mull upgrades both.
-async function reportVersionMismatch(
-  outputChannel: vscode.LogOutputChannel,
-  expectedVersion: string,
-  versionOutput: string,
-): Promise<void> {
-  const message = `This extension expects Mull ${expectedVersion}, but the executable reports \`${versionOutput}\`.`;
-  outputChannel.warn(`${message} Reinstall Mull to update both. ${INSTALLATION_URL}`);
-  await offerRecovery(false, message);
-}
-
-// Retain the active client so it can be stopped when the extension is deactivated.
-let client: LanguageClient | undefined;
 
 // Determine whether an editor is one of the main editors showing a wiki. Embedded editors, such as
 // the preview in the references view, have no view column, and are left alone.
@@ -131,10 +119,6 @@ function pageAt(
   return pages.findLast((page) => page.range.start.isBeforeOrEqual(position));
 }
 
-// This command checks the wiki being edited again, through the language server command of the same
-// name. Keep this in sync with [group:check_wiki_command].
-const CHECK_WIKI_COMMAND = 'mull.checkWiki';
-
 // Ask the language server to check the wiki being edited, which reports the result.
 async function checkActiveWiki(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -146,10 +130,6 @@ async function checkActiveWiki(): Promise<void> {
     arguments: [editor.document.uri.toString()],
   });
 }
-
-// This private command lets the language server reveal a source range in a document.
-// [group:reveal_range_command]
-const REVEAL_RANGE_COMMAND = 'mull.revealRange';
 
 // Reveal a source range supplied by the language server.
 async function revealRange(
@@ -169,11 +149,6 @@ async function revealRange(
   editor.revealRange(range, revealType);
 }
 
-// This private command lets the language server reveal a directory in the explorer, or in the
-// system's file manager.
-// [group:reveal_in_explorer_command]
-const REVEAL_IN_EXPLORER_COMMAND = 'mull.revealInExplorer';
-
 // Reveal a directory supplied by the language server in the explorer. The explorer only shows the
 // workspace's folders, so a directory outside them opens in the system's file manager instead.
 async function revealInExplorer(uriString: string): Promise<void> {
@@ -185,13 +160,6 @@ async function revealInExplorer(uriString: string): Promise<void> {
     await vscode.commands.executeCommand('revealInExplorer', uri);
   }
 }
-
-// These commands move the cursor to the start or end of the page containing it, optionally
-// extending the selection.
-const GO_TO_PAGE_START_COMMAND = 'mull.goToPageStart';
-const GO_TO_PAGE_END_COMMAND = 'mull.goToPageEnd';
-const SELECT_TO_PAGE_START_COMMAND = 'mull.selectToPageStart';
-const SELECT_TO_PAGE_END_COMMAND = 'mull.selectToPageEnd';
 
 // Move each cursor to the start or end of the page containing it. A cursor before the first page
 // stays put, and repeating the command changes nothing.
@@ -495,17 +463,6 @@ class TypingDiagnostics {
   }
 }
 
-// These commands move through the pages visited in a wiki, like a browser's back and forward
-// buttons.
-const GO_BACK_COMMAND = 'mull.goBack';
-const GO_FORWARD_COMMAND = 'mull.goForward';
-
-// This caps how many visits each wiki's trail remembers, forgetting the oldest first.
-const MAX_HISTORY_LENGTH = 100;
-
-// This caps how many of the latest visits the back link's tooltip lists.
-const MAX_TOOLTIP_VISITS = 10;
-
 // A visit to a page, with the cursor's position in it, relative to the page's start, for returning
 // to where the cursor was.
 interface Visit {
@@ -724,10 +681,6 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
   }
 }
 
-// This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
-// with [ref:attach_files_request_server].
-const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
-
 // This is a file to attach to a wiki: its name, where it is if that's known, and its data if it
 // came from outside the editor. One of the last two is always given.
 interface AttachableFile {
@@ -742,12 +695,6 @@ interface AttachFilesPlan {
   copyUris: (string | null)[];
   text: string;
 }
-
-// This kind identifies pasting or dropping files into a wiki as links to them.
-const ATTACH_FILES_KIND = vscode.DocumentDropOrPasteEditKind.Empty.append('mull', 'file');
-
-// This describes pasting or dropping files into a wiki to the user.
-const ATTACH_FILES_TITLE = 'Link to the files, copying them into the wiki if needed';
 
 // Collect the files being pasted or dropped. They come as data, like a screenshot, or as locations,
 // like a file copied in a file manager or dragged from the explorer, or both. Folders, and
@@ -893,16 +840,6 @@ async function dropFiles(
   edit.additionalEdit = attachment.additionalEdit;
   return edit;
 }
-
-// This initialization option names this extension as the language server's client, so the server
-// can attach VS Code commands to completions, quick fixes, and directory links. Keep this in sync
-// with [group:client_option].
-const CLIENT_OPTION = 'client';
-const VSCODE_CLIENT = 'vscode';
-
-// This formatting option asks the language server to run a wiki's scripts as it's formatted. Keep
-// this in sync with [group:run_scripts_option].
-const RUN_SCRIPTS_OPTION = 'mull.runScripts';
 
 // Format a wiki, running its scripts as well if scripts may run, which they can't in Restricted
 // Mode. The language client sends only the standard formatting options, so the request is sent
@@ -1058,6 +995,69 @@ async function formatKeepingPagePositions(
     }
   });
   return edits;
+}
+
+// Show a notification offering the two ways to get a suitable executable, installing Mull or
+// selecting an existing executable, and perform the one the user selects.
+async function offerRecovery(isError: boolean, message: string): Promise<void> {
+  // Offer direct access to the two ways to resolve the problem [tag:recovery_actions].
+  const action = await (isError
+    ? vscode.window.showErrorMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION)
+    : vscode.window.showWarningMessage(message, INSTALLATION_ACTION, CONFIGURATION_ACTION));
+
+  // Perform the selected recovery action.
+  if (action === INSTALLATION_ACTION) {
+    await vscode.env.openExternal(vscode.Uri.parse(INSTALLATION_URL));
+  } else if (action === CONFIGURATION_ACTION) {
+    await vscode.commands.executeCommand('workbench.action.openSettings', 'mull.executablePath');
+  } else if (action === undefined) {
+    // Do nothing when the user dismisses the notification.
+    return;
+  } else {
+    // VS Code returns an offered action or undefined [ref:recovery_actions].
+    throw new Error('Unexpected recovery action.');
+  }
+}
+
+// Help the user install Mull or select an existing executable.
+async function reportMissingMull(
+  outputChannel: vscode.LogOutputChannel,
+  error: unknown,
+): Promise<void> {
+  // Record both an actionable explanation and the underlying launch failure.
+  outputChannel.error(
+    `Mull couldn't be found. Install Mull or configure mull.executablePath. ${INSTALLATION_URL}`,
+  );
+  outputChannel.debug(String(error));
+
+  // Leave Mull inactive unless the user resolves the problem.
+  await offerRecovery(true, "Mull couldn't be found.");
+}
+
+// Read the version of this extension, which is the version of Mull it's released with.
+function extensionVersion(context: vscode.ExtensionContext): string {
+  const manifest: unknown = context.extension.packageJSON;
+  if (
+    typeof manifest === 'object' &&
+    manifest !== null &&
+    'version' in manifest &&
+    typeof manifest.version === 'string'
+  ) {
+    return manifest.version;
+  }
+  throw new Error('The extension manifest should specify a version.');
+}
+
+// Warn that the executable isn't the version of Mull this extension was released with, as when
+// only one of them was upgraded. Reinstalling Mull upgrades both.
+async function reportVersionMismatch(
+  outputChannel: vscode.LogOutputChannel,
+  expectedVersion: string,
+  versionOutput: string,
+): Promise<void> {
+  const message = `This extension expects Mull ${expectedVersion}, but the executable reports \`${versionOutput}\`.`;
+  outputChannel.warn(`${message} Reinstall Mull to update both. ${INSTALLATION_URL}`);
+  await offerRecovery(false, message);
 }
 
 // Start a Mull language server for local and untitled Mull documents.

@@ -34,6 +34,29 @@ struct Instance {
     source_range: SourceRange,
 }
 
+// This maps offsets in a copy read as a page back to the source of the wiki, through the copies
+// containing it. Each line of the copy is listed with where it starts in the copy, after the title
+// line which makes it a page, and where it starts in the source of the copy containing it.
+struct CopyMap<'a> {
+    title_line_length: usize,
+    line_starts: Vec<(usize, usize)>,
+    outer: Option<&'a CopyMap<'a>>,
+}
+
+impl CopyMap<'_> {
+    // Map an offset after the title line to the source of the wiki.
+    fn offset(&self, offset: usize) -> usize {
+        let copy_offset = offset - self.title_line_length;
+        let (copy_line_start, source_line_start) = self.line_starts[self
+            .line_starts
+            .partition_point(|(copy_line_start, _)| *copy_line_start <= copy_offset)
+            - 1];
+        let source_offset = source_line_start + copy_offset - copy_line_start;
+        self.outer
+            .map_or(source_offset, |copy_map| copy_map.offset(source_offset))
+    }
+}
+
 // Collect the instances of each page shown in portals in a wiki without syntax errors.
 pub fn instances(wiki: &Wiki) -> Instances {
     let mut instances = Instances::default();
@@ -113,29 +136,6 @@ fn collect_copies(
             nested_portal,
             instances,
         );
-    }
-}
-
-// This maps offsets in a copy read as a page back to the source of the wiki, through the copies
-// containing it. Each line of the copy is listed with where it starts in the copy, after the title
-// line which makes it a page, and where it starts in the source of the copy containing it.
-struct CopyMap<'a> {
-    title_line_length: usize,
-    line_starts: Vec<(usize, usize)>,
-    outer: Option<&'a CopyMap<'a>>,
-}
-
-impl CopyMap<'_> {
-    // Map an offset after the title line to the source of the wiki.
-    fn offset(&self, offset: usize) -> usize {
-        let copy_offset = offset - self.title_line_length;
-        let (copy_line_start, source_line_start) = self.line_starts[self
-            .line_starts
-            .partition_point(|(copy_line_start, _)| *copy_line_start <= copy_offset)
-            - 1];
-        let source_offset = source_line_start + copy_offset - copy_line_start;
-        self.outer
-            .map_or(source_offset, |copy_map| copy_map.offset(source_offset))
     }
 }
 

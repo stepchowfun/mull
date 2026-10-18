@@ -41,6 +41,12 @@ pub fn unescape(source: &str, context: Context) -> Option<String> {
     Some(plain)
 }
 
+// Determine whether a backslash starts an escape in a context, rather than being a plain
+// character.
+fn has_escapes(context: Context) -> bool {
+    context != Context::Verbatim
+}
+
 // Determine whether a backslash escapes a character in a context [tag:content_escapes]. Keep this
 // in sync with `invalid_escape_message`.
 pub fn is_escapable(character: char, context: Context) -> bool {
@@ -64,12 +70,6 @@ pub fn invalid_escape_message(context: Context) -> &'static str {
         }
         Context::Verbatim => "Here, a backslash is a plain character.",
     }
-}
-
-// Determine whether a backslash starts an escape in a context, rather than being a plain
-// character.
-fn has_escapes(context: Context) -> bool {
-    context != Context::Verbatim
 }
 
 #[cfg(test)]
