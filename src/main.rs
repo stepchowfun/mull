@@ -75,7 +75,6 @@ struct FormatArgs {
     #[arg(
         long,
         value_enum,
-        value_name = "WHICH",
         default_value_t,
         help = "Specify which of the wiki's scripts to run"
     )]
