@@ -45,7 +45,7 @@ You can link to files like photos, spreadsheets, or anything else. Mull checks t
 
 Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can drag-and-drop or paste files directly into the editor. You can also link to directories like `[/photos/]`.
 
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it.
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory counts as linking to everything inside it.
 
 ### Opening a portal to another page
 
