@@ -164,9 +164,9 @@ tasks:
 
       # Keep this in sync with [group:excluded_input_paths].
       - artifacts
+      - example_scripts/node_modules
       - target
       - vscode_extension/node_modules
-      - example_scripts/node_modules
     command: |
       # Check the example wiki.
       cargo-offline run -- check --path example.mull
@@ -271,9 +271,9 @@ tasks:
       - example_scripts/vite.config.ts
       - src
       - vscode_extension/.vscode
-      - vscode_extension/src
       - vscode_extension/language-configuration.json
       - vscode_extension/package.json
+      - vscode_extension/src
       - vscode_extension/syntaxes
       - vscode_extension/tsconfig.json
       - vscode_extension/vite.config.ts
