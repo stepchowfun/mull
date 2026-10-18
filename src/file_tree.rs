@@ -26,6 +26,17 @@ use crate::{
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use std::path::Path;
 
+// This describes whether a walk of the file tree reaches a path.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Visibility {
+    // The walk reaches the path.
+    Reached,
+
+    // The walk never reaches the path, because it doesn't exist, an ignore rule excludes it or one
+    // of its ancestors, or a directory along the way can't be read.
+    Unreached,
+}
+
 // Configure a walk of the file tree which follows directory symlinks, includes hidden
 // entries, and honors ignore files within the tree while excluding VCS metadata.
 pub fn file_tree_walker(file_root: &Path) -> WalkBuilder {
@@ -50,17 +61,6 @@ pub fn file_tree_walker(file_root: &Path) -> WalkBuilder {
         .require_git(false)
         .overrides(overrides);
     walker_builder
-}
-
-// This describes whether a walk of the file tree reaches a path.
-#[derive(Debug, Eq, PartialEq)]
-pub enum Visibility {
-    // The walk reaches the path.
-    Reached,
-
-    // The walk never reaches the path, because it doesn't exist, an ignore rule excludes it or one
-    // of its ancestors, or a directory along the way can't be read.
-    Unreached,
 }
 
 // Determine whether a walk of the file tree reaches a path. The walk descends only along the path,
