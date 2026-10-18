@@ -25,7 +25,7 @@ use crate::{
     path_util::relative_path,
     wiki::WIKI_EXTENSION,
 };
-use clap::{ArgAction, Args, Parser, Subcommand as ClapSubcommand};
+use clap::{ArgAction, Args, Parser, Subcommand as ClapSubcommand, ValueEnum};
 use similar::TextDiff;
 use std::{
     env, fs,
@@ -69,44 +69,34 @@ enum Subcommand {
 }
 
 // These are the arguments for checking and formatting a wiki, which is the nearest one unless a
-// path is given. The scripts whose blocks have changed are run unless asked to run none or all of
-// them.
+// path is given, with the stale scripts run unless asked to run none or all of them.
 #[derive(Args, Default)]
 struct FormatArgs {
-    #[arg(long, help = "Don't run the wiki's scripts")]
-    no_scripts: bool,
-
     #[arg(
         long,
-        conflicts_with = "no_scripts",
-        help = "Run all the wiki's scripts, even those whose blocks haven't changed"
+        value_enum,
+        default_value_t,
+        help = "Specify which of the wiki's scripts to run"
     )]
-    rerun_scripts: bool,
+    scripts: Scripts,
 
     #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
     path: Option<PathBuf>,
 }
 
-impl FormatArgs {
-    // Determine which scripts to run.
-    fn scripts(&self) -> Scripts {
-        if self.no_scripts {
-            Scripts::Skip
-        } else if self.rerun_scripts {
-            Scripts::Rerun
-        } else {
-            Scripts::Run
-        }
-    }
-}
-
-// These are the ways to treat a wiki's scripts: running none, running those whose blocks have
-// changed, or running all of them.
-#[derive(Clone, Copy)]
+// These are the choices of which of a wiki's scripts to run. A script block is stale when its hash
+// doesn't match its script, arguments, and contents.
+#[derive(Clone, Copy, Default, ValueEnum)]
 enum Scripts {
-    Skip,
-    Run,
-    Rerun,
+    #[value(help = "Run none of them")]
+    None,
+
+    #[default]
+    #[value(help = "Run those whose block, script, or arguments changed since it last ran")]
+    Stale,
+
+    #[value(help = "Run all of them")]
+    All,
 }
 
 // Let the fun begin!
@@ -129,7 +119,7 @@ async fn entry() -> Result<(), Vec<Error>> {
     let cli = Cli::parse();
 
     // Start the language server without requiring a wiki, or note whether to check or format the
-    // wiki and which of its scripts to run.
+    // wiki.
     let (format_args, should_format) = match cli
         .command
         .unwrap_or(Subcommand::Format(FormatArgs::default()))
@@ -141,7 +131,6 @@ async fn entry() -> Result<(), Vec<Error>> {
             return Ok(());
         }
     };
-    let scripts_to_run = format_args.scripts();
 
     // Select the wiki and make its path relative when it's contained in the current directory.
     let current_directory = env::current_dir().map_err(|error| {
@@ -184,8 +173,8 @@ async fn entry() -> Result<(), Vec<Error>> {
 
     // Analyze and render the wiki, running its scripts as asked and noting any which failed. The
     // command line has nothing to cancel, so the analysis always runs to completion.
-    let (rendered_wiki, mut errors) = match scripts_to_run {
-        Scripts::Skip => (
+    let (rendered_wiki, mut errors) = match format_args.scripts {
+        Scripts::None => (
             analyze(
                 Some(&wiki_path),
                 &wiki_contents,
@@ -195,11 +184,11 @@ async fn entry() -> Result<(), Vec<Error>> {
             .to_string(),
             Vec::new(),
         ),
-        Scripts::Run | Scripts::Rerun => {
+        Scripts::Stale | Scripts::All => {
             let (rendered_wiki, failures) = scripts::run(
                 &wiki_path,
                 &wiki_contents,
-                matches!(scripts_to_run, Scripts::Rerun),
+                matches!(format_args.scripts, Scripts::All),
             )?;
             (
                 rendered_wiki,
@@ -344,7 +333,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, FormatArgs, Subcommand};
+    use super::{Cli, FormatArgs, Scripts, Subcommand};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -372,30 +361,36 @@ mod tests {
         ));
     }
 
-    // Accept an explicit wiki path, and a request not to run scripts, after the subcommands that
-    // check or format the wiki, but not a request both to run none and to run all of them.
+    // Accept an explicit wiki path, and a choice of which scripts to run, after the subcommands
+    // that check or format the wiki, running the stale scripts by default and rejecting an unknown
+    // choice.
     #[test]
     fn parse_format_args() {
         for subcommand in ["check", "format"] {
-            let Some(
-                Subcommand::Check(FormatArgs {
-                    no_scripts, path, ..
-                })
-                | Subcommand::Format(FormatArgs {
-                    no_scripts, path, ..
-                }),
-            ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull", "--no-scripts"])
-                .unwrap()
-                .command
+            let parse = |arguments: &[&str]| {
+                let command = Cli::try_parse_from([&["mull", subcommand], arguments].concat())
+                    .ok()?
+                    .command?;
+                match command {
+                    Subcommand::Check(format_args) | Subcommand::Format(format_args) => {
+                        Some(format_args)
+                    }
+                    Subcommand::LanguageServer => None,
+                }
+            };
+            let Some(FormatArgs { scripts, path }) =
+                parse(&["--path", "notes.mull", "--scripts", "none"])
             else {
                 panic!("The {subcommand} subcommand should be parsed.");
             };
             assert_eq!(path, Some(PathBuf::from("notes.mull")));
-            assert!(no_scripts);
-            assert!(
-                Cli::try_parse_from(["mull", subcommand, "--no-scripts", "--rerun-scripts"])
-                    .is_err(),
-            );
+            assert!(matches!(scripts, Scripts::None));
+            assert!(matches!(parse(&[]).unwrap().scripts, Scripts::Stale));
+            assert!(matches!(
+                parse(&["--scripts", "all"]).unwrap().scripts,
+                Scripts::All,
+            ));
+            assert!(parse(&["--scripts", "some"]).is_none());
         }
     }
 }
