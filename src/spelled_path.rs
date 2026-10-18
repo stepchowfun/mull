@@ -216,17 +216,6 @@ impl CodeStr for SpelledPath {
     }
 }
 
-// Format a path relative to the file root as a link would write it, starting with `/`
-// and separating components with `/`, so it isn't mistaken for a path relative to the current
-// directory.
-pub fn code_file_path(path: &Path) -> ColoredString {
-    let components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>();
-    format!("/{}", components.join("/")).code_str()
-}
-
 // This explains why a path's spelling isn't confirmed: a name along it isn't listed as written, or
 // a directory along it can't be listed, for an underlying reason.
 #[derive(Debug)]
@@ -238,6 +227,17 @@ pub struct SpellingError {
 // These are the names of the entries in each directory, listed at most once per validation or
 // rename, or else why a directory can't be listed.
 pub type DirectoryListings = HashMap<PathBuf, Result<HashSet<OsString>, Arc<io::Error>>>;
+
+// Format a path relative to the file root as a link would write it, starting with `/`
+// and separating components with `/`, so it isn't mistaken for a path relative to the current
+// directory.
+pub fn code_file_path(path: &Path) -> ColoredString {
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    format!("/{}", components.join("/")).code_str()
+}
 
 // Identify the directory entry that a path names without following a symlink in its last component,
 // so symlinks to the same target remain distinct.
@@ -263,13 +263,24 @@ mod tests {
     use crate::wiki::FilesystemTarget;
     use std::{env, fs, path::Path, process};
 
-    // Root a path relative to the file root at `/`, as a link would write it.
+    // Report the first name that matches nothing on disk, rather than failing to list a directory
+    // that doesn't exist beneath it.
     #[test]
-    fn code_file_path_display() {
-        assert_eq!(format!("{}", code_file_path(Path::new(""))), "`/`");
+    fn missing_component() {
+        let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
+        fs::create_dir_all(directory.join("wiki_files")).unwrap();
+        let file_root = FileRoot::new(&directory.join("wiki.mull")).unwrap();
+
+        let error = file_root
+            .spell(
+                &FilesystemTarget::parse("/missing/file.txt").unwrap(),
+                &mut DirectoryListings::new(),
+            )
+            .unwrap_err();
+        fs::remove_dir_all(&directory).unwrap();
         assert_eq!(
-            format!("{}", code_file_path(&Path::new("photos").join("paris"))),
-            "`/photos/paris`",
+            error.message,
+            "`/missing` doesn't match the spelling of any name on disk.",
         );
     }
 
@@ -299,24 +310,13 @@ mod tests {
         }
     }
 
-    // Report the first name that matches nothing on disk, rather than failing to list a directory
-    // that doesn't exist beneath it.
+    // Root a path relative to the file root at `/`, as a link would write it.
     #[test]
-    fn missing_component() {
-        let directory = env::temp_dir().join(format!("mull-spelling-{}", process::id()));
-        fs::create_dir_all(directory.join("wiki_files")).unwrap();
-        let file_root = FileRoot::new(&directory.join("wiki.mull")).unwrap();
-
-        let error = file_root
-            .spell(
-                &FilesystemTarget::parse("/missing/file.txt").unwrap(),
-                &mut DirectoryListings::new(),
-            )
-            .unwrap_err();
-        fs::remove_dir_all(&directory).unwrap();
+    fn code_file_path_display() {
+        assert_eq!(format!("{}", code_file_path(Path::new(""))), "`/`");
         assert_eq!(
-            error.message,
-            "`/missing` doesn't match the spelling of any name on disk.",
+            format!("{}", code_file_path(&Path::new("photos").join("paris"))),
+            "`/photos/paris`",
         );
     }
 }
