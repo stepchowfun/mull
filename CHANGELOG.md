@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.3] - 2026-10-17
+
+### Fixed
+
+- An unclosed block is reported across its whole opening fence, like `::: calc`, rather than only its colons. In the VS Code extension, this keeps the error hidden while the fence is being typed, so choosing a script from the suggestions after typing part of its name, like `:::ca`, no longer briefly shows an error.
+
 ## [0.63.2] - 2026-10-17
 
 ### Added
