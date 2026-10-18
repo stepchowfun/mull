@@ -45,14 +45,9 @@ interface Fields {
   day: number | undefined;
 }
 
-// This is a date with a year, how precise it is, and whether it was written without its year. A
-// month or day which isn't part of the date is 0.
-interface ParsedDate {
-  year: number;
-  month: number;
-  day: number;
-  precision: 'year' | 'month' | 'day';
-  yearless: boolean;
+// This is a date as written, along with the year of its next occurrence if it has no year.
+interface ParsedDate extends Fields {
+  inferredYear: number | undefined;
 }
 
 // This is a top-level bullet with its date and text, along with the nested lines beneath it.
@@ -87,8 +82,7 @@ function parseMonth(word: string): number | undefined {
 // - `January`, `Jan 1`, or `1 Jan`
 //
 // A date without a year is in the current year if it hasn't passed yet, and otherwise in the next
-// year in which it occurs, and it's marked as `yearless`. The result has a `precision` of `year`,
-// `month`, or `day`.
+// year in which it occurs, which becomes its `inferredYear`.
 function parseDate(text: string): ParsedDate | undefined {
   const fields = readFields(text);
   if (fields === undefined) {
@@ -96,12 +90,15 @@ function parseDate(text: string): ParsedDate | undefined {
   }
   const { year, month, day } = fields;
   if (year !== undefined) {
-    return checkDate(text, year, month, day, false);
+    checkDate(text, year, month, day);
+    return { year, month, day, inferredYear: undefined };
   }
   if (month === undefined) {
     return undefined;
   }
-  return checkDate(text, nextYear(month, day), month, day, true);
+  const inferredYear = nextYear(month, day);
+  checkDate(text, inferredYear, month, day);
+  return { year, month, day, inferredYear };
 }
 
 // Read a number from digits which may be missing.
@@ -170,22 +167,16 @@ function checkDate(
   year: number,
   month: number | undefined,
   day: number | undefined,
-  yearless: boolean,
-): ParsedDate {
-  if (month === undefined) {
-    return { year, month: 0, day: 0, precision: 'year', yearless };
+): void {
+  if (month !== undefined) {
+    if (month < 1 || month > 12) {
+      fail(`\`${text}\` has a month which doesn't exist.`);
+    }
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (day !== undefined && (day < 1 || day > daysInMonth)) {
+      fail(`\`${text}\` has a day which doesn't exist.`);
+    }
   }
-  if (month < 1 || month > 12) {
-    fail(`\`${text}\` has a month which doesn't exist.`);
-  }
-  if (day === undefined) {
-    return { year, month, day: 0, precision: 'month', yearless };
-  }
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  if (day < 1 || day > daysInMonth) {
-    fail(`\`${text}\` has a day which doesn't exist.`);
-  }
-  return { year, month, day, precision: 'day', yearless };
 }
 
 // Write a number with at least two digits.
@@ -197,14 +188,20 @@ function pad(number: number): string {
 // without a year is written without one again, like `--01-01` or `--01`, so it moves to the next
 // year once it passes.
 function formatDate(date: ParsedDate): string {
-  const year = date.yearless ? '-' : String(date.year);
-  if (date.precision === 'day') {
-    return `${year}-${pad(date.month)}-${pad(date.day)}`;
+  const year = date.year === undefined ? '-' : String(date.year);
+  if (date.month === undefined) {
+    return year;
   }
-  if (date.precision === 'month') {
+  if (date.day === undefined) {
     return `${year}-${pad(date.month)}`;
   }
-  return year;
+  return `${year}-${pad(date.month)}-${pad(date.day)}`;
+}
+
+// Find the numbers to sort a date by: its year, as written or inferred, then its month and day. A
+// missing month or day is 0 to come first, since real ones start at 1.
+function sortKey(date: ParsedDate): number[] {
+  return [date.year ?? date.inferredYear ?? 0, date.month ?? 0, date.day ?? 0];
 }
 
 // Group each top-level bullet with the nested lines beneath it, so they move together, and drop
@@ -239,9 +236,11 @@ for (const line of readFileSync(0, 'utf8').split('\n')) {
 // with `desc`. Items with the same date keep their order.
 const direction = process.argv.includes('desc') ? -1 : 1;
 items.sort((a, b) => {
-  for (const key of ['year', 'month', 'day'] as const) {
-    if (a.date[key] !== b.date[key]) {
-      return direction * (a.date[key] - b.date[key]);
+  const aKey = sortKey(a.date);
+  const bKey = sortKey(b.date);
+  for (const [index, value] of aKey.entries()) {
+    if (value !== bKey[index]) {
+      return direction * (value - bKey[index]);
     }
   }
   return 0;
