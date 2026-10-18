@@ -18,25 +18,16 @@ export default defineConfig({
         specifier: 'vite-plus/oxlint-plugin',
       },
     ],
+    // Type-check with `tsc` instead, since only it applies tsconfig.json to the scripts outside this
+    // directory.
     options: {
       typeAware: true,
-      typeCheck: true,
+      typeCheck: false,
     },
     plugins: ['oxc', 'typescript', 'unicorn'],
     rules: {
       'no-undefined': 'allow',
       'no-use-before-define': ['deny', { functions: false }],
     },
-  },
-  // Build each script on its own into the example wiki's scripts directory, as an executable which
-  // keeps its `#!` line.
-  pack: {
-    entry: ['src/calc.ts', 'src/chrono.ts', 'src/sort.ts'],
-    outDir: '../example_files/scripts',
-    format: 'esm',
-    platform: 'node',
-    target: 'node24',
-    fixedExtension: false,
-    dts: false,
   },
 });

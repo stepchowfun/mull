@@ -185,17 +185,11 @@ tasks:
         npm run lint
       )
 
-      # Check the example wiki's scripts, and check that the scripts built from them are up to date.
+      # Check the example wiki's scripts.
       (
         cd example_scripts
         npm ci
         npm run lint
-        cp -R ../example_files/scripts "$HOME/committed_example_scripts"
-        npm run build
-        if ! diff --recursive "$HOME/committed_example_scripts" ../example_files/scripts; then
-          echo 'ERROR: The example scripts are out of date. Run `toast build_example_scripts`.' 1>&2
-          exit 1
-        fi
       )
 
       # Check that the VS Code extension has the same version as Mull, since it expects the version
@@ -229,22 +223,6 @@ tasks:
         exit 1
       fi
 
-  build_example_scripts:
-    description: Build the example wiki's scripts from their TypeScript sources.
-    dependencies:
-      - install_tools
-    input_paths:
-      - example_scripts
-    excluded_input_paths:
-      - example_scripts/node_modules
-    output_paths:
-      - example_files/scripts
-    command: |
-      # Build the scripts into the example wiki's file root.
-      cd example_scripts
-      npm ci
-      npm run build
-
   run:
     description: Run the program.
     dependencies:
@@ -258,6 +236,7 @@ tasks:
     dependencies:
       - fetch_crates
     input_paths:
+      - example_files/scripts
       - example_scripts
       - src
       - vscode_extension
@@ -265,8 +244,8 @@ tasks:
       - example_scripts/node_modules
       - vscode_extension/node_modules
     output_paths:
+      - example_files/scripts
       - example_scripts/package.json
-      - example_scripts/src
       - example_scripts/tsconfig.json
       - example_scripts/vite.config.ts
       - src

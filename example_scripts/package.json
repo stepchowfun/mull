@@ -1,12 +1,11 @@
 {
   "name": "mull-example-scripts",
   "private": true,
-  "description": "The scripts in the example wiki's file root, which are built into example_files/scripts.",
+  "description": "Checks for the scripts in the example wiki's file root, example_files/scripts.",
   "type": "module",
   "scripts": {
-    "build": "vp pack",
-    "lint": "vp check",
-    "format": "vp fmt"
+    "lint": "tsc && vp check . \"$(realpath ../example_files/scripts)\"",
+    "format": "vp fmt . \"$(realpath ../example_files/scripts)\""
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
