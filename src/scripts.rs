@@ -79,14 +79,7 @@ pub fn run_formatted(
             {
                 continue;
             }
-            match run_block(
-                formatted_contents,
-                &wiki,
-                page,
-                block,
-                &file_root,
-                wiki_path,
-            ) {
+            match run_block(formatted_contents, &wiki, page, block, &file_root) {
                 Ok(replacement) => {
                     replacements.push((block.source_range, replacement));
                     ran.push((&page.title, index));
@@ -250,7 +243,6 @@ fn run_block(
     page: &Page,
     block: &ScriptBlock,
     file_root: &FileRoot,
-    wiki_path: &Path,
 ) -> Result<String, Failure> {
     // Run the script on the block's body. Paths are made absolute, since the script runs in the
     // file root rather than the current directory.
@@ -278,8 +270,6 @@ fn run_block(
         &arguments,
         &input,
         &absolute_file_root,
-        wiki_path,
-        &page.title.text(Context::Verbatim),
         SCRIPT_TIMEOUT,
     )
     .map_err(|failure| {
@@ -453,8 +443,8 @@ fn arguments(
     arguments
 }
 
-// Run a script with arguments in the file root, with an input on its standard input and the
-// wiki's path and the page's title in its environment, and return what it prints. The operating
+// Run a script with arguments in the file root, with an input on its standard input, and return
+// what it prints. The operating
 // system starts it, so on Windows the program associated with its extension runs it. A script
 // which fails or prints anything but UTF-8 is reported with what it printed as errors, and one
 // which runs too long is stopped.
@@ -463,8 +453,6 @@ fn execute(
     arguments: &[String],
     input: &str,
     file_root: &Path,
-    wiki_path: &Path,
-    title: &str,
     timeout: Duration,
 ) -> Result<String, Failure> {
     // Start the script.
@@ -478,11 +466,6 @@ fn execute(
     let mut child = command
         .args(arguments)
         .current_dir(file_root)
-        .env(
-            "MULL_WIKI",
-            path::absolute(wiki_path).unwrap_or_else(|_| wiki_path.to_owned()),
-        )
-        .env("MULL_PAGE", title)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -684,10 +667,7 @@ mod tests {
             ),
             &[
                 ("sort.sh", "#!/bin/sh\nsort\n"),
-                (
-                    "fence.sh",
-                    "#!/bin/sh\necho \"$MULL_PAGE\"\necho '::: [Other] :::'\n",
-                ),
+                ("fence.sh", "#!/bin/sh\necho '::: [Other] :::'\n"),
             ],
         );
 
@@ -698,7 +678,7 @@ mod tests {
             concat!(
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
-                ":::: fence\nHome\n::: [Other] :::\n:::: #hash\n\n",
+                ":::: fence\n::: [Other] :::\n:::: #hash\n\n",
                 "# Other\n",
             ),
         );
@@ -824,8 +804,6 @@ mod tests {
             &[],
             "",
             &wiki.0.join("wiki_files"),
-            &wiki.path(),
-            "Home",
             Duration::from_millis(100),
         )
         .unwrap_err();
