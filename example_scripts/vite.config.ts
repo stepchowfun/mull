@@ -28,15 +28,4 @@ export default defineConfig({
       'no-use-before-define': ['deny', { functions: false }],
     },
   },
-  // Build each script on its own into the example wiki's scripts directory, as an executable which
-  // keeps its `#!` line.
-  pack: {
-    entry: ['src/calc.ts', 'src/chrono.ts', 'src/sort.ts'],
-    outDir: '../example_files/scripts',
-    format: 'esm',
-    platform: 'node',
-    target: 'node24',
-    fixedExtension: false,
-    dts: false,
-  },
 });

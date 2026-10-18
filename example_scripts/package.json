@@ -1,10 +1,9 @@
 {
   "name": "mull-example-scripts",
   "private": true,
-  "description": "The scripts in the example wiki's file root, which are built into example_files/scripts.",
+  "description": "The scripts in the example wiki's file root, which example_files/scripts links to.",
   "type": "module",
   "scripts": {
-    "build": "vp pack",
     "lint": "vp check",
     "format": "vp fmt"
   },
