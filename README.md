@@ -176,7 +176,6 @@ Usage: mull [COMMAND]
 Commands:
   check            Check that a wiki is valid and formatted, with its scripts run
   format           Format a wiki, running its scripts (default)
-  page             Print the content of a page in a wiki
   language-server  Start the language server (editors use this)
   help             Print this message or the help of the given subcommand(s)
 

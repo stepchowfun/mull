@@ -22,9 +22,8 @@ use crate::{
     cancellation::CancellationFlag,
     error::{Error, format_errors},
     format::CodeStr,
-    line_index::LineIndex,
     path_util::relative_path,
-    wiki::{PageTitle, WIKI_EXTENSION},
+    wiki::WIKI_EXTENSION,
 };
 use clap::{ArgAction, Args, Parser, Subcommand as ClapSubcommand};
 use similar::TextDiff;
@@ -65,15 +64,12 @@ enum Subcommand {
     #[command(about = "Format a wiki, running its scripts (default)")]
     Format(FormatArgs),
 
-    #[command(about = "Print the content of a page in a wiki")]
-    Page(PageArgs),
-
     #[command(about = "Start the language server (editors use this)")]
     LanguageServer,
 }
 
 // These are the arguments for the operations that act on a wiki. Without a path, the wiki is the
-// one a script is running in, if any, or else the nearest one.
+// nearest one.
 #[derive(Args, Default)]
 struct WikiArgs {
     #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
@@ -111,22 +107,11 @@ impl FormatArgs {
     }
 }
 
-// These are the arguments for printing a page.
-#[derive(Args)]
-struct PageArgs {
-    #[arg(help = "The page's title")]
-    title: String,
-
-    #[command(flatten)]
-    wiki_args: WikiArgs,
-}
-
 // These are the operations which act on a wiki once it's loaded. Checking and formatting note
 // which of the wiki's scripts to run.
 enum Operation {
     Check(Scripts),
     Format(Scripts),
-    Page(String),
 }
 
 // These are the ways to treat a wiki's scripts: running none, running those whose blocks have
@@ -170,7 +155,6 @@ async fn entry() -> Result<(), Vec<Error>> {
             Operation::Format(format_args.scripts()),
             format_args.wiki_args,
         ),
-        Subcommand::Page(PageArgs { title, wiki_args }) => (Operation::Page(title), wiki_args),
         Subcommand::LanguageServer => {
             language_server::run().await;
             return Ok(());
@@ -190,7 +174,6 @@ async fn entry() -> Result<(), Vec<Error>> {
     let wiki_path = relative_path(
         &current_directory,
         &path
-            .or_else(|| env::var_os("MULL_WIKI").map(PathBuf::from))
             .map_or_else(|| find_wiki(&current_directory), Ok)
             .map_err(|error| vec![error])?,
     )
@@ -216,9 +199,8 @@ async fn entry() -> Result<(), Vec<Error>> {
         )]
     })?;
 
-    // Print a page, or note which scripts to run while checking or formatting.
+    // Note which scripts to run while checking or formatting.
     let (scripts_to_run, should_format) = match operation {
-        Operation::Page(title) => return print_page(&wiki_path, &wiki_contents, &title),
         Operation::Check(scripts_to_run) => (scripts_to_run, false),
         Operation::Format(scripts_to_run) => (scripts_to_run, true),
     };
@@ -383,38 +365,9 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
     ))
 }
 
-// Print a page's content as formatting would write it, for scripts to read.
-fn print_page(wiki_path: &Path, wiki_contents: &str, title: &str) -> Result<(), Vec<Error>> {
-    // Read the wiki without validating it, which needs only its syntax.
-    let (wiki, errors) = parser::parse(
-        Some(wiki_path),
-        wiki_contents,
-        &LineIndex::new(wiki_contents),
-    );
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    // Find the page.
-    let page = PageTitle::parse(title)
-        .ok()
-        .and_then(|title| wiki.pages.get(&title))
-        .ok_or_else(|| {
-            vec![Error::new(
-                &format!("Page {} not found.", title.code_str()),
-                Some(wiki_path),
-                None,
-                None,
-                None,
-            )]
-        })?;
-    println!("{}", wiki.page_content(page));
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Cli, FormatArgs, PageArgs, Subcommand, WikiArgs};
+    use super::{Cli, FormatArgs, Subcommand, WikiArgs};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -434,14 +387,6 @@ mod tests {
             Cli::try_parse_from(["mull", "format"]).unwrap().command,
             Some(Subcommand::Format(_)),
         ));
-        let Some(Subcommand::Page(PageArgs { title, .. })) =
-            Cli::try_parse_from(["mull", "page", "Home"])
-                .unwrap()
-                .command
-        else {
-            panic!("The page subcommand should be parsed.");
-        };
-        assert_eq!(title, "Home");
         assert!(matches!(
             Cli::try_parse_from(["mull", "language-server"])
                 .unwrap()

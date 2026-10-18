@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0] - 2026-10-18
+
+### Removed
+
+- The `mull page` subcommand, which printed the content of a page, is gone.
+- Scripts are no longer given the `MULL_WIKI` and `MULL_PAGE` environment variables, and `mull check` and `mull format` no longer use `MULL_WIKI` to find the wiki. Without `--path`, they use the nearest wiki.
+
 ## [0.63.4] - 2026-10-17
 
 ### Fixed
