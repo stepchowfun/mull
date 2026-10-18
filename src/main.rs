@@ -68,16 +68,9 @@ enum Subcommand {
     LanguageServer,
 }
 
-// These are the arguments for the operations that act on a wiki. Without a path, the wiki is the
-// nearest one.
-#[derive(Args, Default)]
-struct WikiArgs {
-    #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
-    path: Option<PathBuf>,
-}
-
-// These are the arguments for checking and formatting a wiki, which runs the scripts whose blocks
-// have changed unless asked to run none or all of them.
+// These are the arguments for checking and formatting a wiki, which is the nearest one unless a
+// path is given. The scripts whose blocks have changed are run unless asked to run none or all of
+// them.
 #[derive(Args, Default)]
 struct FormatArgs {
     #[arg(long, help = "Don't run the wiki's scripts")]
@@ -90,8 +83,8 @@ struct FormatArgs {
     )]
     rerun_scripts: bool,
 
-    #[command(flatten)]
-    wiki_args: WikiArgs,
+    #[arg(long, value_name = "PATH", help = "Specify the path to the wiki")]
+    path: Option<PathBuf>,
 }
 
 impl FormatArgs {
@@ -105,13 +98,6 @@ impl FormatArgs {
             Scripts::Run
         }
     }
-}
-
-// These are the operations which act on a wiki once it's loaded. Checking and formatting note
-// which of the wiki's scripts to run.
-enum Operation {
-    Check(Scripts),
-    Format(Scripts),
 }
 
 // These are the ways to treat a wiki's scripts: running none, running those whose blocks have
@@ -142,24 +128,20 @@ async fn entry() -> Result<(), Vec<Error>> {
     // Parse the command-line arguments.
     let cli = Cli::parse();
 
-    // Start the language server without requiring a wiki, or select the requested wiki operation.
-    let (operation, WikiArgs { path }) = match cli
+    // Start the language server without requiring a wiki, or note whether to check or format the
+    // wiki and which of its scripts to run.
+    let (format_args, should_format) = match cli
         .command
         .unwrap_or(Subcommand::Format(FormatArgs::default()))
     {
-        Subcommand::Check(format_args) => (
-            Operation::Check(format_args.scripts()),
-            format_args.wiki_args,
-        ),
-        Subcommand::Format(format_args) => (
-            Operation::Format(format_args.scripts()),
-            format_args.wiki_args,
-        ),
+        Subcommand::Check(format_args) => (format_args, false),
+        Subcommand::Format(format_args) => (format_args, true),
         Subcommand::LanguageServer => {
             language_server::run().await;
             return Ok(());
         }
     };
+    let scripts_to_run = format_args.scripts();
 
     // Select the wiki and make its path relative when it's contained in the current directory.
     let current_directory = env::current_dir().map_err(|error| {
@@ -173,7 +155,8 @@ async fn entry() -> Result<(), Vec<Error>> {
     })?;
     let wiki_path = relative_path(
         &current_directory,
-        &path
+        &format_args
+            .path
             .map_or_else(|| find_wiki(&current_directory), Ok)
             .map_err(|error| vec![error])?,
     )
@@ -198,12 +181,6 @@ async fn entry() -> Result<(), Vec<Error>> {
             None,
         )]
     })?;
-
-    // Note which scripts to run while checking or formatting.
-    let (scripts_to_run, should_format) = match operation {
-        Operation::Check(scripts_to_run) => (scripts_to_run, false),
-        Operation::Format(scripts_to_run) => (scripts_to_run, true),
-    };
 
     // Analyze and render the wiki, running its scripts as asked and noting any which failed. The
     // command line has nothing to cancel, so the analysis always runs to completion.
@@ -367,7 +344,7 @@ fn find_wiki(current_directory: &Path) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, FormatArgs, Subcommand, WikiArgs};
+    use super::{Cli, FormatArgs, Subcommand};
     use clap::{CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -402,14 +379,10 @@ mod tests {
         for subcommand in ["check", "format"] {
             let Some(
                 Subcommand::Check(FormatArgs {
-                    no_scripts,
-                    wiki_args: WikiArgs { path },
-                    ..
+                    no_scripts, path, ..
                 })
                 | Subcommand::Format(FormatArgs {
-                    no_scripts,
-                    wiki_args: WikiArgs { path },
-                    ..
+                    no_scripts, path, ..
                 }),
             ) = Cli::try_parse_from(["mull", subcommand, "--path", "notes.mull", "--no-scripts"])
                 .unwrap()
