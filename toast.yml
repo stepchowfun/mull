@@ -166,6 +166,7 @@ tasks:
       - artifacts
       - target
       - vscode-extension/node_modules
+      - example-scripts/node_modules
     command: |
       # Check the example wiki.
       cargo-offline run -- check --path example.mull
@@ -182,6 +183,19 @@ tasks:
         cd vscode-extension
         npm ci
         npm run lint
+      )
+
+      # Check the example wiki's scripts, and check that the scripts built from them are up to date.
+      (
+        cd example-scripts
+        npm ci
+        npm run lint
+        cp -R ../example_files/scripts "$HOME/committed-example-scripts"
+        npm run build
+        if ! diff --recursive "$HOME/committed-example-scripts" ../example_files/scripts; then
+          echo 'ERROR: The example scripts are out of date. Run `toast build_example_scripts`.' 1>&2
+          exit 1
+        fi
       )
 
       # Check that the VS Code extension has the same version as Mull, since it expects the version
@@ -215,6 +229,22 @@ tasks:
         exit 1
       fi
 
+  build_example_scripts:
+    description: Build the example wiki's scripts from their TypeScript sources.
+    dependencies:
+      - install_tools
+    input_paths:
+      - example-scripts
+    excluded_input_paths:
+      - example-scripts/node_modules
+    output_paths:
+      - example_files/scripts
+    command: |
+      # Build the scripts into the example wiki's file root.
+      cd example-scripts
+      npm ci
+      npm run build
+
   run:
     description: Run the program.
     dependencies:
@@ -228,11 +258,17 @@ tasks:
     dependencies:
       - fetch_crates
     input_paths:
+      - example-scripts
       - src
       - vscode-extension
     excluded_input_paths:
+      - example-scripts/node_modules
       - vscode-extension/node_modules
     output_paths:
+      - example-scripts/package.json
+      - example-scripts/src
+      - example-scripts/tsconfig.json
+      - example-scripts/vite.config.ts
       - src
       - vscode-extension/.vscode
       - vscode-extension/src
@@ -252,6 +288,13 @@ tasks:
       # Format the VS Code extension.
       (
         cd vscode-extension
+        npm ci
+        npm run format
+      )
+
+      # Format the example wiki's scripts.
+      (
+        cd example-scripts
         npm ci
         npm run format
       )
