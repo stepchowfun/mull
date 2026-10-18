@@ -165,8 +165,8 @@ tasks:
       # Keep this in sync with [group:excluded_input_paths].
       - artifacts
       - target
-      - vscode-extension/node_modules
-      - example-scripts/node_modules
+      - vscode_extension/node_modules
+      - example_scripts/node_modules
     command: |
       # Check the example wiki.
       cargo-offline run -- check --path example.mull
@@ -180,19 +180,19 @@ tasks:
 
       # Check the VS Code extension.
       (
-        cd vscode-extension
+        cd vscode_extension
         npm ci
         npm run lint
       )
 
       # Check the example wiki's scripts, and check that the scripts built from them are up to date.
       (
-        cd example-scripts
+        cd example_scripts
         npm ci
         npm run lint
-        cp -R ../example_files/scripts "$HOME/committed-example-scripts"
+        cp -R ../example_files/scripts "$HOME/committed_example_scripts"
         npm run build
-        if ! diff --recursive "$HOME/committed-example-scripts" ../example_files/scripts; then
+        if ! diff --recursive "$HOME/committed_example_scripts" ../example_files/scripts; then
           echo 'ERROR: The example scripts are out of date. Run `toast build_example_scripts`.' 1>&2
           exit 1
         fi
@@ -202,7 +202,7 @@ tasks:
       # it's released with.
       PKGID="$(cargo-offline pkgid)"
       CRATE_VERSION="${PKGID##*[#@:]}"
-      for MANIFEST in vscode-extension/package.json vscode-extension/package-lock.json; do
+      for MANIFEST in vscode_extension/package.json vscode_extension/package-lock.json; do
         MANIFEST_VERSION="$(node -p "require('./$MANIFEST').version")"
         if [ "$MANIFEST_VERSION" != "$CRATE_VERSION" ]; then
           echo "ERROR: $MANIFEST has version $MANIFEST_VERSION, but Mull is $CRATE_VERSION." 1>&2
@@ -234,14 +234,14 @@ tasks:
     dependencies:
       - install_tools
     input_paths:
-      - example-scripts
+      - example_scripts
     excluded_input_paths:
-      - example-scripts/node_modules
+      - example_scripts/node_modules
     output_paths:
       - example_files/scripts
     command: |
       # Build the scripts into the example wiki's file root.
-      cd example-scripts
+      cd example_scripts
       npm ci
       npm run build
 
@@ -258,25 +258,25 @@ tasks:
     dependencies:
       - fetch_crates
     input_paths:
-      - example-scripts
+      - example_scripts
       - src
-      - vscode-extension
+      - vscode_extension
     excluded_input_paths:
-      - example-scripts/node_modules
-      - vscode-extension/node_modules
+      - example_scripts/node_modules
+      - vscode_extension/node_modules
     output_paths:
-      - example-scripts/package.json
-      - example-scripts/src
-      - example-scripts/tsconfig.json
-      - example-scripts/vite.config.ts
+      - example_scripts/package.json
+      - example_scripts/src
+      - example_scripts/tsconfig.json
+      - example_scripts/vite.config.ts
       - src
-      - vscode-extension/.vscode
-      - vscode-extension/src
-      - vscode-extension/language-configuration.json
-      - vscode-extension/package.json
-      - vscode-extension/syntaxes
-      - vscode-extension/tsconfig.json
-      - vscode-extension/vite.config.ts
+      - vscode_extension/.vscode
+      - vscode_extension/src
+      - vscode_extension/language-configuration.json
+      - vscode_extension/package.json
+      - vscode_extension/syntaxes
+      - vscode_extension/tsconfig.json
+      - vscode_extension/vite.config.ts
     command: |
       # Format the code with Rustfmt. We temporarily convert macro invocations into function calls
       # so Rustfmt's `trailing_comma` feature applies to macro arguments [tag:format_macros].
@@ -287,14 +287,14 @@ tasks:
 
       # Format the VS Code extension.
       (
-        cd vscode-extension
+        cd vscode_extension
         npm ci
         npm run format
       )
 
       # Format the example wiki's scripts.
       (
-        cd example-scripts
+        cd example_scripts
         npm ci
         npm run format
       )
@@ -305,9 +305,9 @@ tasks:
       - fetch_crates
     input_paths:
       - src
-      - vscode-extension
+      - vscode_extension
     excluded_input_paths:
-      - vscode-extension/node_modules
+      - vscode_extension/node_modules
     output_paths:
       - artifacts
     command: |
@@ -346,7 +346,7 @@ tasks:
 
       # Package the VS Code extension.
       (
-        cd vscode-extension
+        cd vscode_extension
         npm ci
         npx @vscode/vsce package \
           --allow-missing-repository \

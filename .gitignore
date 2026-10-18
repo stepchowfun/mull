@@ -1,5 +1,5 @@
 # Keep this in sync with [group:excluded_input_paths].
 /artifacts/
 /target/
-/vscode-extension/node_modules/
-/example-scripts/node_modules/
+/vscode_extension/node_modules/
+/example_scripts/node_modules/
