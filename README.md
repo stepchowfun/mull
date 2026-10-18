@@ -29,13 +29,13 @@ Great on [Pancakes].
 - A squeeze of [Lemons]
 ```
 
-Each page starts with a `# Title`, followed by the contents of the page. To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete kicks in to help you find the page you're looking for.
+Each page starts with a `# Title`, followed by the contents of the page. To link to a page, use square brackets like `[Lemons]`.
 
 ![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
+A wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
 
-Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
+Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
 
 ### Linking to files and directories
 
@@ -43,11 +43,9 @@ You can link to files like photos, spreadsheets, or anything else. Mull checks t
 
 ![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
 
-Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can also link to directories like `[/photos/]`.
+Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can drag-and-drop or paste files directly into the editor. You can also link to directories like `[/photos/]`.
 
-Autocomplete helps you enter the names of files and directories when linking to them. You can also drag-and-drop (while holding the `Shift` key) or paste files directly into the editor.
-
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory implicitly counts as linking to everything inside it. An empty directory needs a link of its own.
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory counts as linking to everything inside it.
 
 ### Opening a portal to another page
 
