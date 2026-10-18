@@ -29,13 +29,13 @@ Great on [Pancakes].
 - A squeeze of [Lemons]
 ```
 
-Each page starts with a `# Title`, followed by the contents of the page. To link to a page, use square brackets like `[Lemons]`. When you type the opening `[`, autocomplete kicks in to help you find the page you're looking for.
+Each page starts with a `# Title`, followed by the contents of the page. To link to a page, use square brackets like `[Lemons]`.
 
 ![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
-Every wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
+A wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
 
-Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages in the file based on the links between them, so you don't have to think about it. Linking to pages is the only way to organize them.
+Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
 
 ### Linking to files and directories
 
