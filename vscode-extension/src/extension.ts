@@ -931,6 +931,21 @@ async function formatRunningScripts(
   return client.protocol2CodeConverter.asTextEdits(edits, token);
 }
 
+// Format a wiki, and give it Unix line endings, which formatting writes, if it has Windows line
+// endings. The editor would otherwise convert the formatted text's line endings to the document's.
+async function formatWithUnixLineEndings(
+  document: vscode.TextDocument,
+  options: vscode.FormattingOptions,
+  token: vscode.CancellationToken,
+  next: ProvideDocumentFormattingEditsSignature,
+): Promise<vscode.TextEdit[] | null | undefined> {
+  const edits = await formatRunningScripts(document, options, token, next);
+  if (edits === null || edits === undefined || document.eol !== vscode.EndOfLine.CRLF) {
+    return edits;
+  }
+  return [...edits, vscode.TextEdit.setEndOfLine(vscode.EndOfLine.LF)];
+}
+
 // This is where an editor's cursor is in a page, as its title and the number of characters before
 // the cursor in the page, counting only those which aren't whitespace, along with the whitespace
 // right before the cursor. Formatting rarely changes anything but whitespace within a page, so these
@@ -1018,7 +1033,7 @@ async function formatKeepingPagePositions(
 ): Promise<vscode.TextEdit[] | null | undefined> {
   // Note the cursors, then format.
   const positions = await pagePositions(document);
-  const edits = await formatRunningScripts(document, options, token, next);
+  const edits = await formatWithUnixLineEndings(document, options, token, next);
   if (edits === null || edits === undefined || edits.length === 0 || positions.length === 0) {
     return edits;
   }
@@ -1210,9 +1225,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     markdown: { supportHtml: true },
     // Let the server attach commands that only VS Code with this extension can run.
     initializationOptions: { [CLIENT_OPTION]: VSCODE_CLIENT },
-    // Run scripts when formatting where they may run, keep cursors in place within their pages
-    // when formatting moves the pages, and hide the diagnostics where the user is typing, except
-    // from code actions they ask for.
+    // Run scripts when formatting where they may run, give wikis Unix line endings, keep cursors in
+    // place within their pages when formatting moves the pages, and hide the diagnostics where the
+    // user is typing, except from code actions they ask for.
     middleware: {
       provideDocumentFormattingEdits: formatKeepingPagePositions,
       handleDiagnostics: typingDiagnostics.handleDiagnostics,
