@@ -39,9 +39,6 @@ const GO_FORWARD_COMMAND = 'mull.goForward';
 // This caps how many visits each wiki's trail remembers, forgetting the oldest first.
 const MAX_HISTORY_LENGTH = 100;
 
-// This caps how many of the latest visits the back link's tooltip lists.
-const MAX_TOOLTIP_VISITS = 10;
-
 // This request plans attaching files which are pasted or dropped into a wiki. Keep this in sync
 // with [ref:attach_files_request_server].
 const ATTACH_FILES_REQUEST = 'mull/attachFiles'; // [tag:attach_files_request_client]
@@ -478,20 +475,14 @@ interface Trail {
   forward: Visit[];
 }
 
-// This keeps a trail of the pages visited in each wiki, and shows the previous page above the
-// current page's title, like a browser's back button.
+// This keeps a trail of the pages visited in each wiki, for going back and forward like a browser.
 //
 // Moving the cursor to another page, by any means, visits that page. Like a browser's history, the
 // trail is never pruned of loops, so going back always returns to the page visited just before,
 // and visiting a page discards the visits that going back left ahead.
-class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
+class PageHistory {
   // Remember each wiki's trail.
   private readonly trails = new Map<string, Trail>();
-
-  // Tell the editor to ask for the code lens again when a trail changes.
-  private readonly changeEmitter = new vscode.EventEmitter<void>();
-
-  public readonly onDidChangeCodeLenses = this.changeEmitter.event;
 
   // Find the pages the dimming last found, which are current enough for following the cursor.
   private readonly pageFocus: PageFocus;
@@ -570,7 +561,6 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
       trail.back.shift();
     }
     trail.forward = [];
-    this.changeEmitter.fire();
   }
 
   // Record where the active editor's cursor is once its wiki's pages are found again. This also
@@ -598,7 +588,6 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
     back.pop();
     forward.push(current);
     PageHistory.revisit(active.editor, active.pages, previous);
-    this.changeEmitter.fire();
   }
 
   // Go forward to the page that going back left ahead in the active wiki.
@@ -614,7 +603,6 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
     }
     back.push(next);
     PageHistory.revisit(active.editor, active.pages, next);
-    this.changeEmitter.fire();
   }
 
   // Move the cursor back to where it was in a visited page. The resulting selection change finds
@@ -637,47 +625,9 @@ class PageHistory implements vscode.CodeLensProvider, vscode.Disposable {
     );
   }
 
-  // Show the previous page above the current page's title, as a link back to it, with the latest
-  // visits in its tooltip.
-  public async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-    // Find the current and previous pages.
-    const pages = await wikiPages(document);
-    const { back } = this.trailOf(document, pages);
-    const currentVisit = back.at(-1);
-    const previous = back.at(-2);
-    const current =
-      currentVisit === undefined
-        ? undefined
-        : pages.find((page) => page.name === currentVisit.title);
-    if (current === undefined || previous === undefined) {
-      return [];
-    }
-
-    // List the latest visits, marking where older ones are left out.
-    const titles = back.slice(-MAX_TOOLTIP_VISITS).map((visit) => visit.title);
-    if (back.length > MAX_TOOLTIP_VISITS) {
-      titles.unshift('…');
-    }
-
-    // Place the link above the current page's title. The command takes no arguments, since the
-    // editor may keep showing a lens's command after the lens is replaced.
-    return [
-      new vscode.CodeLens(document.lineAt(current.range.start.line).range, {
-        title: `← ${previous.title}`,
-        tooltip: titles.join(' › '),
-        command: GO_BACK_COMMAND,
-      }),
-    ];
-  }
-
   // Forget the trail of a wiki that's no longer open.
   public forget(document: vscode.TextDocument): void {
     this.trails.delete(document.uri.toString());
-  }
-
-  // Release the event emitter.
-  public dispose(): void {
-    this.changeEmitter.dispose();
   }
 }
 
@@ -1158,11 +1108,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // Keep a trail of the pages visited in each wiki, shown as a link back to the previous page, and
-  // expose the commands that move along it. The trail follows the pages found above.
+  // Keep a trail of the pages visited in each wiki, and expose the commands that move along it. The
+  // trail follows the pages found above.
   context.subscriptions.push(
-    pageHistory,
-    vscode.languages.registerCodeLensProvider({ language: 'mull' }, pageHistory),
     vscode.commands.registerCommand(GO_BACK_COMMAND, () => {
       pageHistory.goBack();
     }),

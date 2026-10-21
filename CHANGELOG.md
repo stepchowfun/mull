@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.0] - 2026-10-20
+
+### Removed
+
+- The VS Code extension no longer shows a code lens above the current page's title linking back to the previous page. The history of visited pages and the commands to go back (`Command + [` on macOS, `Alt + Left` elsewhere) and forward (`Command + ]`, `Alt + Right`) remain.
+
 ## [0.65.0] - 2026-10-18
 
 ### Changed
