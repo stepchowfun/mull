@@ -66,7 +66,7 @@ The `sort` script keeps a list in order, moving nested lines with the line above
   - Granny Smith
 - Cherries
 - Pears
-::: #bfffc387bde6
+::: #2ed65aadf508
 
 The `chrono` script sorts dates and writes them in a standard form.
 
@@ -74,11 +74,11 @@ The `chrono` script sorts dates and writes them in a standard form.
 - 2026-03-01: Spring cleaning
 - 2026-07-04: Picnic in the park
 - 2027-01-15: Car registration renewal
-::: #f001a941fd9d
+::: #17149ba25d9c
 
 The `calc` script works out arithmetic. On each line with an `=`, it replaces whatever follows the `=` with the result.
 
 ::: calc
 36 - 2 * 0.75 = 34.5
 (3 + 5) * 2 ^ 3 = 64
-::: #1d52ffb0aebc
+::: #d5a18e0631bc
