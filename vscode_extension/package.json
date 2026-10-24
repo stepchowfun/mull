@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.66.0",
+  "version": "0.67.0",
   "description": "A tool for managing a wiki stored in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -131,8 +131,8 @@
         "category": "Mull"
       },
       {
-        "command": "mull.checkWiki",
-        "title": "Check Wiki",
+        "command": "mull.check",
+        "title": "Check",
         "category": "Mull"
       }
     ],
@@ -163,7 +163,7 @@
           "when": "editorLangId == mull"
         },
         {
-          "command": "mull.checkWiki",
+          "command": "mull.check",
           "when": "editorLangId == mull"
         }
       ]

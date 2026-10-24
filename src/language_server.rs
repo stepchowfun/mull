@@ -59,8 +59,8 @@ use tower_lsp_server::{
 };
 
 // This server command rechecks the open wiki named by its argument, as when the filesystem changed
-// without the editor reporting it. Keep this in sync with [group:check_wiki_command].
-const CHECK_WIKI_COMMAND: &str = "mull.checkWiki";
+// without the editor reporting it. Keep this in sync with [group:check_command].
+const CHECK_COMMAND: &str = "mull.check";
 
 // This initialization option names the client integration talking to the server. The VS Code
 // extension names itself, which tells the server it can run the editor commands below. Other
@@ -560,7 +560,7 @@ impl LanguageServer for Backend {
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
         // Reject commands this server doesn't provide.
         let command = params.command.as_str();
-        if command != CHECK_WIKI_COMMAND {
+        if command != CHECK_COMMAND {
             return Err(JsonRpcError::invalid_params(format!(
                 "Unknown command {}.",
                 command.code_str(),

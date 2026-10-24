@@ -12,8 +12,8 @@ import {
 } from 'vscode-languageclient/node';
 
 // This command checks the wiki being edited again, through the language server command of the same
-// name. Keep this in sync with [group:check_wiki_command].
-const CHECK_WIKI_COMMAND = 'mull.checkWiki';
+// name. Keep this in sync with [group:check_command].
+const CHECK_COMMAND = 'mull.check';
 
 // This private command lets the language server reveal a source range in a document.
 // [group:reveal_range_command]
@@ -123,7 +123,7 @@ async function checkActiveWiki(): Promise<void> {
     return;
   }
   await client.sendRequest(ExecuteCommandRequest.type, {
-    command: CHECK_WIKI_COMMAND,
+    command: CHECK_COMMAND,
     arguments: [editor.document.uri.toString()],
   });
 }
@@ -1019,7 +1019,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // Expose the command that checks the wiki being edited again.
-  context.subscriptions.push(vscode.commands.registerCommand(CHECK_WIKI_COMMAND, checkActiveWiki));
+  context.subscriptions.push(vscode.commands.registerCommand(CHECK_COMMAND, checkActiveWiki));
 
   // Paste or drop files into saved wikis as links to them, copying them in if needed.
   context.subscriptions.push(
