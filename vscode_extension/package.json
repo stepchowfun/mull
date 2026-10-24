@@ -132,7 +132,7 @@
       },
       {
         "command": "mull.checkWiki",
-        "title": "Check Wiki",
+        "title": "Check",
         "category": "Mull"
       }
     ],
