@@ -131,7 +131,7 @@
         "category": "Mull"
       },
       {
-        "command": "mull.checkWiki",
+        "command": "mull.check",
         "title": "Check",
         "category": "Mull"
       }
@@ -163,7 +163,7 @@
           "when": "editorLangId == mull"
         },
         {
-          "command": "mull.checkWiki",
+          "command": "mull.check",
           "when": "editorLangId == mull"
         }
       ]
