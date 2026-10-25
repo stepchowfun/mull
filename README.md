@@ -35,11 +35,11 @@ Each page starts with a `# Title`, followed by the contents of the page. To link
 
 A wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
 
-Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
+Mull formats the wiki when you save the file (default behavior), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
 
 ### Dividing a page into sections
 
-A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
+A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
 
 ```md
 # Pancakes
@@ -66,7 +66,7 @@ Let the batter rest for a few minutes.
 Whisk everything together.
 ```
 
-To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the title when linking to a section on the same page, like `[#Tips]`.
+To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the page title when linking to a section on the same page, like `[#Tips]`.
 
 ### Linking to files and directories
 
