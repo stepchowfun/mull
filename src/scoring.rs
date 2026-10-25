@@ -87,9 +87,10 @@ pub fn traversal_order<'a>(
 }
 
 // Collect the distinct titles of a page's text links to whole pages in title order, skipping the
-// links in its portals. A portal or a link to a section of a page doesn't justify the page as a
-// whole. Formatting refreshes the copies portals show, so counting the links in them would let
-// formatting change the order it renders pages in, and formatting again would reorder them.
+// links in the copies its portals show but keeping the link in each portal's opening fence. A link
+// to a section of a page doesn't justify the page as a whole, so it's skipped too. Formatting
+// refreshes the copies, so counting their links would let formatting change the order it renders
+// pages in, and formatting again would reorder them.
 fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
     page.links
         .iter()
@@ -98,6 +99,7 @@ fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
             !page.portals.iter().any(|portal| {
                 portal.source_range.start <= source_range.start
                     && source_range.end <= portal.source_range.end
+                    && source_range != portal.link_source_range
             })
         })
         .filter_map(|link| match link {
@@ -205,8 +207,8 @@ mod tests {
         assert_eq!(titles, vec!["Home", "Left", "Middle", "Target"]);
     }
 
-    // Follow neither a portal's link nor the links in its copy, since showing a page doesn't
-    // justify it, and a page's position shouldn't depend on whether the copy has been refreshed.
+    // Follow a portal's link but not the links in its copy, so a page's position doesn't depend on
+    // whether the copy has been refreshed.
     #[test]
     fn links_in_portals() {
         let (_, titles) = traversal_order(concat!(
@@ -215,7 +217,7 @@ mod tests {
             "# Alpha\n",
         ));
 
-        assert_eq!(titles, vec!["Home"]);
+        assert_eq!(titles, vec!["Home", "Zulu", "Alpha"]);
     }
 
     // Leave pages which can't be reached from the home page without a position.

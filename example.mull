@@ -37,7 +37,7 @@ When Mull formats the wiki, it orders the pages by the links between them, so yo
 
 # Portals
 
-A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. Here's a portal to the recipe for [Pancakes]:
+A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. Here's a portal to the recipe for pancakes:
 
 ::: [Pancakes]
 - 1 cup of flour

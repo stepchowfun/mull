@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n[Other]\n\n::: [ Other ]\nstale\n:::\n\n",
+            "# Home\n\n::: [ Other ]\nstale\n:::\n\n",
             "::: [Missing]\nkept\n:::\n\n",
             "::: [Home]\nkept\n:::\n\n",
             "# Other\n\nSee [ Last ].\n\n::: [Last]\n:::\n\n",
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n[Other]\n\n",
+                "# Home\n\n",
                 ":::: [Other]\nSee [Last].\n\n::: [Last]\nThe end.\n:::\n::::\n\n",
                 "::: [Missing]\nkept\n:::\n\n",
                 "::: [Home]\nkept\n:::\n\n",
@@ -1045,7 +1045,7 @@ mod tests {
     #[test]
     fn indented_portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n[Other]\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
+            "# Home\n\n- Item\n  ::: [Other]\nstale\n:::\n\n",
             "# Other\n\nSee:\n\n\t::: [Last]\n\t:::\n\n",
             "# Last\n\nThe end.",
         ));
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n[Other]\n\n- Item\n",
+                "# Home\n\n- Item\n",
                 "  :::: [Other]\n  See:\n\n  \t::: [Last]\n  \tThe end.\n  \t:::\n",
                 "  ::::\n\n",
                 "# Other\n\nSee:\n\n\t::: [Last]\n\tThe end.\n\t:::\n\n",

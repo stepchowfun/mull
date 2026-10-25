@@ -5620,8 +5620,7 @@ mod tests {
     // disagree without one unchanged, reporting them instead.
     #[test]
     fn formatting_propagates_changes() {
-        let source =
-            "# Home\n\n[Pancakes]\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix.\n";
+        let source = "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix.\n";
         let snapshot = snapshot(&untitled_uri(), source);
         let baseline = Baseline::from([(
             Target {
@@ -5633,7 +5632,7 @@ mod tests {
 
         assert_eq!(
             formatting_for_document(&snapshot, &baseline).unwrap()[0].new_text,
-            "# Home\n\n[Pancakes]\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix well.\n",
+            "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix well.\n",
         );
         assert!(formatting_for_document(&snapshot, &Baseline::new()).is_none());
         assert_eq!(
@@ -5642,8 +5641,8 @@ mod tests {
                 .map(|diagnostic| diagnostic.range)
                 .collect::<Vec<_>>(),
             vec![
-                Range::new(Position::new(8, 2), Position::new(8, 10)),
-                Range::new(Position::new(4, 4), Position::new(4, 14)),
+                Range::new(Position::new(6, 2), Position::new(6, 10)),
+                Range::new(Position::new(2, 4), Position::new(2, 14)),
             ],
         );
     }

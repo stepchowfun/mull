@@ -813,7 +813,7 @@ mod tests {
     fn portal_cycles() {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
-            "# Home\n[Bottom] [Last] [Left] [Middle] [Right] [Self] [Top]\n",
+            "# Home\n[Middle] [Self] [Top]\n",
             "# Top\n::: [Left]\n:::\n::: [Right]\n:::\n",
             "# Left\n::: [Bottom]\n:::\n",
             "# Right\n::: [Bottom]\n:::\n",
@@ -859,19 +859,6 @@ mod tests {
             "Page `Notes` can't be reached by following links starting from `Home`.",
         ));
         assert!(errors.iter().all(|error| error.fix().is_none()));
-    }
-
-    // Don't let a portal to a page make the page reachable, since showing it doesn't justify it.
-    #[test]
-    fn portals_dont_reach_pages() {
-        let wiki = parse("# Home\n::: [Shown]\n:::\n# Shown").unwrap();
-
-        let errors = validate_untitled(&wiki).unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(contains_error(
-            &errors,
-            "Page `Shown` can't be reached by following links starting from `Home`.",
-        ));
     }
 
     // Reject a portal which closes a cycle through a section, where showing a section means
