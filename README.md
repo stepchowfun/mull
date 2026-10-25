@@ -39,7 +39,7 @@ Mull formats the wiki when you save the file (default), or when you explicitly r
 
 ### Dividing a page into sections
 
-A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
+A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
 
 ```md
 # Pancakes

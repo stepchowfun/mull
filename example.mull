@@ -86,7 +86,7 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 
 # Sections
 
-A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
+A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
 
 To link to a section, write `#` and the section title after the page title, like [Sections#Dinner]. You can leave out the page title when linking to a section on the same page, like [#Weekends]. A portal can show a section too:
 
