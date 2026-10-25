@@ -54,7 +54,7 @@ A page can be divided into *sections*. A section's title is marked with `##`, wi
 Whisk everything together.
 ```
 
-To end a section before the next title, put its title in a fence. The text after the closing fence belongs to the section around it again:
+To end a section before the next title, put it in a *fence*:
 
 ```md
 ## Steps
@@ -66,7 +66,7 @@ Let the batter rest for a few minutes.
 Whisk everything together.
 ```
 
-Each section must be one level deeper than the title it's under, and each section in a page must have a different title. To link to a section, follow the page's title with `#` and the section's title, like `[Pancakes#Steps]`. Within the same page, you can leave out the title, like `[#Tips]`. A link to a section doesn't count toward making its page reachable from `Home`, since the page as a whole should be linked somewhere.
+To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the title when linking to a section on the same page, like `[#Tips]`.
 
 ### Linking to files and directories
 
@@ -148,7 +148,7 @@ Using a script in a block counts as linking to it, so it doesn't need to be link
 
 ### Escaping and code
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. Inside a link, the first `#` separates a page's title from a section's title, so write `\#` for a `#` that's part of a page's title. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
 ````md
 # Home
