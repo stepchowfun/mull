@@ -14,6 +14,10 @@
 // comes before the days within it. Indented lines are nested under the line above them and move
 // with it. Empty lines are dropped.
 //
+// A date can also be relative to today, like `today`, `tomorrow`, `yesterday`, `wednesday`, or
+// `next friday`, and it's written back as the date it refers to. A weekday alone is its next
+// occurrence, counting today, `next` adds a week to that, and `last` takes a week away.
+//
 // The year can be left out, like `Jan 15`, for something which happens every year. It's written
 // back without a year, like `--01-15`, and sorted as its next occurrence, counting today, so it
 // moves to the end of the list once it passes and the script runs again.
@@ -37,6 +41,10 @@ const MONTHS = [
   'november',
   'december',
 ];
+
+// These are the weekday names in the order of `Date.getDay`, which can also be abbreviated to their
+// first three or more letters.
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 // These are the parts of a date as written, each of which may be missing.
 interface Fields {
@@ -72,6 +80,45 @@ function parseMonth(word: string): number | undefined {
   return index === -1 ? undefined : index + 1;
 }
 
+// Find a weekday from its name or an abbreviation of it, like `Thu` or `Thurs`.
+function parseWeekday(word: string): number | undefined {
+  if (word.length < 3) {
+    return undefined;
+  }
+  const index = WEEKDAYS.findIndex((weekday) => weekday.startsWith(word));
+  return index === -1 ? undefined : index;
+}
+
+// Read a date relative to today, like `today`, `tomorrow`, `yesterday`, `wednesday`, or
+// `next friday`. A weekday alone is its next occurrence, counting today, `this` changes nothing,
+// `next` adds a week, and `last` takes a week away.
+function readRelativeFields(text: string): Fields | undefined {
+  const words = text.toLowerCase().trim().split(/\s+/);
+  const today = new Date();
+
+  // Find how many days away the date is.
+  let offset: number | undefined = undefined;
+  if (words.length === 1 && words[0] === 'today') {
+    offset = 0;
+  } else if (words.length === 1 && words[0] === 'tomorrow') {
+    offset = 1;
+  } else if (words.length === 1 && words[0] === 'yesterday') {
+    offset = -1;
+  } else {
+    const weekday = parseWeekday(words[words.length - 1]);
+    const modifier = words.length === 2 ? words[0] : words.length === 1 ? 'this' : undefined;
+    const weeks = modifier === undefined ? undefined : { this: 0, next: 1, last: -1 }[modifier];
+    if (weekday === undefined || weeks === undefined) {
+      return undefined;
+    }
+    offset = ((weekday - today.getDay() + 7) % 7) + 7 * weeks;
+  }
+
+  // Find the date that many days from today, letting `Date` carry into the month and year.
+  const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
+  return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() };
+}
+
 // Read a date with optionally a month and a day, in any of these forms:
 //
 // - `2026`
@@ -80,11 +127,12 @@ function parseMonth(word: string): number | undefined {
 // - `1/1/2026` or `1/1`, read as month, day, and year
 // - `January 2026`, `Jan 1, 2026`, `1 Jan 2026`, or `Thursday, January 1st, 2026`
 // - `January`, `Jan 1`, or `1 Jan`
+// - `today`, `tomorrow`, `yesterday`, `wednesday`, `next friday`, or `last monday`
 //
 // A date without a year is in the current year if it hasn't passed yet, and otherwise in the next
 // year in which it occurs, which becomes its `inferredYear`.
 function parseDate(text: string): ParsedDate | undefined {
-  const fields = readFields(text);
+  const fields = readRelativeFields(text) ?? readFields(text);
   if (fields === undefined) {
     return undefined;
   }
@@ -226,7 +274,7 @@ for (const line of readFileSync(0, 'utf8').split('\n')) {
   if (date === undefined) {
     fail(
       `\`${dateText}\` isn't a date this script understands. ` +
-        'Try a form like `2026-01-01`, `January 1, 2026`, `Jan 1`, or `Jan 2026`.',
+        'Try a form like `2026-01-01`, `January 1, 2026`, `Jan 1`, `Jan 2026`, or `next friday`.',
     );
   }
   items.push({ date, text: match[2], lines: [] });
