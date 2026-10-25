@@ -25,6 +25,14 @@ pub enum Fix {
 
     // Escape the backslash at this byte offset in the wiki's source.
     EscapeBackslash(usize),
+
+    // Replace the `#`s marking a section's title, from a byte offset to another, with those of a
+    // level.
+    SetSectionLevel {
+        start: usize,
+        end: usize,
+        level: usize,
+    },
 }
 
 // This is the primary error type we'll be using everywhere. Its parts are exposed through accessors

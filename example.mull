@@ -3,6 +3,7 @@
 This wiki is a short tour of Mull, written in Mull. Each page shows one feature:
 
 - [Pages and links]
+- [Sections]
 - [Files]
 - [Portals]
 - [Scripts]
@@ -82,3 +83,33 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 36 - 2 * 0.75 = 34.5
 (3 + 5) * 2 ^ 3 = 64
 ::: #d5a18e0631bc
+
+# Sections
+
+A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
+
+To link to a section, write `#` and the section title after the page title, like [Sections#Dinner]. You can leave out the title when linking to a section on the same page, like [#Weekends]. A portal can show a section too:
+
+:::: [#Breakfast]
+Usually [Pancakes].
+
+::: ### Weekends
+With extra lemon.
+:::
+
+Coffee every day.
+::::
+
+## Breakfast
+
+Usually [Pancakes].
+
+::: ### Weekends
+With extra lemon.
+:::
+
+Coffee every day.
+
+## Dinner
+
+Whatever's in the fridge.

@@ -7,7 +7,9 @@ use crate::{
     line_index::LineIndex,
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
-    wiki::{Link, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Wiki, write_block},
+    wiki::{
+        Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki, write_block,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -61,12 +63,12 @@ impl Failure {
     }
 }
 
-// Run the script blocks outside other blocks in a wiki without errors, in source order, after
-// formatting the wiki, then format the result. A block whose hash shows that its body is already
-// its script's output for its arguments is skipped unless every block is to be rerun, and each
-// block which runs is given a new hash. Return the wiki's new contents, along with a failure for
-// each script block which couldn't be run, which is left as it was. The failures' errors locate the
-// blocks in the formatted wiki.
+// Run the script blocks outside portals and other script blocks in a wiki without errors, in source
+// order, after formatting the wiki, then format the result. A block whose hash shows that its body
+// is already its script's output for its arguments is skipped unless every block is to be rerun,
+// and each block which runs is given a new hash. Return the wiki's new contents, along with a
+// failure for each script block which couldn't be run, which is left as it was. The failures'
+// errors locate the blocks in the formatted wiki.
 pub fn run(
     wiki_path: &Path,
     source_contents: &str,
@@ -82,7 +84,7 @@ pub fn run(
     run_formatted(wiki_path, &formatted_contents, rerun)
 }
 
-// Run the script blocks outside other blocks in a formatted wiki, as `run` does.
+// Run the script blocks outside portals and other script blocks in a formatted wiki, as `run` does.
 pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
@@ -257,10 +259,12 @@ fn run_block(
         }
     })?;
 
-    // Require the output to be readable as a page's content.
+    // Require the output to be readable as a page's content within the block, where title lines
+    // don't start sections.
     let output_source = format!(
-        "{TITLE_PREFIX}{}\n\n{output}",
+        "{TITLE_PREFIX}{}\n\n{}",
         page.title.text(Context::Verbatim),
+        write_block("", &block.name, &output),
     );
     let (output_wiki, errors) =
         parser::parse(None, &output_source, &LineIndex::new(&output_source));
@@ -288,9 +292,10 @@ fn run_block(
 }
 
 // Find the values of a script block's arguments. Text outside links and code is split on
-// whitespace, with its escapes resolved. A link to a page stands for the page's title, and a link
-// to a file or directory stands for its full path. Code stands for its text as written. Pieces
-// which aren't separated by whitespace form one argument.
+// whitespace, with its escapes resolved. A link to a page stands for the page's title, a link to a
+// section stands for its page's title and the section's title joined by `#`, and a link to a file
+// or directory stands for its full path. Code stands for its text as written. Pieces which aren't
+// separated by whitespace form one argument.
 fn arguments(
     source_contents: &str,
     page: &Page,
@@ -317,7 +322,14 @@ fn arguments(
         // Take a link's value.
         if let Some(link) = links.get(&position) {
             let value = match link {
-                Link::Text { title, .. } => title.text(Context::Verbatim),
+                Link::Text { target, .. } => match &target.section {
+                    Some(section) => format!(
+                        "{}{SECTION_SEPARATOR}{}",
+                        target.title.text(Context::Verbatim),
+                        section.text(Context::Verbatim),
+                    ),
+                    None => target.title.text(Context::Verbatim),
+                },
                 Link::Filesystem { target, .. } => {
                     file_root.join(target.path()).to_string_lossy().into_owned()
                 }
@@ -534,15 +546,17 @@ fn script_display(file_root: &FileRoot, script: &Path) -> String {
     code_file_path(script.strip_prefix(file_root.path()).unwrap_or(script)).to_string()
 }
 
-// Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes.
+// Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes. A hash
+// has no whitespace in it, unlike a fenced section's title.
 #[cfg(all(test, unix))]
 pub fn hide_hashes(contents: &str) -> String {
     contents
         .split_inclusive('\n')
         .map(|line| match line.split_once(" #") {
-            Some((fence, _hash))
+            Some((fence, hash))
                 if fence.trim_start().starts_with(':')
-                    && fence.trim_start().trim_start_matches(':').is_empty() =>
+                    && fence.trim_start().trim_start_matches(':').is_empty()
+                    && !hash.trim_end().contains(char::is_whitespace) =>
             {
                 format!(
                     "{fence} #hash{}",
@@ -654,6 +668,8 @@ mod tests {
 
     // Replace each block's body with its script's output, indented like the block and within
     // fences longer than any in it and followed by a hash, filling in a block written on one line.
+    // A block within a fenced section is run too, and title lines in the output don't start
+    // sections.
     #[cfg(unix)]
     #[test]
     fn runs_replace_bodies() {
@@ -663,11 +679,13 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - b\n  - a\n  :::\n\n",
                 "::: fence :::\n\n",
+                ":::: ## Section\n::: title :::\n::::\n\n",
                 "# Other\n",
             ),
             &[
                 ("sort.sh", "#!/bin/sh\nsort\n"),
                 ("fence.sh", "#!/bin/sh\necho '::: [Other] :::'\n"),
+                ("title.sh", "#!/bin/sh\necho '#### Deep'\n"),
             ],
         );
 
@@ -679,6 +697,7 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
                 ":::: fence\n::: [Other] :::\n:::: #hash\n\n",
+                ":::: ## Section\n::: title\n#### Deep\n::: #hash\n::::\n\n",
                 "# Other\n",
             ),
         );
@@ -767,13 +786,15 @@ mod tests {
         assert_eq!(wiki.run_and_save(false), 5);
     }
 
-    // Take links to pages as their titles and links to files as their paths, code as written, and
-    // the rest split on whitespace with its escapes resolved, joining pieces which aren't
-    // separated.
+    // Take links to pages as their titles, links to sections as their pages' titles and their own
+    // titles joined by `#`, and links to files as their paths, code as written, and the rest split
+    // on whitespace with its escapes resolved, joining pieces which aren't separated.
     #[test]
     fn script_arguments() {
-        let source =
-            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] :::";
+        let source = concat!(
+            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] ",
+            "[#Notes] :::\n## Notes",
+        );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
         let page = wiki.page("Home");
@@ -788,6 +809,7 @@ mod tests {
                 "two",
                 "words",
                 "--page=Home",
+                "Home#Notes",
             ],
         );
     }

@@ -6,7 +6,7 @@
       "include": "#titles"
     },
     {
-      "include": "#secondary-headings"
+      "include": "#section-title-lines"
     },
     {
       "include": "#fences"
@@ -525,23 +525,105 @@
         }
       }
     },
-    "secondary-headings": {
+    "section-title-lines": {
       "name": "markup.italic.heading.mull",
-      "begin": "^(#{2,6})(?= |$)",
-      "beginCaptures": {
+      "match": "^(#{2,}) (.*)$",
+      "captures": {
         "1": {
           "name": "punctuation.definition.heading.mull"
+        },
+        "2": {
+          "name": "entity.name.section.mull"
         }
-      },
-      "end": "$",
-      "patterns": [
-        {
-          "include": "#text"
+      }
+    },
+    "indented-section-title-lines": {
+      "name": "markup.italic.heading.mull",
+      "match": "^[ \\t]*(#{2,}) (.*)$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.heading.mull"
+        },
+        "2": {
+          "name": "entity.name.section.mull"
         }
-      ]
+      }
     },
     "fences": {
       "patterns": [
+        {
+          "name": "meta.block.mull",
+          "match": "^[ \\t]*(:{3,})[ \\t]*(#{2,}[ \\t]+.*?)[ \\t]*(:{3,})[ \\t]*$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.block.begin.mull"
+            },
+            "2": {
+              "name": "markup.italic.heading.mull",
+              "patterns": [
+                {
+                  "match": "(#{2,})[ \\t]+(.*)",
+                  "captures": {
+                    "1": {
+                      "name": "punctuation.definition.heading.mull"
+                    },
+                    "2": {
+                      "name": "entity.name.section.mull"
+                    }
+                  }
+                }
+              ]
+            },
+            "3": {
+              "name": "punctuation.definition.block.end.mull"
+            }
+          }
+        },
+        {
+          "name": "meta.block.mull",
+          "begin": "^[ \\t]*(:{3,})[ \\t]*(#{2,}[ \\t]+.*?)[ \\t]*$",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.block.begin.mull"
+            },
+            "2": {
+              "name": "markup.italic.heading.mull",
+              "patterns": [
+                {
+                  "match": "(#{2,})[ \\t]+(.*)",
+                  "captures": {
+                    "1": {
+                      "name": "punctuation.definition.heading.mull"
+                    },
+                    "2": {
+                      "name": "entity.name.section.mull"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "end": "^[ \\t]*(\\1)(?:[ \\t]*(#[^ \\t]*))?[ \\t]*$|^(?=# )",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.block.end.mull"
+            },
+            "2": {
+              "name": "punctuation.definition.block.end.mull"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#indented-section-title-lines"
+            },
+            {
+              "include": "#fences"
+            },
+            {
+              "include": "#text"
+            }
+          ]
+        },
         {
           "name": "meta.block.mull",
           "match": "^[ \\t]*(:{3,})[ \\t]*([^ \\t#:].*?)[ \\t]*(:{3,})[ \\t]*$",
@@ -589,7 +671,7 @@
           },
           "patterns": [
             {
-              "include": "#secondary-headings"
+              "include": "#indented-section-title-lines"
             },
             {
               "include": "#fences"
@@ -621,7 +703,7 @@
       "patterns": [
         {
           "name": "constant.character.escape.mull",
-          "match": "\\\\[\\\\\\[\\]]"
+          "match": "\\\\[\\\\\\[\\]#]"
         },
         {
           "name": "invalid.illegal.escape.mull",
@@ -669,6 +751,10 @@
       "patterns": [
         {
           "include": "#link-escapes"
+        },
+        {
+          "name": "punctuation.separator.section.mull",
+          "match": "#"
         },
         {
           "name": "invalid.illegal.unexpected-opening-delimiter.mull",

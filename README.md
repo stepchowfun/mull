@@ -37,6 +37,37 @@ A wiki starts with a `Home` page. Mull requires that every other page is *reacha
 
 Mull formats the wiki when you save the file (default), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
 
+### Dividing a page into sections
+
+A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
+
+```md
+# Pancakes
+
+## Ingredients
+
+- 1 cup of flour
+- 1 cup of milk
+
+## Steps
+
+Whisk everything together.
+```
+
+To end a section before the next title, put it in a *fence*:
+
+```md
+## Steps
+
+::: ### Tips
+Let the batter rest for a few minutes.
+:::
+
+Whisk everything together.
+```
+
+To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the title when linking to a section on the same page, like `[#Tips]`.
+
 ### Linking to files and directories
 
 You can link to files like photos, spreadsheets, or anything else. Mull checks that the linked files actually exist, and you can preview them without leaving the editor.
@@ -71,6 +102,8 @@ This is my favorite breakfast:
 ```
 
 Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
+
+A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`.
 
 ### Extending Mull with scripts
 
@@ -135,7 +168,7 @@ print("Thanks for playing!")
 ```
 ````
 
-No escaping is necessary inside page titles or code.
+No escaping is necessary inside titles or code.
 
 ## Keyboard shortcuts
 
@@ -143,17 +176,17 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
-| Jump to a page from a link | `F12` or `Command + click` | `F12` or `Control + click` |
-| Jump to links to a page (i.e., backlinks) | `Shift + F12` | `Shift + F12` |
+| Jump to a page or section from a link | `F12` or `Command + click` | `F12` or `Control + click` |
+| Jump to links to a page or section (i.e., backlinks) | `Shift + F12` | `Shift + F12` |
 | Jump back to the previously visited page | `Command + [` | `Alt + Left` |
 | Jump forward to the next visited page | `Command + ]` | `Alt + Right` |
 | Jump to the start of the current page | `Command + Up` | `Control + Home` |
 | Jump to the end of the current page | `Command + Down` | `Control + End` |
 | Jump to the next error | `F8` | `F8` |
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
-| Find a page | `Command + Shift + O` | `Control + Shift + O` |
+| Find a page or section | `Command + Shift + O` | `Control + Shift + O` |
 | Code actions (e.g., create a missing page) | `Command + .` | `Control + .` |
-| Rename a page | `F2` | `F2` |
+| Rename a page or section | `F2` | `F2` |
 | Format the wiki | `Shift + Option + F` | `Shift + Alt + F` |
 
 Most of these keyboard shortcuts are standard in Visual Studio Code and Cursor, so they may be familiar to you already. You can remap them.

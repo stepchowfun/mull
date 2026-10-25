@@ -6,7 +6,7 @@ use crate::{
     line_index::LineIndex,
     scripts::script_path,
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
-    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Portal, Wiki},
+    wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
 };
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
@@ -74,7 +74,8 @@ pub fn validate(
 }
 
 // Validate text-link targets, the absence of cycles of portals, and reachability from the home
-// page, given the wiki's pages in title order.
+// page, given the wiki's pages in title order. Missing sections are reported, but there's no fix
+// for them, since a section's place in its page can't be chosen for it.
 fn validate_text_links(
     wiki: &Wiki,
     pages: &[&Page],
@@ -100,38 +101,53 @@ fn validate_text_links(
 
     // Validate text-link targets.
     for page in pages {
-        // Report each missing target at the corresponding text-link occurrence, which declaring
-        // the target would fix. Filesystem links are checked separately, and malformed links have
-        // no target.
+        // Report each missing page at the corresponding text-link occurrence, which declaring the
+        // page would fix, and each missing section. Filesystem links are checked separately, and
+        // malformed links have no target.
         for link in &page.links {
-            match link {
-                Link::Text {
-                    title,
-                    source_range,
-                } if !wiki.pages.contains_key(title) => {
-                    errors.push(Error::new(
-                        &format!("Page {} not found.", title.code_str()),
-                        source_path,
-                        Some((source_contents, line_index, *source_range)),
-                        None,
-                        Some(Fix::CreatePage(title.clone())),
-                    ));
-                }
-                Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => {}
-            }
+            let Link::Text {
+                target,
+                source_range,
+                ..
+            } = link
+            else {
+                continue;
+            };
+            let (message, fix) = match (wiki.pages.get(&target.title), &target.section) {
+                (None, _) => (
+                    format!("Page {} not found.", target.title.code_str()),
+                    Some(Fix::CreatePage(target.title.clone())),
+                ),
+                (Some(target_page), Some(section)) if target_page.section(section).is_none() => (
+                    format!(
+                        "Page {} has no section {}.",
+                        target.title.code_str(),
+                        section.code_str(),
+                    ),
+                    None,
+                ),
+                (Some(_), _) => continue,
+            };
+            errors.push(Error::new(
+                &message,
+                source_path,
+                Some((source_contents, line_index, *source_range)),
+                None,
+                fix,
+            ));
         }
     }
 
     // Reject portals which close cycles of portals, since there's no finite copy of the content of
     // the pages in a cycle.
     errors.extend(
-        cycle_closing_portals(wiki, pages)
+        wiki.cycle_closing_portals(pages.iter().map(|page| page.target(None)))
             .into_iter()
             .map(|portal| {
                 Error::new(
                     &format!(
                         "A portal to {} here creates a cycle of portals.",
-                        portal.title.code_str(),
+                        portal.target.code_str(),
                     ),
                     source_path,
                     Some((source_contents, line_index, portal.link_source_range)),
@@ -164,48 +180,6 @@ fn validate_text_links(
     }
 
     errors
-}
-
-// Find portals which close cycles of portals with a depth-first search over portals, starting from
-// each page in title order. A portal to a page whose search is still in progress closes a cycle.
-// Every cycle has such a portal, and without them there would be no cycles.
-fn cycle_closing_portals<'a>(wiki: &'a Wiki, pages: &[&'a Page]) -> Vec<&'a Portal> {
-    let mut cycle_closing_portals = Vec::new();
-    let mut in_progress = HashSet::new();
-    let mut done = HashSet::new();
-    for &start in pages {
-        // Search from a page which hasn't been searched, keeping each page on the current path
-        // along with the index of its next portal to follow.
-        if done.contains(&start.title) {
-            continue;
-        }
-        in_progress.insert(&start.title);
-        let mut path = vec![(start, 0)];
-        while let Some((page, next_portal)) = path.last_mut() {
-            let page = *page;
-
-            // Finish a page once all of its portals have been followed.
-            let Some(portal) = page.portals.get(*next_portal) else {
-                in_progress.remove(&page.title);
-                done.insert(&page.title);
-                path.pop();
-                continue;
-            };
-
-            // Follow the next portal, unless it closes a cycle or leads to a page which has been
-            // searched or doesn't exist.
-            *next_portal += 1;
-            if in_progress.contains(&portal.title) {
-                cycle_closing_portals.push(portal);
-            } else if !done.contains(&portal.title)
-                && let Some(shown_page) = wiki.pages.get(&portal.title)
-            {
-                in_progress.insert(&shown_page.title);
-                path.push((shown_page, 0));
-            }
-        }
-    }
-    cycle_closing_portals
 }
 
 // Require local filesystem context for every file and directory link in an untitled wiki, given
@@ -858,6 +832,52 @@ mod tests {
                 &format!("A portal to `{title}` here creates a cycle of portals."),
             ));
         }
+    }
+
+    // Reject a link to a section which its page doesn't have, without a fix, and don't let a link
+    // to a section of a page make the page reachable.
+    #[test]
+    fn section_links() {
+        let wiki = parse(concat!(
+            "# Home\n[Notes#Missing] [Notes#Present] [#Local] [#Absent]\n## Local\n",
+            "# Notes\n## Present",
+        ))
+        .unwrap();
+
+        let errors = validate_untitled(&wiki).unwrap_err();
+        assert_eq!(errors.len(), 3);
+        assert!(contains_error(
+            &errors,
+            "Page `Notes` has no section `Missing`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Page `Home` has no section `Absent`.",
+        ));
+        assert!(contains_error(
+            &errors,
+            "Page `Notes` can't be reached by following links starting from `Home`.",
+        ));
+        assert!(errors.iter().all(|error| error.fix().is_none()));
+    }
+
+    // Reject a portal which closes a cycle through a section, where showing a section means
+    // showing the portals within it, but not a portal to a section of the page it's in outside that
+    // section.
+    #[test]
+    fn section_portal_cycles() {
+        let wiki = parse(concat!(
+            "# Home\n[Other]\n::: [#Notes] :::\n## Notes\n::: [Other#Left] :::\n",
+            "# Other\n## Left\n::: [Home#Notes] :::\n## Right\n::: [#Left] :::\n",
+        ))
+        .unwrap();
+
+        let errors = validate_untitled(&wiki).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(contains_error(
+            &errors,
+            "A portal to `Home#Notes` here creates a cycle of portals.",
+        ));
     }
 
     // Validate syntax and graph structure without requiring an untitled wiki to be saved.

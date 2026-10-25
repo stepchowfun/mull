@@ -97,8 +97,9 @@ function isMainWikiEditor(editor: vscode.TextEditor | undefined): editor is vsco
   );
 }
 
-// List a wiki's pages in source order, using the language server's document symbols, which are
-// named after the pages' titles and whose ranges span entire pages.
+// List a wiki's pages in source order, using the language server's top-level document symbols,
+// which are named after the pages' titles and whose ranges span entire pages. Their children are
+// the pages' sections.
 async function wikiPages(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
   const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[] | undefined>(
     'vscode.executeDocumentSymbolProvider',

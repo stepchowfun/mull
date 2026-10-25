@@ -86,10 +86,11 @@ pub fn traversal_order<'a>(
     order
 }
 
-// Collect the distinct titles of a page's text links in title order, skipping the links in the
-// copies its portals show but keeping the link in each portal's opening fence. Formatting refreshes
-// the copies, so counting their links would let formatting change the order it renders pages in,
-// and formatting again would reorder them.
+// Collect the distinct titles of a page's text links to whole pages in title order, skipping the
+// links in the copies its portals show but keeping the link in each portal's opening fence. A link
+// to a section of a page doesn't justify the page as a whole, so it's skipped too. Formatting
+// refreshes the copies, so counting their links would let formatting change the order it renders
+// pages in, and formatting again would reorder them.
 fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
     page.links
         .iter()
@@ -102,8 +103,8 @@ fn text_link_titles(page: &Page) -> BTreeSet<&PageTitle> {
             })
         })
         .filter_map(|link| match link {
-            Link::Text { title, .. } => Some(title),
-            Link::Filesystem { .. } | Link::Malformed { .. } => None,
+            Link::Text { target, .. } if target.section.is_none() => Some(&target.title),
+            Link::Text { .. } | Link::Filesystem { .. } | Link::Malformed { .. } => None,
         })
         .collect()
 }

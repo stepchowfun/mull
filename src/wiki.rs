@@ -7,25 +7,30 @@ use crate::{
 use colored::ColoredString;
 use serde::{Deserialize, Serialize, Serializer};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     path::{Component, Path, PathBuf},
 };
 
 // These strings define the wiki format's extension, the suffix that names a wiki's file
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
-// relative to the file root, which names a directory if it ends with `/`. The home page's title
-// identifies the root of every wiki's text-link graph.
+// relative to the file root, which names a directory if it ends with `/`. Otherwise, it names a
+// page, followed by a section of it after `#`. A section's title line marks its title with a run of
+// at least two of the title marker's `#`s, one for each level, followed by a space. The home page's
+// title identifies the root of every wiki's text-link graph.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
+pub const TITLE_MARKER: char = '#';
+pub const MIN_SECTION_LEVEL: usize = 2;
+pub const SECTION_SEPARATOR: char = '#';
 pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names the page a portal shows or the script which computes its body, and a closing fence
-// consists of colons alone or followed by a hash.
+// fence names what a portal shows, the title of a fenced section, or the script which computes
+// its body, and a closing fence consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
@@ -65,103 +70,282 @@ impl Wiki {
         (traversal_index.is_none(), traversal_index, title)
     }
 
-    // Render a page's content in its canonical form, with each portal refreshed.
-    pub fn page_content(&self, page: &Page) -> String {
-        self.rendered_content(page, &mut Vec::new())
+    // Find the page a target names, along with the section of it, if it names one.
+    pub fn resolve(&self, target: &Target) -> Option<(&Page, Option<&Section>)> {
+        let page = self.pages.get(&target.title)?;
+        match &target.section {
+            Some(section_title) => Some((page, Some(page.section(section_title)?))),
+            None => Some((page, None)),
+        }
     }
 
-    // Render a page's content from the source in its canonical form, with each portal refreshed.
-    // The pages being rendered, which show this one in portals, are listed so a cycle of portals is
-    // left as written.
-    fn rendered_content(&self, page: &Page, enclosing_pages: &mut Vec<PageTitle>) -> String {
-        enclosing_pages.push(page.title.clone());
-        let content = self.canonical_content(page, |portal| {
-            self.pages
-                .get(&portal.title)
-                .filter(|shown_page| !enclosing_pages.contains(&shown_page.title))
-                .map(|shown_page| self.rendered_content(shown_page, enclosing_pages))
+    // Find portals which close cycles of portals with a depth-first search over portals, starting
+    // from each of the given targets in order. Showing a page or a section means showing the
+    // portals within it. A portal to a target whose search is still in progress closes a cycle.
+    // Every cycle reachable from the targets has such a portal, and without them there would be no
+    // cycles.
+    pub fn cycle_closing_portals(&self, targets: impl IntoIterator<Item = Target>) -> Vec<&Portal> {
+        let mut cycle_closing_portals = Vec::new();
+        let mut in_progress = HashSet::new();
+        let mut done = HashSet::new();
+        for start in targets {
+            // Search from a target which exists and hasn't been searched, keeping each target on
+            // the current path along with the portals within it which remain to be followed, last
+            // first.
+            let Some((start_page, start_section)) = self.resolve(&start) else {
+                continue;
+            };
+            if done.contains(&start) {
+                continue;
+            }
+            let portals = start_page
+                .portals_within(start_section)
+                .rev()
+                .collect::<Vec<_>>();
+            in_progress.insert(start.clone());
+            let mut path = vec![(start, portals)];
+            while let Some((target, portals)) = path.last_mut() {
+                // Finish a target once all of its portals have been followed.
+                let Some(portal) = portals.pop() else {
+                    in_progress.remove(target);
+                    done.insert(target.clone());
+                    path.pop();
+                    continue;
+                };
+
+                // Follow the next portal, unless it closes a cycle or leads to a target which has
+                // been searched or doesn't exist.
+                if in_progress.contains(&portal.target) {
+                    cycle_closing_portals.push(portal);
+                } else if !done.contains(&portal.target)
+                    && let Some((shown_page, shown_section)) = self.resolve(&portal.target)
+                {
+                    in_progress.insert(portal.target.clone());
+                    path.push((
+                        portal.target.clone(),
+                        shown_page.portals_within(shown_section).rev().collect(),
+                    ));
+                }
+            }
+        }
+        cycle_closing_portals
+    }
+
+    // Render a page's content in its canonical form, with each portal refreshed.
+    pub fn page_content(&self, page: &Page) -> String {
+        self.rendered_content(page, None, &mut Vec::new())
+    }
+
+    // Render the content of a page or a section of it from the source in its canonical form, with
+    // each portal refreshed. The targets being rendered, which show this one in portals, are listed
+    // so a cycle of portals is left as written.
+    fn rendered_content(
+        &self,
+        page: &Page,
+        section: Option<&Section>,
+        enclosing_targets: &mut Vec<Target>,
+    ) -> String {
+        enclosing_targets.push(page.target(section));
+        let content = self.canonical_content(page, section, &HashMap::new(), &mut |portal| {
+            if enclosing_targets.contains(&portal.target) {
+                return None;
+            }
+            let (shown_page, shown_section) = self.resolve(&portal.target)?;
+            Some(self.rendered_content(shown_page, shown_section, enclosing_targets))
         });
-        enclosing_pages.pop();
+        enclosing_targets.pop();
         content
     }
 
-    // Render a page's own content in its canonical form, leaving out the copies its portals show,
-    // which belong to the pages shown in portals. Instances of a page with the same own content
-    // differ only in ways formatting erases.
-    pub fn own_content(&self, page: &Page) -> String {
-        self.canonical_content(page, |_portal| Some(String::new()))
+    // Render the own content of a page or a section of it in its canonical form, leaving out the
+    // copies its portals show, which belong to what they show. Instances of a page or a section
+    // with the same own content differ only in ways formatting erases.
+    pub fn own_content(&self, page: &Page, section: Option<&Section>) -> String {
+        self.own_content_with(page, section, &HashMap::new())
     }
 
-    // Render a page's content from the source, with each link and each script block's fences
-    // written in their canonical form, Unix line endings, and no whitespace at the end of a line.
-    // Each portal shows the body given for it, with each line indented like its opening fence, or
-    // is copied as written if it has none.
+    // Render the own content of a page or a section of it as if each section given content had
+    // that content instead.
+    pub fn own_content_with(
+        &self,
+        page: &Page,
+        section: Option<&Section>,
+        section_contents: &HashMap<SectionTitle, String>,
+    ) -> String {
+        self.canonical_content(page, section, section_contents, &mut |_portal| {
+            Some(String::new())
+        })
+    }
+
+    // Render the content of a page or a section of it from the source, from after its title line
+    // but without the blank lines around it, with the indentation of a section's title line removed
+    // from each line. Each section given content is written with that content instead. Links, title
+    // lines, and fences are written in their canonical forms, with Unix line endings, no whitespace
+    // at the end of a line, and a blank line around each section without fences. Each portal shows
+    // the body given for it, with each line indented like its opening fence, or is copied as
+    // written if it has none.
     fn canonical_content(
         &self,
         page: &Page,
-        mut body: impl FnMut(&Portal) -> Option<String>,
+        section: Option<&Section>,
+        section_contents: &HashMap<SectionTitle, String>,
+        body: &mut dyn FnMut(&Portal) -> Option<String>,
     ) -> String {
-        // Find the content after the title line, skipping the blank lines around it but keeping the
-        // indentation of its first line, so an indented line which starts with a title marker
-        // doesn't become a title.
-        let content_end = page.source_range.end;
-        let after_title = &self.source[page.title_source_range.end..content_end];
-        let Some(first_character) = after_title.find(|character: char| !character.is_whitespace())
-        else {
+        // Use the content given for the section, if any.
+        if let Some(content) = section.and_then(|section| section_contents.get(&section.title)) {
+            return content.clone();
+        }
+
+        // Find the content after the title line, skipping the blank lines around it but
+        // keeping the indentation of its first line, so an indented line which starts with a title
+        // marker doesn't become a title.
+        let (start, end, indentation) = match section {
+            Some(section) => (
+                section.body_source_range.start,
+                section.body_source_range.end,
+                self.indentation(section.source_range.start),
+            ),
+            None => (page.title_source_range.end, page.source_range.end, ""),
+        };
+        let text = &self.source[start..end];
+        let Some(first_character) = text.find(|character: char| !character.is_whitespace()) else {
             return String::new();
         };
-        let content_start = page.title_source_range.end
-            + after_title[..first_character]
+        let start = start
+            + text[..first_character]
                 .rfind('\n')
                 .map_or(0, |index| index + '\n'.len_utf8());
+        let end = start + self.source[start..end].trim_end().len();
 
-        // Interleave the portals and script blocks in source order. Neither is ever within the
-        // other, since blocks within a script block's body are part of its text.
-        let mut blocks = page
+        // Write the content, then remove the title line's indentation and the whitespace at the end
+        // of each line, using Unix line endings. Links can't contain line breaks, and each ends
+        // with a delimiter, so this never changes one.
+        let mut content = String::new();
+        self.write_region(page, start, end, section_contents, body, &mut content);
+        content
+            .lines()
+            .map(|line| {
+                line.strip_prefix(indentation)
+                    .unwrap_or_else(|| line.trim_start_matches([' ', '\t']))
+                    .trim_end()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // Write a region of a page's content, interleaving its portals, script blocks, and sections in
+    // source order. What's within a section is written with it. A section can contain blocks, but
+    // no block is ever within a portal or a script block, since blocks within those are part of
+    // their text.
+    fn write_region(
+        &self,
+        page: &Page,
+        start: usize,
+        end: usize,
+        section_contents: &HashMap<SectionTitle, String>,
+        body: &mut dyn FnMut(&Portal) -> Option<String>,
+        content: &mut String,
+    ) {
+        // List what starts in the region in source order.
+        let is_within = |source_range: &SourceRange| (start..end).contains(&source_range.start);
+        let mut parts = page
             .portals
             .iter()
-            .map(|portal| (portal.source_range, Block::Portal(portal)))
+            .filter(|portal| is_within(&portal.source_range))
+            .map(|portal| (portal.source_range, Part::Portal(portal)))
             .chain(
                 page.script_blocks
                     .iter()
-                    .map(|script_block| (script_block.source_range, Block::Script(script_block))),
+                    .filter(|script_block| is_within(&script_block.source_range))
+                    .map(|script_block| (script_block.source_range, Part::Script(script_block))),
+            )
+            .chain(
+                page.sections
+                    .iter()
+                    .filter(|section| is_within(&section.source_range))
+                    .map(|section| (section.source_range, Part::Section(section))),
             )
             .collect::<Vec<_>>();
-        blocks.sort_by_key(|(source_range, _block)| source_range.start);
+        parts.sort_by_key(|(source_range, _part)| source_range.start);
 
-        // Copy the content, writing each portal with its body, and each script block with its
-        // fences in their canonical form, each block within a fence longer than any in it.
-        let mut content = String::new();
-        let mut copied_through = content_start;
-        for (source_range, block) in blocks {
-            match block {
-                Block::Portal(portal) => {
-                    let Some(body) = body(portal) else {
+        // Copy the region, writing each portal with its body, each script block and fenced section
+        // with its fences in their canonical form, each block within a fence longer than any in it,
+        // and each other section after a blank line. Nothing but whitespace can follow a section
+        // without fences before the next part, since the section would contain it, so that
+        // whitespace becomes a blank line.
+        let mut copied_through = start;
+        let mut follows_section = false;
+        for (source_range, part) in parts {
+            // Skip what's within a section which has been written.
+            if source_range.start < copied_through {
+                continue;
+            }
+
+            // Leave a portal without a body to be copied as written.
+            let portal_body = match part {
+                Part::Portal(portal) => {
+                    let Some(portal_body) = body(portal) else {
                         continue;
                     };
-                    self.copy_links(page, copied_through, source_range.start, &mut content);
+                    Some(portal_body)
+                }
+                Part::Script(_) | Part::Section(_) => None,
+            };
+
+            // Copy what precedes the part.
+            if follows_section
+                && self.source[copied_through..source_range.start]
+                    .trim()
+                    .is_empty()
+            {
+                separate(content);
+                content.push_str(self.indentation(source_range.start));
+            } else {
+                self.copy_links(page, copied_through, source_range.start, content);
+            }
+
+            // Write the part.
+            follows_section = false;
+            match part {
+                Part::Portal(portal) => {
                     content.push_str(&write_block(
                         self.indentation(source_range.start),
-                        &format!("[{}]", portal.title.text(Context::Link)),
-                        &body,
+                        &format!("[{}]", portal.target.link_text(portal.is_local)),
+                        &portal_body.expect("A portal's body should have been found."),
                     ));
                 }
-                Block::Script(script_block) => {
-                    self.copy_links(page, copied_through, source_range.start, &mut content);
-                    self.copy_script_block(page, script_block, &mut content);
+                Part::Script(script_block) => {
+                    self.copy_script_block(page, script_block, content);
+                }
+                Part::Section(section) => {
+                    let indentation = self.indentation(source_range.start);
+                    let section_content =
+                        self.canonical_content(page, Some(section), section_contents, body);
+                    if section.is_fenced {
+                        content.push_str(&write_block(
+                            indentation,
+                            &section.title_line(),
+                            &section_content,
+                        ));
+                    } else {
+                        separate(content);
+                        content.push_str(indentation);
+                        content.push_str(&section.title_line());
+                        if !section_content.is_empty() {
+                            content.push_str("\n\n");
+                            content.push_str(&indent(&section_content, indentation));
+                        }
+                        follows_section = true;
+                    }
                 }
             }
             copied_through = source_range.end;
         }
-        self.copy_links(page, copied_through, content_end, &mut content);
 
-        // Use Unix line endings and remove whitespace at the end of each line. Links can't contain
-        // line breaks, and each ends with a delimiter, so this never changes one.
-        content
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
+        // Copy the rest of the region.
+        if !follows_section && copied_through < end {
+            self.copy_links(page, copied_through, end, content);
+        }
     }
 
     // Copy a script block with its fences in their canonical form, keeping its body as written
@@ -199,7 +383,7 @@ impl Wiki {
     }
 
     // Copy part of a page's content, replacing each link within it with its canonical form: a text
-    // link's title escaped, and a filesystem link's normalized target. A malformed link, which a
+    // link's target escaped, and a filesystem link's normalized target. A malformed link, which a
     // wiki without syntax errors doesn't have, is copied as written.
     fn copy_links(&self, page: &Page, start: usize, end: usize, content: &mut String) {
         let mut links = page
@@ -213,7 +397,9 @@ impl Wiki {
             let source_range = link.source_range();
             content.push_str(&self.source[copied_through..source_range.start]);
             let target = match link {
-                Link::Text { title, .. } => title.text(Context::Link),
+                Link::Text {
+                    target, is_local, ..
+                } => target.link_text(*is_local),
                 Link::Filesystem { target, .. } => target.text(Context::Link),
                 Link::Malformed { .. } => {
                     content.push_str(&self.source[source_range.start..source_range.end]);
@@ -272,8 +458,9 @@ impl fmt::Display for Wiki {
         let mut pages = self.pages.iter().collect::<Vec<_>>();
         pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
 
-        // Write each page as a heading and its content, omitting the content separator when there's
-        // no content. Add one line break between pages because each page already ends with one.
+        // Write each page as a title line and its content, omitting the content separator when
+        // there's no content. Add one line break between pages because each page already ends with
+        // one.
         for (index, (_title, page)) in pages.into_iter().enumerate() {
             if index > 0 {
                 writeln!(formatter)?;
@@ -292,26 +479,83 @@ impl fmt::Display for Wiki {
     }
 }
 
-// This struct represents a page in a wiki.
+// This struct represents a page in a wiki. Its portals, script blocks, and sections exclude those
+// within portals and script blocks, but not those within sections.
 #[derive(Clone, Debug)]
 pub struct Page {
     pub title: PageTitle,
     pub links: Vec<Link>,
-    pub portals: Vec<Portal>, // In source order, excluding those in copies other portals show
-    pub script_blocks: Vec<ScriptBlock>, // In source order, excluding those within other blocks
-    pub traversal_index: Option<usize>, // Position in a depth-first traversal from the root
-    pub source_range: SourceRange, // The complete page without leading or trailing whitespace
+    pub portals: Vec<Portal>,            // In source order
+    pub script_blocks: Vec<ScriptBlock>, // In source order
+    pub sections: Vec<Section>,          // In source order, each with a distinct title
+    pub traversal_index: Option<usize>,  // Position in a depth-first traversal from the root
+    pub source_range: SourceRange,       // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
 }
 
-// This struct represents a portal in a page's content, which shows another page. It holds a copy
-// of the content of the page it shows, which formatting keeps in sync with the page, along with any
-// portals within it.
+impl Page {
+    // Find the section of the page with a title.
+    pub fn section(&self, title: &SectionTitle) -> Option<&Section> {
+        self.sections.iter().find(|section| section.title == *title)
+    }
+
+    // Name the page, or a section of it, as a target.
+    pub fn target(&self, section: Option<&Section>) -> Target {
+        Target {
+            title: self.title.clone(),
+            section: section.map(|section| section.title.clone()),
+        }
+    }
+
+    // List the portals within the page, or within a section of it.
+    pub fn portals_within(
+        &self,
+        section: Option<&Section>,
+    ) -> impl DoubleEndedIterator<Item = &Portal> {
+        let source_range = section.map_or(self.source_range, |section| section.source_range);
+        self.portals.iter().filter(move |portal| {
+            (source_range.start..source_range.end).contains(&portal.source_range.start)
+        })
+    }
+}
+
+// This struct represents a section of a page's content, which a title line starts. Its title is
+// marked with a run of `#`s, one for each level: a page's title is at the first level, and each
+// section is one level deeper than the section or page it's in. A section ends at the next title
+// line of the same or a higher level, or at the end of whatever contains it, unless it's fenced, in
+// which case its title follows the colons of an opening fence and it ends at the closing fence.
+#[derive(Clone, Debug)]
+pub struct Section {
+    pub title: SectionTitle,
+    pub level: usize,
+    pub is_fenced: bool,
+    pub source_range: SourceRange, // From the first `#` or colons without trailing whitespace
+    pub marked_title_source_range: SourceRange, // From the first `#` through the title's range
+    pub title_source_range: SourceRange, // From the title through the line's end or closing colons
+    pub body_source_range: SourceRange, // After the title line, up to the closing fence if any
+}
+
+impl Section {
+    // Write the section's title line in its canonical form, without any fence.
+    pub fn title_line(&self) -> String {
+        format!(
+            "{} {}",
+            TITLE_MARKER.to_string().repeat(self.level),
+            self.title.text(Context::Verbatim),
+        )
+    }
+}
+
+// This struct represents a portal in a page's content, which shows a page or a section of one. It
+// holds a copy of the content it shows, which formatting keeps in sync, along with any portals
+// within it. A portal to a section can name it without its page, which is then the page whose
+// content the portal is in.
 #[derive(Clone, Debug)]
 pub struct Portal {
-    pub title: PageTitle,
+    pub target: Target,
+    pub is_local: bool,
     pub source_range: SourceRange, // From the opening fence's colons through the closing fence
-    pub link_source_range: SourceRange, // The link in the opening fence which names the page
+    pub link_source_range: SourceRange, // The link in the opening fence which names the target
 }
 
 // This struct represents a block whose body is computed by a script, which reads the body and
@@ -340,10 +584,12 @@ impl ScriptBlock {
     }
 }
 
-// This is a block which formatting rewrites, either a portal or a script block.
-enum Block<'a> {
+// This is a part of a page's content which formatting rewrites: a portal, a script block, or a
+// section.
+enum Part<'a> {
     Portal(&'a Portal),
     Script(&'a ScriptBlock),
+    Section(&'a Section),
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -408,13 +654,84 @@ impl CodeStr for PageTitle {
     }
 }
 
+// This is a section's title, which links name it by within its page: non-empty, one line, and
+// trimmed.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SectionTitle(String);
+
+impl SectionTitle {
+    // Make a title from text such as a title line's or a rename's new name, trimming it and
+    // describing any rule it breaks.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if text.contains(['\r', '\n']) {
+            return Err("A section title can't contain a line break.".to_owned());
+        }
+        let title = text.trim();
+        if title.is_empty() {
+            Err("A section title can't be empty.".to_owned())
+        } else {
+            Ok(Self(title.to_owned()))
+        }
+    }
+
+    // Write the title as it appears in a context, such as escaped in a link or as written in a
+    // title line.
+    pub fn text(&self, context: Context) -> String {
+        escape(&self.0, context)
+    }
+}
+
+// Format a section's title for a message, as written in its title line.
+impl CodeStr for SectionTitle {
+    fn code_str(&self) -> ColoredString {
+        self.0.code_str()
+    }
+}
+
+// This is what a text link or a portal points at: a page, or a section of one.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Target {
+    pub title: PageTitle,
+    pub section: Option<SectionTitle>,
+}
+
+impl Target {
+    // Write the target as it appears between a link's delimiters, without its page if the link
+    // names a section without one.
+    pub fn link_text(&self, is_local: bool) -> String {
+        let mut text = if is_local {
+            String::new()
+        } else {
+            self.title.text(Context::Link)
+        };
+        if let Some(section) = &self.section {
+            text.push(SECTION_SEPARATOR);
+            text.push_str(&section.text(Context::Link));
+        }
+        text
+    }
+}
+
+// Format a target for a message, with the titles of its page and any section as written in their
+// title lines.
+impl CodeStr for Target {
+    fn code_str(&self) -> ColoredString {
+        match &self.section {
+            Some(section) => format!("{}{SECTION_SEPARATOR}{}", self.title.0, section.0).code_str(),
+            None => self.title.code_str(),
+        }
+    }
+}
+
 // These are the source occurrences through which a page can reference a target. A malformed link
 // has a syntax error, such as a missing closing delimiter, so it references nothing, but an editor
-// can still complete it. A link which isn't closed extends to the end of its line.
+// can still complete it. A link which isn't closed extends to the end of its line. A text link to a
+// section can name it without its page, which is then the page whose content the link is in.
 #[derive(Clone, Debug)]
 pub enum Link {
     Text {
-        title: PageTitle,
+        target: Target,
+        is_local: bool,
         source_range: SourceRange,
     },
     Filesystem {
@@ -602,6 +919,23 @@ pub fn write_block(indentation: &str, argument: &str, body: &str) -> String {
     block
 }
 
+// End what's been written with a blank line, unless nothing has been written, so what's written
+// next is separated from it.
+fn separate(content: &mut String) {
+    content.truncate(content.trim_end().len());
+    if !content.is_empty() {
+        content.push_str("\n\n");
+    }
+}
+
+// Indent each line of some text.
+fn indent(text: &str, indentation: &str) -> String {
+    text.lines()
+        .map(|line| format!("{indentation}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // Make the fence for a block with a body: longer than any run of colons starting a line of the
 // body, so none of them closes the block, and no shorter than the shortest fence.
 fn fence_around(body: &str) -> String {
@@ -753,6 +1087,52 @@ mod tests {
         );
     }
 
+    // Write each section's title line in its canonical form, with one blank line between it and
+    // what's around it, unless it's fenced. Write a fenced section's fences in their canonical
+    // form, with a fence longer than any in it, and without blank lines around its content.
+    #[test]
+    fn sections_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n- List:\n  ::: ## Indented\n  ### Inner\n  Text.\n  :::\n",
+            "##   Monthly  \nNotes.\n\n\n:::::  ###   Fixed\n\nRent.\n#### Utilities\n",
+            "Power.\n\n:::::\nBack.\n### Variable\n\n\nFood.\n## Yearly\n## Empty\n\n",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n- List:\n  ::: ## Indented\n  ### Inner\n\n  Text.\n  :::\n\n",
+                "## Monthly\n\nNotes.\n\n\n::: ### Fixed\nRent.\n\n#### Utilities\n\nPower.\n:::\n",
+                "Back.\n\n### Variable\n\nFood.\n\n## Yearly\n\n## Empty\n",
+            ),
+        );
+    }
+
+    // Refresh each portal to a section with a copy of the section's content after its title line,
+    // without the indentation of its title line, along with the portals in it. A portal to a
+    // section which doesn't exist is left as written.
+    #[test]
+    fn section_portals_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n::: [Other#Monthly] :::\n\n::: [Other#Indented]\nstale\n:::\n\n",
+            "::: [Other#Missing]\nkept\n:::\n\n::: [#Notes] :::\n\n## Notes\n\nNone.\n\n",
+            "# Other\n\n- List:\n  ::: ## Indented\n  Item.\n    More.\n  :::\n\n",
+            "## Monthly\n\nRent.\n\n### Fixed\n\n::: [Home#Notes] :::\n",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n:::: [Other#Monthly]\nRent.\n\n### Fixed\n\n::: [Home#Notes]\nNone.\n",
+                ":::\n::::\n\n::: [Other#Indented]\nItem.\n  More.\n:::\n\n",
+                "::: [Other#Missing]\nkept\n:::\n\n::: [#Notes]\nNone.\n:::\n\n",
+                "## Notes\n\nNone.\n\n",
+                "# Other\n\n- List:\n  ::: ## Indented\n  Item.\n    More.\n  :::\n\n",
+                "## Monthly\n\nRent.\n\n### Fixed\n\n::: [Home#Notes]\nNone.\n:::\n",
+            ),
+        );
+    }
+
     // Render a page's own content in its canonical form, leaving out the copies its portals show.
     #[test]
     fn own_content() {
@@ -763,7 +1143,7 @@ mod tests {
         ));
 
         assert_eq!(
-            wiki.own_content(&wiki.pages[&PageTitle::parse("Home").unwrap()]),
+            wiki.own_content(&wiki.pages[&PageTitle::parse("Home").unwrap()], None),
             "See [Other].\n\n  ::: [Other]\n  :::",
         );
     }
