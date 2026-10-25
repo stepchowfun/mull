@@ -29,8 +29,8 @@ pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names the page a portal shows or the script which computes its body, and a closing fence
-// consists of colons alone or followed by a hash.
+// fence names what a portal shows, the heading of a fenced section, or the script which computes
+// its body, and a closing fence consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'

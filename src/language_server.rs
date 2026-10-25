@@ -704,9 +704,9 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        // Render the latest synchronized editor snapshot, propagating changes to pages shown in
-        // portals and leaving contents which can't be rendered unchanged. Run the wiki's scripts as
-        // well if the editor asks, reporting any which couldn't be run.
+        // Render the latest synchronized editor snapshot, propagating changes to pages and sections
+        // shown in portals and leaving contents which can't be rendered unchanged. Run the wiki's
+        // scripts as well if the editor asks, reporting any which couldn't be run.
         let baseline = baseline(&self.documents, &params.text_document.uri);
         if !matches!(
             params.options.properties.get(RUN_SCRIPTS_OPTION),
