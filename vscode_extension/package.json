@@ -2,7 +2,7 @@
   "name": "mull",
   "displayName": "Mull",
   "version": "0.68.0",
-  "description": "A tool for managing a wiki stored in a plain text file.",
+  "description": "Structured note-taking in a plain text file.",
   "categories": [
     "Programming Languages"
   ],
