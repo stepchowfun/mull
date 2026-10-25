@@ -54,7 +54,7 @@ A page can be divided into *sections*. A section starts with a `## Title`, with 
 Whisk everything together.
 ```
 
-To end a section before the next title, put it in a *fence*:
+To end a section early, put it in a *fence*:
 
 ```md
 ## Steps
