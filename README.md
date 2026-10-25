@@ -156,7 +156,7 @@ To keep what you wrote and have the script write its output separately, divide t
 
 A script can tell whether the block is divided via the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
 
-A link in a block's arguments, or in a divided block's input, stands for what it points to. A link to a page or a section stands for what a reader sees there, with each script block showing just its output, and a link to a file or a directory stands for its full path. Each block runs after the blocks whose outputs it reads, so blocks can build on each other's results, like cells in a notebook. With a script that works out arithmetic:
+A link in a block's arguments, or in a divided block's input, stands for what it points to. A link to a page or a section stands for what a reader sees there, with each script block showing just its output, and a link to a file or a directory stands for its full path. Each block runs after the blocks whose outputs it reads, so blocks can build on each other's results, like cells in a notebook. With the calculator script:
 
 ```md
 :::: ## Rent
