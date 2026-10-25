@@ -75,7 +75,7 @@ The `chrono` script sorts dates and writes them in a standard form.
 - 2026-03-01: Spring cleaning
 - 2026-07-04: Picnic in the park
 - 2027-01-15: Car registration renewal
-::: #17149ba25d9c
+::: #df07de3fc6a7
 
 The `calc` script works out arithmetic. On each line with an `=`, it replaces whatever follows the `=` with the result.
 
