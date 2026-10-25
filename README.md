@@ -66,7 +66,7 @@ Let the batter rest for a few minutes.
 Whisk everything together.
 ```
 
-To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the title when linking to a section on the same page, like `[#Tips]`.
+To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the page title when linking to a section on the same page, like `[#Tips]`.
 
 ### Linking to files and directories
 
