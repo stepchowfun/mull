@@ -70,7 +70,7 @@ This is my favorite breakfast:
 :::
 ```
 
-You can edit the page or any of its portals, and formatting will propagate your edits to the rest.
+Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
 
 ### Extending Mull with scripts
 
