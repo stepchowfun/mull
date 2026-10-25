@@ -25,6 +25,16 @@ pub enum Fix {
 
     // Escape the backslash at this byte offset in the wiki's source.
     EscapeBackslash(usize),
+
+    // Escape the `#` at each of these byte offsets in the wiki's source.
+    EscapeHashes(Vec<usize>),
+
+    // Replace the `#`s of a heading, from a byte offset to another, with those of a level.
+    SetHeadingLevel {
+        start: usize,
+        end: usize,
+        level: usize,
+    },
 }
 
 // This is the primary error type we'll be using everywhere. Its parts are exposed through accessors

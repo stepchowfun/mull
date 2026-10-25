@@ -289,7 +289,8 @@ pub fn parse_at_level(
             );
         }
 
-        // Require the heading to be one level deeper than the section or page it's in.
+        // Require the heading to be one level deeper than the section or page it's in, which
+        // rewriting its `#`s would fix.
         let expected_level = open_sections
             .last()
             .map_or(title_level, |open_section| open_section.level)
@@ -302,7 +303,11 @@ pub fn parse_at_level(
                     HEADING_MARKER.to_string().repeat(expected_level).code_str(),
                 ),
                 heading.marker_source_range,
-                None,
+                Some(Fix::SetHeadingLevel {
+                    start: heading.marker_source_range.start,
+                    end: heading.marker_source_range.end,
+                    level: expected_level,
+                }),
             ));
         }
 
@@ -799,7 +804,9 @@ pub fn parse_at_level(
                         start: link.start,
                         end: position + ']'.len_utf8(),
                     };
-                    let target = source_contents[link.start + '['.len_utf8()..position].trim();
+                    let untrimmed_target = &source_contents[link.start + '['.len_utf8()..position];
+                    let target = untrimmed_target.trim();
+                    let target_start = position - untrimmed_target.trim_start().len();
                     let malformed_link = Link::Malformed {
                         source_range: link_source_range,
                         is_closed: true,
@@ -810,6 +817,7 @@ pub fn parse_at_level(
                         } else {
                             match parse_link(
                                 target,
+                                target_start,
                                 local_title(
                                     &open_blocks,
                                     opening_fence_links_before.is_some(),
@@ -1151,39 +1159,50 @@ fn local_title(
     }
 }
 
-// Convert the contents of a closed delimiter pair, trimmed and with valid escapes, into a typed
-// link occurrence. A link which names a section without its page refers to the given page, and
-// there's no link if there's none.
+// Convert the contents of a closed delimiter pair, trimmed and with valid escapes and starting at
+// an offset, into a typed link occurrence. A link which names a section without its page refers to
+// the given page, and there's no link if there's none.
 fn parse_link(
     target: &str,
+    target_start: usize,
     local_title: Option<PageTitle>,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
     source_range: SourceRange,
 ) -> Result<Option<Link>, Error> {
-    // Report a problem with the link at the link.
-    let link_error = |message: &str| {
+    // Report a problem with the link at the link, along with any fix for it.
+    let link_error_with_fix = |message: &str, fix| {
         Error::new(
             message,
             source_path,
             Some((source_contents, line_index, source_range)),
             None,
-            None,
+            fix,
         )
+    };
+    let link_error = |message: &str| link_error_with_fix(message, None);
+    let escape_hashes = |indices: &[usize]| {
+        Some(Fix::EscapeHashes(
+            indices.iter().map(|index| target_start + index).collect(),
+        ))
     };
     let unescape =
         |text: &str| unescape(text, Context::Link).expect("The escapes should be valid.");
 
-    // Parse a filesystem link's target, which starts with `/` and can't name a section.
+    // Parse a filesystem link's target, which starts with `/` and can't name a section, so
+    // escaping each `#` in it would fix it.
     let separators = unescaped_indices(target, SECTION_SEPARATOR, Context::Link);
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
         if !separators.is_empty() {
-            return Err(link_error(&format!(
-                "A filesystem link can't name a section, so write {} for {} in it.",
-                "\\#".code_str(),
-                "#".code_str(),
-            )));
+            return Err(link_error_with_fix(
+                &format!(
+                    "A filesystem link can't name a section, so write {} for {} in it.",
+                    "\\#".code_str(),
+                    "#".code_str(),
+                ),
+                escape_hashes(&separators),
+            ));
         }
         return Ok(Some(Link::Filesystem {
             target: FilesystemTarget::parse(&unescape(target))
@@ -1196,22 +1215,26 @@ fn parse_link(
     }
 
     // Take any other target as the title of the page it links to, followed by the label of a
-    // section of it after the first `#` which isn't escaped. A link which names a section without
-    // its page refers to the given page.
+    // section of it after the first `#` which isn't escaped, so escaping each `#` after that would
+    // fix a link with more. A link which names a section without its page refers to the given
+    // page.
     let (title, label) = match separators[..] {
         [] => (target, None),
         [index] => (
             &target[..index],
             Some(&target[index + SECTION_SEPARATOR.len_utf8()..]),
         ),
-        [_, _, ..] => {
-            return Err(link_error(&format!(
-                "Only the {} before a section's label can be unescaped, so write {} for {} \
-                 elsewhere in a link.",
-                "#".code_str(),
-                "\\#".code_str(),
-                "#".code_str(),
-            )));
+        [_, ref others @ ..] => {
+            return Err(link_error_with_fix(
+                &format!(
+                    "Only the {} before a section's label can be unescaped, so write {} for {} \
+                     elsewhere in a link.",
+                    "#".code_str(),
+                    "\\#".code_str(),
+                    "#".code_str(),
+                ),
+                escape_hashes(others),
+            ));
         }
     };
     let label = label

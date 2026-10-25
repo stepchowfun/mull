@@ -14,8 +14,8 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
-        SECTION_SEPARATOR, Section, SectionLabel, TITLE_PREFIX, Target, Wiki,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, HEADING_MARKER, Link, MIN_FENCE_LENGTH, Page,
+        PageTitle, SECTION_SEPARATOR, Section, SectionLabel, TITLE_PREFIX, Target, Wiki,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -2564,12 +2564,18 @@ fn code_action_for_document(
     }
 
     // Parse the current snapshot so a stale diagnostic doesn't lead to a fix that's already made,
-    // recovering from syntax errors since validation reports missing pages despite them.
-    let wiki = snapshot.wiki();
+    // recovering from syntax errors since validation reports missing pages despite them. A fix for
+    // a syntax error is offered only while the current snapshot still has the error.
+    let (wiki, syntax_errors) = snapshot.parsed();
     let actions = fixes
         .into_iter()
         .filter_map(|(fix, diagnostics)| {
-            let (title, edit, command) = match fix {
+            if !matches!(fix, Fix::CreatePage(_))
+                && !syntax_errors.iter().any(|error| error.fix() == Some(&fix))
+            {
+                return None;
+            }
+            let (title, edits, command) = match fix {
                 Fix::CreatePage(title) if wiki.pages.contains_key(&title) => return None,
                 Fix::CreatePage(title) => {
                     // Insert the page where the formatter would render it, which doesn't move any
@@ -2643,23 +2649,47 @@ fn code_action_for_document(
                             RevealType::AtTop,
                         )
                     });
-                    (format!("Create page {}", title.code_str()), edit, command)
+                    (
+                        format!("Create page {}", title.code_str()),
+                        vec![edit],
+                        command,
+                    )
                 }
                 Fix::EscapeBackslash(offset) => {
-                    // Skip a fix from a stale diagnostic whose backslash no longer needs escaping.
-                    let (_wiki, syntax_errors) = snapshot.parsed();
-                    if !syntax_errors
-                        .iter()
-                        .any(|error| error.fix() == Some(&Fix::EscapeBackslash(offset)))
-                    {
-                        return None;
-                    }
-
                     // Double the backslash so it stands for itself.
                     let position = snapshot.position(offset);
                     (
                         "Escape the backslash".to_owned(),
-                        TextEdit::new(Range::new(position, position), "\\".to_owned()),
+                        vec![TextEdit::new(
+                            Range::new(position, position),
+                            "\\".to_owned(),
+                        )],
+                        None,
+                    )
+                }
+                Fix::EscapeHashes(offsets) => {
+                    // Put a backslash before each `#` so it stands for itself.
+                    (
+                        format!("Escape {}", "#".code_str()),
+                        offsets
+                            .into_iter()
+                            .map(|offset| {
+                                let position = snapshot.position(offset);
+                                TextEdit::new(Range::new(position, position), "\\".to_owned())
+                            })
+                            .collect(),
+                        None,
+                    )
+                }
+                Fix::SetHeadingLevel { start, end, level } => {
+                    // Write one `#` for each level.
+                    let marker = HEADING_MARKER.to_string().repeat(level);
+                    (
+                        format!("Change the heading to start with {}", marker.code_str()),
+                        vec![TextEdit::new(
+                            snapshot.range(SourceRange { start, end }),
+                            marker,
+                        )],
                         None,
                     )
                 }
@@ -2669,7 +2699,7 @@ fn code_action_for_document(
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(diagnostics),
                 edit: Some(WorkspaceEdit {
-                    changes: Some(HashMap::from([(snapshot.uri.clone(), vec![edit])])),
+                    changes: Some(HashMap::from([(snapshot.uri.clone(), edits)])),
                     ..WorkspaceEdit::default()
                 }),
                 command,
@@ -6253,6 +6283,56 @@ mod tests {
         assert_eq!(
             attach(&snapshot(&untitled_uri(), source), &[("notes.txt", None)]),
             None,
+        );
+    }
+
+    // Fix a heading at the wrong level by rewriting its `#`s, and a link with more than one
+    // unescaped `#` by escaping all but the first, applying each fix's edits from the end. A fix
+    // isn't offered once its error is gone.
+    #[test]
+    fn code_actions_fix_sections() {
+        let source = "# Home\n\n### Deep\n\n[Home#A#B#C] [/a#b]\n\n## Fine\n\n#### Deeper";
+        let uri = untitled_uri();
+        let section_diagnostics = diagnostics(&uri, source);
+        assert_eq!(section_diagnostics.len(), 4);
+
+        let actions =
+            code_action_for_document(&snapshot(&uri, source), &section_diagnostics, true).unwrap();
+        let mut titles = Vec::new();
+        let mut edits = Vec::new();
+        for action in &actions {
+            let CodeActionOrCommand::CodeAction(action) = action else {
+                panic!("A code action shouldn't be a bare command.");
+            };
+            assert_eq!(action.command, None);
+            titles.push(action.title.clone());
+            edits.extend(action.edit.as_ref().unwrap().changes.as_ref().unwrap()[&uri].clone());
+        }
+        assert_eq!(
+            titles,
+            vec![
+                "Escape `#`",
+                "Escape `#`",
+                "Change the heading to start with `##`",
+                "Change the heading to start with `###`",
+            ],
+        );
+        edits.sort_by_key(|edit| byte_offset(source, edit.range.start).unwrap());
+        let mut applied = source.to_owned();
+        for edit in edits.iter().rev() {
+            applied.replace_range(
+                byte_offset(source, edit.range.start).unwrap()
+                    ..byte_offset(source, edit.range.end).unwrap(),
+                &edit.new_text,
+            );
+        }
+        assert_eq!(
+            applied,
+            "# Home\n\n## Deep\n\n[Home#A\\#B\\#C] [/a\\#b]\n\n## Fine\n\n### Deeper",
+        );
+        assert!(
+            code_action_for_document(&snapshot(&uri, &applied), &section_diagnostics, true)
+                .is_none(),
         );
     }
 
