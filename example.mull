@@ -84,7 +84,7 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 (3 + 5) * 2 ^ 3 = 64
 ::: #76a2f4c0baa8
 
-A line of dashes as long as the fence divides a block, so the script reads only what's above it and writes its output below it. In a divided block, `calc` keeps the arithmetic you wrote and writes just the results.
+To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as the fence. The input goes above the divider, and the output ends up below it.
 
 ::: calc
 1850 * 12

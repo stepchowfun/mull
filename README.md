@@ -119,7 +119,7 @@ The contents of my pantry:
 - Rice
 ```
 
-Mull can help with this; you just have to teach it about sorting. Create a file called `<wiki>_files/scripts/sort.sh` with the following contents:
+Mull can help with this; you just have to teach it about sorting. Create a script called `<wiki>_files/scripts/sort.sh` with the following contents:
 
 ```sh
 #!/bin/sh
@@ -144,7 +144,7 @@ The contents of my pantry:
 
 Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
 
-To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as its fence. The script reads only what's above the divider, and its output replaces what's below it:
+To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as the fence. The input goes above the divider, and the output ends up below it:
 
 ```md
 ::: sort
@@ -156,7 +156,7 @@ To keep what you wrote and have the script write its output separately, divide t
 :::
 ```
 
-A script can tell whether its block is divided from the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
+A script can tell whether the block is divided via the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
 
 ### Escaping and code
 
