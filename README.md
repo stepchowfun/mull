@@ -103,7 +103,7 @@ This is my favorite breakfast:
 
 Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
 
-A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`.
+A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`. A portal doesn't count as a link for reachability, so the page it shows still needs to be linked to from somewhere.
 
 ### Extending Mull with scripts
 

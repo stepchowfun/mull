@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - In a link, `#` separates a page's title from a section's label, so a `#` in a title or label must be written as `\#`.
-- A link to a section doesn't count toward making its page reachable from `Home`, since the page as a whole should be linked somewhere.
+- A link to a section doesn't count toward making its page reachable from `Home`, since the page as a whole should be linked somewhere. Neither does a portal, even to a whole page.
 - Formatting puts a blank line between a heading and what's around it, unless the heading is fenced.
 
 ## [0.67.0] - 2026-10-23
