@@ -28,6 +28,7 @@ use std::{
     io::{BufReader, Read},
     iter,
     path::{Path, PathBuf},
+    slice,
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
 };
@@ -2451,56 +2452,7 @@ fn document_symbol_for_document(
             pages
                 .into_iter()
                 .map(|page| {
-                    // Nest each section, in source order, within the last of the sections before it
-                    // which contains it, if any.
-                    let mut symbols = Vec::new();
-                    let mut open_sections = Vec::<(SourceRange, DocumentSymbol)>::new();
-                    let mut close_section =
-                        |open_sections: &mut Vec<(SourceRange, DocumentSymbol)>| {
-                            let (_source_range, symbol) = open_sections
-                                .pop()
-                                .expect("The last open section should exist.");
-                            match open_sections.last_mut() {
-                                Some((_source_range, parent)) => {
-                                    parent.children.get_or_insert_default().push(symbol);
-                                }
-                                None => symbols.push(symbol),
-                            }
-                        };
-                    for section in &page.sections {
-                        while open_sections.last().is_some_and(|(source_range, _symbol)| {
-                            !(source_range.start..source_range.end)
-                                .contains(&section.source_range.start)
-                        }) {
-                            close_section(&mut open_sections);
-                        }
-                        open_sections.push((
-                            section.source_range,
-                            DocumentSymbol {
-                                name: section.label.text(Context::Verbatim),
-                                detail: None,
-                                kind: SymbolKind::STRING,
-                                tags: None,
-                                deprecated: None,
-                                range: snapshot.range(section.source_range),
-                                selection_range: target_start_range(snapshot, page, Some(section)),
-                                children: None,
-                            },
-                        ));
-                    }
-                    while !open_sections.is_empty() {
-                        close_section(&mut open_sections);
-                    }
-                    DocumentSymbol {
-                        name: page.title.text(Context::Verbatim),
-                        detail: None,
-                        kind: SymbolKind::OBJECT,
-                        tags: None,
-                        deprecated: None,
-                        range: snapshot.range(page.source_range),
-                        selection_range: target_start_range(snapshot, page, None),
-                        children: (!symbols.is_empty()).then_some(symbols),
-                    }
+                    target_symbol(snapshot, page, None, &mut page.sections.iter().peekable())
                 })
                 .collect(),
         )
@@ -2536,6 +2488,44 @@ fn document_symbol_for_document(
                 })
                 .collect(),
         )
+    }
+}
+
+// Describe a page or a section as a symbol, along with the symbols of the sections directly within
+// it, which are next among the sections of the page, in source order.
+#[allow(
+    deprecated,
+    reason = "The protocol's DocumentSymbol type retains a required legacy field."
+)]
+fn target_symbol(
+    snapshot: &Snapshot,
+    page: &Page,
+    section: Option<&Section>,
+    sections: &mut iter::Peekable<slice::Iter<Section>>,
+) -> DocumentSymbol {
+    let source_range = section.map_or(page.source_range, |section| section.source_range);
+    let mut children = Vec::new();
+    while let Some(child) = sections
+        .next_if(|child| (source_range.start..source_range.end).contains(&child.source_range.start))
+    {
+        children.push(target_symbol(snapshot, page, Some(child), sections));
+    }
+    DocumentSymbol {
+        name: section.map_or_else(
+            || page.title.text(Context::Verbatim),
+            |section| section.label.text(Context::Verbatim),
+        ),
+        detail: None,
+        kind: if section.is_some() {
+            SymbolKind::STRING
+        } else {
+            SymbolKind::OBJECT
+        },
+        tags: None,
+        deprecated: None,
+        range: snapshot.range(source_range),
+        selection_range: target_start_range(snapshot, page, section),
+        children: (!children.is_empty()).then_some(children),
     }
 }
 

@@ -580,7 +580,9 @@ pub fn parse_at_level(
                             let level =
                                 argument.len() - argument.trim_start_matches(HEADING_MARKER).len();
                             let label = argument[level..].trim_start();
-                            if level < MIN_HEADING_LEVEL || label.len() == argument.len() - level {
+                            if level < MIN_HEADING_LEVEL
+                                || !argument[level..].starts_with(char::is_whitespace)
+                            {
                                 errors.push(syntax_error(
                                     &format!(
                                         "A fenced section's heading is a run of at least two {}s \
