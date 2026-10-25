@@ -86,9 +86,9 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 
 # Sections
 
-A page can be divided into sections. A section's title is marked with `##`, plus another `#` for each level of nesting, and the section ends at the next title of the same level or higher. A title in a fence starts a section which ends at the closing fence instead, so the text after the fence belongs to the section around it again.
+A page can be divided into *sections*. A section's title is marked with `##`, with another `#` for each level of nesting.
 
-Each section in a page has a different title. To link to a section, follow the page's title with `#` and the section's title, like [Sections#Dinner], or leave out the title for a section of the same page, like [#Weekends]. A portal can show a section too:
+To link to a section, write `#` and the section title after the page title, like [Sections#Dinner]. You can leave out the title when linking to a section on the same page, like [#Weekends]. A portal can show a section too:
 
 :::: [#Breakfast]
 Usually [Pancakes].
