@@ -120,10 +120,10 @@ enum FenceLine {
 // run of exactly as many backticks, on the same line for a run of one or two, and its text is taken
 // as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
 // characters in it. Its target is split at the first `#` which isn't escaped into a page and a
-// section of it, and a link which names a section without its page refers to the page whose
-// content it's in. Outside code and title lines, a backslash escapes the next character, as allowed
-// by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a run of
-// at least two `#`s and a space, after the indentation of the innermost block containing it, is a
+// section of it, and a link which names a section without its page refers to the page whose content
+// it's in. Outside code and title lines, a backslash escapes the next character, as allowed by
+// whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a run of at
+// least two `#`s and a space, after the indentation of the innermost block containing it, is a
 // heading, whose text is taken as written. Outside portals and script blocks, a heading starts a
 // section, which must be one level deeper than the section or page it's in and have a label which
 // is new to the page. Outside code, a line which starts with a run of colons, after any
@@ -131,11 +131,12 @@ enum FenceLine {
 // named by the link after it, a fenced section with the heading after it, or names the script which
 // computes the block's body, followed by the script's arguments. A closing fence consists of
 // colons, followed by a hash only for a script block, and closes the innermost open block with a
-// fence of the same length. A block can also be written on one line, closed by a run of colons
-// after its argument, for formatting or its script to fill in. The wiki retains as much of the
-// source as possible so it can still be validated and navigated, but it omits the content of
-// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
-// if there are any syntax errors. The line index locates syntax errors in their source listings.
+// fence of the same length. A portal or a script block can also be written on one line, closed by a
+// run of colons after its argument, for formatting or its script to fill in. The wiki retains as
+// much of the source as possible so it can still be validated and navigated, but it omits the
+// content of duplicate pages, invalid titles, and anything before the first title, so it mustn't be
+// rendered if there are any syntax errors. The line index locates syntax errors in their source
+// listings.
 pub fn parse(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -576,10 +577,15 @@ pub fn parse_at_level(
                             OpenBlockKind::Portal(None)
                         } else if argument.starts_with(HEADING_MARKER) {
                             // Read the heading, and start a section there unless the block is
-                            // within a portal or a script block.
+                            // within a portal or a script block. A fenced section can't be
+                            // written on one line, since there's nothing to fill in.
                             let level =
                                 argument.len() - argument.trim_start_matches(HEADING_MARKER).len();
                             let label = argument[level..].trim_start();
+                            let argument_source_range = SourceRange {
+                                start: position + argument_start,
+                                end: position + argument_end,
+                            };
                             if level < MIN_HEADING_LEVEL
                                 || !argument[level..].starts_with(char::is_whitespace)
                             {
@@ -590,10 +596,13 @@ pub fn parse_at_level(
                                         "#".code_str(),
                                         "::: ## Section".code_str(),
                                     ),
-                                    SourceRange {
-                                        start: position + argument_start,
-                                        end: position + argument_end,
-                                    },
+                                    argument_source_range,
+                                    None,
+                                ));
+                            } else if is_one_line {
+                                errors.push(syntax_error(
+                                    "A fenced section can't be written on one line.",
+                                    argument_source_range,
                                     None,
                                 ));
                             } else if open_blocks
@@ -806,9 +815,7 @@ pub fn parse_at_level(
                         start: link.start,
                         end: position + ']'.len_utf8(),
                     };
-                    let untrimmed_target = &source_contents[link.start + '['.len_utf8()..position];
-                    let target = untrimmed_target.trim();
-                    let target_start = position - untrimmed_target.trim_start().len();
+                    let target = source_contents[link.start + '['.len_utf8()..position].trim();
                     let malformed_link = Link::Malformed {
                         source_range: link_source_range,
                         is_closed: true,
@@ -819,7 +826,6 @@ pub fn parse_at_level(
                         } else {
                             match parse_link(
                                 target,
-                                target_start,
                                 local_title(
                                     &open_blocks,
                                     opening_fence_links_before.is_some(),
@@ -1161,51 +1167,32 @@ fn local_title(
     }
 }
 
-// Convert the contents of a closed delimiter pair, trimmed and with valid escapes and starting at
-// an offset, into a typed link occurrence. A link which names a section without its page refers to
-// the given page, and there's no link if there's none.
+// Convert the contents of a closed delimiter pair, trimmed and with valid escapes, into a typed
+// link occurrence. A link which names a section without its page refers to the given page, and
+// there's no link if there's none.
 fn parse_link(
     target: &str,
-    target_start: usize,
     local_title: Option<PageTitle>,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
     source_range: SourceRange,
 ) -> Result<Option<Link>, Error> {
-    // Report a problem with the link at the link, along with any fix for it.
-    let link_error_with_fix = |message: &str, fix| {
+    // Report a problem with the link at the link.
+    let link_error = |message: &str| {
         Error::new(
             message,
             source_path,
             Some((source_contents, line_index, source_range)),
             None,
-            fix,
+            None,
         )
-    };
-    let link_error = |message: &str| link_error_with_fix(message, None);
-    let escape_hashes = |indices: &[usize]| {
-        Some(Fix::EscapeHashes(
-            indices.iter().map(|index| target_start + index).collect(),
-        ))
     };
     let unescape =
         |text: &str| unescape(text, Context::Link).expect("The escapes should be valid.");
 
-    // Parse a filesystem link's target, which starts with `/` and can't name a section, so
-    // escaping each `#` in it would fix it.
-    let separators = unescaped_indices(target, SECTION_SEPARATOR, Context::Link);
+    // Parse a filesystem link's target, which starts with `/`.
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        if !separators.is_empty() {
-            return Err(link_error_with_fix(
-                &format!(
-                    "A filesystem link can't name a section, so write {} for {} in it.",
-                    "\\#".code_str(),
-                    "#".code_str(),
-                ),
-                escape_hashes(&separators),
-            ));
-        }
         return Ok(Some(Link::Filesystem {
             target: FilesystemTarget::parse(&unescape(target))
                 .map_err(|message| link_error(&message))?,
@@ -1217,27 +1204,14 @@ fn parse_link(
     }
 
     // Take any other target as the title of the page it links to, followed by the label of a
-    // section of it after the first `#` which isn't escaped, so escaping each `#` after that would
-    // fix a link with more. A link which names a section without its page refers to the given
-    // page.
-    let (title, label) = match separators[..] {
-        [] => (target, None),
-        [index] => (
+    // section of it after the first `#` which isn't escaped. A link which names a section without
+    // its page refers to the given page.
+    let (title, label) = match unescaped_indices(target, SECTION_SEPARATOR, Context::Link).first() {
+        Some(&index) => (
             &target[..index],
             Some(&target[index + SECTION_SEPARATOR.len_utf8()..]),
         ),
-        [_, ref others @ ..] => {
-            return Err(link_error_with_fix(
-                &format!(
-                    "Only the {} before a section's label can be unescaped, so write {} for {} \
-                     elsewhere in a link.",
-                    "#".code_str(),
-                    "\\#".code_str(),
-                    "#".code_str(),
-                ),
-                escape_hashes(others),
-            ));
-        }
+        None => (target, None),
     };
     let label = label
         .map(|label| SectionLabel::parse(&unescape(label)))
@@ -2515,12 +2489,13 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     }
 
     // Reject a label used by another section of the same page, keeping the first, but allow it in
-    // another page. A heading needs a label and a fenced heading needs a space after its `#`s.
+    // another page. A heading needs a label, a fenced heading needs a space after its `#`s, and a
+    // fenced section can't be written on one line.
     #[test]
     fn invalid_labels() {
         let (wiki, errors) = parse_fixture(concat!(
             "# Home\n## Notes\n## Notes\n## \n::: ##Notes x\n:::\n::: # Notes\n:::\n",
-            "# Other\n## Notes",
+            "::: ## One line :::\n# Other\n## Notes",
         ));
 
         assert_eq!(
@@ -2532,6 +2507,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                  and a label, like `::: ## Section`.",
                 "A fenced section's heading is a run of at least two `#`s followed by a space \
                  and a label, like `::: ## Section`.",
+                "A fenced section can't be written on one line.",
             ],
         );
         assert_eq!(wiki.page("Home").sections.len(), 1);
@@ -2600,22 +2576,28 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Reject a link with more than one unescaped `#`, an empty label, or a filesystem link with an
-    // unescaped `#`.
+    // Take each `#` after the first one which isn't escaped as part of a section's label, and each
+    // `#` in a filesystem link as part of its path, which formatting escapes. Reject a link with an
+    // empty label.
     #[test]
-    fn invalid_section_links() {
+    fn section_link_hashes() {
         let (wiki, errors) = parse_fixture("# Home\n[Home#A#B] [Home#] [#] [/a#b] [/a\\#b]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
             vec![
-                "Only the `#` before a section's label can be unescaped, so write `\\#` for `#` \
-                 elsewhere in a link.",
                 "A section label can't be empty.",
                 "A section label can't be empty.",
-                "A filesystem link can't name a section, so write `\\#` for `#` in it.",
             ],
         );
-        assert_eq!(link_targets(&wiki.page("Home").links), vec!["file:a#b"]);
+        assert_eq!(
+            link_targets(&wiki.page("Home").links),
+            vec!["text:Home#A#B", "file:a#b", "file:a#b"],
+        );
+        let wiki = parse_test("# Home\n[Home#A#B] [/a#b]").unwrap();
+        assert_eq!(
+            wiki.own_content(wiki.page("Home"), None),
+            "[Home#A\\#B] [/a\\#b]",
+        );
     }
 }

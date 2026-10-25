@@ -11,11 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Headings divide a page into sections. A heading starts with `##`, with another `#` for each level of nesting and no limit on levels, and its section lasts until the next heading at the same level or higher. A heading after the colons of an opening fence, like `::: ### Tips`, starts a fenced section, which ends at its closing fence. Each heading must be one level deeper than the heading it's under, and each section in a page must have a different label.
 - Links can name a section of a page, like `[Pancakes#Steps]`, or a section of the same page, like `[#Steps]`. A portal can show a section, like `::: [Pancakes#Steps] :::`, and Mull keeps it in sync with the section.
-- The VS Code extension completes section labels after `#` in a link, and supports jumping to sections, previewing them, finding links to them, highlighting them, and renaming them. The outline lists each page's sections, and quick fixes correct a heading's level and escape a `#` in a link.
+- The VS Code extension completes section labels after `#` in a link, and supports jumping to sections, previewing them, finding links to them, highlighting them, and renaming them. The outline lists each page's sections, and a quick fix corrects a heading's level.
 
 ### Changed
 
-- In a link, `#` separates a page's title from a section's label, so a `#` in a title or label must be written as `\#`.
+- In a link, the first `#` separates a page's title from a section's label, so a `#` in a title must be written as `\#`. Formatting writes every `#` in a link that way.
 - A link to a section doesn't count toward making its page reachable from `Home`, since the page as a whole should be linked somewhere.
 - Formatting puts a blank line between a heading and what's around it, unless the heading is fenced.
 

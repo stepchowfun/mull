@@ -148,7 +148,7 @@ Using a script in a block counts as linking to it, so it doesn't need to be link
 
 ### Escaping and code
 
-To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. Inside a link, `#` separates a page's title from a section's label, so write `\#` for a `#` that's part of a title or label. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
+To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. Inside a link, the first `#` separates a page's title from a section's label, so write `\#` for a `#` that's part of a title. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
 
 ````md
 # Home

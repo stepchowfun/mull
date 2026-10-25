@@ -2657,20 +2657,6 @@ fn code_action_for_document(
                         None,
                     )
                 }
-                Fix::EscapeHashes(offsets) => {
-                    // Put a backslash before each `#` so it stands for itself.
-                    (
-                        format!("Escape {}", "#".code_str()),
-                        offsets
-                            .into_iter()
-                            .map(|offset| {
-                                let position = snapshot.position(offset);
-                                TextEdit::new(Range::new(position, position), "\\".to_owned())
-                            })
-                            .collect(),
-                        None,
-                    )
-                }
                 Fix::SetHeadingLevel { start, end, level } => {
                     // Write one `#` for each level.
                     let marker = HEADING_MARKER.to_string().repeat(level);
@@ -6276,15 +6262,14 @@ mod tests {
         );
     }
 
-    // Fix a heading at the wrong level by rewriting its `#`s, and a link with more than one
-    // unescaped `#` by escaping all but the first, applying each fix's edits from the end. A fix
-    // isn't offered once its error is gone.
+    // Fix a heading at the wrong level by rewriting its `#`s, applying each fix's edit from the
+    // end. A fix isn't offered once its error is gone.
     #[test]
-    fn code_actions_fix_sections() {
-        let source = "# Home\n\n### Deep\n\n[Home#A#B#C] [/a#b]\n\n## Fine\n\n#### Deeper";
+    fn code_actions_fix_heading_levels() {
+        let source = "# Home\n\n### Deep\n\n## Fine\n\n#### Deeper";
         let uri = untitled_uri();
         let section_diagnostics = diagnostics(&uri, source);
-        assert_eq!(section_diagnostics.len(), 4);
+        assert_eq!(section_diagnostics.len(), 2);
 
         let actions =
             code_action_for_document(&snapshot(&uri, source), &section_diagnostics, true).unwrap();
@@ -6301,8 +6286,6 @@ mod tests {
         assert_eq!(
             titles,
             vec![
-                "Escape `#`",
-                "Escape `#`",
                 "Change the heading to start with `##`",
                 "Change the heading to start with `###`",
             ],
@@ -6316,10 +6299,7 @@ mod tests {
                 &edit.new_text,
             );
         }
-        assert_eq!(
-            applied,
-            "# Home\n\n## Deep\n\n[Home#A\\#B\\#C] [/a\\#b]\n\n## Fine\n\n### Deeper",
-        );
+        assert_eq!(applied, "# Home\n\n## Deep\n\n## Fine\n\n### Deeper");
         assert!(
             code_action_for_document(&snapshot(&uri, &applied), &section_diagnostics, true)
                 .is_none(),
