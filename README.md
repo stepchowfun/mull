@@ -144,15 +144,13 @@ The contents of my pantry:
 
 Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
 
-To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as the fence. The input goes above the divider, and the output ends up below it:
+To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as the fence. The input goes above the divider, and the output ends up below it. For example, this repository has a [calculator script](https://github.com/stepchowfun/mull/blob/main/example_scripts/src/calc.ts) that can be used like this:
 
 ```md
-::: sort
-- Rice
-- Garlic
+::: calc
+1850 * 12
 ---
-- Garlic
-- Rice
+22200
 :::
 ```
 
