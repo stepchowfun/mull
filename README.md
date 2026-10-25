@@ -168,7 +168,7 @@ print("Thanks for playing!")
 ```
 ````
 
-No escaping is necessary inside page or section titles, or code.
+No escaping is necessary inside titles or code.
 
 ## Keyboard shortcuts
 
