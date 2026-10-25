@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0] - 2026-10-25
+
+### Added
+
+- A link in a script block's arguments, or in a divided block's input, stands for what it points to. A link to a page or a section stands for its rendered view, which is what a reader sees there: each script block shows just its output, each portal shows the rendered view of what it shows, and fences are left out. A link to a file or a directory stands for its full path, as before.
+- Script blocks run after the blocks whose outputs their links read, and run again when those outputs change, so blocks can build on each other's results like cells in a notebook. A link which makes a block depend on its own output is an error.
+
+### Changed
+
+- A link to a page or a section in a script block's arguments stands for its rendered view instead of its title. To pass a title, write it as plain text or code.
+
 ## [0.69.0] - 2026-10-25
 
 ### Added

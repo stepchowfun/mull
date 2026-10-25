@@ -1,20 +1,20 @@
 use crate::{
     analyzer::analyze,
     cancellation::CancellationFlag,
-    error::{Error, format_errors},
+    error::{Error, SourceRange, format_errors},
     escaping::Context,
     format::CodeStr,
     line_index::LineIndex,
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
     wiki::{
-        Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki, write_block,
+        Link, Page, PageTitle, ScriptBlock, TITLE_PREFIX, Target, Wiki, write_block,
         write_divided_block,
     },
 };
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fs,
     io::{self, Read, Write},
@@ -67,12 +67,13 @@ impl Failure {
     }
 }
 
-// Run the script blocks outside portals and other script blocks in a wiki without errors, in source
-// order, after formatting the wiki, then format the result. A block whose hash shows that its body
-// is already its script's output for its arguments is skipped unless every block is to be rerun,
-// and each block which runs is given a new hash. Return the wiki's new contents, along with a
-// failure for each script block which couldn't be run, which is left as it was. The failures'
-// errors locate the blocks in the formatted wiki.
+// Run the script blocks outside portals and other script blocks in a wiki without errors, each
+// after the blocks whose outputs it reads and otherwise in source order, after formatting the
+// wiki, then format the result. A block whose hash shows that its output is already its script's
+// output for what it reads is skipped unless every block is to be rerun, and each block which runs
+// is given a new hash. Return the wiki's new contents, along with a failure for each script block
+// which couldn't be run, which is left as it was. The failures' errors locate the blocks in the
+// wiki as it stood when they ran.
 pub fn run(
     wiki_path: &Path,
     source_contents: &str,
@@ -89,12 +90,15 @@ pub fn run(
 }
 
 // Run the script blocks outside portals and other script blocks in a formatted wiki, as `run` does.
+// Blocks run in rounds, each after the blocks whose outputs its links stand for, so it reads their
+// new outputs. The blocks in a round run on the wiki as it stands after the rounds before it.
 pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
     rerun: bool,
 ) -> Result<(String, Vec<ScriptFailure>), Vec<Error>> {
-    // Read the wiki, whose blocks' bodies are already in their canonical form.
+    // Read the wiki, whose blocks' bodies are already in their canonical form, and find the rounds
+    // to run its blocks in.
     let line_index = LineIndex::new(formatted_contents);
     let (wiki, errors) = parser::parse(Some(wiki_path), formatted_contents, &line_index);
     if !errors.is_empty() {
@@ -102,32 +106,41 @@ pub fn run_formatted(
     }
     let file_root = FileRoot::new(wiki_path)
         .map_err(|message| vec![Error::new(&message, None, None, None, None)])?;
+    let rounds = rounds(&wiki);
 
     // Run each block which needs it, noting its replacement or why it failed. The blocks which ran
     // are noted by their pages and their positions among the pages' blocks, which don't change.
-    let mut pages = wiki.pages.values().collect::<Vec<_>>();
-    pages.sort_by_key(|page| page.source_range.start);
-    let mut replacements = Vec::new();
+    // After each round, replace the blocks which ran, from the end so earlier offsets stay valid,
+    // and format the result.
+    let mut run_contents = formatted_contents.to_owned();
     let mut ran = Vec::new();
     let mut failures = Vec::new();
-    for page in pages {
-        for (index, block) in page.script_blocks.iter().enumerate() {
+    for round in rounds {
+        let round_line_index = LineIndex::new(&run_contents);
+        let (round_wiki, errors) = parser::parse(Some(wiki_path), &run_contents, &round_line_index);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let mut replacements = Vec::new();
+        for (title, index) in round {
+            let page = &round_wiki.pages[&title];
+            let block = &page.script_blocks[index];
             if !rerun
                 && block.hash.is_some()
-                && block.hash == hash(formatted_contents, &wiki, block, &file_root)
+                && block.hash == hash(&run_contents, &round_wiki, page, block, &file_root)
             {
                 continue;
             }
-            match run_block(formatted_contents, &wiki, page, block, &file_root) {
+            match run_block(&run_contents, &round_wiki, page, block, &file_root) {
                 Ok(replacement) => {
                     replacements.push((block.source_range, replacement));
-                    ran.push((&page.title, index));
+                    ran.push((title, index));
                 }
                 Err(failure) => failures.push(ScriptFailure {
                     error: Error::new(
                         &failure.message,
                         Some(wiki_path),
-                        Some((formatted_contents, &line_index, block.name_source_range)),
+                        Some((&run_contents, &round_line_index, block.name_source_range)),
                         failure.reason,
                         None,
                     ),
@@ -138,14 +151,16 @@ pub fn run_formatted(
                 }),
             }
         }
+        if replacements.is_empty() {
+            continue;
+        }
+        replacements.sort_by_key(|(source_range, _replacement)| source_range.start);
+        let mut round_contents = run_contents.clone();
+        for (source_range, replacement) in replacements.into_iter().rev() {
+            round_contents.replace_range(source_range.start..source_range.end, &replacement);
+        }
+        run_contents = format(wiki_path, &round_contents)?;
     }
-
-    // Replace the blocks, from the end so earlier offsets stay valid, and format the result.
-    let mut run_contents = formatted_contents.to_owned();
-    for (source_range, replacement) in replacements.into_iter().rev() {
-        run_contents.replace_range(source_range.start..source_range.end, &replacement);
-    }
-    let run_contents = format(wiki_path, &run_contents)?;
 
     // Follow each block which ran with its hash, which is computed once the block is formatted so
     // it still matches when the wiki is next formatted, and format the result again so the copies
@@ -158,10 +173,11 @@ pub fn run_formatted(
     let mut hashes = ran
         .into_iter()
         .filter_map(|(title, index)| {
-            let block = &run_wiki.pages.get(title)?.script_blocks[index];
+            let page = run_wiki.pages.get(&title)?;
+            let block = &page.script_blocks[index];
             Some((
                 block.source_range.end,
-                hash(&run_contents, &run_wiki, block, &file_root)?,
+                hash(&run_contents, &run_wiki, page, block, &file_root)?,
             ))
         })
         .collect::<Vec<_>>();
@@ -184,12 +200,216 @@ fn format(wiki_path: &Path, contents: &str) -> Result<String, Vec<Error>> {
     }
 }
 
-// Hash a script block's script, its arguments as written, and its body, so it needn't run again
-// while they stay the same. The hash is the first 48 bits of their SHA-256 hash, in hexadecimal. A
-// block whose script can't be read has no hash.
+// Find the rounds to run a wiki's script blocks in, each block in a round after those of the
+// blocks it depends on, and the blocks in a round in source order. Blocks in a cycle, which
+// validation reports, run in a last round.
+fn rounds(wiki: &Wiki) -> Vec<Vec<BlockId>> {
+    // Find each block's dependencies.
+    let mut remaining = dependencies(wiki)
+        .into_iter()
+        .map(|(block, dependencies)| {
+            let dependencies = dependencies
+                .into_iter()
+                .map(|(dependency, _link_source_range)| dependency)
+                .filter(|dependency| *dependency != block)
+                .collect::<HashSet<_>>();
+            (block, dependencies)
+        })
+        .collect::<Vec<_>>();
+
+    // Take each round from the blocks whose dependencies have all been taken.
+    let mut rounds = Vec::new();
+    let mut taken = HashSet::new();
+    while !remaining.is_empty() {
+        let (ready, waiting) = remaining
+            .into_iter()
+            .partition::<Vec<_>, _>(|(_block, dependencies)| dependencies.is_subset(&taken));
+        let round = if ready.is_empty() {
+            remaining = Vec::new();
+            waiting
+        } else {
+            remaining = waiting;
+            ready
+        };
+        let round = round
+            .into_iter()
+            .map(|(block, _dependencies)| block)
+            .collect::<Vec<_>>();
+        taken.extend(round.iter().cloned());
+        rounds.push(round);
+    }
+    rounds
+}
+
+// Find the links which close cycles of script blocks depending on each other's outputs, with a
+// depth-first search over the blocks in source order. A link to what a block reads through a block
+// whose search is still in progress closes a cycle, including a link to what contains the block
+// itself. Every cycle has such a link, and without them there would be no cycles.
+pub fn dependency_cycle_links(wiki: &Wiki) -> Vec<SourceRange> {
+    let dependencies = dependencies(wiki).into_iter().collect::<HashMap<_, _>>();
+    let mut cycle_links = Vec::new();
+    let mut in_progress = HashSet::new();
+    let mut done = HashSet::new();
+    for (start, _dependencies) in block_ids(wiki) {
+        // Search from a block which hasn't been searched, keeping each block on the current path
+        // along with its dependencies which remain to be followed, last first.
+        if done.contains(&start) {
+            continue;
+        }
+        in_progress.insert(start.clone());
+        let mut path = vec![(start.clone(), reversed(&dependencies[&start]))];
+        while let Some((block, block_dependencies)) = path.last_mut() {
+            // Finish a block once all of its dependencies have been followed.
+            let Some((dependency, link_source_range)) = block_dependencies.pop() else {
+                in_progress.remove(block);
+                done.insert(block.clone());
+                path.pop();
+                continue;
+            };
+
+            // Follow the next dependency, unless it closes a cycle or has been searched.
+            if in_progress.contains(&dependency) {
+                cycle_links.push(link_source_range);
+            } else if !done.contains(&dependency) {
+                in_progress.insert(dependency.clone());
+                let next = reversed(&dependencies[&dependency]);
+                path.push((dependency, next));
+            }
+        }
+    }
+    cycle_links.sort_by_key(|source_range| (source_range.start, source_range.end));
+    cycle_links.dedup_by_key(|source_range| (source_range.start, source_range.end));
+    cycle_links
+}
+
+// Copy a list in reverse order.
+fn reversed<T: Clone>(items: &[T]) -> Vec<T> {
+    items.iter().rev().cloned().collect()
+}
+
+// This identifies a script block by the title of its page and its position among the page's
+// script blocks, which running scripts doesn't change.
+type BlockId = (PageTitle, usize);
+
+// List the script blocks of a wiki in source order, each with its page.
+fn block_ids(wiki: &Wiki) -> Vec<(BlockId, &ScriptBlock)> {
+    let mut pages = wiki.pages.values().collect::<Vec<_>>();
+    pages.sort_by_key(|page| page.source_range.start);
+    pages
+        .into_iter()
+        .flat_map(|page| {
+            page.script_blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| ((page.title.clone(), index), block))
+        })
+        .collect()
+}
+
+// Find the blocks each script block depends on, in source order: those whose outputs appear in
+// the rendered view of what a link in its arguments or input stands for, through the portals in
+// it, each along with that link.
+fn dependencies(wiki: &Wiki) -> Vec<(BlockId, Vec<(BlockId, SourceRange)>)> {
+    block_ids(wiki)
+        .into_iter()
+        .map(|(block_id, block)| {
+            let page = &wiki.pages[&block_id.0];
+            let mut block_dependencies = Vec::new();
+            for link in value_links(wiki, page, block) {
+                let Link::Text {
+                    target,
+                    source_range,
+                    ..
+                } = link
+                else {
+                    continue;
+                };
+                let mut blocks = Vec::new();
+                blocks_in_view(wiki, target, &mut HashSet::new(), &mut blocks);
+                block_dependencies.extend(blocks.into_iter().map(|block| (block, *source_range)));
+            }
+            (block_id, block_dependencies)
+        })
+        .collect()
+}
+
+// Find the script blocks whose outputs appear in the rendered view of a page or a section, which
+// are those within it and within what the portals in it show, skipping targets already visited.
+fn blocks_in_view(
+    wiki: &Wiki,
+    target: &Target,
+    visited: &mut HashSet<Target>,
+    blocks: &mut Vec<BlockId>,
+) {
+    let Some((page, section)) = wiki.resolve(target) else {
+        return;
+    };
+    if !visited.insert(target.clone()) {
+        return;
+    }
+    let source_range = section.map_or(page.source_range, |section| section.source_range);
+    blocks.extend(
+        page.script_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_index, block)| {
+                (source_range.start..source_range.end).contains(&block.source_range.start)
+            })
+            .map(|(index, _block)| (page.title.clone(), index)),
+    );
+    for portal in page.portals_within(section) {
+        blocks_in_view(wiki, &portal.target, visited, blocks);
+    }
+}
+
+// List the links which stand for values in a script block, in source order: those in its
+// arguments, and those in its input if it's divided.
+fn value_links<'a>(wiki: &Wiki, page: &'a Page, block: &ScriptBlock) -> Vec<&'a Link> {
+    let ranges = [
+        Some(block.arguments_source_range),
+        wiki.script_input_source_range(block),
+    ];
+    let mut links = page
+        .links
+        .iter()
+        .filter(|link| {
+            let source_range = link.source_range();
+            ranges
+                .iter()
+                .flatten()
+                .any(|range| range.start <= source_range.start && source_range.end <= range.end)
+        })
+        .collect::<Vec<_>>();
+    links.sort_by_key(|link| link.source_range().start);
+    links
+}
+
+// Find the value a link in a script block stands for: the rendered view of a page or a section, or
+// the full path of a file or a directory. A malformed link, which a wiki without syntax errors
+// doesn't have, stands for itself as written.
+fn link_value(source_contents: &str, wiki: &Wiki, link: &Link, file_root: &Path) -> String {
+    match link {
+        Link::Text { target, .. } => wiki.resolve(target).map_or_else(
+            || target.link_text(false),
+            |(page, section)| wiki.rendered_view(page, section),
+        ),
+        Link::Filesystem { target, .. } => {
+            file_root.join(target.path()).to_string_lossy().into_owned()
+        }
+        Link::Malformed { source_range, .. } => {
+            source_contents[source_range.start..source_range.end].to_owned()
+        }
+    }
+}
+
+// Hash a script block's script, its arguments and its body as written, and the values its links to
+// pages and sections stand for, so it needn't run again while they stay the same. A divided
+// block's input and output are hashed separately. The hash is the first 48 bits of their SHA-256
+// hash, in hexadecimal. A block whose script can't be read has no hash.
 fn hash(
     source_contents: &str,
     wiki: &Wiki,
+    page: &Page,
     block: &ScriptBlock,
     file_root: &FileRoot,
 ) -> Option<String> {
@@ -197,10 +417,16 @@ fn hash(
     let arguments =
         &source_contents[block.arguments_source_range.start..block.arguments_source_range.end];
     let (input, output) = wiki.script_body(block);
+    let values = value_links(wiki, page, block)
+        .into_iter()
+        .filter(|link| matches!(link, Link::Text { .. }))
+        .map(|link| link_value(source_contents, wiki, link, file_root.path()))
+        .collect::<Vec<_>>();
     let mut hasher = Sha256::new();
     for part in [script.as_slice(), arguments.as_bytes(), input.as_bytes()]
         .into_iter()
         .chain(output.as_deref().map(str::as_bytes))
+        .chain(values.iter().map(String::as_bytes))
     {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
@@ -211,8 +437,9 @@ fn hash(
     Some(format!("{:012x}", u64::from_be_bytes(prefix)))
 }
 
-// Run a script block, and write it anew with the script's output as its body, indented like its
-// opening fence and within fences longer than any in it.
+// Run a script block on what it reads, and write it anew with the script's output as its body, or
+// below its input if it's divided, indented like its opening fence and within fences longer than
+// any in it.
 fn run_block(
     source_contents: &str,
     wiki: &Wiki,
@@ -236,13 +463,13 @@ fn run_block(
             Some(Arc::new(error) as _),
         )
     })?;
-    let arguments = arguments(source_contents, page, block, &absolute_file_root);
+    let arguments = arguments(source_contents, wiki, page, block, &absolute_file_root);
     let (input, old_output) = wiki.script_body(block);
     let is_divided = old_output.is_some();
     let output = execute(
         &absolute_script,
         &arguments,
-        &input,
+        &expanded_input(source_contents, wiki, page, block, &absolute_file_root),
         is_divided,
         &absolute_file_root,
         SCRIPT_TIMEOUT,
@@ -296,13 +523,82 @@ fn run_block(
     })
 }
 
+// Find what a script block's script reads: a divided block's input with each link replaced by its
+// value, its escapes resolved, and code taken as written, or an undivided block's body as written,
+// either without the indentation of the block's opening fence.
+fn expanded_input(
+    source_contents: &str,
+    wiki: &Wiki,
+    page: &Page,
+    block: &ScriptBlock,
+    file_root: &Path,
+) -> String {
+    // Find the links in a divided block's input.
+    let Some(source_range) = wiki.script_input_source_range(block) else {
+        return wiki.script_body(block).0;
+    };
+    let indentation = wiki.indentation(block.source_range.start);
+    let links = page
+        .links
+        .iter()
+        .filter(|link| {
+            source_range.start <= link.source_range().start
+                && link.source_range().end <= source_range.end
+        })
+        .map(|link| (link.source_range().start, link))
+        .collect::<HashMap<_, _>>();
+
+    // Read the input a piece at a time, removing the indentation at the start of each line, even
+    // within code.
+    let mut input = String::new();
+    let mut position = source_range.start;
+    let mut code_end = position;
+    let mut is_at_line_start = true;
+    while let Some(character) = source_contents[position..source_range.end].chars().next() {
+        let rest = &source_contents[position..source_range.end];
+        if is_at_line_start {
+            is_at_line_start = false;
+            position += if rest.starts_with(indentation) {
+                indentation.len()
+            } else {
+                rest.len() - rest.trim_start_matches([' ', '\t']).len()
+            };
+            continue;
+        }
+        if position < code_end {
+            input.push(character);
+            is_at_line_start = character == '\n';
+            position += character.len_utf8();
+        } else if let Some(link) = links.get(&position) {
+            input.push_str(&link_value(source_contents, wiki, link, file_root));
+            position = link.source_range().end;
+        } else if character == '`' {
+            code_end = closing_run_end(
+                source_contents,
+                position + backtick_run_length(rest),
+                backtick_run_length(rest),
+            )
+            .map_or(source_range.end, |run_end| run_end.min(source_range.end));
+        } else if character == '\\' {
+            let escaped = rest[1..].chars().next().unwrap_or('\\');
+            input.push(escaped);
+            position += '\\'.len_utf8() + escaped.len_utf8();
+        } else {
+            input.push(character);
+            is_at_line_start = character == '\n';
+            position += character.len_utf8();
+        }
+    }
+    input
+}
+
 // Find the values of a script block's arguments. Text outside links and code is split on
-// whitespace, with its escapes resolved. A link to a page stands for the page's title, a link to a
-// section stands for its page's title and the section's title joined by `#`, and a link to a file
-// or directory stands for its full path. Code stands for its text as written. Pieces which aren't
-// separated by whitespace form one argument.
+// whitespace, with its escapes resolved. A link stands for its value, even if it has whitespace in
+// it. Code stands for its text as written. Pieces which aren't separated by whitespace form one
+// argument.
 fn arguments(
     source_contents: &str,
+    wiki: &Wiki,
     page: &Page,
     block: &ScriptBlock,
     file_root: &Path,
@@ -326,23 +622,12 @@ fn arguments(
     while let Some(character) = source_contents[position..source_range.end].chars().next() {
         // Take a link's value.
         if let Some(link) = links.get(&position) {
-            let value = match link {
-                Link::Text { target, .. } => match &target.section {
-                    Some(section) => format!(
-                        "{}{SECTION_SEPARATOR}{}",
-                        target.title.text(Context::Verbatim),
-                        section.text(Context::Verbatim),
-                    ),
-                    None => target.title.text(Context::Verbatim),
-                },
-                Link::Filesystem { target, .. } => {
-                    file_root.join(target.path()).to_string_lossy().into_owned()
-                }
-                Link::Malformed { source_range, .. } => {
-                    source_contents[source_range.start..source_range.end].to_owned()
-                }
-            };
-            argument.get_or_insert_default().push_str(&value);
+            argument.get_or_insert_default().push_str(&link_value(
+                source_contents,
+                wiki,
+                link,
+                file_root,
+            ));
             position = link.source_range().end;
             continue;
         }
@@ -588,7 +873,7 @@ pub fn lock_script_tests() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 mod tests {
-    use super::arguments;
+    use super::{arguments, expanded_input};
     use crate::{line_index::LineIndex, parser};
     use std::path::Path;
     #[cfg(unix)]
@@ -839,31 +1124,112 @@ mod tests {
         );
     }
 
-    // Take links to pages as their titles, links to sections as their pages' titles and their own
-    // titles joined by `#`, and links to files as their paths, code as written, and the rest split
-    // on whitespace with its escapes resolved, joining pieces which aren't separated.
+    // Run each block after the blocks whose outputs its links stand for, even when it comes first,
+    // and run it again once one of those outputs changes.
+    #[cfg(unix)]
+    #[test]
+    fn runs_follow_dependencies() {
+        let _lock = lock_script_tests();
+        let wiki = TestWiki::new(
+            concat!(
+                "# Home\n\n[/runs] [/scripts/]\n\n",
+                "::: ## Total\n::: add\n[#Base] + 1\n---\n:::\n:::\n\n",
+                "::: ## Base\n::: add\n1 + 1\n---\n:::\n:::\n",
+            ),
+            &[("add.sh", "#!/bin/sh\necho run >> runs\nexpr $(cat)\n")],
+        );
+        fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
+
+        assert_eq!(wiki.run_and_save(false), 2);
+        assert_eq!(
+            hide_hashes(&fs::read_to_string(wiki.path()).unwrap()),
+            concat!(
+                "# Home\n\n[/runs] [/scripts/]\n\n",
+                ":::: ## Total\n::: add\n[#Base] + 1\n---\n3\n::: #hash\n::::\n\n",
+                ":::: ## Base\n::: add\n1 + 1\n---\n2\n::: #hash\n::::\n",
+            ),
+        );
+        assert_eq!(wiki.run_and_save(false), 2);
+        let source = fs::read_to_string(wiki.path()).unwrap();
+        fs::write(wiki.path(), source.replace("1 + 1", "2 + 2")).unwrap();
+        assert_eq!(wiki.run_and_save(false), 4);
+        assert!(
+            fs::read_to_string(wiki.path())
+                .unwrap()
+                .contains("[#Base] + 1\n---\n5\n"),
+        );
+    }
+
+    // Take links to pages and sections as their rendered views, each in one argument, and links to
+    // files as their paths, code as written, and the rest split on whitespace with its escapes
+    // resolved, joining pieces which aren't separated.
     #[test]
     fn script_arguments() {
         let source = concat!(
-            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] ",
-            "[#Notes] :::\n## Notes",
+            "# Home\n::: tidy [Other] [/notes.txt] `a\\d b` x\\]y two  words --page=[Other] ",
+            "[Other#Notes] :::\n# Other\nHello there.\n## Notes\nSome notes.",
         );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
         let page = wiki.page("Home");
 
         assert_eq!(
-            arguments(source, page, &page.script_blocks[0], Path::new("/root")),
+            arguments(
+                source,
+                &wiki,
+                page,
+                &page.script_blocks[0],
+                Path::new("/root"),
+            ),
             vec![
-                "Home",
+                "Hello there.\n\n## Notes\n\nSome notes.",
                 &Path::new("/root").join("notes.txt").to_string_lossy(),
                 "a\\d b",
                 "x]y",
                 "two",
                 "words",
-                "--page=Home",
-                "Home#Notes",
+                "--page=Hello there.\n\n## Notes\n\nSome notes.",
+                "Some notes.",
             ],
+        );
+    }
+
+    // Take a divided block's input with each link replaced by its value, escapes resolved, code
+    // taken as written, and the indentation of its opening fence removed from each line, even in
+    // code, but take an undivided block's body as written.
+    #[test]
+    fn script_inputs() {
+        let source = concat!(
+            "# Home\n- List:\n  ::: tidy\n  sum [#Rent] [/a.txt] \\[x\\]\n",
+            "  ```\n  [#Rent]\n  ```\n",
+            "  ---\n  :::\n\n::: tidy\n[#Rent]\n:::\n\n::: ## Rent\n::: tidy\n1\n---\n12\n:::\n:::",
+        );
+        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
+        assert!(errors.is_empty());
+        let page = wiki.page("Home");
+
+        assert_eq!(
+            expanded_input(
+                source,
+                &wiki,
+                page,
+                &page.script_blocks[0],
+                Path::new("/root"),
+            ),
+            format!(
+                "sum 12 {} [x]\n```\n[#Rent]\n```\n",
+                Path::new("/root").join("a.txt").to_string_lossy(),
+            ),
+        );
+        assert_eq!(
+            expanded_input(
+                source,
+                &wiki,
+                page,
+                &page.script_blocks[1],
+                Path::new("/root"),
+            ),
+            "[#Rent]\n",
         );
     }
 

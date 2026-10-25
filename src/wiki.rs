@@ -148,15 +148,57 @@ impl Wiki {
         enclosing_targets: &mut Vec<Target>,
     ) -> String {
         enclosing_targets.push(page.target(section));
-        let content = self.canonical_content(page, section, &HashMap::new(), &mut |portal| {
-            if enclosing_targets.contains(&portal.target) {
-                return None;
-            }
-            let (shown_page, shown_section) = self.resolve(&portal.target)?;
-            Some(self.rendered_content(shown_page, shown_section, enclosing_targets))
-        });
+        let content = self.canonical_content(
+            page,
+            section,
+            View::Source,
+            &HashMap::new(),
+            &mut |portal| {
+                if enclosing_targets.contains(&portal.target) {
+                    return None;
+                }
+                let (shown_page, shown_section) = self.resolve(&portal.target)?;
+                Some(self.rendered_content(shown_page, shown_section, enclosing_targets))
+            },
+        );
         enclosing_targets.pop();
         content
+    }
+
+    // Render a page or a section of it as a reader sees it, which is what a link to it stands for
+    // in a script block. It's its canonical content, except that each script block reads as its
+    // output, each portal as the rendered view of what it shows, and each fenced section as its
+    // title line and content, all without fences. Links read as links, so nothing they point to is
+    // rendered.
+    pub fn rendered_view(&self, page: &Page, section: Option<&Section>) -> String {
+        self.rendered_view_within(page, section, &mut Vec::new())
+    }
+
+    // Render a page or a section of it as a reader sees it, as `rendered_view` does. The targets
+    // being rendered, which show this one in portals, are listed so a cycle of portals is left as
+    // written.
+    fn rendered_view_within(
+        &self,
+        page: &Page,
+        section: Option<&Section>,
+        enclosing_targets: &mut Vec<Target>,
+    ) -> String {
+        enclosing_targets.push(page.target(section));
+        let view = self.canonical_content(
+            page,
+            section,
+            View::Rendered,
+            &HashMap::new(),
+            &mut |portal| {
+                if enclosing_targets.contains(&portal.target) {
+                    return None;
+                }
+                let (shown_page, shown_section) = self.resolve(&portal.target)?;
+                Some(self.rendered_view_within(shown_page, shown_section, enclosing_targets))
+            },
+        );
+        enclosing_targets.pop();
+        view
     }
 
     // Render the own content of a page or a section of it in its canonical form, leaving out the
@@ -174,14 +216,19 @@ impl Wiki {
         section: Option<&Section>,
         section_contents: &HashMap<SectionTitle, String>,
     ) -> String {
-        self.canonical_content(page, section, section_contents, &mut |_portal| {
-            Some(String::new())
-        })
+        self.canonical_content(
+            page,
+            section,
+            View::Source,
+            section_contents,
+            &mut |_portal| Some(String::new()),
+        )
     }
 
-    // Render the content of a page or a section of it from the source, from after its title line
-    // but without the blank lines around it, with the indentation of a section's title line removed
-    // from each line. Each section given content is written with that content instead. Links, title
+    // Render the content of a page or a section of it from the source, as written or as a reader
+    // sees it, from after its title line but without the blank lines around it, with the
+    // indentation of a section's title line removed from each line. Each section given content is
+    // written with that content instead. Links, title
     // lines, and fences are written in their canonical forms, with Unix line endings, no whitespace
     // at the end of a line, and a blank line around each section without fences. Each portal shows
     // the body given for it, with each line indented like its opening fence, or is copied as
@@ -190,6 +237,7 @@ impl Wiki {
         &self,
         page: &Page,
         section: Option<&Section>,
+        view: View,
         section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal) -> Option<String>,
     ) -> String {
@@ -223,7 +271,7 @@ impl Wiki {
         // of each line, using Unix line endings. Links can't contain line breaks, and each ends
         // with a delimiter, so this never changes one.
         let mut content = String::new();
-        self.write_region(page, start, end, section_contents, body, &mut content);
+        self.write_region(page, start, end, view, section_contents, body, &mut content);
         content
             .lines()
             .map(|line| {
@@ -239,11 +287,16 @@ impl Wiki {
     // source order. What's within a section is written with it. A section can contain blocks, but
     // no block is ever within a portal or a script block, since blocks within those are part of
     // their text.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The region is written as part of what contains it, which the arguments describe."
+    )]
     fn write_region(
         &self,
         page: &Page,
         start: usize,
         end: usize,
+        view: View,
         section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal) -> Option<String>,
         content: &mut String,
@@ -306,29 +359,44 @@ impl Wiki {
                 self.copy_links(page, copied_through, source_range.start, content);
             }
 
-            // Write the part.
+            // Write the part, without fences if it's rendered.
             follows_section = false;
+            let indentation = self.indentation(source_range.start);
             match part {
                 Part::Portal(portal) => {
-                    content.push_str(&write_block(
-                        self.indentation(source_range.start),
-                        &format!("[{}]", portal.target.link_text(portal.is_local)),
-                        &portal_body.expect("A portal's body should have been found."),
-                    ));
-                }
-                Part::Script(script_block) => {
-                    self.copy_script_block(page, script_block, content);
-                }
-                Part::Section(section) => {
-                    let indentation = self.indentation(source_range.start);
-                    let section_content =
-                        self.canonical_content(page, Some(section), section_contents, body);
-                    if section.is_fenced {
-                        content.push_str(&write_block(
+                    let portal_body = portal_body.expect("A portal's body should have been found.");
+                    content.push_str(&match view {
+                        View::Source => write_block(
                             indentation,
-                            &section.title_line(),
-                            &section_content,
+                            &format!("[{}]", portal.target.link_text(portal.is_local)),
+                            &portal_body,
+                        ),
+                        View::Rendered => indent_after_first(&portal_body, indentation),
+                    });
+                }
+                Part::Script(script_block) => match view {
+                    View::Source => self.copy_script_block(page, script_block, content),
+                    View::Rendered => {
+                        let (input, output) = self.script_body(script_block);
+                        content.push_str(&indent_after_first(
+                            output.as_deref().unwrap_or(&input).trim_end(),
+                            indentation,
                         ));
+                    }
+                },
+                Part::Section(section) => {
+                    let section_content =
+                        self.canonical_content(page, Some(section), view, section_contents, body);
+                    if section.is_fenced {
+                        content.push_str(&match view {
+                            View::Source => {
+                                write_block(indentation, &section.title_line(), &section_content)
+                            }
+                            View::Rendered => indent_after_first(
+                                &format!("{}\n{section_content}", section.title_line()),
+                                indentation,
+                            ),
+                        });
                     } else {
                         separate(content);
                         content.push_str(indentation);
@@ -484,6 +552,17 @@ impl Wiki {
         let (output, _line_starts) =
             self.lines_without_indentation(divider_line_end, body_end, indentation);
         (input, Some(output))
+    }
+
+    // Find the lines of a divided script block's input, from the line after its opening fence to
+    // the start of its divider's line. An undivided block's body isn't input apart from its output.
+    pub fn script_input_source_range(&self, block: &ScriptBlock) -> Option<SourceRange> {
+        let divider = block.divider_source_range?;
+        let block_source = &self.source[block.source_range.start..block.source_range.end];
+        Some(SourceRange {
+            start: block.source_range.start + block_source.find('\n')? + '\n'.len_utf8(),
+            end: divider.start - self.indentation(block.source_range.start).len(),
+        })
     }
 
     // Find the lines in a range of the source with an indentation removed from each, along with
@@ -655,6 +734,13 @@ impl ScriptBlock {
             format!("{} {arguments}", self.name)
         }
     }
+}
+
+// This is how content is rendered: as written, or as a reader sees it.
+#[derive(Clone, Copy)]
+enum View {
+    Source,
+    Rendered,
 }
 
 // This is a part of a page's content which formatting rewrites: a portal, a script block, or a
@@ -1026,6 +1112,13 @@ fn separate(content: &mut String) {
     }
 }
 
+// Indent each line of some text after the first, which goes after the indentation already written.
+fn indent_after_first(text: &str, indentation: &str) -> String {
+    text.lines()
+        .collect::<Vec<_>>()
+        .join(&format!("\n{indentation}"))
+}
+
 // Indent each line of some text.
 fn indent(text: &str, indentation: &str) -> String {
     text.lines()
@@ -1277,6 +1370,30 @@ mod tests {
             write_divided_block("  ", "calc", "1 + 2\n---\n", "3\n"),
             ":::: calc\n  1 + 2\n  ---\n  ----\n  3\n  ::::",
         );
+    }
+
+    // Render a page as a reader sees it: each script block as its output, or an undivided block as
+    // its body, each portal as the rendered view of what it shows, and each fenced section as its
+    // title line and content, all without fences, while links stay links. Render a section the same
+    // way, without its own title line or indentation.
+    #[test]
+    fn rendered_views() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\nSee [Other].\n\n::: calc\n1 + 2\n---\n3\n::: #0a1b2c3d4e5f\n\n",
+            "- List:\n  ::: sort\n  a\n  b\n  :::\n\n::: [#Notes] :::\n\n",
+            "- Fenced:\n  ::: ## Notes\n  ::: calc\n  4\n  ---\n  4\n  :::\n  :::\n",
+            "# Other",
+        ));
+        let page = wiki.page("Home");
+
+        assert_eq!(
+            wiki.rendered_view(page, None),
+            concat!(
+                "See [Other].\n\n3\n\n- List:\n  a\n  b\n\n4\n\n",
+                "- Fenced:\n  ## Notes\n  4",
+            ),
+        );
+        assert_eq!(wiki.rendered_view(page, Some(&page.sections[0])), "4");
     }
 
     // Render a page's own content in its canonical form, leaving out the copies its portals show.

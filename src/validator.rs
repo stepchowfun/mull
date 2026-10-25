@@ -4,7 +4,7 @@ use crate::{
     file_tree::{Visibility, file_tree_walker, visibility},
     format::CodeStr,
     line_index::LineIndex,
-    scripts::script_path,
+    scripts::{self, script_path},
     spelled_path::{DirectoryListings, FileRoot, SpelledPath},
     wiki::{FilesystemTarget, HOME_TITLE, Link, Page, PageTitle, Wiki},
 };
@@ -73,9 +73,10 @@ pub fn validate(
     })
 }
 
-// Validate text-link targets, the absence of cycles of portals, and reachability from the home
-// page, given the wiki's pages in title order. Missing sections are reported, but there's no fix
-// for them, since a section's place in its page can't be chosen for it.
+// Validate text-link targets, the absence of cycles of portals and of script blocks depending on
+// each other, and reachability from the home page, given the wiki's pages in title order. Missing
+// sections are reported, but there's no fix for them, since a section's place in its page can't be
+// chosen for it.
 fn validate_text_links(
     wiki: &Wiki,
     pages: &[&Page],
@@ -151,6 +152,22 @@ fn validate_text_links(
                     ),
                     source_path,
                     Some((source_contents, line_index, portal.link_source_range)),
+                    None,
+                    None,
+                )
+            }),
+    );
+
+    // Reject links which close cycles of script blocks depending on each other's outputs, since
+    // there's no order to run them in.
+    errors.extend(
+        scripts::dependency_cycle_links(wiki)
+            .into_iter()
+            .map(|source_range| {
+                Error::new(
+                    "This link makes a script block depend on its own output.",
+                    source_path,
+                    Some((source_contents, line_index, source_range)),
                     None,
                     None,
                 )
@@ -878,6 +895,35 @@ mod tests {
             &errors,
             "A portal to `Home#Notes` here creates a cycle of portals.",
         ));
+    }
+
+    // Reject a link which makes a script block depend on its own output, directly or through other
+    // blocks or portals, at the link which closes the cycle, but not links in an undivided block's
+    // body, which aren't read.
+    #[test]
+    fn script_dependency_cycles() {
+        let wiki = parse(concat!(
+            "# Home\n",
+            "::: ## A\n::: calc\n[#B]\n---\n:::\n:::\n",
+            "::: ## B\n::: [#C] :::\n:::\n",
+            "::: ## C\n::: calc\n[#A]\n---\n:::\n:::\n",
+            "::: ## D\n::: calc [#D]\n:::\n:::\n",
+            "::: ## E\n::: calc\n[#E]\n:::\n:::\n",
+        ))
+        .unwrap();
+
+        let errors = validate_untitled(&wiki).unwrap_err();
+        let cycle_errors = errors
+            .iter()
+            .filter(|error| {
+                error
+                    .to_string()
+                    .contains("This link makes a script block depend on its own output.")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cycle_errors.len(), 2);
+        assert!(cycle_errors[0].to_string().contains("[#A]"));
+        assert!(cycle_errors[1].to_string().contains("::: calc [#D]"));
     }
 
     // Validate syntax and graph structure without requiring an untitled wiki to be saved.

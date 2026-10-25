@@ -94,6 +94,30 @@ To keep what you wrote and have the script write its output separately, divide t
 7200
 ::: #f682c17f91d2
 
+A link in a divided block's input stands for what a reader sees where it points, so blocks can build on each other's results, like cells in a notebook. Each block runs after the blocks it reads from.
+
+:::: ## Rent
+::: calc
+1850 * 12
+---
+22200
+::: #4194dd49312f
+::::
+
+:::: ## Food
+::: calc
+600 * 12
+---
+7200
+::: #6f87be4e8173
+::::
+
+::: calc
+[#Rent] + [#Food]
+---
+29400
+::: #483854ded1c6
+
 # Sections
 
 A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.

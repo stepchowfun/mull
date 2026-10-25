@@ -156,6 +156,26 @@ To keep what you wrote and have the script write its output separately, divide t
 
 A script can tell whether the block is divided via the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
 
+A link in a block's arguments, or in a divided block's input, stands for what it points to. A link to a page or a section stands for what a reader sees there, with each script block showing just its output, and a link to a file or a directory stands for its full path. Each block runs after the blocks whose outputs it reads, so blocks can build on each other's results, like cells in a notebook. With a script that works out arithmetic:
+
+```md
+:::: ## Rent
+::: calc
+1850 * 12
+---
+22200
+:::
+::::
+
+::: calc
+[#Rent] / 12
+---
+1850
+:::
+```
+
+When the rent changes, both blocks run again.
+
 ### Escaping and code
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.
