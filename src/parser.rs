@@ -116,15 +116,15 @@ enum FenceLine {
 }
 
 // Parse source contents into a scored wiki in a single pass, with source ranges for every page and
-// link, along with any syntax errors in source order. A title line starts a region, which is a page
-// if its title is valid. In the content, code starts with a run of backticks and ends at the next
-// run of exactly as many backticks, on the same line for a run of one or two, and its text is taken
-// as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
-// characters in it. Its target is split at the first `#` which isn't escaped into a page and a
-// section of it, and a link which names a section without its page refers to the page whose content
-// it's in. Outside code and title lines, a backslash escapes the next character, as allowed by
-// whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a run of at
-// least two `#`s and a space, after the indentation of the innermost block containing it, is a
+// link, along with any syntax errors in source order. A page's title line starts a region, which is
+// a page if its title is valid. In the content, code starts with a run of backticks and ends at the
+// next run of exactly as many backticks, on the same line for a run of one or two, and its text is
+// taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
+// plain characters in it. Its target is split at the first `#` which isn't escaped into a page and
+// a section of it, and a link which names a section without its page refers to the page whose
+// content it's in. Outside code and title lines, a backslash escapes the next character, as allowed
+// by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a run of
+// at least two `#`s and a space, after the indentation of the innermost block containing it, is a
 // section's title line, whose title is taken as written. Outside portals and script blocks, a title
 // line starts a section, which must be one level deeper than the section or page it's in and have a
 // title which is new to the page. Outside code, a line which starts with a run of colons, after any
@@ -450,8 +450,8 @@ pub fn parse_at_level(
     };
 
     while let Some(character) = source_contents[position..].chars().next() {
-        // At the start of a line, which is never within code or a link, read a title line, which
-        // starts a new region, a section's title line, or a fence line.
+        // At the start of a line, which is never within code or a link, read a page's title line,
+        // which starts a new region, a section's title line, or a fence line.
         if is_at_line_start {
             is_at_line_start = false;
             let line_end = source_contents[position..]
@@ -465,8 +465,8 @@ pub fn parse_at_level(
             };
             let next_line_start = source_contents.len().min(line_end + '\n'.len_utf8());
             if let Some(raw_title) = title_line_text(line) {
-                // Finish the preceding region, then start one which belongs to a page if its
-                // title is valid and hasn't been used. Content after a title line is in a region.
+                // Finish the preceding region, then start one which belongs to a page if its title
+                // is valid and hasn't been used. Content after a page's title line is in a region.
                 can_report_content_before_title = false;
                 report_unclosed_blocks(&mut open_blocks, &mut errors);
                 end_sections(
@@ -721,7 +721,7 @@ pub fn parse_at_level(
                 continue;
             }
 
-            // Report only the first non-whitespace content before the first title line.
+            // Report only the first non-whitespace content before the first page's title line.
             if can_report_content_before_title && !line.trim().is_empty() {
                 errors.push(syntax_error(
                     "This content isn't in any page.",
@@ -931,8 +931,9 @@ pub fn parse_at_level(
     (wiki, errors)
 }
 
-// Find the text after a title line's prefix, which is a title marker followed by a space. A line
-// that isn't a title line has none, including a bare title marker.
+// Find the text after the prefix of a page's title line, which is a title marker followed by a
+// space. A line that isn't a page's title line has none, including a bare title marker or a
+// section's title line.
 fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
@@ -2083,8 +2084,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
     }
 
-    // Reject a backslash before `#`, which can't be escaped, since only a title marker at the start
-    // of a line is special.
+    // Reject a backslash before `#` outside a link, which can't be escaped there, since only title
+    // markers at the start of a line are special.
     #[test]
     fn hashes_cant_be_escaped() {
         let (_wiki, errors) = parse_fixture("# Home\nC\\# and \\#1");
