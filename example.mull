@@ -86,9 +86,9 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 
 # Sections
 
-A heading divides a page into sections. It starts with `##`, plus another `#` for each level of nesting, and its section ends at the next heading of the same level or higher. A heading in a fence starts a section which ends at the closing fence instead, so the text after the fence belongs to the section around it again.
+A page can be divided into sections. A section's title is marked with `##`, plus another `#` for each level of nesting, and the section ends at the next title of the same level or higher. A title in a fence starts a section which ends at the closing fence instead, so the text after the fence belongs to the section around it again.
 
-Each heading in a page has a different label. To link to a section, follow the page's title with `#` and the label, like [Sections#Dinner], or leave out the title for a section of the same page, like [#Weekends]. A portal can show a section too:
+Each section in a page has a different title. To link to a section, follow the page's title with `#` and the section's title, like [Sections#Dinner], or leave out the title for a section of the same page, like [#Weekends]. A portal can show a section too:
 
 :::: [#Breakfast]
 Usually [Pancakes].

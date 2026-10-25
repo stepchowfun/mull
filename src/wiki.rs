@@ -15,21 +15,21 @@ use std::{
 // These strings define the wiki format's extension, the suffix that names a wiki's file
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
 // relative to the file root, which names a directory if it ends with `/`. Otherwise, it names a
-// page, followed by a section of it after `#`. A heading is a run of at least two of the title
-// marker's `#`s, one for each level, followed by a space. The home page's title identifies the root
-// of every wiki's text-link graph.
+// page, followed by a section of it after `#`. A section's title line marks its title with a run of
+// at least two of the title marker's `#`s, one for each level, followed by a space. The home page's
+// title identifies the root of every wiki's text-link graph.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
-pub const HEADING_MARKER: char = '#';
-pub const MIN_HEADING_LEVEL: usize = 2;
+pub const TITLE_MARKER: char = '#';
+pub const MIN_SECTION_LEVEL: usize = 2;
 pub const SECTION_SEPARATOR: char = '#';
 pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names what a portal shows, the heading of a fenced section, or the script which computes
+// fence names what a portal shows, the title of a fenced section, or the script which computes
 // its body, and a closing fence consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
 
@@ -73,8 +73,8 @@ impl Wiki {
     // Find the page a target names, along with the section of it, if it names one.
     pub fn resolve(&self, target: &Target) -> Option<(&Page, Option<&Section>)> {
         let page = self.pages.get(&target.title)?;
-        match &target.label {
-            Some(label) => Some((page, Some(page.section(label)?))),
+        match &target.section {
+            Some(section_title) => Some((page, Some(page.section(section_title)?))),
             None => Some((page, None)),
         }
     }
@@ -170,33 +170,33 @@ impl Wiki {
         &self,
         page: &Page,
         section: Option<&Section>,
-        section_contents: &HashMap<SectionLabel, String>,
+        section_contents: &HashMap<SectionTitle, String>,
     ) -> String {
         self.canonical_content(page, section, section_contents, &mut |_portal| {
             Some(String::new())
         })
     }
 
-    // Render the content of a page or a section of it from the source, from after its title or
-    // heading but without the blank lines around it, with the indentation of a section's heading
-    // removed from each line. Each section given content is written with that content instead.
-    // Links, headings, and fences are written in their canonical forms, with Unix line endings, no
-    // whitespace at the end of a line, and a blank line around each section without fences. Each
-    // portal shows the body given for it, with each line indented like its opening fence, or is
-    // copied as written if it has none.
+    // Render the content of a page or a section of it from the source, from after its title line
+    // but without the blank lines around it, with the indentation of a section's title line removed
+    // from each line. Each section given content is written with that content instead. Links, title
+    // lines, and fences are written in their canonical forms, with Unix line endings, no whitespace
+    // at the end of a line, and a blank line around each section without fences. Each portal shows
+    // the body given for it, with each line indented like its opening fence, or is copied as
+    // written if it has none.
     fn canonical_content(
         &self,
         page: &Page,
         section: Option<&Section>,
-        section_contents: &HashMap<SectionLabel, String>,
+        section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal) -> Option<String>,
     ) -> String {
         // Use the content given for the section, if any.
-        if let Some(content) = section.and_then(|section| section_contents.get(&section.label)) {
+        if let Some(content) = section.and_then(|section| section_contents.get(&section.title)) {
             return content.clone();
         }
 
-        // Find the content after the title or heading, skipping the blank lines around it but
+        // Find the content after the title line, skipping the blank lines around it but
         // keeping the indentation of its first line, so an indented line which starts with a title
         // marker doesn't become a title.
         let (start, end, indentation) = match section {
@@ -217,9 +217,9 @@ impl Wiki {
                 .map_or(0, |index| index + '\n'.len_utf8());
         let end = start + self.source[start..end].trim_end().len();
 
-        // Write the content, then remove the heading's indentation and the whitespace at the end of
-        // each line, using Unix line endings. Links can't contain line breaks, and each ends with a
-        // delimiter, so this never changes one.
+        // Write the content, then remove the title line's indentation and the whitespace at the end
+        // of each line, using Unix line endings. Links can't contain line breaks, and each ends
+        // with a delimiter, so this never changes one.
         let mut content = String::new();
         self.write_region(page, start, end, section_contents, body, &mut content);
         content
@@ -242,7 +242,7 @@ impl Wiki {
         page: &Page,
         start: usize,
         end: usize,
-        section_contents: &HashMap<SectionLabel, String>,
+        section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal) -> Option<String>,
         content: &mut String,
     ) {
@@ -324,13 +324,13 @@ impl Wiki {
                     if section.is_fenced {
                         content.push_str(&write_block(
                             indentation,
-                            &section.heading(),
+                            &section.title_line(),
                             &section_content,
                         ));
                     } else {
                         separate(content);
                         content.push_str(indentation);
-                        content.push_str(&section.heading());
+                        content.push_str(&section.title_line());
                         if !section_content.is_empty() {
                             content.push_str("\n\n");
                             content.push_str(&indent(&section_content, indentation));
@@ -458,8 +458,9 @@ impl fmt::Display for Wiki {
         let mut pages = self.pages.iter().collect::<Vec<_>>();
         pages.sort_by_key(|(title, page)| Self::rendering_order_key(page.traversal_index, title));
 
-        // Write each page as a heading and its content, omitting the content separator when there's
-        // no content. Add one line break between pages because each page already ends with one.
+        // Write each page as a title line and its content, omitting the content separator when
+        // there's no content. Add one line break between pages because each page already ends with
+        // one.
         for (index, (_title, page)) in pages.into_iter().enumerate() {
             if index > 0 {
                 writeln!(formatter)?;
@@ -486,23 +487,23 @@ pub struct Page {
     pub links: Vec<Link>,
     pub portals: Vec<Portal>,            // In source order
     pub script_blocks: Vec<ScriptBlock>, // In source order
-    pub sections: Vec<Section>,          // In source order, each with a distinct label
+    pub sections: Vec<Section>,          // In source order, each with a distinct title
     pub traversal_index: Option<usize>,  // Position in a depth-first traversal from the root
     pub source_range: SourceRange,       // The complete page without leading or trailing whitespace
     pub title_source_range: SourceRange, // From the title text, not the `#`, through the line's end
 }
 
 impl Page {
-    // Find the section of the page with a label.
-    pub fn section(&self, label: &SectionLabel) -> Option<&Section> {
-        self.sections.iter().find(|section| section.label == *label)
+    // Find the section of the page with a title.
+    pub fn section(&self, title: &SectionTitle) -> Option<&Section> {
+        self.sections.iter().find(|section| section.title == *title)
     }
 
     // Name the page, or a section of it, as a target.
     pub fn target(&self, section: Option<&Section>) -> Target {
         Target {
             title: self.title.clone(),
-            label: section.map(|section| section.label.clone()),
+            section: section.map(|section| section.title.clone()),
         }
     }
 
@@ -518,29 +519,29 @@ impl Page {
     }
 }
 
-// This struct represents a section of a page's content, which a heading starts and names. The
-// title is the first level of heading, and each section is one level deeper than the section or
-// page it's in. A section ends at the next heading of the same or a higher level, or at the end of
-// whatever contains it, unless it's fenced, in which case its heading follows the colons of an
-// opening fence and it ends at the closing fence.
+// This struct represents a section of a page's content, which a title line starts. Its title is
+// marked with a run of `#`s, one for each level: a page's title is at the first level, and each
+// section is one level deeper than the section or page it's in. A section ends at the next title
+// line of the same or a higher level, or at the end of whatever contains it, unless it's fenced, in
+// which case its title follows the colons of an opening fence and it ends at the closing fence.
 #[derive(Clone, Debug)]
 pub struct Section {
-    pub label: SectionLabel,
+    pub title: SectionTitle,
     pub level: usize,
     pub is_fenced: bool,
-    pub source_range: SourceRange, // From the heading's `#` or colons without trailing whitespace
-    pub heading_source_range: SourceRange, // From the heading's `#` through its label's range
-    pub label_source_range: SourceRange, // From the label through the line's end or closing colons
-    pub body_source_range: SourceRange, // After the heading's line, up to the closing fence if any
+    pub source_range: SourceRange, // From the first `#` or colons without trailing whitespace
+    pub marked_title_source_range: SourceRange, // From the first `#` through the title's range
+    pub title_source_range: SourceRange, // From the title through the line's end or closing colons
+    pub body_source_range: SourceRange, // After the title line, up to the closing fence if any
 }
 
 impl Section {
-    // Write the section's heading in its canonical form.
-    pub fn heading(&self) -> String {
+    // Write the section's title line in its canonical form, without any fence.
+    pub fn title_line(&self) -> String {
         format!(
             "{} {}",
-            HEADING_MARKER.to_string().repeat(self.level),
-            self.label.text(Context::Verbatim),
+            TITLE_MARKER.to_string().repeat(self.level),
+            self.title.text(Context::Verbatim),
         )
     }
 }
@@ -653,35 +654,35 @@ impl CodeStr for PageTitle {
     }
 }
 
-// This is a section's label, which links name it by within its page: non-empty, one line, and
+// This is a section's title, which links name it by within its page: non-empty, one line, and
 // trimmed.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SectionLabel(String);
+pub struct SectionTitle(String);
 
-impl SectionLabel {
-    // Make a label from text such as a heading's or a rename's new name, trimming it and
+impl SectionTitle {
+    // Make a title from text such as a title line's or a rename's new name, trimming it and
     // describing any rule it breaks.
     pub fn parse(text: &str) -> Result<Self, String> {
         if text.contains(['\r', '\n']) {
-            return Err("A section label can't contain a line break.".to_owned());
+            return Err("A section title can't contain a line break.".to_owned());
         }
-        let label = text.trim();
-        if label.is_empty() {
-            Err("A section label can't be empty.".to_owned())
+        let title = text.trim();
+        if title.is_empty() {
+            Err("A section title can't be empty.".to_owned())
         } else {
-            Ok(Self(label.to_owned()))
+            Ok(Self(title.to_owned()))
         }
     }
 
-    // Write the label as it appears in a context, such as escaped in a link or as written in a
-    // heading.
+    // Write the title as it appears in a context, such as escaped in a link or as written in a
+    // title line.
     pub fn text(&self, context: Context) -> String {
         escape(&self.0, context)
     }
 }
 
-// Format a label for a message, as written in its heading.
-impl CodeStr for SectionLabel {
+// Format a section's title for a message, as written in its title line.
+impl CodeStr for SectionTitle {
     fn code_str(&self) -> ColoredString {
         self.0.code_str()
     }
@@ -691,7 +692,7 @@ impl CodeStr for SectionLabel {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Target {
     pub title: PageTitle,
-    pub label: Option<SectionLabel>,
+    pub section: Option<SectionTitle>,
 }
 
 impl Target {
@@ -703,19 +704,20 @@ impl Target {
         } else {
             self.title.text(Context::Link)
         };
-        if let Some(label) = &self.label {
+        if let Some(section) = &self.section {
             text.push(SECTION_SEPARATOR);
-            text.push_str(&label.text(Context::Link));
+            text.push_str(&section.text(Context::Link));
         }
         text
     }
 }
 
-// Format a target for a message, with its page and any section as written in their headings.
+// Format a target for a message, with the titles of its page and any section as written in their
+// title lines.
 impl CodeStr for Target {
     fn code_str(&self) -> ColoredString {
-        match &self.label {
-            Some(label) => format!("{}{SECTION_SEPARATOR}{}", self.title.0, label.0).code_str(),
+        match &self.section {
+            Some(section) => format!("{}{SECTION_SEPARATOR}{}", self.title.0, section.0).code_str(),
             None => self.title.code_str(),
         }
     }
@@ -1085,9 +1087,9 @@ mod tests {
         );
     }
 
-    // Write each heading in its canonical form, with one blank line between it and what's around
-    // it, unless it's fenced. Write a fenced section's fences in their canonical form, with a fence
-    // longer than any in it, and without blank lines around its content.
+    // Write each section's title line in its canonical form, with one blank line between it and
+    // what's around it, unless it's fenced. Write a fenced section's fences in their canonical
+    // form, with a fence longer than any in it, and without blank lines around its content.
     #[test]
     fn sections_display() {
         let wiki = parse_wiki(concat!(
@@ -1106,9 +1108,9 @@ mod tests {
         );
     }
 
-    // Refresh each portal to a section with a copy of the section's content after its heading,
-    // without the indentation of its heading, along with the portals in it. A portal to a section
-    // which doesn't exist is left as written.
+    // Refresh each portal to a section with a copy of the section's content after its title line,
+    // without the indentation of its title line, along with the portals in it. A portal to a
+    // section which doesn't exist is left as written.
     #[test]
     fn section_portals_display() {
         let wiki = parse_wiki(concat!(

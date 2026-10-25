@@ -259,8 +259,8 @@ fn run_block(
         }
     })?;
 
-    // Require the output to be readable as a page's content within the block, where headings don't
-    // start sections.
+    // Require the output to be readable as a page's content within the block, where title lines
+    // don't start sections.
     let output_source = format!(
         "{TITLE_PREFIX}{}\n\n{}",
         page.title.text(Context::Verbatim),
@@ -293,8 +293,8 @@ fn run_block(
 
 // Find the values of a script block's arguments. Text outside links and code is split on
 // whitespace, with its escapes resolved. A link to a page stands for the page's title, a link to a
-// section stands for its page's title and its label joined by `#`, and a link to a file or
-// directory stands for its full path. Code stands for its text as written. Pieces which aren't
+// section stands for its page's title and the section's title joined by `#`, and a link to a file
+// or directory stands for its full path. Code stands for its text as written. Pieces which aren't
 // separated by whitespace form one argument.
 fn arguments(
     source_contents: &str,
@@ -322,11 +322,11 @@ fn arguments(
         // Take a link's value.
         if let Some(link) = links.get(&position) {
             let value = match link {
-                Link::Text { target, .. } => match &target.label {
-                    Some(label) => format!(
+                Link::Text { target, .. } => match &target.section {
+                    Some(section) => format!(
                         "{}{SECTION_SEPARATOR}{}",
                         target.title.text(Context::Verbatim),
-                        label.text(Context::Verbatim),
+                        section.text(Context::Verbatim),
                     ),
                     None => target.title.text(Context::Verbatim),
                 },
@@ -547,7 +547,7 @@ fn script_display(file_root: &FileRoot, script: &Path) -> String {
 }
 
 // Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes. A hash
-// has no whitespace in it, unlike a fenced section's heading.
+// has no whitespace in it, unlike a fenced section's title.
 #[cfg(all(test, unix))]
 pub fn hide_hashes(contents: &str) -> String {
     contents
@@ -668,7 +668,8 @@ mod tests {
 
     // Replace each block's body with its script's output, indented like the block and within
     // fences longer than any in it and followed by a hash, filling in a block written on one line.
-    // A block within a fenced section is run too, and headings in the output don't start sections.
+    // A block within a fenced section is run too, and title lines in the output don't start
+    // sections.
     #[cfg(unix)]
     #[test]
     fn runs_replace_bodies() {
@@ -678,13 +679,13 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - b\n  - a\n  :::\n\n",
                 "::: fence :::\n\n",
-                ":::: ## Section\n::: heading :::\n::::\n\n",
+                ":::: ## Section\n::: title :::\n::::\n\n",
                 "# Other\n",
             ),
             &[
                 ("sort.sh", "#!/bin/sh\nsort\n"),
                 ("fence.sh", "#!/bin/sh\necho '::: [Other] :::'\n"),
-                ("heading.sh", "#!/bin/sh\necho '#### Deep'\n"),
+                ("title.sh", "#!/bin/sh\necho '#### Deep'\n"),
             ],
         );
 
@@ -696,7 +697,7 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
                 ":::: fence\n::: [Other] :::\n:::: #hash\n\n",
-                ":::: ## Section\n::: heading\n#### Deep\n::: #hash\n::::\n\n",
+                ":::: ## Section\n::: title\n#### Deep\n::: #hash\n::::\n\n",
                 "# Other\n",
             ),
         );
@@ -785,8 +786,8 @@ mod tests {
         assert_eq!(wiki.run_and_save(false), 5);
     }
 
-    // Take links to pages as their titles, links to sections as their pages' titles and their
-    // labels joined by `#`, and links to files as their paths, code as written, and the rest split
+    // Take links to pages as their titles, links to sections as their pages' titles and their own
+    // titles joined by `#`, and links to files as their paths, code as written, and the rest split
     // on whitespace with its escapes resolved, joining pieces which aren't separated.
     #[test]
     fn script_arguments() {

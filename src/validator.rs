@@ -113,16 +113,16 @@ fn validate_text_links(
             else {
                 continue;
             };
-            let (message, fix) = match (wiki.pages.get(&target.title), &target.label) {
+            let (message, fix) = match (wiki.pages.get(&target.title), &target.section) {
                 (None, _) => (
                     format!("Page {} not found.", target.title.code_str()),
                     Some(Fix::CreatePage(target.title.clone())),
                 ),
-                (Some(target_page), Some(label)) if target_page.section(label).is_none() => (
+                (Some(target_page), Some(section)) if target_page.section(section).is_none() => (
                     format!(
                         "Page {} has no section {}.",
                         target.title.code_str(),
-                        label.code_str(),
+                        section.code_str(),
                     ),
                     None,
                 ),

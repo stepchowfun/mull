@@ -14,8 +14,8 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, HEADING_MARKER, Link, MIN_FENCE_LENGTH, Page,
-        PageTitle, SECTION_SEPARATOR, Section, SectionLabel, TITLE_PREFIX, Target, Wiki,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
+        SECTION_SEPARATOR, Section, SectionTitle, TITLE_MARKER, TITLE_PREFIX, Target, Wiki,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -920,9 +920,9 @@ enum Occurrence<'a> {
     // whitespace. Navigating to a page leaves the cursor before the `#`.
     Title(&'a Page),
 
-    // A section's heading, from its first `#` through its label's range. Navigating to a section
-    // leaves the cursor at its start.
-    Heading(&'a Page, &'a Section),
+    // A section's title line, from its first `#` through its title's range. Navigating to a
+    // section leaves the cursor at its start.
+    SectionTitle(&'a Page, &'a Section),
 
     // A link of any kind in the page's content.
     Link(&'a Link),
@@ -1116,7 +1116,7 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
 }
 
 // Complete a portal or a script block at an editor position, or the target of the link there with
-// page titles, section labels, or filesystem paths. Where more can be chosen after a completion, VS
+// page titles, section titles, or filesystem paths. Where more can be chosen after a completion, VS
 // Code commands, if available, ask for suggestions again.
 fn completion_for_document(
     snapshot: &Snapshot,
@@ -1170,7 +1170,7 @@ fn completion_for_document(
     }
 
     // Complete a text link with the titles of the pages in the wiki which match the typed text, or
-    // after a `#` which isn't escaped, with the labels of the sections of the page before it which
+    // after a `#` which isn't escaped, with the titles of the sections of the page before it which
     // match the text typed after it. A link without a page before the `#` names a section of the
     // page the link would refer to. Replace a closed link in its entirety and an unfinished link
     // through the cursor. Offer nothing while the typed text has a backslash which doesn't escape
@@ -1204,10 +1204,10 @@ fn completion_for_document(
         snapshot,
         wiki.pages.get(&title)?.sections.iter().map(|section| {
             (
-                section.label.text(Context::Verbatim),
+                section.title.text(Context::Verbatim),
                 format!(
                     "{typed_title}{SECTION_SEPARATOR}{}",
-                    section.label.text(Context::Link),
+                    section.title.text(Context::Link),
                 ),
             )
         }),
@@ -1397,10 +1397,11 @@ fn suggest_command() -> Command {
     }
 }
 
-// Complete a text link with the candidates, each a title or a label along with the link's target
-// when it's chosen, whose titles or labels contain the typed text's characters in order, ignoring
-// case, replacing the link at a source range. If there are too many, offer those which start with
-// the typed text first, and mark the list as incomplete so the client asks again as more is typed.
+// Complete a text link with the candidates, each a page's or a section's title along with the
+// link's target when it's chosen, whose titles contain the typed text's characters in order,
+// ignoring case, replacing the link at a source range. If there are too many, offer those which
+// start with the typed text first, and mark the list as incomplete so the client asks again as more
+// is typed.
 fn link_completions(
     snapshot: &Snapshot,
     candidates: impl Iterator<Item = (String, String)>,
@@ -1467,9 +1468,9 @@ fn goto_definition_for_document(
     let (page, section, origin_source_range) =
         target_at(snapshot, snapshot.byte_offset(cursor)?, LinkExtent::Whole)?;
 
-    // Identify the complete source link, title, or heading, and target the start of the destination
-    // page or section with an empty range. Editors preview the source of a nonempty target range
-    // alongside the hover preview, and the selection range has to be within the target range.
+    // Identify the complete source link or title, and target the start of the destination page or
+    // section with an empty range. Editors preview the source of a nonempty target range alongside
+    // the hover preview, and the selection range has to be within the target range.
     let target_range = target_start_range(snapshot, page, section);
     Some(GotoDefinitionResponse::Link(vec![LocationLink {
         origin_selection_range: Some(snapshot.range(origin_source_range)),
@@ -1479,12 +1480,11 @@ fn goto_definition_for_document(
     }]))
 }
 
-// Preview the page, section, or filesystem entry which a title, heading, or link at an editor
-// position names.
+// Preview the page, section, or filesystem entry which a title or link at an editor position names.
 fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
-    // Parse only the wiki syntax because hovering over a text link, title, or heading doesn't
-    // require filesystem validation, and recover from syntax errors so previews keep working while
-    // they're fixed. A filesystem link may preview a directory or a file instead.
+    // Parse only the wiki syntax because hovering over a text link or a title doesn't require
+    // filesystem validation, and recover from syntax errors so previews keep working while they're
+    // fixed. A filesystem link may preview a directory or a file instead.
     let byte_offset = snapshot.byte_offset(cursor)?;
     if let Some(Occurrence::Link(Link::Filesystem {
         target,
@@ -1704,7 +1704,7 @@ fn text_preview(path: &Path) -> Option<String> {
 }
 
 // Locate every text link to the page or section at an editor position, including the links to the
-// sections of a page. Outside a title, heading, or link, that's the page containing the position.
+// sections of a page. Outside a title or link, that's the page containing the position.
 fn references_for_document(
     snapshot: &Snapshot,
     cursor: Position,
@@ -1716,7 +1716,7 @@ fn references_for_document(
     let wiki = snapshot.wiki();
     let (page, section) = match occurrence_at(wiki, snapshot.byte_offset(cursor)?)? {
         Occurrence::Title(page) | Occurrence::Prose(page) => (page, None),
-        Occurrence::Heading(page, section) => (page, Some(section)),
+        Occurrence::SectionTitle(page, section) => (page, Some(section)),
         Occurrence::Link(Link::Text { target, .. }) => wiki.resolve(target)?,
         Occurrence::Link(Link::Filesystem { .. } | Link::Malformed { .. }) => return None,
     };
@@ -1753,7 +1753,7 @@ fn document_highlight_for_document(
     // other text in a page have nothing to highlight.
     let mut highlights = match occurrence_at(wiki, byte_offset)? {
         Occurrence::Title(page) => target_highlights(wiki, page, None),
-        Occurrence::Heading(page, section) => target_highlights(wiki, page, Some(section)),
+        Occurrence::SectionTitle(page, section) => target_highlights(wiki, page, Some(section)),
         Occurrence::Link(Link::Text { target, .. }) => {
             let (page, section) = wiki.resolve(target)?;
             target_highlights(wiki, page, section)
@@ -1845,20 +1845,19 @@ fn prepare_rename_for_document(
         }));
     }
 
-    // Otherwise, resolve a title, a heading, or the part of a text link which names a page or a
-    // section.
+    // Otherwise, resolve a page's or a section's title, or the part of a text link which names a
+    // page or a section.
     let Some((page, section, source_range)) = target_at(snapshot, cursor_offset, LinkExtent::Part)
     else {
         return Ok(None);
     };
 
-    // Select only the title or label and seed the rename prompt with it as written in its title
-    // line or heading.
+    // Select only the title and seed the rename prompt with it as written in its title line.
     Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: snapshot.range(source_range),
         placeholder: section.map_or_else(
             || page.title.text(Context::Verbatim),
-            |section| section.label.text(Context::Verbatim),
+            |section| section.title.text(Context::Verbatim),
         ),
     }))
 }
@@ -1904,9 +1903,9 @@ fn rename_target_for_document(
         return Ok(None);
     };
 
-    // Accept only a title or label which the parser would accept in a title line or heading and
-    // which doesn't already exist. Write it as written in its title line or heading, and escaped in
-    // the part of every matching text link which names it.
+    // Accept only a title which the parser would accept in a title line and which doesn't already
+    // exist. Write it as written in its title line, and escaped in the part of every matching text
+    // link which names it.
     let wiki = snapshot.wiki();
     let (declaration_text, link_text, link_parts_to_edit) = match section {
         None => {
@@ -1934,11 +1933,11 @@ fn rename_target_for_document(
             )
         }
         Some(section) => {
-            let new_label = SectionLabel::parse(new_name)?;
-            if new_label != section.label && page.section(&new_label).is_some() {
+            let new_title = SectionTitle::parse(new_name)?;
+            if new_title != section.title && page.section(&new_title).is_some() {
                 return Err(format!(
                     "Section {} already exists in this page.",
-                    new_label.code_str(),
+                    new_title.code_str(),
                 ));
             }
             let link_parts_to_edit = text_link_source_ranges(wiki, &page.target(Some(section)))
@@ -1946,12 +1945,12 @@ fn rename_target_for_document(
                 .filter_map(|source_range| {
                     link_parts(&snapshot.contents, source_range)
                         .1
-                        .map(|(_separator, label_source_range)| label_source_range)
+                        .map(|(_separator, section_source_range)| section_source_range)
                 })
                 .collect::<Vec<_>>();
             (
-                new_label.text(Context::Verbatim),
-                new_label.text(Context::Link),
+                new_title.text(Context::Verbatim),
+                new_title.text(Context::Link),
                 link_parts_to_edit,
             )
         }
@@ -2474,7 +2473,7 @@ fn document_symbol_for_document(
                     })
                     .chain(page.sections.iter().map(|section| {
                         SymbolInformation {
-                            name: section.label.text(Context::Verbatim),
+                            name: section.title.text(Context::Verbatim),
                             kind: SymbolKind::STRING,
                             tags: None,
                             deprecated: None,
@@ -2513,7 +2512,7 @@ fn target_symbol(
     DocumentSymbol {
         name: section.map_or_else(
             || page.title.text(Context::Verbatim),
-            |section| section.label.text(Context::Verbatim),
+            |section| section.title.text(Context::Verbatim),
         ),
         detail: None,
         kind: if section.is_some() {
@@ -2657,11 +2656,11 @@ fn code_action_for_document(
                         None,
                     )
                 }
-                Fix::SetHeadingLevel { start, end, level } => {
+                Fix::SetSectionLevel { start, end, level } => {
                     // Write one `#` for each level.
-                    let marker = HEADING_MARKER.to_string().repeat(level);
+                    let marker = TITLE_MARKER.to_string().repeat(level);
                     (
-                        format!("Change the heading to start with {}", marker.code_str()),
+                        format!("Mark the title with {}", marker.code_str()),
                         vec![TextEdit::new(
                             snapshot.range(SourceRange { start, end }),
                             marker,
@@ -2907,12 +2906,12 @@ fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
         return Some(Occurrence::Title(page));
     }
 
-    // Look for a heading among the page's sections, which never contains a link.
+    // Look for a section's title line, which never contains a link.
     if let Some(section) = page.sections.iter().find(|section| {
-        section.heading_source_range.start <= byte_offset
-            && byte_offset <= section.heading_source_range.end
+        section.marked_title_source_range.start <= byte_offset
+            && byte_offset <= section.marked_title_source_range.end
     }) {
-        return Some(Occurrence::Heading(page, section));
+        return Some(Occurrence::SectionTitle(page, section));
     }
 
     // Look for a link among the page's own links. Links never overlap, so at most one contains the
@@ -2929,8 +2928,8 @@ fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
 }
 
 // Resolve the page, and any section of it, denoted by a declaration or text link at a source
-// offset, along with the occurrence's range: a title's or heading's label, or whichever extent of a
-// link the caller asked for. A link to a missing page or section denotes nothing.
+// offset, along with the occurrence's range: a page's or a section's title, or whichever extent of
+// a link the caller asked for. A link to a missing page or section denotes nothing.
 fn target_at(
     snapshot: &Snapshot,
     byte_offset: usize,
@@ -2939,8 +2938,8 @@ fn target_at(
     let wiki = snapshot.wiki();
     match occurrence_at(wiki, byte_offset)? {
         Occurrence::Title(page) => Some((page, None, page.title_source_range)),
-        Occurrence::Heading(page, section) => {
-            Some((page, Some(section), section.label_source_range))
+        Occurrence::SectionTitle(page, section) => {
+            Some((page, Some(section), section.title_source_range))
         }
         Occurrence::Link(Link::Text {
             target,
@@ -2951,14 +2950,15 @@ fn target_at(
             match link_extent {
                 LinkExtent::Whole => Some((page, section, *source_range)),
                 LinkExtent::Part => {
-                    let (title_source_range, label) = link_parts(&snapshot.contents, *source_range);
-                    match label {
-                        Some((separator, label_source_range))
+                    let (page_source_range, section_part) =
+                        link_parts(&snapshot.contents, *source_range);
+                    match section_part {
+                        Some((separator, section_source_range))
                             if *is_local || separator <= byte_offset =>
                         {
-                            Some((page, section, label_source_range))
+                            Some((page, section, section_source_range))
                         }
-                        _ => Some((page, None, title_source_range)),
+                        _ => Some((page, None, page_source_range)),
                     }
                 }
             }
@@ -2977,10 +2977,10 @@ fn target_start_range(snapshot: &Snapshot, page: &Page, section: Option<&Section
     Range::new(start, start)
 }
 
-// Find where a page or a section is declared: its title or its label.
+// Find where a page or a section is declared: its title.
 fn declaration_source_range(page: &Page, section: Option<&Section>) -> SourceRange {
     section.map_or(page.title_source_range, |section| {
-        section.label_source_range
+        section.title_source_range
     })
 }
 
@@ -3066,7 +3066,7 @@ fn text_link_source_ranges(wiki: &Wiki, target: &Target) -> Vec<SourceRange> {
                 source_range,
                 ..
             } if link_target.title == target.title
-                && (target.label.is_none() || link_target.label == target.label) =>
+                && (target.section.is_none() || link_target.section == target.section) =>
             {
                 Some(*source_range)
             }
@@ -5601,7 +5601,7 @@ mod tests {
         let baseline = Baseline::from([(
             Target {
                 title: PageTitle::parse("Pancakes").unwrap(),
-                label: None,
+                section: None,
             },
             Arc::from("Mix."),
         )]);
@@ -5738,7 +5738,7 @@ mod tests {
         let baseline = Baseline::from([(
             Target {
                 title: PageTitle::parse("Other").unwrap(),
-                label: None,
+                section: None,
             },
             Arc::from("::: sort\n- d\n- c\n:::"),
         )]);
@@ -6262,10 +6262,10 @@ mod tests {
         );
     }
 
-    // Fix a heading at the wrong level by rewriting its `#`s, applying each fix's edit from the
-    // end. A fix isn't offered once its error is gone.
+    // Fix a section at the wrong level by rewriting the `#`s marking its title, applying each fix's
+    // edit from the end. A fix isn't offered once its error is gone.
     #[test]
-    fn code_actions_fix_heading_levels() {
+    fn code_actions_fix_section_levels() {
         let source = "# Home\n\n### Deep\n\n## Fine\n\n#### Deeper";
         let uri = untitled_uri();
         let section_diagnostics = diagnostics(&uri, source);
@@ -6285,10 +6285,7 @@ mod tests {
         }
         assert_eq!(
             titles,
-            vec![
-                "Change the heading to start with `##`",
-                "Change the heading to start with `###`",
-            ],
+            vec!["Mark the title with `##`", "Mark the title with `###`"],
         );
         edits.sort_by_key(|edit| byte_offset(source, edit.range.start).unwrap());
         let mut applied = source.to_owned();
@@ -6306,10 +6303,10 @@ mod tests {
         );
     }
 
-    // Complete a link to a section with the labels of the sections of the page before its `#`, or
+    // Complete a link to a section with the titles of the sections of the page before its `#`, or
     // of the page the link is in if it names no page, in source order.
     #[test]
-    fn completions_offer_section_labels() {
+    fn completions_offer_section_titles() {
         let source = concat!(
             "# Home\n\n[Budget#mo\n\n[#n\n\n## Notes\n\n",
             "# Budget\n\n## Monthly\n\n## Yearly\n\n## Mortgage",
@@ -6345,7 +6342,7 @@ mod tests {
         );
     }
 
-    // Navigate from a link to a section, or from its heading, to the start of the section, and
+    // Navigate from a link to a section, or from its title, to the start of the section, and
     // preview the section as written.
     #[test]
     fn navigation_targets_sections() {
@@ -6380,7 +6377,7 @@ mod tests {
         }
     }
 
-    // Find the links to a section from its heading or a link to it, and the links to a page,
+    // Find the links to a section from its title or a link to it, and the links to a page,
     // including those to its sections, from its title.
     #[test]
     fn references_find_section_links() {
@@ -6418,8 +6415,8 @@ mod tests {
         );
     }
 
-    // Rename a section from its heading or the part of a link which names it, along with the
-    // label in every link to it, and rename a page along with the part of every link which names
+    // Rename a section from its title or the part of a link which names it, along with the part of
+    // every link which names it, and rename a page along with the part of every link which names
     // it, but not links which name its sections without it.
     #[test]
     fn rename_updates_sections() {

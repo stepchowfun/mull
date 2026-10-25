@@ -2,15 +2,15 @@
 // appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, `#`
 // separates a link's page from a section, and a backslash escapes the character after it
 // [ref:content_escapes]. Which characters a backslash can escape depends on the context, since
-// backticks are plain characters in a link's target, `#` is only special in one, and title lines,
-// headings, and code are taken as written.
+// backticks are plain characters in a link's target, `#` is only special in one, and title lines
+// and code are taken as written.
 
 // This is where text appears in a wiki's source, which determines how it's escaped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Context {
     Text,     // Content outside links and code
     Link,     // Between a link's delimiters
-    Verbatim, // A title line, a heading, or code, where a backslash is a plain character
+    Verbatim, // A title line or code, where a backslash is a plain character
 }
 
 // Escape plain text, such as a page title or a path, so it retains its meaning in a context.

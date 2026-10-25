@@ -3,7 +3,7 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     parser,
-    wiki::{PageTitle, Portal, SectionLabel, TITLE_PREFIX, Target, Wiki},
+    wiki::{PageTitle, Portal, SectionTitle, TITLE_PREFIX, Target, Wiki},
 };
 use std::{
     cmp::Reverse,
@@ -26,8 +26,8 @@ pub struct Instances {
 }
 
 // This is an instance of a page or a section shown in portals, which is either the original or a
-// copy of it, possibly within another copy. Errors about it are reported at the original's title or
-// label, or at the link in the copy's opening fence.
+// copy of it, possibly within another copy. Errors about it are reported at the original's title,
+// or at the link in the copy's opening fence.
 #[derive(Debug)]
 struct Instance {
     content: String,
@@ -122,7 +122,7 @@ fn collect_copies(
             vec![Instance {
                 content: wiki.own_content(page, section),
                 source_range: section.map_or(page.title_source_range, |section| {
-                    section.label_source_range
+                    section.title_source_range
                 }),
             }]
         })
@@ -326,7 +326,7 @@ pub fn propagate(
             for &(outer_target, _outer_page, outer_section) in &targets {
                 if outer_target.title != target.title
                     || outer_section.is_some_and(|outer_section| {
-                        outer_section.label == section.label
+                        outer_section.title == section.title
                             || !(outer_section.source_range.start..outer_section.source_range.end)
                                 .contains(&section.source_range.start)
                     })
@@ -344,7 +344,7 @@ pub fn propagate(
                         outer_content,
                         &page.title,
                         level,
-                        &section.label,
+                        &section.title,
                         &content,
                         target_baseline,
                     ) {
@@ -378,13 +378,13 @@ pub fn propagate(
     // sections, or else its own content with the changes of its sections. Replace the content of
     // each page whose content changes, from the end so earlier offsets stay valid, and read the
     // result.
-    let mut section_changes = HashMap::<&PageTitle, HashMap<SectionLabel, String>>::new();
+    let mut section_changes = HashMap::<&PageTitle, HashMap<SectionTitle, String>>::new();
     for (target, (content, _source_ranges)) in &changes {
-        if let Some(label) = &target.label {
+        if let Some(section) = &target.section {
             section_changes
                 .entry(&target.title)
                 .or_default()
-                .insert(label.clone(), content.clone());
+                .insert(section.clone(), content.clone());
         }
     }
     let mut replacements = changes
@@ -446,7 +446,7 @@ fn write_section(
     instance: &str,
     title: &PageTitle,
     level: usize,
-    label: &SectionLabel,
+    section_title: &SectionTitle,
     content: &str,
     baseline: Option<&str>,
 ) -> Option<String> {
@@ -457,13 +457,13 @@ fn write_section(
         .pages
         .get(title)
         .filter(|_| errors.is_empty())?;
-    let section_content = instance_wiki.own_content(page, Some(page.section(label)?));
+    let section_content = instance_wiki.own_content(page, Some(page.section(section_title)?));
     (section_content == content || baseline.is_some_and(|baseline| section_content == baseline))
         .then(|| {
             instance_wiki.own_content_with(
                 page,
                 None,
-                &HashMap::from([(label.clone(), content.to_owned())]),
+                &HashMap::from([(section_title.clone(), content.to_owned())]),
             )
         })
 }
@@ -476,7 +476,7 @@ mod tests {
         error::Error,
         line_index::LineIndex,
         parser,
-        wiki::{PageTitle, SectionLabel, Target},
+        wiki::{PageTitle, SectionTitle, Target},
     };
     use std::{fmt::Write, sync::Arc};
 
@@ -488,15 +488,15 @@ mod tests {
         let baseline = baseline
             .iter()
             .map(|(target, content)| {
-                let (title, label) = target
+                let (title, section) = target
                     .split_once('#')
-                    .map_or((*target, None), |(title, label)| {
-                        (title, Some(SectionLabel::parse(label).unwrap()))
+                    .map_or((*target, None), |(title, section)| {
+                        (title, Some(SectionTitle::parse(section).unwrap()))
                     });
                 (
                     Target {
                         title: PageTitle::parse(title).unwrap(),
-                        label,
+                        section,
                     },
                     Arc::from(*content),
                 )

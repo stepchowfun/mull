@@ -6,7 +6,7 @@
       "include": "#titles"
     },
     {
-      "include": "#secondary-headings"
+      "include": "#section-title-lines"
     },
     {
       "include": "#fences"
@@ -525,7 +525,7 @@
         }
       }
     },
-    "secondary-headings": {
+    "section-title-lines": {
       "name": "markup.italic.heading.mull",
       "match": "^(#{2,}) (.*)$",
       "captures": {
@@ -537,7 +537,7 @@
         }
       }
     },
-    "indented-headings": {
+    "indented-section-title-lines": {
       "name": "markup.italic.heading.mull",
       "match": "^[ \\t]*(#{2,}) (.*)$",
       "captures": {
@@ -614,7 +614,7 @@
           },
           "patterns": [
             {
-              "include": "#indented-headings"
+              "include": "#indented-section-title-lines"
             },
             {
               "include": "#fences"
@@ -671,7 +671,7 @@
           },
           "patterns": [
             {
-              "include": "#indented-headings"
+              "include": "#indented-section-title-lines"
             },
             {
               "include": "#fences"

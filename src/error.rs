@@ -26,8 +26,9 @@ pub enum Fix {
     // Escape the backslash at this byte offset in the wiki's source.
     EscapeBackslash(usize),
 
-    // Replace the `#`s of a heading, from a byte offset to another, with those of a level.
-    SetHeadingLevel {
+    // Replace the `#`s marking a section's title, from a byte offset to another, with those of a
+    // level.
+    SetSectionLevel {
         start: usize,
         end: usize,
         level: usize,
