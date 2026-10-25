@@ -35,8 +35,7 @@ Each page starts with a `# Title`, followed by the contents of the page. To link
 
 A wiki starts with a `Home` page. Mull requires that every other page is *reachable* (directly or indirectly) by following links, starting from `Home`. This rule promotes a basic form of organization that doesn't involve any hierarchical structure. Pages serve the roles traditionally filled by files *and* directories.
 
-> [!NOTE]
-> Mull formats the wiki when you save the file (default behavior), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
+Mull formats the wiki when you save the file (default behavior), or when you explicitly request it. It chooses the ordering of the pages for you, putting related pages near to each other. Linking to pages is the only way to organize them.
 
 ### Dividing a page into sections
 
