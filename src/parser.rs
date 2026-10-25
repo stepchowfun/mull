@@ -1,12 +1,13 @@
 use crate::{
     error::{Error, Fix, SourceRange},
-    escaping::{Context, invalid_escape_message, is_escapable, unescape},
+    escaping::{Context, invalid_escape_message, is_escapable, unescape, unescaped_indices},
     format::CodeStr,
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle, Portal,
-        ScriptBlock, TITLE_PREFIX, Wiki,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, HEADING_MARKER, Link, MIN_FENCE_LENGTH,
+        MIN_HEADING_LEVEL, Page, PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section,
+        SectionLabel, TITLE_PREFIX, Target, Wiki,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -15,14 +16,31 @@ use std::{collections::HashSet, path::Path};
 const MIN_MULTILINE_CODE_LENGTH: usize = 3;
 
 // This struct retains what's needed to finish a region at its next boundary: its title, if it has
-// a valid one which hasn't been used, where it starts, and the links, portals, and script blocks in
-// its content.
+// a valid one which hasn't been used, where it starts, the links, portals, script blocks, and
+// sections in its content, and the labels its headings have used.
 struct PendingPage {
     title: Option<(PageTitle, SourceRange)>,
     source_start: usize,
     links: Vec<Link>,
     portals: Vec<Portal>,
     script_blocks: Vec<ScriptBlock>,
+    sections: Vec<Section>,
+    labels: HashSet<SectionLabel>,
+}
+
+impl PendingPage {
+    // Start a region at an offset, with its title if it's a page.
+    fn new(title: Option<(PageTitle, SourceRange)>, source_start: usize) -> Self {
+        Self {
+            title,
+            source_start,
+            links: Vec::new(),
+            portals: Vec::new(),
+            script_blocks: Vec::new(),
+            sections: Vec::new(),
+            labels: HashSet::new(),
+        }
+    }
 }
 
 // This struct tracks a block which has been opened but not yet closed.
@@ -34,12 +52,42 @@ struct OpenBlock {
     one_line_end: Option<usize>, // The end of the line of a block written on one line
 }
 
-// These are the kinds of blocks. A portal's page is known once the link in its opening fence has
-// been read, if that link names a page. A script block's name is known if it's valid, along with
-// where it and the arguments after it are.
+// These are the kinds of blocks. A portal's target is known once the link in its opening fence has
+// been read, if that link names a page or a section, along with whether it names a section without
+// its page. A script block's name is known if it's valid, along with where it and the arguments
+// after it are. A fenced section is tracked as a section too, unless it's within a portal or a
+// script block, which takes it as text.
 enum OpenBlockKind {
-    Portal(Option<(PageTitle, SourceRange)>),
+    Portal(Option<(Target, bool, SourceRange)>),
     Script(Option<(String, SourceRange, SourceRange)>),
+    Section,
+}
+
+// This struct tracks a section which has been started but not yet ended, outside portals and script
+// blocks. Its label is known if it's valid and hasn't been used in the page. The depth of its
+// content is the number of blocks containing it, which for a fenced section includes its own.
+struct OpenSection {
+    label: Option<(SectionLabel, SourceRange)>,
+    level: usize,
+    is_fenced: bool,
+    start: usize, // The offset of its heading's `#` or its opening fence's colons
+    heading_start: usize, // The offset of its heading's `#`
+    body_start: usize, // The offset of the line after its heading
+    depth: usize,
+}
+
+// This struct describes a heading which starts a section: its level, where its `#`s are, its label
+// if it's valid, where the section starts, where the heading's line and the line after it start,
+// and the number of blocks containing it, which doesn't include a fenced section's own.
+struct Heading {
+    level: usize,
+    marker_source_range: SourceRange,
+    label: Result<(SectionLabel, SourceRange), Error>,
+    start: usize,
+    line_start: usize,
+    body_start: usize,
+    depth: usize,
+    is_fenced: bool,
 }
 
 // This struct tracks a link which has been opened but not yet closed.
@@ -71,41 +119,53 @@ enum FenceLine {
 // if its title is valid. In the content, code starts with a run of backticks and ends at the next
 // run of exactly as many backticks, on the same line for a run of one or two, and its text is taken
 // as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are plain
-// characters in it. Outside code and title lines, a backslash escapes the next character, as
-// allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a
-// run of colons, after any indentation, is a fence. An opening fence starts a block: it's a portal
-// to the page named by the link after it, or names the script which computes the block's body,
-// followed by the script's arguments. A closing fence consists of colons, followed by a hash only
-// for a script block, and closes the innermost open block with a fence of the same length. A block
-// can also be written on one line, closed by a run of colons after its argument, for formatting or
-// its script to fill in. The wiki retains as much of the source as possible so it can still be
-// validated and navigated, but it omits the content of duplicate pages, invalid titles, and
-// anything before the first title, so it mustn't be rendered if there are any syntax errors. The
-// line index locates syntax errors in their source listings.
-#[allow(
-    clippy::too_many_lines,
-    reason = "The function reads the source in one pass, tracking the state of the region, link, \
-              portals, and line being read."
-)]
+// characters in it. Its target is split at the first `#` which isn't escaped into a page and a
+// section of it, and a link which names a section without its page refers to the page whose
+// content it's in. Outside code and title lines, a backslash escapes the next character, as allowed
+// by whether it's in a link [ref:content_escapes]. Outside code, a line which starts with a run of
+// at least two `#`s and a space, after the indentation of the innermost block containing it, is a
+// heading, whose text is taken as written. Outside portals and script blocks, a heading starts a
+// section, which must be one level deeper than the section or page it's in and have a label which
+// is new to the page. Outside code, a line which starts with a run of colons, after any
+// indentation, is a fence. An opening fence starts a block: it's a portal to the page or section
+// named by the link after it, a fenced section with the heading after it, or names the script which
+// computes the block's body, followed by the script's arguments. A closing fence consists of
+// colons, followed by a hash only for a script block, and closes the innermost open block with a
+// fence of the same length. A block can also be written on one line, closed by a run of colons
+// after its argument, for formatting or its script to fill in. The wiki retains as much of the
+// source as possible so it can still be validated and navigated, but it omits the content of
+// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
+// if there are any syntax errors. The line index locates syntax errors in their source listings.
 pub fn parse(
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
 ) -> (Wiki, Vec<Error>) {
+    parse_at_level(source_path, source_contents, line_index, 1)
+}
+
+// Parse source contents as `parse` does, as if each title were a heading at a level, so the
+// sections in a page start one level deeper, as for a copy of a section read as a page's content.
+#[allow(
+    clippy::too_many_lines,
+    reason = "The function reads the source in one pass, tracking the state of the region, link, \
+              blocks, sections, and line being read."
+)]
+pub fn parse_at_level(
+    source_path: Option<&Path>,
+    source_contents: &str,
+    line_index: &LineIndex,
+    title_level: usize,
+) -> (Wiki, Vec<Error>) {
     // Accumulate parsed pages, errors, and the state of the scan. The region being read starts as
     // the untitled region before the first title.
     let mut wiki = Wiki::new(source_contents);
     let mut errors = Vec::<Error>::new();
-    let mut pending_page = PendingPage {
-        title: None,
-        source_start: 0,
-        links: Vec::new(),
-        portals: Vec::new(),
-        script_blocks: Vec::new(),
-    };
+    let mut pending_page = PendingPage::new(None, 0);
     let mut can_report_content_before_title = true;
     let mut open_link = None::<OpenLink>;
     let mut open_blocks = Vec::<OpenBlock>::new();
+    let mut open_sections = Vec::<OpenSection>::new();
     let mut opening_fence_links_before = None::<usize>; // Links before the fence whose line is read
     let mut unclosable_lengths = HashSet::new();
     let mut is_at_line_start = true;
@@ -143,8 +203,8 @@ pub fn parse(
             ));
         };
 
-    // Once a portal's opening fence has been read, find the page named by the link which makes up
-    // its argument, which must be the only link read since the fence started.
+    // Once a portal's opening fence has been read, find the page or section named by the link
+    // which makes up its argument, which must be the only link read since the fence started.
     let read_opening_fence = |open_block: &mut OpenBlock,
                               links: &[Link],
                               links_before: usize,
@@ -154,24 +214,27 @@ pub fn parse(
         match new_links {
             [
                 Link::Text {
-                    title,
+                    target,
+                    is_local,
                     source_range,
                 },
             ] if *source_range == argument_source_range => {
-                open_block.kind = OpenBlockKind::Portal(Some((title.clone(), *source_range)));
+                open_block.kind =
+                    OpenBlockKind::Portal(Some((target.clone(), *is_local, *source_range)));
             }
             [Link::Malformed { .. }] => {}
             [Link::Filesystem { source_range, .. }] if *source_range == argument_source_range => {
                 errors.push(syntax_error(
-                    "A portal can only show a page.",
+                    "A portal can only show a page or a section.",
                     *source_range,
                     None,
                 ));
             }
             _ => errors.push(syntax_error(
                 &format!(
-                    "A portal names the page it shows with a link, like {}.",
+                    "A portal names what it shows with a link, like {} or {}.",
                     "::: [Page]".code_str(),
+                    "::: [Page#Section]".code_str(),
                 ),
                 if argument_source_range.start == argument_source_range.end {
                     SourceRange {
@@ -201,12 +264,88 @@ pub fn parse(
         }
     };
 
+    // Start a section at a heading, after ending the sections without fences in the same blocks
+    // which it follows at its level or a deeper one. Require it to be one level deeper than the
+    // section or page it's in, and its label to be valid and new to the page.
+    let start_section = |open_sections: &mut Vec<OpenSection>,
+                         pending_page: &mut PendingPage,
+                         errors: &mut Vec<Error>,
+                         heading: Heading| {
+        // End the sections it follows, at the start of its line.
+        while let Some(open_section) = open_sections.last()
+            && !open_section.is_fenced
+            && open_section.depth == heading.depth
+            && open_section.level >= heading.level
+        {
+            let open_section = open_sections
+                .pop()
+                .expect("The last open section should exist.");
+            finish_section(
+                pending_page,
+                open_section,
+                heading.line_start,
+                heading.line_start,
+                source_contents,
+            );
+        }
+
+        // Require the heading to be one level deeper than the section or page it's in.
+        let expected_level = open_sections
+            .last()
+            .map_or(title_level, |open_section| open_section.level)
+            + 1;
+        if heading.level != expected_level {
+            errors.push(syntax_error(
+                &format!(
+                    "This heading should start with {}, one level deeper than the heading it's \
+                     under.",
+                    HEADING_MARKER.to_string().repeat(expected_level).code_str(),
+                ),
+                heading.marker_source_range,
+                None,
+            ));
+        }
+
+        // Keep the label if it's valid and new to the page.
+        let label = match heading.label {
+            Ok((label, label_source_range)) if pending_page.labels.contains(&label) => {
+                errors.push(syntax_error(
+                    &format!("Section {} already exists in this page.", label.code_str()),
+                    label_source_range,
+                    None,
+                ));
+                None
+            }
+            Ok((label, label_source_range)) => {
+                pending_page.labels.insert(label.clone());
+                Some((label, label_source_range))
+            }
+            Err(error) => {
+                errors.push(error);
+                None
+            }
+        };
+        open_sections.push(OpenSection {
+            label,
+            level: heading.level,
+            is_fenced: heading.is_fenced,
+            start: heading.start,
+            heading_start: heading.marker_source_range.start,
+            body_start: heading.body_start,
+            depth: heading.depth + usize::from(heading.is_fenced),
+        });
+    };
+
     // Close the block at an index among those open, reporting any open within it and a hash on
-    // its closing fence unless it's a script block, and keep it if it isn't within another and is
-    // either a portal which names a page or a script block with a valid name.
+    // its closing fence unless it's a script block, and end the sections within it, along with its
+    // own if it's a fenced section, whose body ends at an offset. Keep the block if it's not within
+    // a portal or a script block and is either a portal which names a target or a script block with
+    // a valid name.
     let close_block = |open_blocks: &mut Vec<OpenBlock>,
+                       open_sections: &mut Vec<OpenSection>,
                        index: usize,
                        end: usize,
+                       body_end: usize,
                        hash_source_range: Option<SourceRange>,
                        pending_page: &mut PendingPage,
                        errors: &mut Vec<Error>| {
@@ -222,7 +361,28 @@ pub fn parse(
                 None,
             ));
         }
-        if index > 0 {
+        while let Some(open_section) = open_sections.last()
+            && open_section.depth > index
+        {
+            let open_section = open_sections
+                .pop()
+                .expect("The last open section should exist.");
+            if !open_section.is_fenced {
+                finish_section(
+                    pending_page,
+                    open_section,
+                    body_end,
+                    body_end,
+                    source_contents,
+                );
+            } else if open_section.depth == index + 1 {
+                finish_section(pending_page, open_section, end, body_end, source_contents);
+            }
+        }
+        if open_blocks
+            .iter()
+            .any(|open_block| !matches!(open_block.kind, OpenBlockKind::Section))
+        {
             return;
         }
         let source_range = SourceRange {
@@ -230,9 +390,10 @@ pub fn parse(
             end,
         };
         match open_block.kind {
-            OpenBlockKind::Portal(Some((title, link_source_range))) => {
+            OpenBlockKind::Portal(Some((target, is_local, link_source_range))) => {
                 pending_page.portals.push(Portal {
-                    title,
+                    target,
+                    is_local,
                     source_range,
                     link_source_range,
                 });
@@ -250,13 +411,14 @@ pub fn parse(
                     }),
                 });
             }
-            OpenBlockKind::Portal(None) | OpenBlockKind::Script(None) => {}
+            OpenBlockKind::Portal(None) | OpenBlockKind::Script(None) | OpenBlockKind::Section => {}
         }
     };
 
-    // Once an opening fence's line has been read, find the page a portal names, and close the
+    // Once an opening fence's line has been read, find the target a portal names, and close the
     // block if it's written on one line.
     let finish_opening_fence = |open_blocks: &mut Vec<OpenBlock>,
+                                open_sections: &mut Vec<OpenSection>,
                                 pending_page: &mut PendingPage,
                                 links_before: usize,
                                 errors: &mut Vec<Error>| {
@@ -269,7 +431,9 @@ pub fn parse(
         if let Some(end) = open_block.one_line_end {
             close_block(
                 open_blocks,
+                open_sections,
                 open_blocks.len() - 1,
+                end,
                 end,
                 None,
                 pending_page,
@@ -280,7 +444,7 @@ pub fn parse(
 
     while let Some(character) = source_contents[position..].chars().next() {
         // At the start of a line, which is never within code or a link, read a title line, which
-        // starts a new region, or a fence line.
+        // starts a new region, a heading, or a fence line.
         if is_at_line_start {
             is_at_line_start = false;
             let line_end = source_contents[position..]
@@ -292,18 +456,30 @@ pub fn parse(
                 start: position,
                 end: position + line.len(),
             };
+            let next_line_start = source_contents.len().min(line_end + '\n'.len_utf8());
             if let Some(raw_title) = title_line_text(line) {
                 // Finish the preceding region, then start one which belongs to a page if its
                 // title is valid and hasn't been used. Content after a title line is in a region.
                 can_report_content_before_title = false;
                 report_unclosed_blocks(&mut open_blocks, &mut errors);
+                end_sections(
+                    &mut open_sections,
+                    &mut pending_page,
+                    position,
+                    source_contents,
+                );
                 finish_page(&mut wiki, pending_page, position, source_contents);
-                let title = match parse_title(
-                    raw_title,
+                let title = match read_name(
+                    PageTitle::parse,
+                    SourceRange {
+                        start: line_source_range.end - raw_title.len(),
+                        end: line_source_range.end,
+                    },
+                    line_source_range.end,
+                    line_source_range,
                     source_path,
                     source_contents,
                     line_index,
-                    line_source_range,
                 ) {
                     Ok((title, title_source_range)) if wiki.pages.contains_key(&title) => {
                         errors.push(syntax_error(
@@ -319,22 +495,66 @@ pub fn parse(
                         None
                     }
                 };
-                pending_page = PendingPage {
-                    title,
-                    source_start: position,
-                    links: Vec::new(),
-                    portals: Vec::new(),
-                    script_blocks: Vec::new(),
-                };
+                pending_page = PendingPage::new(title, position);
                 position = line_end;
                 continue;
             }
 
-            // Read a fence line within a page. An opening fence starts a block, either a portal
-            // or a script block, whose argument is read as usual from where it starts, and which
-            // ends with the line if it's written on one line. A closing fence ends the innermost
-            // open block with a fence of the same length, and any open within it, noting any hash
-            // after it.
+            // Read a heading within a page, whose text is taken as written, and start a section
+            // there if it isn't within a portal or a script block.
+            if !can_report_content_before_title
+                && let Some((level, label_offset)) = heading_line(
+                    line,
+                    open_blocks.last().map_or("", |open_block| {
+                        line_indentation(source_contents, open_block.start)
+                    }),
+                )
+            {
+                if open_blocks
+                    .iter()
+                    .all(|open_block| matches!(open_block.kind, OpenBlockKind::Section))
+                {
+                    let marker_start = position + label_offset - ' '.len_utf8() - level;
+                    let label = read_name(
+                        SectionLabel::parse,
+                        SourceRange {
+                            start: position + label_offset,
+                            end: line_source_range.end,
+                        },
+                        line_source_range.end,
+                        line_source_range,
+                        source_path,
+                        source_contents,
+                        line_index,
+                    );
+                    start_section(
+                        &mut open_sections,
+                        &mut pending_page,
+                        &mut errors,
+                        Heading {
+                            level,
+                            marker_source_range: SourceRange {
+                                start: marker_start,
+                                end: marker_start + level,
+                            },
+                            label,
+                            start: marker_start,
+                            line_start: position,
+                            body_start: next_line_start,
+                            depth: open_blocks.len(),
+                            is_fenced: false,
+                        },
+                    );
+                }
+                position = line_end;
+                continue;
+            }
+
+            // Read a fence line within a page. An opening fence starts a block, either a portal,
+            // a fenced section, or a script block, whose argument is read as usual from where it
+            // starts, and which ends with the line if it's written on one line. A closing fence
+            // ends the innermost open block with a fence of the same length, and any open within
+            // it, noting any hash after it.
             if !can_report_content_before_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
@@ -343,12 +563,69 @@ pub fn parse(
                         argument: (argument_start, argument_end),
                         is_one_line,
                     } => {
-                        // An argument which starts with a link is a portal's. Otherwise, it's a
-                        // script block's: the script's name, which must be valid, and then its
-                        // arguments.
+                        // An argument which starts with a link is a portal's, and one which starts
+                        // with `#` is a fenced section's heading. Otherwise, it's a script block's:
+                        // the script's name, which must be valid, and then its arguments.
                         let argument = &line[argument_start..argument_end];
                         let kind = if argument.starts_with('[') {
                             OpenBlockKind::Portal(None)
+                        } else if argument.starts_with(HEADING_MARKER) {
+                            // Read the heading, and start a section there unless the block is
+                            // within a portal or a script block.
+                            let level =
+                                argument.len() - argument.trim_start_matches(HEADING_MARKER).len();
+                            let label = argument[level..].trim_start();
+                            if level < MIN_HEADING_LEVEL || label.len() == argument.len() - level {
+                                errors.push(syntax_error(
+                                    &format!(
+                                        "A fenced section's heading is a run of at least two {}s \
+                                         followed by a space and a label, like {}.",
+                                        "#".code_str(),
+                                        "::: ## Section".code_str(),
+                                    ),
+                                    SourceRange {
+                                        start: position + argument_start,
+                                        end: position + argument_end,
+                                    },
+                                    None,
+                                ));
+                            } else if open_blocks
+                                .iter()
+                                .all(|open_block| matches!(open_block.kind, OpenBlockKind::Section))
+                            {
+                                let label_start = position + argument_end - label.len();
+                                let label = read_name(
+                                    SectionLabel::parse,
+                                    SourceRange {
+                                        start: label_start,
+                                        end: position + argument_end,
+                                    },
+                                    position + argument_end,
+                                    line_source_range,
+                                    source_path,
+                                    source_contents,
+                                    line_index,
+                                );
+                                start_section(
+                                    &mut open_sections,
+                                    &mut pending_page,
+                                    &mut errors,
+                                    Heading {
+                                        level,
+                                        marker_source_range: SourceRange {
+                                            start: position + argument_start,
+                                            end: position + argument_start + level,
+                                        },
+                                        label,
+                                        start: position + indentation,
+                                        line_start: position,
+                                        body_start: next_line_start,
+                                        depth: open_blocks.len(),
+                                        is_fenced: true,
+                                    },
+                                );
+                            }
+                            OpenBlockKind::Section
                         } else {
                             let name_end =
                                 argument.find(char::is_whitespace).unwrap_or(argument.len());
@@ -403,8 +680,10 @@ pub fn parse(
                         {
                             close_block(
                                 &mut open_blocks,
+                                &mut open_sections,
                                 index,
                                 line_source_range.end,
+                                position,
                                 hash.map(|(start, end)| SourceRange {
                                     start: position + start,
                                     end: position + end,
@@ -482,6 +761,7 @@ pub fn parse(
                 if let Some(links_before) = opening_fence_links_before.take() {
                     finish_opening_fence(
                         &mut open_blocks,
+                        &mut open_sections,
                         &mut pending_page,
                         links_before,
                         &mut errors,
@@ -513,7 +793,8 @@ pub fn parse(
                 if let Some(link) = open_link.take() {
                     // Parse the target unless the link has a syntax error, whose target is
                     // unreliable, including a backslash which doesn't escape anything. Keep a
-                    // link whose target doesn't parse as a malformed link.
+                    // link whose target doesn't parse, or which names a section without its page
+                    // where there's no page, as a malformed link.
                     let link_source_range = SourceRange {
                         start: link.start,
                         end: position + ']'.len_utf8(),
@@ -524,24 +805,28 @@ pub fn parse(
                         is_closed: true,
                     };
                     pending_page.links.push(
-                        match (!link.has_nested_start)
-                            .then(|| unescape(target, Context::Link))
-                            .flatten()
-                        {
-                            Some(target) => match parse_link(
-                                &target,
+                        if link.has_nested_start || unescape(target, Context::Link).is_none() {
+                            malformed_link
+                        } else {
+                            match parse_link(
+                                target,
+                                local_title(
+                                    &open_blocks,
+                                    opening_fence_links_before.is_some(),
+                                    pending_page.title.as_ref(),
+                                ),
                                 source_path,
                                 source_contents,
                                 line_index,
                                 link_source_range,
                             ) {
-                                Ok(link) => link,
+                                Ok(Some(link)) => link,
+                                Ok(None) => malformed_link,
                                 Err(error) => {
                                     errors.push(error);
                                     malformed_link
                                 }
-                            },
-                            None => malformed_link,
+                            }
                         },
                     );
                 } else {
@@ -602,12 +887,19 @@ pub fn parse(
     if let Some(links_before) = opening_fence_links_before {
         finish_opening_fence(
             &mut open_blocks,
+            &mut open_sections,
             &mut pending_page,
             links_before,
             &mut errors,
         );
     }
     report_unclosed_blocks(&mut open_blocks, &mut errors);
+    end_sections(
+        &mut open_sections,
+        &mut pending_page,
+        source_contents.len(),
+        source_contents,
+    );
     finish_page(
         &mut wiki,
         pending_page,
@@ -628,8 +920,78 @@ fn title_line_text(line: &str) -> Option<&str> {
     line.strip_prefix(TITLE_PREFIX)
 }
 
+// Read a line as a heading written after an indentation: a run of at least two `#`s, one for each
+// level, followed by a space and its label. Find its level and where its label starts in the line.
+fn heading_line(line: &str, indentation: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix(indentation)?;
+    let level = rest.len() - rest.trim_start_matches(HEADING_MARKER).len();
+    (level >= MIN_HEADING_LEVEL && rest[level..].starts_with(' '))
+        .then_some((level, indentation.len() + level + ' '.len_utf8()))
+}
+
+// Find the indentation of the line containing an offset, up to the offset.
+fn line_indentation(source_contents: &str, offset: usize) -> &str {
+    &source_contents[source_contents[..offset]
+        .rfind('\n')
+        .map_or(0, |index| index + '\n'.len_utf8())..offset]
+}
+
+// Finish a section which ends at an offset, with its body ending at another, keeping it if its
+// label is valid and new to the page. A section ends with the last of its content, without any
+// whitespace after it, and the body of a section without fences ends with the section.
+fn finish_section(
+    pending_page: &mut PendingPage,
+    open_section: OpenSection,
+    end: usize,
+    body_end: usize,
+    source_contents: &str,
+) {
+    let Some((label, label_source_range)) = open_section.label else {
+        return;
+    };
+    let end = open_section.start + source_contents[open_section.start..end].trim_end().len();
+    let body_end = if open_section.is_fenced {
+        body_end
+    } else {
+        end
+    };
+    pending_page.sections.push(Section {
+        label,
+        level: open_section.level,
+        is_fenced: open_section.is_fenced,
+        source_range: SourceRange {
+            start: open_section.start,
+            end,
+        },
+        heading_source_range: SourceRange {
+            start: open_section.heading_start,
+            end: label_source_range.end,
+        },
+        label_source_range,
+        body_source_range: SourceRange {
+            start: open_section.body_start.min(body_end),
+            end: body_end,
+        },
+    });
+}
+
+// End the sections still open at the end of a region at an offset. A fenced section which is still
+// open is reported with its block and isn't kept.
+fn end_sections(
+    open_sections: &mut Vec<OpenSection>,
+    pending_page: &mut PendingPage,
+    end: usize,
+    source_contents: &str,
+) {
+    for open_section in open_sections.drain(..) {
+        if !open_section.is_fenced {
+            finish_section(pending_page, open_section, end, end, source_contents);
+        }
+    }
+}
+
 // Add a completed region as a page if it has a valid title which hasn't already been used, with
-// the links in its content.
+// the links, blocks, and sections in its content.
 fn finish_page(
     wiki: &mut Wiki,
     pending_page: PendingPage,
@@ -642,8 +1004,11 @@ fn finish_page(
         links,
         portals,
         script_blocks,
+        mut sections,
+        labels: _,
     } = pending_page;
     if let Some((title, title_source_range)) = title {
+        sections.sort_by_key(|section| section.source_range.start);
         wiki.pages.insert(
             title.clone(),
             Page {
@@ -651,6 +1016,7 @@ fn finish_page(
                 links,
                 portals,
                 script_blocks,
+                sections,
                 traversal_index: None,
                 source_range: trim_source_range(
                     source_contents,
@@ -665,51 +1031,48 @@ fn finish_page(
     }
 }
 
-// Locate the title that follows a title marker, rejecting a title which breaks the rules for
-// titles, such as one which is empty once surrounding whitespace is stripped.
-fn parse_title(
-    raw_title: &str,
+// Read a title or a label, the text in a range of the source, rejecting text which breaks its
+// rules, such as text which is empty once surrounding whitespace is stripped. Its range is extended
+// through any whitespace after it to an offset, so it's found with the cursor anywhere after it. A
+// problem is reported at the text, or at the whole line if the text is empty, since it then has no
+// text of its own.
+fn read_name<T>(
+    parse_name: impl FnOnce(&str) -> Result<T, String>,
+    text_source_range: SourceRange,
+    extended_end: usize,
+    line_source_range: SourceRange,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
-    line_source_range: SourceRange,
-) -> Result<(PageTitle, SourceRange), Error> {
-    // Strip surrounding whitespace from the text after the marker, which ends the line.
-    let title_source_range = trim_source_range(
-        source_contents,
-        SourceRange {
-            start: line_source_range.end - raw_title.len(),
-            end: line_source_range.end,
-        },
-    );
-
-    // Extend a title's range through any trailing whitespace to the end of its line, so the title
-    // is found with the cursor anywhere after it. Report a problem at the title, or at the whole
-    // line if the title is empty, since it then has no text of its own.
-    match PageTitle::parse(raw_title) {
-        Ok(title) => Ok((
-            title,
-            SourceRange {
-                start: title_source_range.start,
-                end: line_source_range.end,
-            },
-        )),
-        Err(message) => Err(Error::new(
-            &message,
-            source_path,
-            Some((
-                source_contents,
-                line_index,
-                if title_source_range.start == title_source_range.end {
-                    line_source_range
-                } else {
-                    title_source_range
+) -> Result<(T, SourceRange), Error> {
+    let trimmed_source_range = trim_source_range(source_contents, text_source_range);
+    parse_name(&source_contents[text_source_range.start..text_source_range.end])
+        .map(|name| {
+            (
+                name,
+                SourceRange {
+                    start: trimmed_source_range.start,
+                    end: extended_end,
                 },
-            )),
-            None,
-            None,
-        )),
-    }
+            )
+        })
+        .map_err(|message| {
+            Error::new(
+                &message,
+                source_path,
+                Some((
+                    source_contents,
+                    line_index,
+                    if trimmed_source_range.start == trimmed_source_range.end {
+                        trim_source_range(source_contents, line_source_range)
+                    } else {
+                        trimmed_source_range
+                    },
+                )),
+                None,
+                None,
+            )
+        })
 }
 
 // Read a line as a fence line: optional indentation and a run of fence characters, alone or
@@ -762,14 +1125,43 @@ pub fn is_script_name(name: &str) -> bool {
             .all(|character| character.is_alphanumeric() || "-_.".contains(character))
 }
 
-// Convert the unescaped contents of a closed delimiter pair into a typed link occurrence.
+// Find the page a link which names a section without its page refers to: the page shown by the
+// innermost portal containing the link, since the copy in it belongs to that page, or else the page
+// whose content the link is in. A portal whose opening fence is being read doesn't contain the link
+// in it. There's no such page if the innermost portal doesn't name one or the region isn't a page.
+fn local_title(
+    open_blocks: &[OpenBlock],
+    is_reading_opening_fence: bool,
+    title: Option<&(PageTitle, SourceRange)>,
+) -> Option<PageTitle> {
+    let containing_blocks = if is_reading_opening_fence {
+        &open_blocks[..open_blocks.len().saturating_sub(1)]
+    } else {
+        open_blocks
+    };
+    match containing_blocks
+        .iter()
+        .rev()
+        .find_map(|open_block| match &open_block.kind {
+            OpenBlockKind::Portal(target) => Some(target),
+            OpenBlockKind::Script(_) | OpenBlockKind::Section => None,
+        }) {
+        Some(target) => target.as_ref().map(|(target, _, _)| target.title.clone()),
+        None => title.map(|(title, _)| title.clone()),
+    }
+}
+
+// Convert the contents of a closed delimiter pair, trimmed and with valid escapes, into a typed
+// link occurrence. A link which names a section without its page refers to the given page, and
+// there's no link if there's none.
 fn parse_link(
     target: &str,
+    local_title: Option<PageTitle>,
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
     source_range: SourceRange,
-) -> Result<Link, Error> {
+) -> Result<Option<Link>, Error> {
     // Report a problem with the link at the link.
     let link_error = |message: &str| {
         Error::new(
@@ -780,22 +1172,67 @@ fn parse_link(
             None,
         )
     };
+    let unescape =
+        |text: &str| unescape(text, Context::Link).expect("The escapes should be valid.");
 
-    // Parse a filesystem link's target, which starts with `/`, and take any other target as the
-    // title of the page it links to, which an empty link lacks.
+    // Parse a filesystem link's target, which starts with `/` and can't name a section.
+    let separators = unescaped_indices(target, SECTION_SEPARATOR, Context::Link);
     if target.starts_with(FILESYSTEM_LINK_PREFIX) {
-        Ok(Link::Filesystem {
-            target: FilesystemTarget::parse(target).map_err(|message| link_error(&message))?,
+        if !separators.is_empty() {
+            return Err(link_error(&format!(
+                "A filesystem link can't name a section, so write {} for {} in it.",
+                "\\#".code_str(),
+                "#".code_str(),
+            )));
+        }
+        return Ok(Some(Link::Filesystem {
+            target: FilesystemTarget::parse(&unescape(target))
+                .map_err(|message| link_error(&message))?,
             source_range,
-        })
-    } else if target.is_empty() {
-        Err(link_error("This link is missing a target."))
-    } else {
-        Ok(Link::Text {
-            title: PageTitle::parse(target).map_err(|message| link_error(&message))?,
-            source_range,
-        })
+        }));
     }
+    if target.is_empty() {
+        return Err(link_error("This link is missing a target."));
+    }
+
+    // Take any other target as the title of the page it links to, followed by the label of a
+    // section of it after the first `#` which isn't escaped. A link which names a section without
+    // its page refers to the given page.
+    let (title, label) = match separators[..] {
+        [] => (target, None),
+        [index] => (
+            &target[..index],
+            Some(&target[index + SECTION_SEPARATOR.len_utf8()..]),
+        ),
+        [_, _, ..] => {
+            return Err(link_error(&format!(
+                "Only the {} before a section's label can be unescaped, so write {} for {} \
+                 elsewhere in a link.",
+                "#".code_str(),
+                "\\#".code_str(),
+                "#".code_str(),
+            )));
+        }
+    };
+    let label = label
+        .map(|label| SectionLabel::parse(&unescape(label)))
+        .transpose()
+        .map_err(|message| link_error(&message))?;
+    let title = unescape(title);
+    let is_local = label.is_some() && title.trim().is_empty();
+    let title = if is_local {
+        let Some(title) = local_title else {
+            return Ok(None);
+        };
+        title
+    } else {
+        PageTitle::parse(&title).map_err(|message| link_error(&message))?
+    };
+    Ok(Some(Link::Text {
+        target: Target { title, label },
+        is_local,
+        source_range,
+    }))
 }
 
 // Count the backticks at the start of some text.
@@ -843,13 +1280,13 @@ fn trim_source_range(source_contents: &str, source_range: SourceRange) -> Source
 
 #[cfg(test)]
 mod tests {
-    use super::{FenceLine, fence_line, parse, title_line_text};
+    use super::{FenceLine, fence_line, parse, parse_at_level, title_line_text};
     use crate::{
         assert_fails,
         error::{Error, Fix, SourceRange},
         escaping::Context,
         line_index::LineIndex,
-        wiki::{Link, Wiki},
+        wiki::{Link, Page, Wiki},
     };
     use std::{
         fmt::Write,
@@ -876,13 +1313,36 @@ mod tests {
         }
     }
 
+    // Describe a page's sections by their labels, levels, whether they're fenced, and their sources
+    // and bodies as written.
+    fn sections<'a>(source: &'a str, page: &Page) -> Vec<(String, usize, bool, &'a str, &'a str)> {
+        page.sections
+            .iter()
+            .map(|section| {
+                (
+                    section.label.text(Context::Verbatim),
+                    section.level,
+                    section.is_fenced,
+                    &source[section.source_range.start..section.source_range.end],
+                    &source[section.body_source_range.start..section.body_source_range.end],
+                )
+            })
+            .collect()
+    }
+
     // Describe the targets of the links which parsed without coupling semantic assertions to their
     // source ranges. Malformed links have no targets.
     fn link_targets(links: &[Link]) -> Vec<String> {
         links
             .iter()
             .filter_map(|link| match link {
-                Link::Text { title, .. } => Some(format!("text:{}", title.text(Context::Verbatim))),
+                Link::Text { target, .. } => Some(format!(
+                    "text:{}{}",
+                    target.title.text(Context::Verbatim),
+                    target.label.as_ref().map_or_else(String::new, |label| {
+                        format!("#{}", label.text(Context::Verbatim))
+                    }),
+                )),
                 Link::Filesystem { target, .. } => Some(format!(
                     "{}:{}",
                     if target.is_directory() { "dir" } else { "file" },
@@ -995,12 +1455,15 @@ mod tests {
         assert_eq!(wiki.to_string(), source);
     }
 
-    // Treat non-title hash prefixes as ordinary content.
+    // Treat hash prefixes which start neither a title nor a heading as ordinary content.
     #[test]
     fn non_title_hashes() {
-        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title").unwrap();
+        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title\n##not a heading").unwrap();
 
-        assert_eq!(wiki.to_string(), "# Home\n\n## Subtitle\n#not a title\n");
+        assert_eq!(
+            wiki.to_string(),
+            "# Home\n\n## Subtitle\n\n#not a title\n##not a heading\n",
+        );
     }
 
     // Treat a bare title marker as content, even once formatting removes whitespace after it, so
@@ -1230,7 +1693,7 @@ mod tests {
                 .iter()
                 .map(|portal| {
                     (
-                        portal.title.text(Context::Verbatim),
+                        portal.target.title.text(Context::Verbatim),
                         &source[portal.source_range.start..portal.source_range.end],
                         &source[portal.link_source_range.start..portal.link_source_range.end],
                     )
@@ -1306,7 +1769,7 @@ mod tests {
     fn invalid_portal_links() {
         assert_fails!(
             parse_test("# Home\n::: [Other] more\n:::\n# Other"),
-            "A portal names the page it shows with a link, like `::: [Page]`.",
+            "A portal names what it shows with a link, like `::: [Page]` or `::: [Page#Section]`.",
         );
         assert_eq!(
             parse_test("# Home\n::: [Other] more\n:::\n# Other")
@@ -1316,11 +1779,11 @@ mod tests {
         );
         assert_fails!(
             parse_test("# Home\n::: [Other] [Last]\n:::"),
-            "A portal names the page it shows with a link, like `::: [Page]`.",
+            "A portal names what it shows with a link, like `::: [Page]` or `::: [Page#Section]`.",
         );
         assert_fails!(
             parse_test("# Home\n::: [/notes.txt]\n:::"),
-            "A portal can only show a page.",
+            "A portal can only show a page or a section.",
         );
     }
 
@@ -1903,5 +2366,231 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(links[0].closing_delimiter(), Some(16));
         assert_eq!(links[3].closing_delimiter(), None);
+    }
+
+    // Start a section at each heading, which ends at the next heading of the same or a higher
+    // level, or at the end of its page, and a fenced section at each opening fence with a heading,
+    // which ends at its closing fence, after which the section containing it continues. Blocks
+    // within sections are kept.
+    #[test]
+    fn sections_of_pages() {
+        let source = concat!(
+            "# Home\nIntro.\n## Monthly  \nNotes.\n\n::: ### Fixed\nRent.\n#### Utilities\n",
+            "Power.\n::: [Other] :::\n:::\nMore.\n### Variable\nFood.\n## Yearly\n::: sort\n:::\n",
+            "# Other",
+        );
+        let wiki = parse_test(source).unwrap();
+        let page = wiki.page("Home");
+
+        assert_eq!(
+            sections(source, page),
+            vec![
+                (
+                    "Monthly".to_owned(),
+                    2,
+                    false,
+                    "## Monthly  \nNotes.\n\n::: ### Fixed\nRent.\n#### Utilities\nPower.\n\
+                     ::: [Other] :::\n:::\nMore.\n### Variable\nFood.",
+                    "Notes.\n\n::: ### Fixed\nRent.\n#### Utilities\nPower.\n::: [Other] :::\n\
+                     :::\nMore.\n### Variable\nFood.",
+                ),
+                (
+                    "Fixed".to_owned(),
+                    3,
+                    true,
+                    "::: ### Fixed\nRent.\n#### Utilities\nPower.\n::: [Other] :::\n:::",
+                    "Rent.\n#### Utilities\nPower.\n::: [Other] :::\n",
+                ),
+                (
+                    "Utilities".to_owned(),
+                    4,
+                    false,
+                    "#### Utilities\nPower.\n::: [Other] :::",
+                    "Power.\n::: [Other] :::",
+                ),
+                (
+                    "Variable".to_owned(),
+                    3,
+                    false,
+                    "### Variable\nFood.",
+                    "Food.",
+                ),
+                (
+                    "Yearly".to_owned(),
+                    2,
+                    false,
+                    "## Yearly\n::: sort\n:::",
+                    "::: sort\n:::",
+                ),
+            ],
+        );
+        assert_eq!(
+            &source[page.sections[0].label_source_range.start
+                ..page.sections[0].label_source_range.end],
+            "Monthly  ",
+        );
+        assert_eq!(
+            &source[page.sections[1].heading_source_range.start
+                ..page.sections[1].heading_source_range.end],
+            "### Fixed",
+        );
+        assert_eq!(page.portals.len(), 1);
+        assert_eq!(page.script_blocks.len(), 1);
+    }
+
+    // Require each heading to be one level deeper than the heading it's under, including a fenced
+    // section's, which can't be ended by a heading within it, and let a fenced heading end the
+    // sections it follows like any other heading. Sections still nest as their levels say.
+    #[test]
+    fn heading_levels() {
+        let (wiki, errors) = parse_fixture(concat!(
+            "# Home\n### Skipped\n## Fine\n::: ## Fenced\n## Shallow\n### Deeper\n:::\n",
+            "After.\n::: ## Sibling\n:::\n",
+        ));
+
+        assert_eq!(
+            errors.iter().map(Error::message).collect::<Vec<_>>(),
+            vec![
+                "This heading should start with `##`, one level deeper than the heading it's \
+                 under.",
+                "This heading should start with `###`, one level deeper than the heading it's \
+                 under.",
+            ],
+        );
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error.source_range().unwrap().start)
+                .collect::<Vec<_>>(),
+            vec![7, 41],
+        );
+        assert_eq!(
+            wiki.page("Home")
+                .sections
+                .iter()
+                .map(|section| section.label.text(Context::Verbatim))
+                .collect::<Vec<_>>(),
+            vec!["Skipped", "Fine", "Fenced", "Shallow", "Deeper", "Sibling"],
+        );
+    }
+
+    // Read the sections of content shown as a section, whose headings start deeper.
+    #[test]
+    fn deeper_sections() {
+        let source = "# Home\n### Deeper\n";
+        let (wiki, errors) = parse_at_level(None, source, &LineIndex::new(source), 2);
+
+        assert!(errors.is_empty());
+        assert_eq!(wiki.page("Home").sections[0].level, 3);
+        assert!(
+            !parse_at_level(None, "# Home\n## Shallow", &LineIndex::new(source), 2)
+                .1
+                .is_empty(),
+        );
+    }
+
+    // Reject a label used by another section of the same page, keeping the first, but allow it in
+    // another page. A heading needs a label and a fenced heading needs a space after its `#`s.
+    #[test]
+    fn invalid_labels() {
+        let (wiki, errors) = parse_fixture(concat!(
+            "# Home\n## Notes\n## Notes\n## \n::: ##Notes x\n:::\n::: # Notes\n:::\n",
+            "# Other\n## Notes",
+        ));
+
+        assert_eq!(
+            errors.iter().map(Error::message).collect::<Vec<_>>(),
+            vec![
+                "Section `Notes` already exists in this page.",
+                "A section label can't be empty.",
+                "A fenced section's heading is a run of at least two `#`s followed by a space \
+                 and a label, like `::: ## Section`.",
+                "A fenced section's heading is a run of at least two `#`s followed by a space \
+                 and a label, like `::: ## Section`.",
+            ],
+        );
+        assert_eq!(wiki.page("Home").sections.len(), 1);
+        assert_eq!(wiki.page("Other").sections.len(), 1);
+    }
+
+    // Take a heading within a portal or a script block as written, with no links in it, without
+    // starting a section there. A heading within a fenced section is indented like its opening
+    // fence, so a line indented otherwise isn't one.
+    #[test]
+    fn headings_within_blocks() {
+        let source = concat!(
+            "# Home\n  ::: [Other]\n  ### See [Missing]\n  :::\n::: sort\n## [Missing]\n:::\n",
+            "- Item\n  ::: ## Fenced\n  ### Inner\n    ### Text [Other]\n  :::\n",
+            "  ## Text [Other]\n",
+            "# Other",
+        );
+        let wiki = parse_test(source).unwrap();
+        let page = wiki.page("Home");
+
+        assert_eq!(
+            page.sections
+                .iter()
+                .map(|section| section.label.text(Context::Verbatim))
+                .collect::<Vec<_>>(),
+            vec!["Fenced", "Inner"],
+        );
+        assert_eq!(
+            link_targets(&page.links),
+            vec!["text:Other", "text:Other", "text:Other"],
+        );
+    }
+
+    // Split a link's target at the first `#` which isn't escaped into a page and a section, which
+    // can be named without its page to refer to the page whose content the link is in, or the page
+    // shown by the portal whose copy contains it. A portal's own link is outside its copy.
+    #[test]
+    fn section_links() {
+        let source = concat!(
+            "# Home\n[Other#Notes] [ Other # Notes ] [#Notes] [C\\#\\# tips#A\\#B]\n",
+            "::: [#Notes]\n[#Notes]\n:::\n::: [Other]\n[#Notes]\n:::\n",
+            "# Other\n# C## tips",
+        );
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(
+            link_targets(&wiki.page("Home").links),
+            vec![
+                "text:Other#Notes",
+                "text:Other#Notes",
+                "text:Home#Notes",
+                "text:C## tips#A#B",
+                "text:Home#Notes",
+                "text:Home#Notes",
+                "text:Other",
+                "text:Other#Notes",
+            ],
+        );
+        assert!(matches!(
+            wiki.page("Home").links[2],
+            Link::Text { is_local: true, .. },
+        ));
+        assert!(
+            wiki.own_content(wiki.page("Home"), None)
+                .starts_with("[Other#Notes] [Other#Notes] [#Notes] [C\\#\\# tips#A\\#B]\n"),
+        );
+    }
+
+    // Reject a link with more than one unescaped `#`, an empty label, or a filesystem link with an
+    // unescaped `#`.
+    #[test]
+    fn invalid_section_links() {
+        let (wiki, errors) = parse_fixture("# Home\n[Home#A#B] [Home#] [#] [/a#b] [/a\\#b]");
+
+        assert_eq!(
+            errors.iter().map(Error::message).collect::<Vec<_>>(),
+            vec![
+                "Only the `#` before a section's label can be unescaped, so write `\\#` for `#` \
+                 elsewhere in a link.",
+                "A section label can't be empty.",
+                "A section label can't be empty.",
+                "A filesystem link can't name a section, so write `\\#` for `#` in it.",
+            ],
+        );
+        assert_eq!(link_targets(&wiki.page("Home").links), vec!["file:a#b"]);
     }
 }

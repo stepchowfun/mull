@@ -1,33 +1,33 @@
 use crate::{
     error::{Error, SourceRange},
-    escaping::Context,
     format::CodeStr,
     line_index::LineIndex,
     parser,
-    wiki::{PageTitle, Portal, TITLE_PREFIX, Wiki},
+    wiki::{PageTitle, Portal, SectionLabel, TITLE_PREFIX, Target, Wiki},
 };
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
 };
 
-// This is the own content of each page shown in portals as of the last time all of its instances
-// agreed, which tells which instances have been changed since. A page without a baseline has no
-// record of agreeing, so its instances must agree already.
-pub type Baseline = HashMap<PageTitle, Arc<str>>;
+// This is the own content of each page or section shown in portals as of the last time all of its
+// instances agreed, which tells which instances have been changed since. A target without a
+// baseline has no record of agreeing, so its instances must agree already.
+pub type Baseline = HashMap<Target, Arc<str>>;
 
-// These are the instances of each page shown in portals, with the page itself first, along with the
-// copies which can't be read as a page's content and so can't be compared with their pages.
+// These are the instances of each page or section shown in portals, with the original first, along
+// with the copies which can't be read as content and so can't be compared with their originals.
 #[derive(Debug, Default)]
 pub struct Instances {
-    pages: HashMap<PageTitle, Vec<Instance>>,
-    unreadable_copies: Vec<(PageTitle, SourceRange)>,
+    targets: HashMap<Target, Vec<Instance>>,
+    unreadable_copies: Vec<(Target, SourceRange)>,
 }
 
-// This is an instance of a page shown in portals, which is either the page itself or a copy of it,
-// possibly within another copy. Errors about it are reported at the page's title or at the link in
-// the copy's opening fence.
+// This is an instance of a page or a section shown in portals, which is either the original or a
+// copy of it, possibly within another copy. Errors about it are reported at the original's title or
+// label, or at the link in the copy's opening fence.
 #[derive(Debug)]
 struct Instance {
     content: String,
@@ -57,7 +57,7 @@ impl CopyMap<'_> {
     }
 }
 
-// Collect the instances of each page shown in portals in a wiki without syntax errors.
+// Collect the instances of each page or section shown in portals in a wiki without syntax errors.
 pub fn instances(wiki: &Wiki) -> Instances {
     let mut instances = Instances::default();
     let mut pages = wiki.pages.values().collect::<Vec<_>>();
@@ -71,9 +71,9 @@ pub fn instances(wiki: &Wiki) -> Instances {
 }
 
 // Record the copy a portal shows in a wiki, which is either the wiki itself or a copy read as a
-// page with a map back to the wiki, and the copies within it, as instances of the pages they show.
-// A copy of a missing page isn't an instance of anything, and a portal written on one line has no
-// copy yet.
+// page with a map back to the wiki, and the copies within it, as instances of what they show. A
+// copy of a missing page or section isn't an instance of anything, and a portal written on one line
+// has no copy yet.
 fn collect_copies(
     wiki: &Wiki,
     containing_wiki: &Wiki,
@@ -81,8 +81,8 @@ fn collect_copies(
     portal: &Portal,
     instances: &mut Instances,
 ) {
-    // Find the page the portal shows, the copy, and where to report it.
-    let Some(page) = wiki.pages.get(&portal.title) else {
+    // Find what the portal shows, the copy, and where to report it.
+    let Some((page, section)) = wiki.resolve(&portal.target) else {
         return;
     };
     let Some((copy, line_starts)) = containing_wiki.body(portal.source_range) else {
@@ -93,34 +93,41 @@ fn collect_copies(
         end: copy_map.offset(portal.link_source_range.end),
     });
 
-    // Read the copy as the content of a page of its own, which fails if a line in it would start
-    // another page.
-    let title_line = format!("{TITLE_PREFIX}{}\n\n", portal.title.text(Context::Verbatim));
+    // Read the copy as the content of a page of its own, as deep as what it shows, which fails if a
+    // line in it would start another page.
+    let title_line = title_line(&page.title);
     let copy_source = format!("{title_line}{copy}");
-    let (copy_wiki, errors) = parser::parse(None, &copy_source, &LineIndex::new(&copy_source));
+    let (copy_wiki, errors) = parser::parse_at_level(
+        None,
+        &copy_source,
+        &LineIndex::new(&copy_source),
+        section.map_or(1, |section| section.level),
+    );
     let Some(copy_page) = copy_wiki
         .pages
-        .get(&portal.title)
+        .get(&page.title)
         .filter(|_| errors.is_empty() && copy_wiki.pages.len() == 1)
     else {
         instances
             .unreadable_copies
-            .push((portal.title.clone(), source_range));
+            .push((portal.target.clone(), source_range));
         return;
     };
 
-    // Record the copy after the page itself, followed by the copies within it.
+    // Record the copy after the original, followed by the copies within it.
     instances
-        .pages
-        .entry(portal.title.clone())
+        .targets
+        .entry(portal.target.clone())
         .or_insert_with(|| {
             vec![Instance {
-                content: wiki.own_content(page),
-                source_range: page.title_source_range,
+                content: wiki.own_content(page, section),
+                source_range: section.map_or(page.title_source_range, |section| {
+                    section.label_source_range
+                }),
             }]
         })
         .push(Instance {
-            content: copy_wiki.own_content(copy_page),
+            content: copy_wiki.own_content(copy_page, None),
             source_range,
         });
     let nested_copy_map = CopyMap {
@@ -139,28 +146,36 @@ fn collect_copies(
     }
 }
 
-// List the own content of each page shown in portals whose instances all agree, which becomes its
-// baseline.
-pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&PageTitle, &str)> {
-    let unreadable_titles = instances
-        .unreadable_copies
-        .iter()
-        .map(|(title, _source_range)| title)
-        .collect::<HashSet<_>>();
-    instances
-        .pages
-        .iter()
-        .filter(move |(title, _instances)| !unreadable_titles.contains(title))
-        .filter(|(_title, page_instances)| {
-            page_instances
-                .iter()
-                .all(|instance| instance.content == page_instances[0].content)
-        })
-        .map(|(title, page_instances)| (title, page_instances[0].content.as_str()))
+// Write the title line which makes content the content of a page.
+fn title_line(title: &PageTitle) -> String {
+    format!(
+        "{TITLE_PREFIX}{}\n\n",
+        title.text(crate::escaping::Context::Verbatim),
+    )
 }
 
-// Format a wiki without syntax errors, propagating the changes to each page shown in portals to all
-// of its instances.
+// List the own content of each page or section shown in portals whose instances all agree, which
+// becomes its baseline.
+pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&Target, &str)> {
+    let unreadable_targets = instances
+        .unreadable_copies
+        .iter()
+        .map(|(target, _source_range)| target)
+        .collect::<HashSet<_>>();
+    instances
+        .targets
+        .iter()
+        .filter(move |(target, _instances)| !unreadable_targets.contains(target))
+        .filter(|(_target, target_instances)| {
+            target_instances
+                .iter()
+                .all(|instance| instance.content == target_instances[0].content)
+        })
+        .map(|(target, target_instances)| (target, target_instances[0].content.as_str()))
+}
+
+// Format a wiki without syntax errors, propagating the changes to each page or section shown in
+// portals to all of its instances.
 pub fn format(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -181,11 +196,17 @@ pub fn format(
     .map(|propagated_wiki| propagated_wiki.to_string())
 }
 
-// Rewrite a wiki so each page shown in portals has the content to propagate to all of its
-// instances: the content of the instances which differ from its baseline, if they all agree, or its
-// own content if none do. Without a baseline, all of its instances must agree. Report the instances
-// which were changed differently, changes which would put a portal to a page inside itself, and
-// copies which can't be compared with their pages.
+// Rewrite a wiki so each page or section shown in portals has the content to propagate to all of
+// its instances: the content of the instances which differ from its baseline, if they all agree, or
+// its own content if none do. Without a baseline, all of its instances must agree. A section's
+// instances are within the instances of its page and of the sections containing it, so its changes
+// are propagated to those before they're compared, unless they were changed there differently.
+// Report the instances which were changed differently, changes which would create a cycle of
+// portals, and copies which can't be compared with their originals.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Each step of propagation is described where the changes are found and written."
+)]
 pub fn propagate(
     wiki: &Wiki,
     source_path: Option<&Path>,
@@ -204,78 +225,185 @@ pub fn propagate(
             None,
         )
     };
+    let mismatch_message = |target: &Target| {
+        format!(
+            "{} and its copies don't match. Make them match, or replace a copy with {} to discard \
+             its changes.",
+            target.code_str(),
+            format!("::: [{}] :::", target.link_text(false)).code_str(),
+        )
+    };
 
-    // Report copies which can't be compared with their pages.
+    // Report copies which can't be compared with their originals.
     let mut errors = instances
         .unreadable_copies
         .iter()
-        .map(|(title, source_range)| {
+        .map(|(target, source_range)| {
             error(
                 &format!(
                     "This copy of {} can't be read as the content of a page.",
-                    title.code_str(),
+                    target.code_str(),
                 ),
                 *source_range,
             )
         })
         .collect::<Vec<_>>();
 
-    // Find the content to propagate for each page, in source order for deterministic errors.
-    let mut titles = instances.pages.keys().collect::<Vec<_>>();
-    titles.sort_by_key(|title| wiki.pages[*title].source_range.start);
-    let mut replacements = Vec::new();
-    for title in titles {
-        // Find the instances which have changed since the page's baseline, or all of them without
-        // one.
-        let page_instances = &instances.pages[title];
-        let changed_instances = match baseline.get(title) {
-            Some(content) => page_instances
-                .iter()
-                .filter(|instance| *instance.content != **content)
-                .collect::<Vec<_>>(),
-            None => page_instances.iter().collect(),
-        };
+    // Visit the targets in source order for deterministic errors, but visit each section before the
+    // page and sections containing it, which come before it.
+    let mut contents = instances
+        .targets
+        .iter()
+        .map(|(target, target_instances)| {
+            (
+                target,
+                target_instances
+                    .iter()
+                    .map(|instance| instance.content.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut targets = instances
+        .targets
+        .keys()
+        .map(|target| {
+            let (page, section) = wiki.resolve(target).expect("Shown targets should exist.");
+            (target, page, section)
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by_key(|(_target, page, section)| {
+        (
+            page.source_range.start,
+            Reverse(section.map_or(page.source_range.start, |section| {
+                section.source_range.start
+            })),
+        )
+    });
 
-        // Propagate the changed instances if they agree, and report each of them otherwise.
-        let Some(first_changed_instance) = changed_instances.first() else {
+    // Find the content to propagate for each target, skipping those which couldn't take the changes
+    // of their sections, which have been reported.
+    let mut changes = HashMap::new();
+    let mut conflicting_targets = HashSet::new();
+    for &(target, page, section) in &targets {
+        if conflicting_targets.contains(target) {
+            continue;
+        }
+
+        // Find the instances which have changed since the target's baseline, or all of them without
+        // one.
+        let target_baseline = baseline.get(target).map(AsRef::as_ref);
+        let target_contents = &contents[target];
+        let changed_instances = target_contents
+            .iter()
+            .enumerate()
+            .filter(|(_index, content)| target_baseline.is_none_or(|baseline| baseline != *content))
+            .map(|(index, _content)| index)
+            .collect::<Vec<_>>();
+
+        // Find the content of the changed instances if they agree, and report each of them
+        // otherwise.
+        let Some(&first_changed_instance) = changed_instances.first() else {
             continue;
         };
+        let content = target_contents[first_changed_instance].clone();
         if changed_instances
             .iter()
-            .all(|instance| instance.content == first_changed_instance.content)
+            .any(|&index| target_contents[index] != content)
         {
-            if first_changed_instance.content != page_instances[0].content {
-                replacements.push((
-                    &wiki.pages[title],
-                    &first_changed_instance.content,
-                    changed_instances,
-                ));
+            errors.extend(changed_instances.iter().map(|&index| {
+                error(
+                    &mismatch_message(target),
+                    instances.targets[target][index].source_range,
+                )
+            }));
+            continue;
+        }
+
+        // Write a section's content into the instances of the page and the sections containing it,
+        // reporting those where it was changed differently or removed.
+        if let Some(section) = section {
+            for &(outer_target, _outer_page, outer_section) in &targets {
+                if outer_target.title != target.title
+                    || outer_section.is_some_and(|outer_section| {
+                        outer_section.label == section.label
+                            || !(outer_section.source_range.start..outer_section.source_range.end)
+                                .contains(&section.source_range.start)
+                    })
+                {
+                    continue;
+                }
+                let level = outer_section.map_or(1, |outer_section| outer_section.level);
+                for (index, outer_content) in contents
+                    .get_mut(outer_target)
+                    .expect("Each target should have contents.")
+                    .iter_mut()
+                    .enumerate()
+                {
+                    if let Some(new_content) = write_section(
+                        outer_content,
+                        &page.title,
+                        level,
+                        &section.label,
+                        &content,
+                        target_baseline,
+                    ) {
+                        *outer_content = new_content;
+                    } else {
+                        errors.push(error(
+                            &mismatch_message(target),
+                            instances.targets[outer_target][index].source_range,
+                        ));
+                        conflicting_targets.insert(outer_target);
+                    }
+                }
             }
-        } else {
-            let message = format!(
-                "{} and its copies don't match. Make them match, or replace a copy with {} to \
-                 discard its changes.",
-                title.code_str(),
-                format!("::: [{}] :::", title.text(Context::Link)).code_str(),
-            );
-            errors.extend(
+        }
+        changes.insert(
+            target,
+            (
+                content,
                 changed_instances
                     .iter()
-                    .map(|instance| error(&message, instance.source_range)),
-            );
-        }
+                    .map(|&index| instances.targets[target][index].source_range)
+                    .collect::<Vec<_>>(),
+            ),
+        );
     }
     if !errors.is_empty() {
         return Err(errors);
     }
 
-    // Replace the content of each page to propagate, from the end so earlier offsets stay valid,
-    // and read the result.
-    replacements.sort_by_key(|(page, _content, _changed_instances)| {
-        std::cmp::Reverse(page.source_range.start)
-    });
+    // Find the new content of each page with changes: its own changes, which include those of its
+    // sections, or else its own content with the changes of its sections. Replace the content of
+    // each page whose content changes, from the end so earlier offsets stay valid, and read the
+    // result.
+    let mut section_changes = HashMap::<&PageTitle, HashMap<SectionLabel, String>>::new();
+    for (target, (content, _source_ranges)) in &changes {
+        if let Some(label) = &target.label {
+            section_changes
+                .entry(&target.title)
+                .or_default()
+                .insert(label.clone(), content.clone());
+        }
+    }
+    let mut replacements = changes
+        .keys()
+        .map(|target| &target.title)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|title| {
+            let page = &wiki.pages[title];
+            let content = changes.get(&page.target(None)).map_or_else(
+                || wiki.own_content_with(page, None, &section_changes[title]),
+                |(content, _source_ranges)| content.clone(),
+            );
+            (content != wiki.own_content(page, None)).then_some((page, content))
+        })
+        .collect::<Vec<_>>();
+    replacements.sort_by_key(|(page, _content)| Reverse(page.source_range.start));
     let mut propagated_contents = source_contents.to_owned();
-    for (page, content, _changed_instances) in &replacements {
+    for (page, content) in &replacements {
         propagated_contents.replace_range(
             page.title_source_range.end..page.source_range.end,
             &format!("\n\n{content}"),
@@ -288,19 +416,19 @@ pub fn propagate(
         return Err(syntax_errors);
     }
 
-    // Report the changed instances of each page which would contain a portal to itself, directly or
-    // through other pages, once its changes were propagated. Its copies couldn't be filled in.
-    for (page, _content, changed_instances) in &replacements {
-        if has_portal_to_itself(&propagated_wiki, &page.title) {
-            let message = format!(
-                "Propagating this change would put a portal to {} inside itself.",
-                page.title.code_str(),
-            );
-            errors.extend(
-                changed_instances
-                    .iter()
-                    .map(|instance| error(&message, instance.source_range)),
-            );
+    // Report the changed instances of each target which would create a cycle of portals once its
+    // changes were propagated. Its copies couldn't be filled in.
+    for (target, (_content, source_ranges)) in &changes {
+        if !propagated_wiki
+            .cycle_closing_portals([(*target).clone()])
+            .is_empty()
+        {
+            errors.extend(source_ranges.iter().map(|source_range| {
+                error(
+                    "Propagating this change would create a cycle of portals.",
+                    *source_range,
+                )
+            }));
         }
     }
     if errors.is_empty() {
@@ -311,31 +439,45 @@ pub fn propagate(
     }
 }
 
-// Determine whether a page contains a portal to itself, directly or through other pages.
-fn has_portal_to_itself(wiki: &Wiki, title: &PageTitle) -> bool {
-    let mut visited_titles = HashSet::new();
-    let mut pending_titles = vec![title];
-    while let Some(pending_title) = pending_titles.pop() {
-        for portal in wiki
-            .pages
-            .get(pending_title)
-            .map_or(&[][..], |page| &page.portals)
-        {
-            if portal.title == *title {
-                return true;
-            }
-            if visited_titles.insert(&portal.title) {
-                pending_titles.push(&portal.title);
-            }
-        }
-    }
-    false
+// Write a section's propagated content into an instance of the page or a section containing it, at
+// a level, unless the instance doesn't have the section or has changed it since its baseline, or at
+// all without one.
+fn write_section(
+    instance: &str,
+    title: &PageTitle,
+    level: usize,
+    label: &SectionLabel,
+    content: &str,
+    baseline: Option<&str>,
+) -> Option<String> {
+    let source = format!("{}{instance}", title_line(title));
+    let (instance_wiki, errors) =
+        parser::parse_at_level(None, &source, &LineIndex::new(&source), level);
+    let page = instance_wiki
+        .pages
+        .get(title)
+        .filter(|_| errors.is_empty())?;
+    let section_content = instance_wiki.own_content(page, Some(page.section(label)?));
+    (section_content == content || baseline.is_some_and(|baseline| section_content == baseline))
+        .then(|| {
+            instance_wiki.own_content_with(
+                page,
+                None,
+                &HashMap::from([(label.clone(), content.to_owned())]),
+            )
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Baseline, agreements, format, instances};
-    use crate::{assert_fails, error::Error, line_index::LineIndex, parser, wiki::PageTitle};
+    use crate::{
+        assert_fails,
+        error::Error,
+        line_index::LineIndex,
+        parser,
+        wiki::{PageTitle, SectionLabel, Target},
+    };
     use std::{fmt::Write, sync::Arc};
 
     // Format a wiki without syntax errors, given the baseline of each page.
@@ -345,7 +487,20 @@ mod tests {
         assert!(errors.is_empty());
         let baseline = baseline
             .iter()
-            .map(|(title, content)| (PageTitle::parse(title).unwrap(), Arc::from(*content)))
+            .map(|(target, content)| {
+                let (title, label) = target
+                    .split_once('#')
+                    .map_or((*target, None), |(title, label)| {
+                        (title, Some(SectionLabel::parse(label).unwrap()))
+                    });
+                (
+                    Target {
+                        title: PageTitle::parse(title).unwrap(),
+                        label,
+                    },
+                    Arc::from(*content),
+                )
+            })
             .collect::<Baseline>();
         format(
             &wiki,
@@ -450,7 +605,7 @@ mod tests {
 
         assert_eq!(
             agreements(&instances)
-                .map(|(title, content)| (title.text(crate::escaping::Context::Verbatim), content))
+                .map(|(target, content)| (target.link_text(false), content))
                 .collect::<Vec<_>>(),
             vec![("Pancakes".to_owned(), "Mix.")],
         );
@@ -561,8 +716,8 @@ mod tests {
         );
     }
 
-    // Report a change which would put a portal to a page inside itself, directly or through other
-    // pages.
+    // Report a change which would create a cycle of portals, putting a portal to a page inside
+    // itself, directly or through other pages.
     #[test]
     fn changes_which_put_pages_in_themselves() {
         for shown_title in ["Pancakes", "Syrup"] {
@@ -578,8 +733,113 @@ mod tests {
             assert_eq!(error_texts(&source, &errors), vec!["[Pancakes]"]);
             assert_fails!(
                 Err::<(), _>(errors),
-                "Propagating this change would put a portal to `Pancakes` inside itself.",
+                "Propagating this change would create a cycle of portals.",
             );
         }
+    }
+
+    // Propagate a change to a copy of a section to the section in its page and to the copies of the
+    // page, and fill in a portal to a section written on one line.
+    #[test]
+    fn section_copy_changes() {
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
+                    "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2000\n:::\n\n",
+                    "::: [#Notes] :::\n\n## Notes\n\nNone.\n\n",
+                    "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
+                ),
+                &[
+                    ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+                    ("Budget#Monthly", "Rent: 2000"),
+                ],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
+                "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2100\n:::\n\n",
+                "::: [#Notes]\nNone.\n:::\n\n## Notes\n\nNone.\n\n",
+                "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+            ),
+        );
+    }
+
+    // Propagate a change to a section in its page to its copies, and to the copies of the page.
+    #[test]
+    fn section_changes() {
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n::: [Budget#Monthly]\nRent: 2000\n:::\n\n",
+                    "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2000\n:::\n\n",
+                    "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+                ),
+                &[
+                    ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+                    ("Budget#Monthly", "Rent: 2000"),
+                ],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
+                "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2100\n:::\n\n",
+                "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+            ),
+        );
+    }
+
+    // Propagate changes to copies of fenced sections nested in each other, writing each inner
+    // change into the instances of the sections containing it.
+    #[test]
+    fn nested_section_changes() {
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n::: [Budget#Fixed]\nRent: 2000\n\n### Utilities\n\n",
+                    "Power: 90\n:::\n\n::: [Budget#Utilities]\nPower: 90\n:::\n\n",
+                    "# Budget\n\n:::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 80\n::::\n",
+                ),
+                &[
+                    ("Budget#Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
+                    ("Budget#Utilities", "Power: 80"),
+                ],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n::: [Budget#Fixed]\nRent: 2000\n\n### Utilities\n\nPower: 90\n:::\n\n",
+                "::: [Budget#Utilities]\nPower: 90\n:::\n\n",
+                "# Budget\n\n::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 90\n:::\n",
+            ),
+        );
+    }
+
+    // Report a section changed differently in a copy of it and in a copy of its page, and a page
+    // changed in a copy of it while one of its sections is changed in another.
+    #[test]
+    fn conflicting_section_changes() {
+        let source = concat!(
+            "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
+            "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2200\n:::\n\n",
+            "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
+        );
+        let baseline = [
+            ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+            ("Budget#Monthly", "Rent: 2000"),
+        ];
+        let errors = format_test(source, &baseline).unwrap_err();
+        assert_eq!(error_texts(source, &errors), vec!["[Budget]"]);
+        assert_fails!(
+            Err::<(), _>(errors),
+            "`Budget#Monthly` and its copies don't match.",
+        );
+
+        let source = source.replace(
+            "Intro.\n\n## Monthly\n\nRent: 2200",
+            "More.\n\n## Monthly\n\nRent: 2000",
+        );
+        let errors = format_test(&source, &baseline).unwrap_err();
+        assert_eq!(error_texts(&source, &errors), vec!["Budget", "[Budget]"]);
+        assert_fails!(Err::<(), _>(errors), "`Budget` and its copies don't match.");
     }
 }

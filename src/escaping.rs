@@ -1,15 +1,16 @@
 // These functions convert between plain text, such as a page title or a path, and text as it
-// appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, and a
-// backslash escapes the character after it [ref:content_escapes]. Which characters a backslash can
-// escape depends on the context, since backticks are plain characters in a link's target, and
-// title lines and code are taken as written.
+// appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, `#`
+// separates a link's page from a section, and a backslash escapes the character after it
+// [ref:content_escapes]. Which characters a backslash can escape depends on the context, since
+// backticks are plain characters in a link's target, `#` is only special in one, and title lines,
+// headings, and code are taken as written.
 
 // This is where text appears in a wiki's source, which determines how it's escaped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Context {
     Text,     // Content outside links and code
     Link,     // Between a link's delimiters
-    Verbatim, // A title line or code, where a backslash is a plain character
+    Verbatim, // A title line, a heading, or code, where a backslash is a plain character
 }
 
 // Escape plain text, such as a page title or a path, so it retains its meaning in a context.
@@ -52,9 +53,23 @@ fn has_escapes(context: Context) -> bool {
 pub fn is_escapable(character: char, context: Context) -> bool {
     match context {
         Context::Text => matches!(character, '\\' | '[' | ']' | '`'),
-        Context::Link => matches!(character, '\\' | '[' | ']'),
+        Context::Link => matches!(character, '\\' | '[' | ']' | '#'),
         Context::Verbatim => false,
     }
+}
+
+// Find where a character appears in text written in a context without being escaped.
+pub fn unescaped_indices(source: &str, target: char, context: Context) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let mut characters = source.char_indices();
+    while let Some((index, character)) = characters.next() {
+        if character == '\\' && has_escapes(context) {
+            characters.next();
+        } else if character == target {
+            indices.push(index);
+        }
+    }
+    indices
 }
 
 // Explain which characters a backslash can escape in a context.
@@ -65,8 +80,8 @@ pub fn invalid_escape_message(context: Context) -> &'static str {
              backslash itself."
         }
         Context::Link => {
-            "In a link, a backslash must be followed by `[`, `]`, or `\\`, so write `\\\\` for a \
-             backslash itself."
+            "In a link, a backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` \
+             for a backslash itself."
         }
         Context::Verbatim => "Here, a backslash is a plain character.",
     }
@@ -74,7 +89,7 @@ pub fn invalid_escape_message(context: Context) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Context, escape, unescape};
+    use super::{Context, escape, unescape, unescaped_indices};
 
     // Escape delimiters and backslashes in plain text, and decode escapes, but decode nothing when
     // a backslash doesn't escape anything. Backticks are escaped only outside links, and verbatim
@@ -82,7 +97,7 @@ mod tests {
     #[test]
     fn escaping() {
         assert_eq!(escape(r"a\[b]\c`", Context::Text), r"a\\\[b\]\\c\`");
-        assert_eq!(escape(r"a\[b]\c`", Context::Link), r"a\\\[b\]\\c`");
+        assert_eq!(escape(r"a\[b]\c`#", Context::Link), r"a\\\[b\]\\c`\#");
         assert_eq!(
             unescape(r"a\\\[b\]\\c\\\``", Context::Text),
             Some(r"a\[b]\c\``".to_owned()),
@@ -92,6 +107,7 @@ mod tests {
             Some(r"a\[b]\c\`".to_owned()),
         );
         assert_eq!(unescape(r"\`", Context::Link), None);
+        assert_eq!(unescape(r"C\#", Context::Link), Some("C#".to_owned()));
         assert_eq!(unescape(r"\a", Context::Text), None);
         assert_eq!(unescape(r"\#", Context::Text), None);
         assert_eq!(unescape(r"a\\\", Context::Text), None);
@@ -101,5 +117,15 @@ mod tests {
             unescape(r"a\[b]\c`\", Context::Verbatim),
             Some(r"a\[b]\c`\".to_owned()),
         );
+    }
+
+    // Find unescaped occurrences of a character, skipping escaped ones and escaped backslashes.
+    #[test]
+    fn unescaped_occurrences() {
+        assert_eq!(
+            unescaped_indices(r"a#b\#c\\#d", '#', Context::Link),
+            vec![1, 8],
+        );
+        assert_eq!(unescaped_indices(r"a\#", '#', Context::Verbatim), vec![2]);
     }
 }

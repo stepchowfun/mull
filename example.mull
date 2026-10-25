@@ -3,6 +3,7 @@
 This wiki is a short tour of Mull, written in Mull. Each page shows one feature:
 
 - [Pages and links]
+- [Sections]
 - [Files]
 - [Portals]
 - [Scripts]
@@ -82,3 +83,33 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 36 - 2 * 0.75 = 34.5
 (3 + 5) * 2 ^ 3 = 64
 ::: #d5a18e0631bc
+
+# Sections
+
+A heading divides a page into sections. It starts with `##`, plus another `#` for each level of nesting, and its section ends at the next heading of the same level or higher. A heading in a fence starts a section which ends at the closing fence instead, so the text after the fence belongs to the section around it again.
+
+Each heading in a page has a different label. To link to a section, follow the page's title with `#` and the label, like [Sections#Dinner], or leave out the title for a section of the same page, like [#Weekends]. A portal can show a section too:
+
+:::: [#Breakfast]
+Usually [Pancakes].
+
+::: ### Weekends
+With extra lemon.
+:::
+
+Coffee every day.
+::::
+
+## Breakfast
+
+Usually [Pancakes].
+
+::: ### Weekends
+With extra lemon.
+:::
+
+Coffee every day.
+
+## Dinner
+
+Whatever's in the fridge.
