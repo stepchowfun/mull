@@ -200,19 +200,6 @@ It first installs the binary, then it installs the extension for Visual Studio C
 
 The same command can be used again to update to the latest version.
 
-The installation script supports the following optional environment variables:
-
-- `VERSION=x.y.z` (defaults to the latest version)
-- `PREFIX=/path/to/install` (defaults to `/usr/local/bin`)
-
-For example, the following will install the binary into the working directory:
-
-```sh
-curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | PREFIX=. sh
-```
-
-Note that if you change the installation path, you may also need to change the `mull.executablePath` accordingly in Visual Studio Code or Cursor.
-
 If you prefer not to use this installation method, you can download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installing-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
 
 ### Installing the binary on Windows (AArch64 or x86-64)
