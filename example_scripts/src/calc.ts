@@ -13,6 +13,17 @@
 // up to date as the arithmetic changes. Other lines are kept as written. A block of a single line
 // doesn't need the `=`.
 //
+// In a divided block, the arithmetic above the divider is kept as written, and the script writes
+// only the results below it, one line for each line of arithmetic, like this:
+//
+//   ::: calc
+//   1850 * 12
+//   ---
+//   22200
+//   :::
+//
+// There, a line needn't have an `=`, and anything after one is ignored. Blank lines stay blank.
+//
 // The arithmetic can use numbers with decimals and commas between their digits, like `2,400.50`,
 // as well as `+`, `-`, `*`, `/`, `^` for powers, and parentheses. Results are rounded to 12
 // significant digits.
@@ -105,18 +116,40 @@ function evaluate(expression: string): number {
   return value;
 }
 
-// Read the lines. A block of a single line without `=` is evaluated as if it ended with one, so a
-// quick calculation needn't end with `=`.
+// Evaluate the arithmetic on a line, reporting a problem with it and stopping if it's invalid. The
+// result is rounded to 12 significant digits to hide floating-point noise.
+function result(expression: string, index: number): number {
+  try {
+    return Number(evaluate(expression).toPrecision(12));
+  } catch (error) {
+    return fail(`Line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Read the lines.
 const lines = readFileSync(0, 'utf8').split('\n');
 if (lines.at(-1) === '') {
   lines.pop();
 }
+
+// In a divided block, write just the result of each line's arithmetic, before any `=`, keeping
+// blank lines blank.
+if (process.env.MULL_DIVIDED === '1') {
+  for (const [index, line] of lines.entries()) {
+    const expression = line.split('=')[0].trim();
+    process.stdout.write(expression === '' ? '\n' : `${result(expression, index)}\n`);
+  }
+  process.exit(0);
+}
+
+// Otherwise, evaluate a block of a single line without `=` as if it ended with one, so a quick
+// calculation needn't end with `=`.
 if (lines.length === 1 && !lines[0].includes('=')) {
   lines[0] += ' =';
 }
 
-// Replace what follows the first `=` on each line with the value of the arithmetic before it,
-// rounded to 12 significant digits to hide floating-point noise, and keep other lines as written.
+// Replace what follows the first `=` on each line with the value of the arithmetic before it, and
+// keep other lines as written.
 for (const [index, line] of lines.entries()) {
   const equals = line.indexOf('=');
   if (equals === -1) {
@@ -124,9 +157,5 @@ for (const [index, line] of lines.entries()) {
     continue;
   }
   const expression = line.slice(0, equals).trimEnd();
-  try {
-    process.stdout.write(`${expression} = ${Number(evaluate(expression).toPrecision(12))}\n`);
-  } catch (error) {
-    fail(`Line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  process.stdout.write(`${expression} = ${result(expression, index)}\n`);
 }

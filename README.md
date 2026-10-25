@@ -144,6 +144,20 @@ The contents of my pantry:
 
 Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
 
+To keep what you wrote and have the script write its output separately, divide the block with a line of dashes as long as its fence. The script reads only what's above the divider, and its output replaces what's below it:
+
+```md
+::: sort
+- Rice
+- Garlic
+---
+- Garlic
+- Rice
+:::
+```
+
+A script can tell whether its block is divided from the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
+
 ### Escaping and code
 
 To use a special symbol like `[` or `]` literally, put a backslash before it, like `\[`. You can also use backticks to denote verbatim text like `` `this` ``, as in Markdown. Fenced code blocks are supported too, with syntax highlighting for common languages.

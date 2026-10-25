@@ -5,9 +5,9 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, MIN_SECTION_LEVEL, Page,
-        PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section, SectionTitle, TITLE_MARKER,
-        TITLE_PREFIX, Target, Wiki,
+        DIVIDER_MARKER, FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH,
+        MIN_SECTION_LEVEL, Page, PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section,
+        SectionTitle, TITLE_MARKER, TITLE_PREFIX, Target, Wiki,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -50,6 +50,7 @@ struct OpenBlock {
     argument_source_range: SourceRange, // The trimmed text after the colons
     kind: OpenBlockKind,
     one_line_end: Option<usize>, // The end of the line of a block written on one line
+    divider: Option<SourceRange>, // The dashes dividing a script block's body, if any
 }
 
 // These are the kinds of blocks. A portal's target is known once the link in its opening fence has
@@ -132,12 +133,13 @@ enum FenceLine {
 // named by the link after it, a fenced section with the title after it, or names the script which
 // computes the block's body, followed by the script's arguments. A closing fence consists of
 // colons, followed by a hash only for a script block, and closes the innermost open block with a
-// fence of the same length. A portal or a script block can also be written on one line, closed by a
-// run of colons after its argument, for formatting or its script to fill in. The wiki retains as
-// much of the source as possible so it can still be validated and navigated, but it omits the
-// content of duplicate pages, invalid titles, and anything before the first title, so it mustn't be
-// rendered if there are any syntax errors. The line index locates syntax errors in their source
-// listings.
+// fence of the same length. While a script block is the innermost open block, the first line of
+// dashes as long as its fence and indented like it divides its body into input and output. A portal
+// or a script block can also be written on one line, closed by a run of colons after its argument,
+// for formatting or its script to fill in. The wiki retains as much of the source as possible so it
+// can still be validated and navigated, but it omits the content of duplicate pages, invalid
+// titles, and anything before the first title, so it mustn't be rendered if there are any syntax
+// errors. The line index locates syntax errors in their source listings.
 pub fn parse(
     source_path: Option<&Path>,
     source_contents: &str,
@@ -411,6 +413,7 @@ pub fn parse_at_level(
                     source_range,
                     name_source_range,
                     arguments_source_range,
+                    divider_source_range: open_block.divider,
                     hash: hash_source_range.map(|hash_source_range| {
                         source_contents
                             [hash_source_range.start + '#'.len_utf8()..hash_source_range.end]
@@ -557,6 +560,27 @@ pub fn parse_at_level(
                 continue;
             }
 
+            // Read a divider within a script block, which divides its body into input and output:
+            // a run of dashes as long as its fence and indented like it, unless the block has one
+            // already or another block is open within it.
+            if let Some(open_block) = open_blocks.last_mut()
+                && matches!(open_block.kind, OpenBlockKind::Script(_))
+                && open_block.divider.is_none()
+                && let Some(dashes) = line
+                    .strip_prefix(line_indentation(source_contents, open_block.start))
+                    .map(str::trim_end)
+                && dashes.len() == open_block.fence_length
+                && dashes.chars().all(|character| character == DIVIDER_MARKER)
+            {
+                let divider_start = position + line.len() - line.trim_start().len();
+                open_block.divider = Some(SourceRange {
+                    start: divider_start,
+                    end: divider_start + dashes.len(),
+                });
+                position = line_end;
+                continue;
+            }
+
             // Read a fence line within a page. An opening fence starts a block, either a portal,
             // a fenced section, or a script block, whose argument is read as usual from where it
             // starts, and which ends with the line if it's written on one line. A closing fence
@@ -686,6 +710,7 @@ pub fn parse_at_level(
                             },
                             kind,
                             one_line_end: is_one_line.then_some(position + line.trim_end().len()),
+                            divider: None,
                         });
                         opening_fence_links_before = Some(pending_page.links.len());
                         position += argument_start;
@@ -1839,6 +1864,43 @@ mod tests {
         );
         assert!(home.portals.is_empty());
         assert_eq!(link_targets(&home.links), vec!["text:Other", "text:Other"]);
+    }
+
+    // Divide a script block's body at the first run of dashes as long as its fence and indented
+    // like it, while it's the innermost open block. Other runs of dashes are content, including
+    // those in portals, fenced sections, and blocks within a script block's body.
+    #[test]
+    fn dividers() {
+        let source = concat!(
+            "# Home\n",
+            "::: calc\n1 + 2\n----\n---\n3\n---\n:::\n",
+            "  :::: sort\n  ::: [Other]\n  ---\n  :::\n  ----\n  ::::\n",
+            "::: sort\n  ---\n--\n:::\n",
+            "::: [Other]\n---\n:::\n",
+            "::: ## Notes\n---\n:::\n",
+            "# Other",
+        );
+        let wiki = parse_test(source).unwrap();
+
+        assert_eq!(
+            wiki.page("Home")
+                .script_blocks
+                .iter()
+                .map(|block| {
+                    block
+                        .divider_source_range
+                        .map(|divider| &source[divider.start..divider.end])
+                })
+                .collect::<Vec<_>>(),
+            vec![Some("---"), Some("----"), None],
+        );
+        assert_eq!(
+            wiki.page("Home").script_blocks[0]
+                .divider_source_range
+                .unwrap()
+                .start,
+            source.find("---\n3").unwrap(),
+        );
     }
 
     // Reject a script's name with characters other than letters, digits, `-`, `_`, and `.`, but

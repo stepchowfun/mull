@@ -9,6 +9,7 @@ use crate::{
     spelled_path::{FileRoot, code_file_path},
     wiki::{
         Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki, write_block,
+        write_divided_block,
     },
 };
 use sha2::{Digest, Sha256};
@@ -29,6 +30,9 @@ pub const SCRIPTS_DIRECTORY: &str = "scripts";
 
 // A script which runs longer than this is stopped, and its block is left as it was.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+// This environment variable tells a script whether its block is divided.
+const DIVIDED_VARIABLE: &str = "MULL_DIVIDED";
 
 // This is a script block which couldn't be run, identified by its page, its position among the
 // page's script blocks, and its script's name, so it can be found again after the wiki changes. The
@@ -192,12 +196,12 @@ fn hash(
     let script = fs::read(script_path(file_root, &block.name).ok()?).ok()?;
     let arguments =
         &source_contents[block.arguments_source_range.start..block.arguments_source_range.end];
-    let body = wiki
-        .body(block.source_range)
-        .map(|(body, _line_starts)| body)
-        .unwrap_or_default();
+    let (input, output) = wiki.script_body(block);
     let mut hasher = Sha256::new();
-    for part in [script.as_slice(), arguments.as_bytes(), body.as_bytes()] {
+    for part in [script.as_slice(), arguments.as_bytes(), input.as_bytes()]
+        .into_iter()
+        .chain(output.as_deref().map(str::as_bytes))
+    {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
     }
@@ -233,14 +237,13 @@ fn run_block(
         )
     })?;
     let arguments = arguments(source_contents, page, block, &absolute_file_root);
-    let input = wiki
-        .body(block.source_range)
-        .map(|(body, _line_starts)| body)
-        .unwrap_or_default();
+    let (input, old_output) = wiki.script_body(block);
+    let is_divided = old_output.is_some();
     let output = execute(
         &absolute_script,
         &arguments,
         &input,
+        is_divided,
         &absolute_file_root,
         SCRIPT_TIMEOUT,
     )
@@ -283,12 +286,14 @@ fn run_block(
         ));
     }
 
-    // Write the block with the output as its body.
-    Ok(write_block(
-        wiki.indentation(block.source_range.start),
-        &block.canonical_argument(source_contents),
-        &output,
-    ))
+    // Write the block with the output as its body, or below its input if it's divided.
+    let indentation = wiki.indentation(block.source_range.start);
+    let argument = block.canonical_argument(source_contents);
+    Ok(if is_divided {
+        write_divided_block(indentation, &argument, &input, &output)
+    } else {
+        write_block(indentation, &argument, &output)
+    })
 }
 
 // Find the values of a script block's arguments. Text outside links and code is split on
@@ -374,7 +379,8 @@ fn arguments(
 }
 
 // Run a script with arguments in the file root, with an input on its standard input, and return
-// what it prints. The operating
+// what it prints. The `MULL_DIVIDED` environment variable is `1` if the script's block is divided,
+// so its output goes below its input, and `0` if the output replaces the input. The operating
 // system starts it, so on Windows the program associated with its extension runs it. A script
 // which fails or prints anything but UTF-8 is reported with what it printed as errors, and one
 // which runs too long is stopped.
@@ -382,6 +388,7 @@ fn execute(
     script: &Path,
     arguments: &[String],
     input: &str,
+    is_divided: bool,
     file_root: &Path,
     timeout: Duration,
 ) -> Result<String, Failure> {
@@ -395,6 +402,7 @@ fn execute(
     };
     let mut child = command
         .args(arguments)
+        .env(DIVIDED_VARIABLE, if is_divided { "1" } else { "0" })
         .current_dir(file_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -786,6 +794,51 @@ mod tests {
         assert_eq!(wiki.run_and_save(false), 5);
     }
 
+    // Run a divided block's script on its input alone, telling it the block is divided, and replace
+    // only its output, keeping the input as written. Rerun the block once its output is edited.
+    #[cfg(unix)]
+    #[test]
+    fn runs_replace_outputs() {
+        let _lock = lock_script_tests();
+        let wiki = TestWiki::new(
+            concat!(
+                "# Home\n\n[/runs] [/scripts/]\n\n",
+                "- List:\n  ::: count\n  - b\n  - a\n  ---\n  stale\n  :::\n\n",
+                "::: count :::\n",
+            ),
+            &[(
+                "count.sh",
+                "#!/bin/sh\necho run >> runs\necho \"divided: $MULL_DIVIDED\"\nsort\n",
+            )],
+        );
+        fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
+
+        assert_eq!(
+            wiki.run().unwrap().0,
+            concat!(
+                "# Home\n\n[/runs] [/scripts/]\n\n",
+                "- List:\n  ::: count\n  - b\n  - a\n  ---\n  divided: 1\n  - a\n  - b\n",
+                "  ::: #hash\n\n",
+                "::: count\ndivided: 0\n::: #hash\n",
+            ),
+        );
+        fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
+        assert_eq!(wiki.run_and_save(false), 2);
+        assert_eq!(wiki.run_and_save(false), 2);
+        let source = fs::read_to_string(wiki.path()).unwrap();
+        fs::write(
+            wiki.path(),
+            source.replacen("  - a\n  - b\n", "  - edited\n", 1),
+        )
+        .unwrap();
+        assert_eq!(wiki.run_and_save(false), 3);
+        assert!(
+            fs::read_to_string(wiki.path())
+                .unwrap()
+                .contains("  ---\n  divided: 1\n  - a\n  - b\n"),
+        );
+    }
+
     // Take links to pages as their titles, links to sections as their pages' titles and their own
     // titles joined by `#`, and links to files as their paths, code as written, and the rest split
     // on whitespace with its escapes resolved, joining pieces which aren't separated.
@@ -825,6 +878,7 @@ mod tests {
             &wiki.0.join("wiki_files/scripts/slow.sh"),
             &[],
             "",
+            false,
             &wiki.0.join("wiki_files"),
             Duration::from_millis(100),
         )

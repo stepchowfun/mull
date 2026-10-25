@@ -30,8 +30,10 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
 // fence names what a portal shows, the title of a fenced section, or the script which computes
-// its body, and a closing fence consists of colons alone or followed by a hash.
+// its body, and a closing fence consists of colons alone or followed by a hash. A script block's
+// body can be divided into input and output by a line of dashes as long as its fence.
 pub const MIN_FENCE_LENGTH: usize = 3;
+pub const DIVIDER_MARKER: char = '-';
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
 // source ranges address and which it's rendered from.
@@ -348,8 +350,8 @@ impl Wiki {
         }
     }
 
-    // Copy a script block with its fences in their canonical form, keeping its body as written
-    // apart from its links. A block written on one line stays on one line.
+    // Copy a script block with its fences and any divider in their canonical form, keeping its
+    // body as written apart from its links. A block written on one line stays on one line.
     fn copy_script_block(&self, page: &Page, script_block: &ScriptBlock, content: &mut String) {
         // Find the lines which start and end the block's body, writing a block written on one line,
         // which has no body, with the fences for an empty body.
@@ -366,15 +368,44 @@ impl Wiki {
             return;
         };
 
-        // Write the opening fence, the body, and the closing fence with any hash after it.
+        // Write the opening fence, the body with any divider between its input and output, and the
+        // closing fence with any hash after it. The fence is chosen for the body without the
+        // divider, which is as long as the fence.
         let body_start = start + opening_end + '\n'.len_utf8();
         let body_end = start + closing_start + '\n'.len_utf8();
-        let fence = fence_around(&self.source[body_start..body_end]);
+        let indentation = self.indentation(start);
+        let parts = match script_block.divider_source_range {
+            Some(divider) => {
+                let divider_line_start = divider.start - indentation.len();
+                let divider_line_end = divider.end
+                    + self.source[divider.end..]
+                        .find('\n')
+                        .map_or(0, |index| index + 1);
+                vec![
+                    (body_start, divider_line_start),
+                    (divider_line_end, body_end),
+                ]
+            }
+            None => vec![(body_start, body_end)],
+        };
+        let fence = fence_around(
+            &parts
+                .iter()
+                .map(|&(part_start, part_end)| &self.source[part_start..part_end])
+                .collect::<String>(),
+        );
         for part in [&fence, " ", &argument, "\n"] {
             content.push_str(part);
         }
-        self.copy_links(page, body_start, body_end, content);
-        content.push_str(self.indentation(start));
+        for (index, &(part_start, part_end)) in parts.iter().enumerate() {
+            if index > 0 {
+                content.push_str(indentation);
+                content.push_str(&divider_for(&fence));
+                content.push('\n');
+            }
+            self.copy_links(page, part_start, part_end, content);
+        }
+        content.push_str(indentation);
         content.push_str(&fence);
         if let Some(hash) = &script_block.hash {
             content.push_str(" #");
@@ -420,24 +451,65 @@ impl Wiki {
     // in the source. A block written on one line has no body.
     pub fn body(&self, block: SourceRange) -> Option<(String, Vec<(usize, usize)>)> {
         let block_source = &self.source[block.start..block.end];
-        let body_start = block_source.find('\n')? + '\n'.len_utf8();
-        let body_end = block_source.rfind('\n')? + '\n'.len_utf8();
-        let indentation = self.indentation(block.start);
-        let mut body = String::new();
+        let body_start = block.start + block_source.find('\n')? + '\n'.len_utf8();
+        let body_end = block.start + block_source.rfind('\n')? + '\n'.len_utf8();
+        Some(self.lines_without_indentation(body_start, body_end, self.indentation(block.start)))
+    }
+
+    // Find a script block's input, with the indentation of its opening fence removed from each
+    // line, along with its output if it's divided. Without a divider, the whole body is the input,
+    // since the script rewrites it. A block written on one line has no body.
+    pub fn script_body(&self, block: &ScriptBlock) -> (String, Option<String>) {
+        let Some((body, _line_starts)) = self.body(block.source_range) else {
+            return (String::new(), None);
+        };
+        let Some(divider) = block.divider_source_range else {
+            return (body, None);
+        };
+        let indentation = self.indentation(block.source_range.start);
+        let block_source = &self.source[block.source_range.start..block.source_range.end];
+        let body_start =
+            block.source_range.start + block_source.find('\n').map_or(0, |index| index + 1);
+        let body_end =
+            block.source_range.start + block_source.rfind('\n').map_or(0, |index| index + 1);
+        let divider_line_end = divider.end
+            + self.source[divider.end..]
+                .find('\n')
+                .map_or(0, |index| index + 1);
+        let (input, _line_starts) = self.lines_without_indentation(
+            body_start,
+            divider.start - indentation.len(),
+            indentation,
+        );
+        let (output, _line_starts) =
+            self.lines_without_indentation(divider_line_end, body_end, indentation);
+        (input, Some(output))
+    }
+
+    // Find the lines in a range of the source with an indentation removed from each, along with
+    // where each line starts in the result and in the source. A line indented less than that has
+    // all of its indentation removed.
+    fn lines_without_indentation(
+        &self,
+        start: usize,
+        end: usize,
+        indentation: &str,
+    ) -> (String, Vec<(usize, usize)>) {
+        let mut lines = String::new();
         let mut line_starts = Vec::new();
-        let mut line_source_start = block.start + body_start;
-        for line in block_source[body_start..body_end].split_inclusive('\n') {
+        let mut line_source_start = start;
+        for line in self.source[start..end].split_inclusive('\n') {
             let unindented_line = line
                 .strip_prefix(indentation)
                 .unwrap_or_else(|| line.trim_start_matches([' ', '\t']));
             line_starts.push((
-                body.len(),
+                lines.len(),
                 line_source_start + line.len() - unindented_line.len(),
             ));
-            body.push_str(unindented_line);
+            lines.push_str(unindented_line);
             line_source_start += line.len();
         }
-        Some((body, line_starts))
+        (lines, line_starts)
     }
 
     // Find the indentation of the opening fence of a block which starts at an offset.
@@ -568,6 +640,7 @@ pub struct ScriptBlock {
     pub source_range: SourceRange, // From the opening fence's colons through the closing fence
     pub name_source_range: SourceRange, // The script's name in the opening fence
     pub arguments_source_range: SourceRange, // The trimmed text after the name
+    pub divider_source_range: Option<SourceRange>, // The dashes dividing the body, if any
     pub hash: Option<String>,      // After the `#` following the closing fence, if any
 }
 
@@ -919,6 +992,31 @@ pub fn write_block(indentation: &str, argument: &str, body: &str) -> String {
     block
 }
 
+// Write a script block with an argument after its opening fence and a body divided into input and
+// output, indenting each line after the first like the opening fence, which the caller places,
+// within a fence longer than any in it and with a divider as long as the fence.
+pub fn write_divided_block(indentation: &str, argument: &str, input: &str, output: &str) -> String {
+    let fence = fence_around(&format!("{input}\n{output}"));
+    let mut block = format!("{fence} {argument}\n");
+    for line in input
+        .lines()
+        .chain([divider_for(&fence).as_str()])
+        .chain(output.lines())
+    {
+        block.push_str(indentation);
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str(indentation);
+    block.push_str(&fence);
+    block
+}
+
+// Make the divider for a script block with a fence, which is as long as the fence.
+fn divider_for(fence: &str) -> String {
+    DIVIDER_MARKER.to_string().repeat(fence.len())
+}
+
 // End what's been written with a blank line, unless nothing has been written, so what's written
 // next is separated from it.
 fn separate(content: &mut String) {
@@ -937,7 +1035,8 @@ fn indent(text: &str, indentation: &str) -> String {
 }
 
 // Make the fence for a block with a body: longer than any run of colons starting a line of the
-// body, so none of them closes the block, and no shorter than the shortest fence.
+// body, so none of them closes the block, unlike any line of the body which is a run of dashes in
+// length, so none of them divides a script block, and no shorter than the shortest fence.
 fn fence_around(body: &str) -> String {
     let longest_run = body
         .lines()
@@ -945,12 +1044,25 @@ fn fence_around(body: &str) -> String {
         .map(|line| line.len() - line.trim_start_matches(':').len())
         .max()
         .unwrap_or(0);
-    ":".repeat((longest_run + 1).max(MIN_FENCE_LENGTH))
+    let divider_lengths = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && line.chars().all(|character| character == DIVIDER_MARKER)
+        })
+        .map(str::len)
+        .collect::<HashSet<_>>();
+    let shortest = (longest_run + 1).max(MIN_FENCE_LENGTH);
+    ":".repeat(
+        (shortest..=shortest + divider_lengths.len())
+            .find(|length| !divider_lengths.contains(length))
+            .expect("One of more lengths than there are lines of dashes should be free."),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FilesystemTarget, PageTitle, Wiki};
+    use super::{FilesystemTarget, PageTitle, Wiki, write_divided_block};
     use crate::{
         escaping::{Context, unescape},
         line_index::LineIndex,
@@ -1130,6 +1242,40 @@ mod tests {
                 "# Other\n\n- List:\n  ::: ## Indented\n  Item.\n    More.\n  :::\n\n",
                 "## Monthly\n\nRent.\n\n### Fixed\n\n::: [Home#Notes]\nNone.\n:::\n",
             ),
+        );
+    }
+
+    // Write a divided script block's fences and divider in their canonical form, with a fence and a
+    // divider as long as each other and unlike any run of dashes in the input or the output, and
+    // give an undivided block whose body has a run of dashes as long as its fence a longer one, so
+    // the run doesn't divide it.
+    #[test]
+    fn divided_script_blocks_display() {
+        let wiki = parse_wiki(concat!(
+            "# Home\n\n:::::: calc\n1 + 2\n------\n3\n::::::\n\n",
+            "::: sort\n- b\n---\n---\n:::\n\n",
+            "- List:\n  :::: sort\n  ---\n  b\n  ----\n  a\n  ::::\n\n",
+            ":::: sort\n---\n::::\n",
+        ));
+
+        assert_eq!(
+            wiki.to_string(),
+            concat!(
+                "# Home\n\n::: calc\n1 + 2\n---\n3\n:::\n\n",
+                ":::: sort\n- b\n----\n---\n::::\n\n",
+                "- List:\n  :::: sort\n  ---\n  b\n  ----\n  a\n  ::::\n\n",
+                ":::: sort\n---\n::::\n",
+            ),
+        );
+    }
+
+    // Write a divided script block with its input, a divider, and its output, with a fence and a
+    // divider long enough for both.
+    #[test]
+    fn divided_blocks() {
+        assert_eq!(
+            write_divided_block("  ", "calc", "1 + 2\n---\n", "3\n"),
+            ":::: calc\n  1 + 2\n  ---\n  ----\n  3\n  ::::",
         );
     }
 

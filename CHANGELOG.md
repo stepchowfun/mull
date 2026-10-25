@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0] - 2026-10-25
+
+### Added
+
+- A line of dashes as long as a script block's fence divides its body into input and output. The script reads only the input, and its output replaces what's below the divider, so what you wrote above it is never overwritten. The hash after the closing fence covers the output too, so editing the output by hand makes the script run again.
+- Scripts receive the `MULL_DIVIDED` environment variable, which is `1` for a divided block and `0` otherwise.
+- In a divided block, the `calc` example script writes just the results of the arithmetic above the divider.
+
+### Changed
+
+- Formatting gives a block a fence whose length differs from that of any line of dashes in its body, so such a line never divides a script block by accident.
+
 ## [0.68.0] - 2026-10-25
 
 ### Added
