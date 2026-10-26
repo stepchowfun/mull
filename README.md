@@ -39,7 +39,7 @@ Mull formats the wiki when you save the file (default behavior), or when you exp
 
 ### Dividing a page into sections
 
-A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
+A page can be divided into *sections*, which can be linked to directly. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
 
 ```md
 # Pancakes
@@ -66,7 +66,7 @@ Let the batter rest for a few minutes.
 Whisk everything together.
 ```
 
-To link to a section, write `#` and the section title after the page title, like `[Pancakes#Steps]`. You can leave out the page title when linking to a section on the same page, like `[#Tips]`.
+To link to a section, write the page title, then `#`, and finally the section title, like `[Pancakes#Steps]`. You can leave out the page title when linking to a section on the same page, like `[#Tips]`.
 
 ### Linking to files and directories
 
