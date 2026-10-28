@@ -54,7 +54,7 @@ A page can be divided into *sections*, which can be linked to directly. A sectio
 Whisk everything together.
 ```
 
-To end a section early, put it in a *fence*:
+To end a section early, put it between *fences*:
 
 ```md
 ## Steps
