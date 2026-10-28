@@ -105,7 +105,7 @@ Any edits to the original page will be propagated to the portal when the wiki is
 
 A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`.
 
-### Extending Mull with scripts
+### Extending Mull with new block types
 
 Suppose you have a list that you want to keep sorted:
 
