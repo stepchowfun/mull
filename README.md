@@ -54,7 +54,7 @@ A page can be divided into *sections*, which can be linked to directly. A sectio
 Whisk everything together.
 ```
 
-To end a section early, put it between *fences*:
+To end a section early, put it in a *block*:
 
 ```md
 ## Steps
@@ -88,7 +88,7 @@ This is my favorite breakfast:
 ::: [Pancakes] :::
 ```
 
-When the wiki is formatted (e.g., on save), that line will be expanded into a copy of the page:
+When the wiki is formatted (e.g., on save), that line will turn into a block containing a copy of the page:
 
 ```md
 This is my favorite breakfast:
@@ -105,7 +105,7 @@ Any edits to the original page will be propagated to the portal when the wiki is
 
 A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`.
 
-### Extending Mull with new block types
+### Extending Mull with scripts
 
 Suppose you have a list that you want to keep sorted:
 
