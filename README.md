@@ -2,7 +2,7 @@
 
 [![Build status](https://github.com/stepchowfun/mull/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/stepchowfun/mull/actions?query=branch%3Amain)
 
-*Mull* is a tool for structured note-taking in a plain text file. It has a [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) extension which provides syntax highlighting, hover previews, completions, diagnostics, formatting, refactoring, etc.
+*Mull* is a tool for structured note-taking in a plain text file, inspired by the vintage experience of writing code in an IDE. It has an extension for [Visual Studio Code](https://code.visualstudio.com/) / [Cursor](https://cursor.com/) which provides syntax highlighting, hover previews, completions, diagnostics, formatting, refactoring, etc. Notes are linked together in a graph, like a wiki, with a strict connectivity rule that helps you keep the graph organized.
 
 ![Welcome to Mull.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/mull.png)
 
