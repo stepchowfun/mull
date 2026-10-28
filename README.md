@@ -68,19 +68,9 @@ Whisk everything together.
 
 To link to a section, write the page title, then `#`, and finally the section title, like `[Pancakes#Steps]`. You can leave out the page title when linking to a section on the same page, like `[#Tips]`.
 
-### Linking to files and directories
+### Opening a portal to another page or section
 
-You can link to files like photos, spreadsheets, or anything else. Mull checks that the linked files actually exist, and you can preview them without leaving the editor.
-
-![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
-
-Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can drag-and-drop or paste files directly into the editor. You can also link to directories like `[/photos/]`.
-
-Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory counts as linking to everything inside it.
-
-### Opening a portal to another page
-
-A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
+A portal is a window into another page or section. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
 This is my favorite breakfast:
@@ -103,7 +93,15 @@ This is my favorite breakfast:
 
 Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
 
-A portal can also show a single section of a page, like `::: [Pancakes#Ingredients] :::`.
+### Linking to files and directories
+
+You can link to files like photos, spreadsheets, or anything else. Mull checks that the linked files actually exist, and you can preview them without leaving the editor.
+
+![A file preview.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/file_preview.png)
+
+Files go in a directory next to the wiki named after the wiki, with the `.mull` extension replaced with `_files`. For example, if the wiki is `my_wiki.mull`, the files go in `my_wiki_files`. If you have a file called `my_wiki_files/photos/beach.jpg`, you can link it with `[/photos/beach.jpg]`. You can drag-and-drop or paste files directly into the editor. You can also link to directories like `[/photos/]`.
+
+Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory counts as linking to everything inside it.
 
 ### Extending Mull with new block types
 
