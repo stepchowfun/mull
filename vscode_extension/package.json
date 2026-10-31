@@ -231,7 +231,6 @@
         "editor.rulers": [
           80
         ],
-        "editor.smoothScrolling": true,
         "editor.tabSize": 2,
         "editor.wordWrap": "bounded",
         "editor.wordWrapColumn": 80,
