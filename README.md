@@ -249,7 +249,7 @@ You can run that command with `--force` to update an existing installation.
 
 ### Installing the Visual Studio Code / Cursor extension
 
-Note that the macOS / Linux installation command will install the extension automatically, so you can skip this section if you use that installation method.
+The macOS / Linux installation command will install the extension automatically, so you can skip this section if you use that installation method.
 
 First, make sure you have [Visual Studio Code](https://code.visualstudio.com/) or [Cursor](https://cursor.com/) installed.
 
