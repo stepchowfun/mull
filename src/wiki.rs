@@ -203,7 +203,7 @@ impl Wiki {
             Some(section) => (
                 section.body_source_range.start,
                 section.body_source_range.end,
-                self.indentation(section.source_range.start),
+                line_indentation(&self.source, section.source_range.start),
             ),
             None => (page.title_source_range.end, page.source_range.end, ""),
         };
@@ -299,7 +299,7 @@ impl Wiki {
                     .is_empty()
             {
                 separate(content);
-                content.push_str(self.indentation(source_range.start));
+                content.push_str(line_indentation(&self.source, source_range.start));
             } else {
                 self.copy_links(page, copied_through, source_range.start, content);
             }
@@ -309,7 +309,7 @@ impl Wiki {
             match part {
                 Part::Portal(portal) => {
                     content.push_str(&write_block(
-                        self.indentation(source_range.start),
+                        line_indentation(&self.source, source_range.start),
                         &format!("[{}]", portal.target.link_text(portal.is_local)),
                         &portal_body.expect("A portal's body should have been found."),
                     ));
@@ -318,7 +318,7 @@ impl Wiki {
                     self.copy_script_block(page, script_block, content);
                 }
                 Part::Section(section) => {
-                    let indentation = self.indentation(source_range.start);
+                    let indentation = line_indentation(&self.source, source_range.start);
                     let section_content =
                         self.canonical_content(page, Some(section), section_contents, body);
                     if section.is_fenced {
@@ -374,7 +374,7 @@ impl Wiki {
             content.push_str(part);
         }
         self.copy_links(page, body_start, body_end, content);
-        content.push_str(self.indentation(start));
+        content.push_str(line_indentation(&self.source, start));
         content.push_str(&fence);
         if let Some(hash) = &script_block.hash {
             content.push_str(" #");
@@ -422,7 +422,7 @@ impl Wiki {
         let block_source = &self.source[block.start..block.end];
         let body_start = block_source.find('\n')? + '\n'.len_utf8();
         let body_end = block_source.rfind('\n')? + '\n'.len_utf8();
-        let indentation = self.indentation(block.start);
+        let indentation = line_indentation(&self.source, block.start);
         let mut body = String::new();
         let mut line_starts = Vec::new();
         let mut line_source_start = block.start + body_start;
@@ -438,13 +438,6 @@ impl Wiki {
             line_source_start += line.len();
         }
         Some((body, line_starts))
-    }
-
-    // Find the indentation of the opening fence of a block which starts at an offset.
-    pub fn indentation(&self, block_start: usize) -> &str {
-        &self.source[self.source[..block_start]
-            .rfind('\n')
-            .map_or(0, |index| index + '\n'.len_utf8())..block_start]
     }
 }
 
@@ -603,13 +596,8 @@ impl PageTitle {
     // Make a title from text such as a title line's or a rename's new name, trimming it and
     // describing any rule it breaks.
     pub fn parse(text: &str) -> Result<Self, String> {
-        if text.contains(['\r', '\n']) {
-            return Err("A page title can't contain a line break.".to_owned());
-        }
-        let title = text.trim();
-        if title.is_empty() {
-            Err("A page title can't be empty.".to_owned())
-        } else if title.starts_with(FILESYSTEM_LINK_PREFIX) {
+        let title = trimmed_title(text, "page")?;
+        if title.starts_with(FILESYSTEM_LINK_PREFIX) {
             Err(format!(
                 "A page title can't start with {}.",
                 FILESYSTEM_LINK_PREFIX.code_str(),
@@ -654,6 +642,20 @@ impl CodeStr for PageTitle {
     }
 }
 
+// Trim a page's or a section's title, requiring it to be one line and non-empty, and naming the
+// kind of title in any message.
+fn trimmed_title<'a>(text: &'a str, kind: &str) -> Result<&'a str, String> {
+    if text.contains(['\r', '\n']) {
+        return Err(format!("A {kind} title can't contain a line break."));
+    }
+    let title = text.trim();
+    if title.is_empty() {
+        Err(format!("A {kind} title can't be empty."))
+    } else {
+        Ok(title)
+    }
+}
+
 // This is a section's title, which links name it by within its page: non-empty, one line, and
 // trimmed.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -663,15 +665,7 @@ impl SectionTitle {
     // Make a title from text such as a title line's or a rename's new name, trimming it and
     // describing any rule it breaks.
     pub fn parse(text: &str) -> Result<Self, String> {
-        if text.contains(['\r', '\n']) {
-            return Err("A section title can't contain a line break.".to_owned());
-        }
-        let title = text.trim();
-        if title.is_empty() {
-            Err("A section title can't be empty.".to_owned())
-        } else {
-            Ok(Self(title.to_owned()))
-        }
+        Ok(Self(trimmed_title(text, "section")?.to_owned()))
     }
 
     // Write the title as it appears in a context, such as escaped in a link or as written in a
@@ -725,8 +719,9 @@ impl CodeStr for Target {
 
 // These are the source occurrences through which a page can reference a target. A malformed link
 // has a syntax error, such as a missing closing delimiter, so it references nothing, but an editor
-// can still complete it. A link which isn't closed extends to the end of its line. A text link to a
-// section can name it without its page, which is then the page whose content the link is in.
+// can still complete it, so it notes the page a section named without its page would belong to, if
+// there is one. A link which isn't closed extends to the end of its line. A text link to a section
+// can name it without its page, which is then the page whose content the link is in.
 #[derive(Clone, Debug)]
 pub enum Link {
     Text {
@@ -741,6 +736,7 @@ pub enum Link {
     Malformed {
         source_range: SourceRange,
         is_closed: bool,
+        local_title: Option<PageTitle>,
     },
 }
 
@@ -902,6 +898,13 @@ impl CodeStr for FilesystemTarget {
     fn code_str(&self) -> ColoredString {
         code_file_path(&self.path)
     }
+}
+
+// Find the indentation of the line containing an offset, up to the offset.
+pub fn line_indentation(source: &str, offset: usize) -> &str {
+    &source[source[..offset]
+        .rfind('\n')
+        .map_or(0, |index| index + '\n'.len_utf8())..offset]
 }
 
 // Write a block with an argument after its opening fence and a body, indenting each line after the
