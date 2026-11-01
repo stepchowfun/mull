@@ -8,7 +8,8 @@ use crate::{
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
     wiki::{
-        Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki, write_block,
+        Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki,
+        line_indentation, write_block,
     },
 };
 use sha2::{Digest, Sha256};
@@ -285,7 +286,7 @@ fn run_block(
 
     // Write the block with the output as its body.
     Ok(write_block(
-        wiki.indentation(block.source_range.start),
+        line_indentation(source_contents, block.source_range.start),
         &block.canonical_argument(source_contents),
         &output,
     ))
@@ -497,15 +498,10 @@ fn read_in_background<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHa
 // Find the script with a name in the file root's scripts directory: the one file there whose name,
 // without its extension, is the given name.
 pub fn script_path(file_root: &FileRoot, name: &str) -> Result<PathBuf, String> {
-    let directory = file_root.path().join(SCRIPTS_DIRECTORY);
-    let mut paths = fs::read_dir(&directory)
+    let paths = script_files(file_root)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.file_stem() == Some(OsStr::new(name)))
+        .filter(|path| path.file_stem() == Some(OsStr::new(name)))
         .collect::<Vec<_>>();
-    paths.sort();
     match paths.as_slice() {
         [path] => Ok(path.clone()),
         [] => Err(format!(
@@ -528,17 +524,27 @@ pub fn script_path(file_root: &FileRoot, name: &str) -> Result<PathBuf, String> 
 
 // List the names of the scripts in the file root's scripts directory, without duplicates.
 pub fn script_names(file_root: &FileRoot) -> Vec<String> {
-    let mut names = fs::read_dir(file_root.path().join(SCRIPTS_DIRECTORY))
+    let mut names = script_files(file_root)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
         .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
         .collect::<Vec<_>>();
     names.sort();
     names.dedup();
     names
+}
+
+// List the files in the file root's scripts directory, sorted by path. A directory which can't be
+// read has none.
+fn script_files(file_root: &FileRoot) -> Vec<PathBuf> {
+    let mut paths = fs::read_dir(file_root.path().join(SCRIPTS_DIRECTORY))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 // Format a script's path as a link to it would be written.

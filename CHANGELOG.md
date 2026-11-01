@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The VS Code extension no longer turns on smooth scrolling in Mull files. It was meant for the snap-back scrolling, which is gone.
+- A fenced section's title must be marked with a space after its `#`s, like a title line's, rather than any whitespace.
+
+### Fixed
+
+- Completing a link like `[#...` in a portal's copy within another portal's copy now offers the sections of the page the inner portal shows, rather than the outer one.
+- After content before the first page's title is reported, later lines there which look like fences or section titles are no longer reported too.
 
 ## [0.68.0] - 2026-10-25
 

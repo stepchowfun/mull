@@ -174,28 +174,6 @@ pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&Target, &str)
         .map(|(target, target_instances)| (target, target_instances[0].content.as_str()))
 }
 
-// Format a wiki without syntax errors, propagating the changes to each page or section shown in
-// portals to all of its instances.
-pub fn format(
-    wiki: &Wiki,
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_index: &LineIndex,
-    instances: &Instances,
-    baseline: &Baseline,
-) -> Result<String, Vec<Error>> {
-    // Render the rewritten wiki, which refreshes the copies from the pages.
-    propagate(
-        wiki,
-        source_path,
-        source_contents,
-        line_index,
-        instances,
-        baseline,
-    )
-    .map(|propagated_wiki| propagated_wiki.to_string())
-}
-
 // Rewrite a wiki so each page or section shown in portals has the content to propagate to all of
 // its instances: the content of the instances which differ from its baseline, if they all agree, or
 // its own content if none do. Without a baseline, all of its instances must agree. A section's
@@ -470,7 +448,7 @@ fn write_section(
 
 #[cfg(test)]
 mod tests {
-    use super::{Baseline, agreements, format, instances};
+    use super::{Baseline, agreements, instances, propagate};
     use crate::{
         assert_fails,
         error::Error,
@@ -502,7 +480,7 @@ mod tests {
                 )
             })
             .collect::<Baseline>();
-        format(
+        propagate(
             &wiki,
             None,
             source,
@@ -510,6 +488,7 @@ mod tests {
             &instances(&wiki),
             &baseline,
         )
+        .map(|propagated_wiki| propagated_wiki.to_string())
     }
 
     // Find the text each error is reported at.

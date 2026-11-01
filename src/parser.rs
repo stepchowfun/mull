@@ -7,7 +7,7 @@ use crate::{
     wiki::{
         FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, MIN_SECTION_LEVEL, Page,
         PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section, SectionTitle, TITLE_MARKER,
-        TITLE_PREFIX, Target, Wiki,
+        TITLE_PREFIX, Target, Wiki, line_indentation,
     },
 };
 use std::{collections::HashSet, path::Path};
@@ -91,10 +91,12 @@ struct SectionTitleLine {
     is_fenced: bool,
 }
 
-// This struct tracks a link which has been opened but not yet closed.
+// This struct tracks a link which has been opened but not yet closed, along with the page a section
+// named in it without its page would belong to, if there is one.
 struct OpenLink {
     start: usize,           // The offset of its opening delimiter
     has_nested_start: bool, // Whether an unexpected opening delimiter appeared in it
+    local_title: Option<PageTitle>,
 }
 
 // These are the kinds of fence lines. An opening fence's indentation is measured in bytes, and its
@@ -164,7 +166,8 @@ pub fn parse_at_level(
     let mut wiki = Wiki::new(source_contents);
     let mut errors = Vec::<Error>::new();
     let mut pending_page = PendingPage::new(None, 0);
-    let mut can_report_content_before_title = true;
+    let mut is_before_first_title = true;
+    let mut has_reported_content_before_title = false;
     let mut open_link = None::<OpenLink>;
     let mut open_blocks = Vec::<OpenBlock>::new();
     let mut open_sections = Vec::<OpenSection>::new();
@@ -194,6 +197,7 @@ pub fn parse_at_level(
                     end,
                 },
                 is_closed: false,
+                local_title: link.local_title,
             });
             errors.push(syntax_error(
                 "Unclosed link.",
@@ -467,7 +471,7 @@ pub fn parse_at_level(
             if let Some(raw_title) = title_line_text(line) {
                 // Finish the preceding region, then start one which belongs to a page if its title
                 // is valid and hasn't been used. Content after a page's title line is in a region.
-                can_report_content_before_title = false;
+                is_before_first_title = false;
                 report_unclosed_blocks(&mut open_blocks, &mut errors);
                 end_sections(
                     &mut open_sections,
@@ -509,7 +513,7 @@ pub fn parse_at_level(
 
             // Read a section's title line within a page, whose title is taken as written, and start
             // a section there if it isn't within a portal or a script block.
-            if !can_report_content_before_title
+            if !is_before_first_title
                 && let Some((level, title_offset)) = section_title_line(
                     line,
                     open_blocks.last().map_or("", |open_block| {
@@ -562,7 +566,7 @@ pub fn parse_at_level(
             // starts, and which ends with the line if it's written on one line. A closing fence
             // ends the innermost open block with a fence of the same length, and any open within
             // it, noting any hash after it.
-            if !can_report_content_before_title && let Some(fence) = fence_line(line) {
+            if !is_before_first_title && let Some(fence) = fence_line(line) {
                 match fence {
                     FenceLine::Opening {
                         indentation,
@@ -577,20 +581,15 @@ pub fn parse_at_level(
                         let kind = if argument.starts_with('[') {
                             OpenBlockKind::Portal(None)
                         } else if argument.starts_with(TITLE_MARKER) {
-                            // Read the title, and start a section there unless the block is
-                            // within a portal or a script block. A fenced section can't be
-                            // written on one line, since there's nothing to fill in.
-                            let level =
-                                argument.len() - argument.trim_start_matches(TITLE_MARKER).len();
-                            let title_text = argument[level..].trim_start();
+                            // Read the title as a title line's, and start a section there unless
+                            // the block is within a portal or a script block. A fenced section
+                            // can't be written on one line, since there's nothing to fill in.
                             let argument_source_range = SourceRange {
                                 start: position + argument_start,
                                 end: position + argument_end,
                             };
-                            if level < MIN_SECTION_LEVEL
-                                || !argument[level..].starts_with(char::is_whitespace)
-                            {
-                                errors.push(syntax_error(
+                            match section_title_line(argument, "") {
+                                None => errors.push(syntax_error(
                                     &format!(
                                         "A fenced section's title is marked with at least two {}s \
                                          and a space, like {}.",
@@ -599,48 +598,49 @@ pub fn parse_at_level(
                                     ),
                                     argument_source_range,
                                     None,
-                                ));
-                            } else if is_one_line {
-                                errors.push(syntax_error(
+                                )),
+                                Some(_) if is_one_line => errors.push(syntax_error(
                                     "A fenced section can't be written on one line.",
                                     argument_source_range,
                                     None,
-                                ));
-                            } else if open_blocks
-                                .iter()
-                                .all(|open_block| matches!(open_block.kind, OpenBlockKind::Section))
-                            {
-                                let title_start = position + argument_end - title_text.len();
-                                let title = read_name(
-                                    SectionTitle::parse,
-                                    SourceRange {
-                                        start: title_start,
-                                        end: position + argument_end,
-                                    },
-                                    position + argument_end,
-                                    line_source_range,
-                                    source_path,
-                                    source_contents,
-                                    line_index,
-                                );
-                                start_section(
-                                    &mut open_sections,
-                                    &mut pending_page,
-                                    &mut errors,
-                                    SectionTitleLine {
-                                        level,
-                                        marker_source_range: SourceRange {
-                                            start: position + argument_start,
-                                            end: position + argument_start + level,
+                                )),
+                                Some((level, title_offset))
+                                    if open_blocks.iter().all(|open_block| {
+                                        matches!(open_block.kind, OpenBlockKind::Section)
+                                    }) =>
+                                {
+                                    let title = read_name(
+                                        SectionTitle::parse,
+                                        SourceRange {
+                                            start: position + argument_start + title_offset,
+                                            end: position + argument_end,
                                         },
-                                        title,
-                                        start: position + indentation,
-                                        line_start: position,
-                                        body_start: next_line_start,
-                                        depth: open_blocks.len(),
-                                        is_fenced: true,
-                                    },
-                                );
+                                        position + argument_end,
+                                        line_source_range,
+                                        source_path,
+                                        source_contents,
+                                        line_index,
+                                    );
+                                    start_section(
+                                        &mut open_sections,
+                                        &mut pending_page,
+                                        &mut errors,
+                                        SectionTitleLine {
+                                            level,
+                                            marker_source_range: SourceRange {
+                                                start: position + argument_start,
+                                                end: position + argument_start + level,
+                                            },
+                                            title,
+                                            start: position + indentation,
+                                            line_start: position,
+                                            body_start: next_line_start,
+                                            depth: open_blocks.len(),
+                                            is_fenced: true,
+                                        },
+                                    );
+                                }
+                                Some(_) => {}
                             }
                             OpenBlockKind::Section
                         } else {
@@ -722,13 +722,16 @@ pub fn parse_at_level(
             }
 
             // Report only the first non-whitespace content before the first page's title line.
-            if can_report_content_before_title && !line.trim().is_empty() {
+            if is_before_first_title
+                && !has_reported_content_before_title
+                && !line.trim().is_empty()
+            {
                 errors.push(syntax_error(
                     "This content isn't in any page.",
                     trim_source_range(source_contents, line_source_range),
                     None,
                 ));
-                can_report_content_before_title = false;
+                has_reported_content_before_title = true;
             }
         }
 
@@ -802,6 +805,11 @@ pub fn parse_at_level(
                     open_link = Some(OpenLink {
                         start: position,
                         has_nested_start: false,
+                        local_title: local_title(
+                            &open_blocks,
+                            opening_fence_links_before.is_some(),
+                            pending_page.title.as_ref(),
+                        ),
                     });
                 }
             }
@@ -820,6 +828,7 @@ pub fn parse_at_level(
                     let malformed_link = Link::Malformed {
                         source_range: link_source_range,
                         is_closed: true,
+                        local_title: link.local_title.clone(),
                     };
                     pending_page.links.push(
                         if link.has_nested_start || unescape(target, Context::Link).is_none() {
@@ -827,11 +836,7 @@ pub fn parse_at_level(
                         } else {
                             match parse_link(
                                 target,
-                                local_title(
-                                    &open_blocks,
-                                    opening_fence_links_before.is_some(),
-                                    pending_page.title.as_ref(),
-                                ),
+                                link.local_title,
                                 source_path,
                                 source_contents,
                                 line_index,
@@ -946,13 +951,6 @@ fn section_title_line(line: &str, indentation: &str) -> Option<(usize, usize)> {
     let level = rest.len() - rest.trim_start_matches(TITLE_MARKER).len();
     (level >= MIN_SECTION_LEVEL && rest[level..].starts_with(' '))
         .then_some((level, indentation.len() + level + ' '.len_utf8()))
-}
-
-// Find the indentation of the line containing an offset, up to the offset.
-fn line_indentation(source_contents: &str, offset: usize) -> &str {
-    &source_contents[source_contents[..offset]
-        .rfind('\n')
-        .map_or(0, |index| index + '\n'.len_utf8())..offset]
 }
 
 // Finish a section which ends at an offset, with its body ending at another, keeping it if its
@@ -1534,10 +1532,11 @@ mod tests {
         );
     }
 
-    // Report only the first occurrence of content before a valid title.
+    // Report only the first occurrence of content before a valid title, even when later content
+    // looks like a fence or a section's title line.
     #[test]
     fn repeated_content_before_title() {
-        let errors = parse_test("First\nSecond\n# Home").unwrap_err();
+        let errors = parse_test("First\n:::\n::: sort\n## Second\n# Home").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -2357,6 +2356,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                     Link::Malformed {
                         source_range,
                         is_closed,
+                        ..
                     } => (source_range.start, source_range.end, *is_closed),
                     Link::Text { .. } | Link::Filesystem { .. } => panic!("The link is malformed."),
                 })
@@ -2495,11 +2495,12 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
 
     // Reject a title used by another section of the same page, keeping the first, but allow it in
     // another page. A section needs a title, a fenced section's title needs a space after its `#`s,
-    // and a fenced section can't be written on one line.
+    // as a title line's does, and a fenced section can't be written on one line.
     #[test]
     fn invalid_section_titles() {
         let (wiki, errors) = parse_fixture(concat!(
-            "# Home\n## Notes\n## Notes\n## \n::: ##Notes x\n:::\n::: # Notes\n:::\n",
+            "# Home\n## Notes\n## Notes\n## \n::: ##Notes x\n:::\n::: ##\tTab\n:::\n",
+            "::: # Notes\n:::\n",
             "::: ## One line :::\n# Other\n## Notes",
         ));
 
@@ -2508,6 +2509,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             vec![
                 "Section `Notes` already exists in this page.",
                 "A section title can't be empty.",
+                "A fenced section's title is marked with at least two `#`s and a space, like \
+                 `::: ## Section`.",
                 "A fenced section's title is marked with at least two `#`s and a space, like \
                  `::: ## Section`.",
                 "A fenced section's title is marked with at least two `#`s and a space, like \

@@ -1196,7 +1196,15 @@ fn completion_for_document(
     };
     let typed_title = typed_target[..separator].trim_end();
     let title = if typed_title.is_empty() {
-        local_title_at(wiki, cursor_offset)?.clone()
+        match link {
+            Link::Text {
+                target,
+                is_local: true,
+                ..
+            } => target.title.clone(),
+            Link::Malformed { local_title, .. } => local_title.clone()?,
+            Link::Text { .. } | Link::Filesystem { .. } => return None,
+        }
     } else {
         PageTitle::parse(&unescape(typed_title, Context::Link)?).ok()?
     };
@@ -2364,19 +2372,10 @@ fn resolves_within(path: &Path, directory: &Path) -> Option<bool> {
 // Produce a whole-document formatting edit for any wiki that parses, even if it's invalid, unless
 // changes to a page or section shown in portals can't be propagated.
 fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<Vec<TextEdit>> {
-    // Render the parsed wiki, propagating changes to pages and sections shown in portals, without
-    // reporting syntax errors or changes which can't be propagated, which diagnostics already
-    // cover.
-    let rendered_wiki = propagation::format(
-        snapshot.wiki(),
-        snapshot.path.as_deref(),
-        &snapshot.contents,
-        snapshot.line_index(),
-        snapshot.instances()?,
-        baseline,
-    )
-    .ok()?;
-    Some(whole_document_edits(snapshot, rendered_wiki))
+    Some(whole_document_edits(
+        snapshot,
+        formatted_contents(snapshot, baseline)?,
+    ))
 }
 
 // Format a wiki as formatting_for_document does, running its scripts once their blocks are
@@ -2386,31 +2385,37 @@ fn formatting_with_scripts_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
 ) -> (Option<Vec<TextEdit>>, Vec<scripts::ScriptFailure>) {
-    // Format an unsaved wiki as usual.
-    let Some(wiki_path) = snapshot.path.as_deref() else {
-        return (formatting_for_document(snapshot, baseline), Vec::new());
-    };
-
-    // Format the wiki with the changes to its pages and sections shown in portals propagated, then
-    // run its scripts, leaving it as it is if it can't be formatted, which diagnostics already
-    // cover.
-    let Some(formatted_contents) = snapshot.instances().and_then(|instances| {
-        propagation::format(
-            snapshot.wiki(),
-            Some(wiki_path),
-            &snapshot.contents,
-            snapshot.line_index(),
-            instances,
-            baseline,
-        )
-        .ok()
-    }) else {
+    // Leave a wiki which can't be formatted as it is, and only format an unsaved one.
+    let Some(formatted_contents) = formatted_contents(snapshot, baseline) else {
         return (None, Vec::new());
     };
+    let Some(wiki_path) = snapshot.path.as_deref() else {
+        return (
+            Some(whole_document_edits(snapshot, formatted_contents)),
+            Vec::new(),
+        );
+    };
+
+    // Run the scripts on the formatted wiki.
     match scripts::run_formatted(wiki_path, &formatted_contents, false) {
         Ok((contents, failures)) => (Some(whole_document_edits(snapshot, contents)), failures),
         Err(_errors) => (None, Vec::new()),
     }
+}
+
+// Render the parsed wiki, propagating changes to pages and sections shown in portals, without
+// reporting syntax errors or changes which can't be propagated, which diagnostics already cover.
+fn formatted_contents(snapshot: &Snapshot, baseline: &Baseline) -> Option<String> {
+    propagation::propagate(
+        snapshot.wiki(),
+        snapshot.path.as_deref(),
+        &snapshot.contents,
+        snapshot.line_index(),
+        snapshot.instances()?,
+        baseline,
+    )
+    .ok()
+    .map(|propagated_wiki| propagated_wiki.to_string())
 }
 
 // Replace the whole document with new contents, which is either one edit or none at all.
@@ -2982,23 +2987,6 @@ fn declaration_source_range(page: &Page, section: Option<&Section>) -> SourceRan
     section.map_or(page.title_source_range, |section| {
         section.title_source_range
     })
-}
-
-// Find the page which a link at a source offset naming a section without its page would refer to:
-// the page shown by the portal whose copy contains the offset, or else the page containing it.
-fn local_title_at(wiki: &Wiki, byte_offset: usize) -> Option<&PageTitle> {
-    let page = wiki.pages.values().find(|page| {
-        page.source_range.start <= byte_offset && byte_offset <= page.source_range.end
-    })?;
-    Some(
-        page.portals
-            .iter()
-            .filter(|portal| {
-                portal.link_source_range.end < byte_offset && byte_offset < portal.source_range.end
-            })
-            .max_by_key(|portal| portal.source_range.start)
-            .map_or(&page.title, |portal| &portal.target.title),
-    )
 }
 
 // Exclude the delimiters from a source range known to represent a complete link.
@@ -6339,6 +6327,35 @@ mod tests {
                 Range::new(Position::new(4, 0), Position::new(4, 3)),
                 "[#Notes]",
             )],
+        );
+    }
+
+    // Complete a link which names a section without its page, in a portal's copy within another
+    // portal's copy, with the titles of the sections of the page the inner portal shows.
+    #[test]
+    fn completions_offer_section_titles_in_nested_copies() {
+        let source = concat!(
+            "# Home\n\n:::: [Other]\n::: [Budget]\n[#Mo\n:::\n::::\n\n",
+            "# Other\n\n## Morning\n\n# Budget\n\n## Monthly\n\n## Mortgage",
+        );
+        let uri = untitled_uri();
+        let completions =
+            completion_for_document(&snapshot(&uri, source), Position::new(4, 4), true).unwrap();
+
+        assert_eq!(
+            completion_edits(&completions.items),
+            vec![
+                (
+                    "Monthly",
+                    Range::new(Position::new(4, 0), Position::new(4, 4)),
+                    "[#Monthly]",
+                ),
+                (
+                    "Mortgage",
+                    Range::new(Position::new(4, 0), Position::new(4, 4)),
+                    "[#Mortgage]",
+                ),
+            ],
         );
     }
 
