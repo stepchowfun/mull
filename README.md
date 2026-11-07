@@ -217,9 +217,9 @@ Options:
 
 To use Mull, you must install the binary and optionally the Visual Studio Code / Cursor extension. The binary does all the work and can be used by itself from the command line. The IDE extensions use the binary to provide a rich wiki editing experience.
 
-### Installation on macOS or Linux (AArch64 or x86-64)
+### Installation on macOS or Linux
 
-If you're running macOS or Linux (AArch64 or x86-64), you can install Mull with this command:
+If you're running macOS or Linux, you can install Mull with this command:
 
 ```sh
 curl https://raw.githubusercontent.com/stepchowfun/mull/main/install.sh -LSfs | sh
@@ -231,9 +231,9 @@ The same command can be used again to update to the latest version.
 
 If you prefer not to use this installation method, you can download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest), make it executable (e.g., with `chmod`), and place it in some directory in your [`PATH`](https://en.wikipedia.org/wiki/PATH_\(variable\)) (e.g., `/usr/local/bin`). You can then follow the instructions [below](#installing-the-visual-studio-code--cursor-extension) to install the Visual Studio Code / Cursor extension.
 
-### Installing the binary on Windows (AArch64 or x86-64)
+### Installing the binary on Windows
 
-If you're running Windows (AArch64 or x86-64), download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and rename it to `mull` (or `mull.exe` if you have file extensions visible). Create a directory called `Mull` in your `%PROGRAMFILES%` directory (e.g., `C:\Program Files\Mull`), and place the renamed binary in there. Then, in the "Advanced" tab of the "System Properties" section of Control Panel, click on "Environment Variables..." and add the full path to the new `Mull` directory to the `PATH` variable under "System variables". Note that the `Program Files` directory might have a different name if Windows is configured for a language other than English.
+If you're running Windows, download the binary from the [latest release](https://github.com/stepchowfun/mull/releases/latest) and rename it to `mull` (or `mull.exe` if you have file extensions visible). Create a directory called `Mull` in your `%PROGRAMFILES%` directory (e.g., `C:\Program Files\Mull`), and place the renamed binary in there. Then, in the "Advanced" tab of the "System Properties" section of Control Panel, click on "Environment Variables..." and add the full path to the new `Mull` directory to the `PATH` variable under "System variables". Note that the `Program Files` directory might have a different name if Windows is configured for a language other than English.
 
 To update an existing installation, simply replace the existing binary.
 
