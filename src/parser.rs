@@ -2643,7 +2643,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // empty section title.
     #[test]
     fn section_link_colons() {
-        let (wiki, errors) = parse_fixture("# Home\n[Home:A:B] [Home:] [:] [/a:b] [/a\\:b]");
+        let (wiki, errors) =
+            parse_fixture("# Home\n[Home:A:B] [Home:] [:] [/10:30.txt] [/10\\:30.txt]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2654,12 +2655,12 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(
             link_targets(&wiki.page("Home").links),
-            vec!["text:Home:A:B", "file:a:b", "file:a:b"],
+            vec!["text:Home:A:B", "file:10:30.txt", "file:10:30.txt"],
         );
-        let wiki = parse_test("# Home\n[Home:A:B] [/a:b]").unwrap();
+        let wiki = parse_test("# Home\n[Home:A:B] [/10:30.txt]").unwrap();
         assert_eq!(
             wiki.own_content(wiki.page("Home"), None),
-            "[Home:A\\:B] [/a\\:b]",
+            "[Home:A\\:B] [/10\\:30.txt]",
         );
     }
 }
