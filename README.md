@@ -54,7 +54,7 @@ A page can be divided into *sections*, which can be linked to directly. A sectio
 Whisk everything together.
 ```
 
-To end a section early, write its `#`s on a line by themselves. That ends any sections within it too, and what follows belongs to the section containing it:
+To close a section explicitly, write a matching string of `#`s on a line by themselves:
 
 ```md
 ## Steps
@@ -72,7 +72,7 @@ To link to a section, write the page title, then `#`, and finally the section ti
 
 ### Opening a portal to another page or section
 
-A *portal* is a window into another page or section. It's a section whose title is a link. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
+A *portal* is a window into another page or section. To open a portal, create a section whose title is a link. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
 This is my favorite breakfast:
@@ -93,9 +93,7 @@ This is my favorite breakfast:
 - A squeeze of [Lemons]
 ```
 
-Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original. To discard the edits in a portal instead, delete its contents, and formatting will fill it in again.
-
-Sections in the copy are marked one level deeper than in the original, so they sit under the portal. Like any section, a portal lasts until the next title at its level or higher, and you can end it early with its `#`s on a line by themselves, like `##`. You can also open a portal to a section, like `## [Pancakes#Steps]`.
+Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
 
 ### Linking to files and directories
 
@@ -168,7 +166,7 @@ print("Thanks for playing!")
 ```
 ````
 
-No escaping is necessary inside titles or code, apart from a portal's title, which is a link.
+No escaping is necessary inside titles or code.
 
 ## Keyboard shortcuts
 
