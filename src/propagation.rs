@@ -468,7 +468,7 @@ mod tests {
         error::Error,
         line_index::LineIndex,
         parser,
-        wiki::{PageTitle, SectionTitle, Target},
+        wiki::{PageTitle, SECTION_SEPARATOR, SectionTitle, Target},
     };
     use std::{fmt::Write, sync::Arc};
 
@@ -481,7 +481,7 @@ mod tests {
             .iter()
             .map(|(target, content)| {
                 let (title, section) = target
-                    .split_once('#')
+                    .split_once(SECTION_SEPARATOR)
                     .map_or((*target, None), |(title, section)| {
                         (title, Some(SectionTitle::parse(section).unwrap()))
                     });
@@ -802,21 +802,21 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                    "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
                     "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
-                    "## [#Notes]\n\n## Notes\n\nNone.\n\n",
+                    "## [:Notes]\n\n## Notes\n\nNone.\n\n",
                     "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
                 ),
                 &[
                     ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
-                    ("Budget#Monthly", "Rent: 2000"),
+                    ("Budget:Monthly", "Rent: 2000"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
                 "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
-                "## [#Notes]\n\nNone.\n\n## Notes\n\nNone.\n\n",
+                "## [:Notes]\n\nNone.\n\n## Notes\n\nNone.\n\n",
                 "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
             ),
         );
@@ -828,18 +828,18 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget#Monthly]\n\nRent: 2000\n\n",
+                    "# Home\n\n## [Budget:Monthly]\n\nRent: 2000\n\n",
                     "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
                     "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
                 ),
                 &[
                     ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
-                    ("Budget#Monthly", "Rent: 2000"),
+                    ("Budget:Monthly", "Rent: 2000"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
                 "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
                 "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
             ),
@@ -854,20 +854,20 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
-                    "## [Budget#Utilities]\n\nPower: 90\n\n",
+                    "# Home\n\n## [Budget:Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
+                    "## [Budget:Utilities]\n\nPower: 90\n\n",
                     "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 80\n\n##\n\n",
                     "Later.\n",
                 ),
                 &[
-                    ("Budget#Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
-                    ("Budget#Utilities", "Power: 80"),
+                    ("Budget:Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
+                    ("Budget:Utilities", "Power: 80"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
-                "## [Budget#Utilities]\n\nPower: 90\n\n",
+                "# Home\n\n## [Budget:Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
+                "## [Budget:Utilities]\n\nPower: 90\n\n",
                 "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n##\n\n",
                 "Later.\n",
             ),
@@ -879,19 +879,19 @@ mod tests {
     #[test]
     fn conflicting_section_changes() {
         let source = concat!(
-            "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+            "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
             "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2200\n\n",
             "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
         );
         let baseline = [
             ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
-            ("Budget#Monthly", "Rent: 2000"),
+            ("Budget:Monthly", "Rent: 2000"),
         ];
         let errors = format_test(source, &baseline).unwrap_err();
         assert_eq!(error_texts(source, &errors), vec!["[Budget]"]);
         assert_fails!(
             Err::<(), _>(errors),
-            "`Budget#Monthly` and its copies don't match.",
+            "`Budget:Monthly` and its copies don't match.",
         );
 
         let source = source.replace(

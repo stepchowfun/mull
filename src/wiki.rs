@@ -15,7 +15,7 @@ use std::{
 // These strings define the wiki format's extension, the suffix that names a wiki's file
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
 // relative to the file root, which names a directory if it ends with `/`. Otherwise, it names a
-// page, followed by a section of it after `#`. A section's title line marks its title with a run of
+// page, followed by a section of it after `:`. A section's title line marks its title with a run of
 // at least two of the title marker's `#`s, one for each level, followed by a space, as does a
 // portal's, whose title is a link, and that run alone is a closing line, which ends one. The home
 // page's title identifies the root of every wiki's text-link graph.
@@ -24,7 +24,7 @@ pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
 pub const TITLE_MARKER: char = '#';
 pub const MIN_SECTION_LEVEL: usize = 2;
-pub const SECTION_SEPARATOR: char = '#';
+pub const SECTION_SEPARATOR: char = ':';
 pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
@@ -1339,26 +1339,26 @@ mod tests {
     #[test]
     fn section_portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n## [Other#Monthly]\n\n## [Other#Closed]\n\nstale\n\n",
-            "## [Other#Missing]\n\nkept\n\n## [#Notes]\n\n## Notes\n\nNone.\n\n",
+            "# Home\n\n## [Other:Monthly]\n\n## [Other:Closed]\n\nstale\n\n",
+            "## [Other:Missing]\n\nkept\n\n## [:Notes]\n\n## Notes\n\nNone.\n\n",
             "# Other\n\n## Closed\n\nItem.\n  More.\n\n##\n\nBetween.\n\n",
-            "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home#Notes]\n\n",
+            "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home:Notes]\n\n",
             "## Yearly\n\n### Taxes\n\nDue.\n\n#### Forms\n\nMany.\n\n",
-            "## [Other#Taxes]\n",
+            "## [Other:Taxes]\n",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n## [Other#Monthly]\n\nRent.\n\n### Fixed\n\n",
-                "#### [Home#Notes]\n\nNone.\n\n",
-                "## [Other#Closed]\n\nItem.\n  More.\n\n",
-                "## [Other#Missing]\n\nkept\n\n## [#Notes]\n\nNone.\n\n",
+                "# Home\n\n## [Other:Monthly]\n\nRent.\n\n### Fixed\n\n",
+                "#### [Home:Notes]\n\nNone.\n\n",
+                "## [Other:Closed]\n\nItem.\n  More.\n\n",
+                "## [Other:Missing]\n\nkept\n\n## [:Notes]\n\nNone.\n\n",
                 "## Notes\n\nNone.\n\n",
                 "# Other\n\n## Closed\n\nItem.\n  More.\n\n##\n\nBetween.\n\n",
-                "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home#Notes]\n\nNone.\n\n",
+                "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home:Notes]\n\nNone.\n\n",
                 "## Yearly\n\n### Taxes\n\nDue.\n\n#### Forms\n\nMany.\n\n",
-                "## [Other#Taxes]\n\nDue.\n\n### Forms\n\nMany.\n",
+                "## [Other:Taxes]\n\nDue.\n\n### Forms\n\nMany.\n",
             ),
         );
     }

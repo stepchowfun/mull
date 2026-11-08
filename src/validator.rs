@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn section_links() {
         let wiki = parse(concat!(
-            "# Home\n[Notes#Missing] [Notes#Present] [#Local] [#Absent]\n## Local\n",
+            "# Home\n[Notes:Missing] [Notes:Present] [:Local] [:Absent]\n## Local\n",
             "# Notes\n## Present",
         ))
         .unwrap();
@@ -867,8 +867,8 @@ mod tests {
     #[test]
     fn section_portal_cycles() {
         let wiki = parse(concat!(
-            "# Home\n[Other]\n## [#Notes]\n## Notes\n### [Other#Left]\n",
-            "# Other\n## Left\n### [Home#Notes]\n## Right\n### [#Left]\n",
+            "# Home\n[Other]\n## [:Notes]\n## Notes\n### [Other:Left]\n",
+            "# Other\n## Left\n### [Home:Notes]\n## Right\n### [:Left]\n",
         ))
         .unwrap();
 
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(contains_error(
             &errors,
-            "A portal to `Home#Notes` here creates a cycle of portals.",
+            "A portal to `Home:Notes` here creates a cycle of portals.",
         ));
     }
 

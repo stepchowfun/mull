@@ -688,7 +688,7 @@
       "patterns": [
         {
           "name": "constant.character.escape.mull",
-          "match": "\\\\[\\\\\\[\\]#]"
+          "match": "\\\\[\\\\\\[\\]:]"
         },
         {
           "name": "invalid.illegal.escape.mull",
@@ -739,7 +739,7 @@
         },
         {
           "name": "punctuation.separator.section.mull",
-          "match": "#"
+          "match": ":"
         },
         {
           "name": "invalid.illegal.unexpected-opening-delimiter.mull",

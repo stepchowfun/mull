@@ -1,8 +1,8 @@
 // These functions convert between plain text, such as a page title or a path, and text as it
-// appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, `#`
+// appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, `:`
 // separates a link's page from a section, and a backslash escapes the character after it
 // [ref:content_escapes]. Which characters a backslash can escape depends on the context, since
-// backticks are plain characters in a link's target, `#` is only special in one, and code and the
+// backticks are plain characters in a link's target, `:` is only special in one, and code and the
 // titles of pages and sections are taken as written. A portal's title is a link, so it's escaped
 // like one.
 
@@ -54,7 +54,7 @@ fn has_escapes(context: Context) -> bool {
 pub fn is_escapable(character: char, context: Context) -> bool {
     match context {
         Context::Text => matches!(character, '\\' | '[' | ']' | '`'),
-        Context::Link => matches!(character, '\\' | '[' | ']' | '#'),
+        Context::Link => matches!(character, '\\' | '[' | ']' | ':'),
         Context::Verbatim => false,
     }
 }
@@ -81,7 +81,7 @@ pub fn invalid_escape_message(context: Context) -> &'static str {
              backslash itself."
         }
         Context::Link => {
-            "In a link, a backslash must be followed by `[`, `]`, `#`, or `\\`, so write `\\\\` \
+            "In a link, a backslash must be followed by `[`, `]`, `:`, or `\\`, so write `\\\\` \
              for a backslash itself."
         }
         Context::Verbatim => "Here, a backslash is a plain character.",
@@ -93,12 +93,12 @@ mod tests {
     use super::{Context, escape, unescape, unescaped_indices};
 
     // Escape delimiters and backslashes in plain text, and decode escapes, but decode nothing when
-    // a backslash doesn't escape anything. Backticks are escaped only outside links, and verbatim
-    // text is left as written.
+    // a backslash doesn't escape anything. Backticks are escaped only outside links, `:` only in
+    // them, and verbatim text is left as written.
     #[test]
     fn escaping() {
         assert_eq!(escape(r"a\[b]\c`", Context::Text), r"a\\\[b\]\\c\`");
-        assert_eq!(escape(r"a\[b]\c`#", Context::Link), r"a\\\[b\]\\c`\#");
+        assert_eq!(escape(r"a\[b]\c`:#", Context::Link), r"a\\\[b\]\\c`\:#");
         assert_eq!(
             unescape(r"a\\\[b\]\\c\\\``", Context::Text),
             Some(r"a\[b]\c\``".to_owned()),
@@ -108,11 +108,12 @@ mod tests {
             Some(r"a\[b]\c\`".to_owned()),
         );
         assert_eq!(unescape(r"\`", Context::Link), None);
-        assert_eq!(unescape(r"C\#", Context::Link), Some("C#".to_owned()));
+        assert_eq!(unescape(r"10\:30", Context::Link), Some("10:30".to_owned()));
+        assert_eq!(unescape(r"C\#", Context::Link), None);
         assert_eq!(unescape(r"\a", Context::Text), None);
-        assert_eq!(unescape(r"\#", Context::Text), None);
+        assert_eq!(unescape(r"\:", Context::Text), None);
         assert_eq!(unescape(r"a\\\", Context::Text), None);
-        assert_eq!(escape(r"#\#", Context::Text), r"#\\#");
+        assert_eq!(escape(r":\:", Context::Text), r":\\:");
         assert_eq!(escape(r"a\[b]\c`", Context::Verbatim), r"a\[b]\c`");
         assert_eq!(
             unescape(r"a\[b]\c`\", Context::Verbatim),
@@ -124,9 +125,9 @@ mod tests {
     #[test]
     fn unescaped_occurrences() {
         assert_eq!(
-            unescaped_indices(r"a#b\#c\\#d", '#', Context::Link),
+            unescaped_indices(r"a:b\:c\\:d", ':', Context::Link),
             vec![1, 8],
         );
-        assert_eq!(unescaped_indices(r"a\#", '#', Context::Verbatim), vec![2]);
+        assert_eq!(unescaped_indices(r"a\:", ':', Context::Verbatim), vec![2]);
     }
 }

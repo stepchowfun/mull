@@ -294,7 +294,7 @@ fn run_block(
 
 // Find the values of a script block's arguments. Text outside links and code is split on
 // whitespace, with its escapes resolved. A link to a page stands for the page's title, a link to a
-// section stands for its page's title and the section's title joined by `#`, and a link to a file
+// section stands for its page's title and the section's title joined by `:`, and a link to a file
 // or directory stands for its full path. Code stands for its text as written. Pieces which aren't
 // separated by whitespace form one argument.
 fn arguments(
@@ -792,13 +792,13 @@ mod tests {
     }
 
     // Take links to pages as their titles, links to sections as their pages' titles and their own
-    // titles joined by `#`, and links to files as their paths, code as written, and the rest split
+    // titles joined by `:`, and links to files as their paths, code as written, and the rest split
     // on whitespace with its escapes resolved, joining pieces which aren't separated.
     #[test]
     fn script_arguments() {
         let source = concat!(
             "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] ",
-            "[#Notes] :::\n## Notes",
+            "[:Notes] :::\n## Notes",
         );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
@@ -814,7 +814,7 @@ mod tests {
                 "two",
                 "words",
                 "--page=Home",
-                "Home#Notes",
+                "Home:Notes",
             ],
         );
     }
