@@ -80,8 +80,7 @@ const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
-// This editor command reopens suggestions so the children of a completed directory, or the page for
-// a new portal, can be chosen.
+// This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // This request plans attaching files which are pasted or dropped into a wiki: which ones to copy

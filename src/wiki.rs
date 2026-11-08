@@ -701,9 +701,10 @@ impl Section {
 
 // This struct represents a portal in a page's content, which shows a page or a section of one. It's
 // a section whose title is a link naming what it shows, and it holds a copy of that content, which
-// formatting keeps in sync, along with any portals within it. The title lines in the copy are as
-// deep under the portal's title as they are under the title of what it shows. A portal to a section
-// can name it without its page, which is then the page whose content the portal is in.
+// formatting keeps in sync, along with any portals within it. The title lines and closing lines in
+// the copy are as deep under the portal's title as they are under the title of what it shows. A
+// portal to a section can name it without its page, which is then the page whose content the
+// portal is in.
 #[derive(Clone, Debug)]
 pub struct Portal {
     pub target: Target,
@@ -1380,9 +1381,9 @@ mod tests {
         );
     }
 
-    // Find a block's body without its indentation, with where each line starts in the body and in
-    // the source. A line indented less than the opening fence loses its indentation, and a block
-    // written on one line has no body.
+    // Find a block's body without its indentation, and a portal's copy after its title line, with
+    // where each line starts in the body or copy and in the source. A line indented less than the
+    // opening fence loses its indentation, and a block written on one line has no body.
     #[test]
     fn bodies() {
         let source = concat!(
