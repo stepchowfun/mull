@@ -2520,12 +2520,11 @@ fn outline_symbol(
 }
 
 // This is a section or a portal of a page, or one in a portal's copy, as the editor navigates and
-// edits it: its name, which is a portal's link, its level, where the `#`s marking its title and any
-// closing line start, and where it is.
+// edits it: its name, which is a portal's link, its level, where its closing line starts if it has
+// one, and where it is, which starts with the `#`s marking its title.
 struct TitledPart {
     name: String,
     level: usize,
-    marker_start: usize,
     closing_start: Option<usize>,
     source_range: SourceRange,
 }
@@ -2539,7 +2538,6 @@ fn titled_parts(page: &Page) -> Vec<TitledPart> {
         .map(|section| TitledPart {
             name: section.title.text(Context::Verbatim),
             level: section.level,
-            marker_start: section.marked_title_source_range.start,
             closing_start: section
                 .closing_source_range
                 .map(|closing_source_range| closing_source_range.start),
@@ -2549,7 +2547,6 @@ fn titled_parts(page: &Page) -> Vec<TitledPart> {
             TitledPart {
                 name: format!("[{}]", portal.target.link_text(portal.is_local)),
                 level: portal.level,
-                marker_start: portal.marked_title_source_range.start,
                 closing_start: portal
                     .closing_source_range
                     .map(|closing_source_range| closing_source_range.start),
@@ -2703,16 +2700,17 @@ fn code_action_for_document(
                         })
                         .map(titled_parts)
                         .unwrap_or_default();
-                    let edits = match parts.iter().find(|part| part.marker_start == start) {
+                    let edits = match parts.iter().find(|part| part.source_range.start == start) {
                         Some(moved_part) => parts
                             .iter()
                             .filter(|part| {
                                 (moved_part.source_range.start..moved_part.source_range.end)
-                                    .contains(&part.marker_start)
+                                    .contains(&part.source_range.start)
                             })
                             .flat_map(|part| {
-                                iter::once(part.marker_start).chain(part.closing_start).map(
-                                    move |marker_start| {
+                                iter::once(part.source_range.start)
+                                    .chain(part.closing_start)
+                                    .map(move |marker_start| {
                                         TextEdit::new(
                                             snapshot.range(SourceRange {
                                                 start: marker_start,
@@ -2724,8 +2722,7 @@ fn code_action_for_document(
                                                     .max(MIN_SECTION_LEVEL),
                                             ),
                                         )
-                                    },
-                                )
+                                    })
                             })
                             .collect(),
                         None => vec![TextEdit::new(
@@ -2980,8 +2977,7 @@ fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
     // Look for a section's title line, which never contains a link. A portal's title is a link,
     // which is found among the page's links below.
     if let Some(section) = page.sections.iter().find(|section| {
-        section.marked_title_source_range.start <= byte_offset
-            && byte_offset <= section.marked_title_source_range.end
+        section.source_range.start <= byte_offset && byte_offset <= section.title_source_range.end
     }) {
         return Some(Occurrence::SectionTitle(page, section));
     }

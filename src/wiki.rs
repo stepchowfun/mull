@@ -494,14 +494,14 @@ impl Wiki {
             .map(|portal| {
                 (
                     portal.level,
-                    portal.marked_title_source_range.start,
+                    portal.source_range.start,
                     portal.closing_source_range,
                 )
             })
             .chain(page.copy_sections.iter().map(|section| {
                 (
                     section.level,
-                    section.marked_title_source_range.start,
+                    section.source_range.start,
                     section.closing_source_range,
                 )
             }))
@@ -682,7 +682,6 @@ pub struct Section {
     pub title: SectionTitle,
     pub level: usize,
     pub source_range: SourceRange, // From the first `#` through its content or closing line
-    pub marked_title_source_range: SourceRange, // From the first `#` through the title's range
     pub title_source_range: SourceRange, // From the title through the line's end
     pub body_source_range: SourceRange, // After the title line through its content
     pub closing_source_range: Option<SourceRange>, // Its closing line's `#`s, if it has one
@@ -711,7 +710,6 @@ pub struct Portal {
     pub is_local: bool,
     pub level: usize,
     pub source_range: SourceRange, // From the first `#` through its copy or closing line
-    pub marked_title_source_range: SourceRange, // From the first `#` through the link
     pub link_source_range: SourceRange, // The link in its title line which names the target
     pub body_source_range: SourceRange, // After the title line through its copy
     pub closing_source_range: Option<SourceRange>, // Its closing line's `#`s, if it has one

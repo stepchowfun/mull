@@ -85,15 +85,6 @@ enum PortalTarget {
     Invalid,
 }
 
-// This struct describes a title line which starts a section or a portal: its level, what it starts,
-// where its first `#` is, and where the line after it starts.
-struct SectionTitleLine {
-    level: usize,
-    kind: TitleLineKind,
-    start: usize,
-    body_start: usize,
-}
-
 // These are the kinds of title lines: a section's, with its title if it's valid, or a portal's,
 // with where the link which names what it shows should be.
 enum TitleLineKind {
@@ -274,29 +265,26 @@ pub fn parse_at_level(
         }
     };
 
-    // Start a section or a portal at a title line, after ending the sections and portals it follows
-    // at its level or a deeper one. Within a portal, it's part of the copy, which is checked once
-    // it's read as the content of what the portal shows. Otherwise, require it to be one level
-    // deeper than the section or page it's in, and a section's title to be valid and new to the
-    // page.
+    // Start a section or a portal at a title line of a level, which starts at an offset, with its
+    // body starting at another, after ending the sections and portals it follows at its level or a
+    // deeper one. Within a portal, it's part of the copy, which is checked once it's read as the
+    // content of what the portal shows. Otherwise, require it to be one level deeper than the
+    // section or page it's in, and a section's title to be valid and new to the page.
     let start_section = |open_sections: &mut Vec<OpenSection>,
                          pending_page: &mut PendingPage,
                          errors: &mut Vec<Error>,
-                         title_line: SectionTitleLine| {
+                         level: usize,
+                         title_line_kind: TitleLineKind,
+                         start: usize,
+                         body_start: usize| {
         // End the sections and portals it follows, at the start of its line.
         while let Some(open_section) = open_sections.last()
-            && open_section.level >= title_line.level
+            && open_section.level >= level
         {
             let open_section = open_sections
                 .pop()
                 .expect("The last open section should exist.");
-            finish_section(
-                pending_page,
-                open_section,
-                title_line.start,
-                None,
-                source_contents,
-            );
+            finish_section(pending_page, open_section, start, None, source_contents);
         }
 
         // Outside portals, require the section or portal to be one level deeper than the section
@@ -308,7 +296,7 @@ pub fn parse_at_level(
             .last()
             .map_or(title_level, |open_section| open_section.level)
             + 1;
-        if !is_in_copy && title_line.level != expected_level {
+        if !is_in_copy && level != expected_level {
             errors.push(syntax_error(
                 &format!(
                     "This title should be marked with {}, one level deeper than the title it's \
@@ -316,12 +304,12 @@ pub fn parse_at_level(
                     TITLE_MARKER.to_string().repeat(expected_level).code_str(),
                 ),
                 SourceRange {
-                    start: title_line.start,
-                    end: title_line.start + title_line.level,
+                    start,
+                    end: start + level,
                 },
                 Some(Fix::SetSectionLevel {
-                    start: title_line.start,
-                    end: title_line.start + title_line.level,
+                    start,
+                    end: start + level,
                     level: expected_level,
                 }),
             ));
@@ -329,7 +317,7 @@ pub fn parse_at_level(
 
         // Keep a section's title if it's valid and, outside portals, new to the page. A portal's
         // target is found once the rest of its title line has been read.
-        let kind = match title_line.kind {
+        let kind = match title_line_kind {
             TitleLineKind::Section(Ok((title, title_source_range)))
                 if !is_in_copy && pending_page.section_titles.contains(&title) =>
             {
@@ -359,9 +347,9 @@ pub fn parse_at_level(
         open_sections.push(OpenSection {
             kind,
             is_in_copy,
-            level: title_line.level,
-            start: title_line.start,
-            body_start: title_line.body_start,
+            level,
+            start,
+            body_start,
         });
     };
 
@@ -605,12 +593,10 @@ pub fn parse_at_level(
                         &mut open_sections,
                         &mut pending_page,
                         &mut errors,
-                        SectionTitleLine {
-                            level,
-                            kind,
-                            start: position,
-                            body_start: next_line_start,
-                        },
+                        level,
+                        kind,
+                        position,
+                        next_line_start,
                     );
                     if let Some(link_start) = link_start {
                         line_links_before = Some(pending_page.links.len());
@@ -979,10 +965,6 @@ fn finish_section(
                 title,
                 level: open_section.level,
                 source_range,
-                marked_title_source_range: SourceRange {
-                    start: open_section.start,
-                    end: title_source_range.end,
-                },
                 title_source_range,
                 body_source_range,
                 closing_source_range,
@@ -999,10 +981,6 @@ fn finish_section(
                 is_local,
                 level: open_section.level,
                 source_range,
-                marked_title_source_range: SourceRange {
-                    start: open_section.start,
-                    end: link_source_range.end,
-                },
                 link_source_range,
                 body_source_range,
                 closing_source_range,
@@ -2469,8 +2447,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             "Monthly  ",
         );
         assert_eq!(
-            &source[page.sections[1].marked_title_source_range.start
-                ..page.sections[1].marked_title_source_range.end],
+            &source[page.sections[1].source_range.start..page.sections[1].title_source_range.end],
             "### Fixed",
         );
         assert_eq!(page.portals.len(), 1);

@@ -99,14 +99,15 @@ fn collect_copies(
         }),
     };
     if copy.trim().is_empty() {
-        instances
+        let target_instances = instances
             .targets
             .entry(portal.target.clone())
-            .or_insert_with(|| vec![original()])
-            .push(Instance {
-                content: wiki.own_content(page, section),
-                source_range,
-            });
+            .or_insert_with(|| vec![original()]);
+        let content = target_instances[0].content.clone();
+        target_instances.push(Instance {
+            content,
+            source_range,
+        });
         return;
     }
 
