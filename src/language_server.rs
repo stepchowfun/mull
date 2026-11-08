@@ -14,8 +14,9 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, Page, PageTitle,
-        SECTION_SEPARATOR, Section, SectionTitle, TITLE_MARKER, TITLE_PREFIX, Target, Wiki,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, MIN_SECTION_LEVEL, Page,
+        PageTitle, SECTION_SEPARATOR, Section, SectionTitle, TITLE_MARKER, TITLE_PREFIX, Target,
+        Wiki,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -28,9 +29,9 @@ use std::{
     io::{BufReader, Read},
     iter,
     path::{Path, PathBuf},
-    slice,
     sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
     time::Duration,
+    vec,
 };
 use tokio::{sync::oneshot, task::JoinHandle};
 use tower_lsp_server::{
@@ -79,8 +80,7 @@ const REVEAL_RANGE_COMMAND: &str = "mull.revealRange";
 // [group:reveal_in_explorer_command].
 const REVEAL_IN_EXPLORER_COMMAND: &str = "mull.revealInExplorer";
 
-// This editor command reopens suggestions so the children of a completed directory, or the page for
-// a new portal, can be chosen.
+// This editor command reopens suggestions so the children of a completed directory can be chosen.
 const TRIGGER_SUGGEST_COMMAND: &str = "editor.action.triggerSuggest";
 
 // This request plans attaching files which are pasted or dropped into a wiki: which ones to copy
@@ -1115,17 +1115,17 @@ fn diagnostic(range: Range, message: String, fix: Option<&Fix>) -> Diagnostic {
     }
 }
 
-// Complete a portal or a script block at an editor position, or the target of the link there with
-// page titles, section titles, or filesystem paths. Where more can be chosen after a completion, VS
-// Code commands, if available, ask for suggestions again.
+// Complete a script block at an editor position, or the target of the link there with page
+// titles, section titles, or filesystem paths. Where more can be chosen after a completion, VS Code
+// commands, if available, ask for suggestions again.
 fn completion_for_document(
     snapshot: &Snapshot,
     cursor: Position,
     vscode_commands: bool,
 ) -> Option<CompletionList> {
-    // Offer to open a portal or run a script after the colons which start a fence.
+    // Offer to run a script after the colons which start a fence.
     let cursor_offset = snapshot.byte_offset(cursor)?;
-    if let Some(items) = fence_completions(snapshot, cursor_offset, vscode_commands) {
+    if let Some(items) = fence_completions(snapshot, cursor_offset) {
         return Some(CompletionList {
             is_incomplete: false,
             items,
@@ -1227,18 +1227,13 @@ fn completion_for_document(
     ))
 }
 
-// Offer to open a portal to a page, or to run each script in a saved wiki, in place of the colons
-// starting the cursor's line and any part of a script's name typed after them, if that's the only
-// text on the line and the parser reports the colons alone as an unexpected closing fence, so they
-// don't close a block and aren't in code. Offering them again while a name is typed brings the
-// suggestions back after none match or they're dismissed. A portal is written on one line with the
-// cursor in its link, where titles are suggested next, and a script block is written with the
-// cursor in its empty body, since a script is more often run without arguments.
-fn fence_completions(
-    snapshot: &Snapshot,
-    cursor: usize,
-    vscode_commands: bool,
-) -> Option<Vec<CompletionItem>> {
+// Offer to run each script in a saved wiki in place of the colons starting the cursor's line and
+// any part of a script's name typed after them, if that's the only text on the line and the parser
+// reports the colons alone as an unexpected closing fence, so they don't close a block and aren't
+// in code. Offering them again while a name is typed brings the suggestions back after none match
+// or they're dismissed. A script block is written with the cursor in its empty body, since a script
+// is more often run without arguments.
+fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<CompletionItem>> {
     // Find the colons starting the line, what's typed between them and the cursor, and the rest
     // of the line.
     let contents = &snapshot.contents;
@@ -1283,26 +1278,13 @@ fn fence_completions(
         return None;
     }
 
-    // Write the portal, then each script block, as a snippet, keeping the portal first. Each is
-    // filtered by its name after the colons, so typing more of it narrows the list rather than
-    // emptying it.
+    // Write each script block as a snippet, filtered by its name after the colons, so typing more
+    // of it narrows the list rather than emptying it.
     let range = snapshot.range(SourceRange {
         start: fence_start,
         end: cursor,
     });
-    let mut completions = vec![CompletionItem {
-        label: "Open a portal to a page".to_owned(),
-        kind: Some(CompletionItemKind::SNIPPET),
-        sort_text: Some("0".to_owned()),
-        filter_text: Some(format!("{fence} portal")),
-        insert_text_format: Some(InsertTextFormat::SNIPPET),
-        text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-            range,
-            format!("{fence} [$1] {fence}"),
-        ))),
-        command: vscode_commands.then(suggest_command),
-        ..CompletionItem::default()
-    }];
+    let mut completions = Vec::new();
     let file_root = snapshot
         .path
         .as_deref()
@@ -1315,7 +1297,6 @@ fn fence_completions(
             label: name.clone(),
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some("Run a script".to_owned()),
-            sort_text: Some(format!("1{name}")),
             filter_text: Some(format!("{fence} {name}")),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
@@ -1325,7 +1306,7 @@ fn fence_completions(
             ..CompletionItem::default()
         });
     }
-    Some(completions)
+    (!completions.is_empty()).then_some(completions)
 }
 
 // Complete the next component of a filesystem link's typed path, which ends at the cursor, from
@@ -2433,7 +2414,8 @@ fn whole_document_edits(snapshot: &Snapshot, contents: String) -> Vec<TextEdit> 
     }
 }
 
-// Describe every parsed page and its sections for editor outlines and document-symbol navigation.
+// Describe every parsed page and its sections and portals, including those in portals' copies, for
+// editor outlines and document-symbol navigation.
 #[allow(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
@@ -2447,16 +2429,22 @@ fn document_symbol_for_document(
     let mut pages = snapshot.wiki().pages.values().collect::<Vec<_>>();
     pages.sort_by_key(|page| page.source_range.start);
 
-    // Use separate ranges for each page or section and its selection when the client supports
-    // hierarchical symbols, nesting each section within the page or section containing it, and
-    // locate each flat symbol by its selection range otherwise, naming the page containing a
-    // section. Selecting a symbol leads to the start of its page or section.
+    // Use separate ranges for each page, section, or portal and its selection when the client
+    // supports hierarchical symbols, nesting each section or portal within the page, section, or
+    // portal containing it, and locate each flat symbol by its selection range otherwise, naming
+    // the page containing a section or portal. Selecting a symbol leads to its start.
     if supports_hierarchy {
         DocumentSymbolResponse::Nested(
             pages
                 .into_iter()
                 .map(|page| {
-                    target_symbol(snapshot, page, None, &mut page.sections.iter().peekable())
+                    outline_symbol(
+                        snapshot,
+                        page.title.text(Context::Verbatim),
+                        SymbolKind::OBJECT,
+                        page.source_range,
+                        &mut titled_parts(page).into_iter().peekable(),
+                    )
                 })
                 .collect(),
         )
@@ -2476,16 +2464,14 @@ fn document_symbol_for_document(
                         ),
                         container_name: None,
                     })
-                    .chain(page.sections.iter().map(|section| {
+                    .chain(titled_parts(page).into_iter().map(|part| {
+                        let start = snapshot.position(part.source_range.start);
                         SymbolInformation {
-                            name: section.title.text(Context::Verbatim),
+                            name: part.name,
                             kind: SymbolKind::STRING,
                             tags: None,
                             deprecated: None,
-                            location: Location::new(
-                                snapshot.uri.clone(),
-                                target_start_range(snapshot, page, Some(section)),
-                            ),
+                            location: Location::new(snapshot.uri.clone(), Range::new(start, start)),
                             container_name: Some(page.title.text(Context::Verbatim)),
                         }
                     }))
@@ -2495,42 +2481,81 @@ fn document_symbol_for_document(
     }
 }
 
-// Describe a page or a section as a symbol, along with the symbols of the sections directly within
-// it, which are next among the sections of the page, in source order.
+// Describe a page, or a section or a portal in it, as a symbol, along with the symbols of the
+// sections and portals directly within it, which are next among those of the page, in source order.
 #[allow(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
 )]
-fn target_symbol(
+fn outline_symbol(
     snapshot: &Snapshot,
-    page: &Page,
-    section: Option<&Section>,
-    sections: &mut iter::Peekable<slice::Iter<Section>>,
+    name: String,
+    kind: SymbolKind,
+    source_range: SourceRange,
+    parts: &mut iter::Peekable<vec::IntoIter<TitledPart>>,
 ) -> DocumentSymbol {
-    let source_range = section.map_or(page.source_range, |section| section.source_range);
     let mut children = Vec::new();
-    while let Some(child) = sections
+    while let Some(child) = parts
         .next_if(|child| (source_range.start..source_range.end).contains(&child.source_range.start))
     {
-        children.push(target_symbol(snapshot, page, Some(child), sections));
+        children.push(outline_symbol(
+            snapshot,
+            child.name,
+            SymbolKind::STRING,
+            child.source_range,
+            parts,
+        ));
     }
+    let start = snapshot.position(source_range.start);
     DocumentSymbol {
-        name: section.map_or_else(
-            || page.title.text(Context::Verbatim),
-            |section| section.title.text(Context::Verbatim),
-        ),
+        name,
         detail: None,
-        kind: if section.is_some() {
-            SymbolKind::STRING
-        } else {
-            SymbolKind::OBJECT
-        },
+        kind,
         tags: None,
         deprecated: None,
         range: snapshot.range(source_range),
-        selection_range: target_start_range(snapshot, page, section),
+        selection_range: Range::new(start, start),
         children: (!children.is_empty()).then_some(children),
     }
+}
+
+// This is a section or a portal of a page, or one in a portal's copy, as the editor navigates and
+// edits it: its name, which is a portal's link, its level, where its closing line starts if it has
+// one, and where it is, which starts with the `#`s marking its title.
+struct TitledPart {
+    name: String,
+    level: usize,
+    closing_start: Option<usize>,
+    source_range: SourceRange,
+}
+
+// List the sections and portals of a page, including those in its portals' copies, in source order.
+fn titled_parts(page: &Page) -> Vec<TitledPart> {
+    let mut parts = page
+        .sections
+        .iter()
+        .chain(&page.copy_sections)
+        .map(|section| TitledPart {
+            name: section.title.text(Context::Verbatim),
+            level: section.level,
+            closing_start: section
+                .closing_source_range
+                .map(|closing_source_range| closing_source_range.start),
+            source_range: section.source_range,
+        })
+        .chain(page.portals.iter().chain(&page.copy_portals).map(|portal| {
+            TitledPart {
+                name: format!("[{}]", portal.target.link_text(portal.is_local)),
+                level: portal.level,
+                closing_start: portal
+                    .closing_source_range
+                    .map(|closing_source_range| closing_source_range.start),
+                source_range: portal.source_range,
+            }
+        }))
+        .collect::<Vec<_>>();
+    parts.sort_by_key(|part| part.source_range.start);
+    parts
 }
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
@@ -2662,14 +2687,52 @@ fn code_action_for_document(
                     )
                 }
                 Fix::SetSectionLevel { start, end, level } => {
-                    // Write one `#` for each level.
+                    // Write one `#` for each level, and move the title lines and closing lines
+                    // within the section or portal along with its own, including those in portals'
+                    // copies, so what's within it stays within it. A section without a valid title
+                    // isn't kept, so only its own title line moves.
                     let marker = TITLE_MARKER.to_string().repeat(level);
+                    let parts = wiki
+                        .pages
+                        .values()
+                        .find(|page| {
+                            (page.source_range.start..page.source_range.end).contains(&start)
+                        })
+                        .map(titled_parts)
+                        .unwrap_or_default();
+                    let edits = match parts.iter().find(|part| part.source_range.start == start) {
+                        Some(moved_part) => parts
+                            .iter()
+                            .filter(|part| {
+                                (moved_part.source_range.start..moved_part.source_range.end)
+                                    .contains(&part.source_range.start)
+                            })
+                            .flat_map(|part| {
+                                iter::once(part.source_range.start)
+                                    .chain(part.closing_start)
+                                    .map(move |marker_start| {
+                                        TextEdit::new(
+                                            snapshot.range(SourceRange {
+                                                start: marker_start,
+                                                end: marker_start + part.level,
+                                            }),
+                                            TITLE_MARKER.to_string().repeat(
+                                                (part.level + level)
+                                                    .saturating_sub(moved_part.level)
+                                                    .max(MIN_SECTION_LEVEL),
+                                            ),
+                                        )
+                                    })
+                            })
+                            .collect(),
+                        None => vec![TextEdit::new(
+                            snapshot.range(SourceRange { start, end }),
+                            marker.clone(),
+                        )],
+                    };
                     (
                         format!("Mark the title with {}", marker.code_str()),
-                        vec![TextEdit::new(
-                            snapshot.range(SourceRange { start, end }),
-                            marker,
-                        )],
+                        edits,
                         None,
                     )
                 }
@@ -2911,10 +2974,10 @@ fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
         return Some(Occurrence::Title(page));
     }
 
-    // Look for a section's title line, which never contains a link.
+    // Look for a section's title line, which never contains a link. A portal's title is a link,
+    // which is found among the page's links below.
     if let Some(section) = page.sections.iter().find(|section| {
-        section.marked_title_source_range.start <= byte_offset
-            && byte_offset <= section.marked_title_source_range.end
+        section.source_range.start <= byte_offset && byte_offset <= section.title_source_range.end
     }) {
         return Some(Occurrence::SectionTitle(page, section));
     }
@@ -3129,9 +3192,8 @@ mod tests {
         CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind,
         CompletionTextEdit, Diagnostic, DiagnosticSeverity, DocumentChangeOperation,
         DocumentChanges, DocumentHighlight, DocumentHighlightKind, DocumentSymbol,
-        DocumentSymbolResponse, GotoDefinitionResponse, HoverContents, InsertTextFormat,
-        MarkupKind, OneOf, Position, PrepareRenameResponse, Range, ResourceOp, SymbolKind, Uri,
-        WorkspaceEdit,
+        DocumentSymbolResponse, GotoDefinitionResponse, HoverContents, MarkupKind, OneOf, Position,
+        PrepareRenameResponse, Range, ResourceOp, SymbolKind, Uri, WorkspaceEdit,
     };
     #[cfg(unix)]
     use {
@@ -3210,6 +3272,15 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
         }
+    }
+
+    // Make a file-backed wiki with a `sort` script, which completion offers after colons.
+    fn wiki_with_script(source_contents: &str) -> TestWiki {
+        let wiki = TestWiki::new(source_contents);
+        let scripts = wiki.directory().join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("sort.sh"), "").unwrap();
+        wiki
     }
 
     // Summarize each completion by its label, replacement range, and inserted text.
@@ -3528,55 +3599,13 @@ mod tests {
         );
     }
 
-    // Offer to open a portal to a page after the colons which start a fence, writing the portal on
-    // one line with the cursor in its link and, with VS Code commands, asking for titles there.
+    // Complete the link in a portal's title line like any other link.
     #[test]
-    fn completions_open_portals() {
-        let source = "# Home\n\n- Item\n  :::\n\n# Other";
-        let completions = completion_for_document(
-            &snapshot(&untitled_uri(), source),
-            Position::new(3, 5),
-            true,
-        )
-        .unwrap()
-        .items;
-
-        assert_eq!(
-            completion_edits(&completions),
-            vec![(
-                "Open a portal to a page",
-                Range::new(Position::new(3, 2), Position::new(3, 5)),
-                "::: [$1] :::",
-            )],
-        );
-        assert_eq!(
-            completions[0].insert_text_format,
-            Some(InsertTextFormat::SNIPPET),
-        );
-        assert_eq!(
-            completions[0]
-                .command
-                .as_ref()
-                .map(|command| command.command.as_str()),
-            Some("editor.action.triggerSuggest"),
-        );
-
-        // Leave asking for titles to clients without VS Code commands.
-        assert!(
-            completion_for_document(
-                &snapshot(&untitled_uri(), source),
-                Position::new(3, 5),
-                false,
-            )
-            .unwrap()
-            .items[0]
-                .command
-                .is_none(),
-        );
+    fn completions_complete_portal_links() {
         assert_eq!(
             completion_for_document(
-                &snapshot(&untitled_uri(), "# Home\n\n::: [] :::\n\n# Other"),
-                Position::new(2, 5),
+                &snapshot(&untitled_uri(), "# Home\n\n## []\n\n# Other"),
+                Position::new(2, 4),
                 true,
             )
             .unwrap()
@@ -3589,7 +3618,7 @@ mod tests {
     }
 
     // Offer to run each script in a saved wiki after the colons which start a fence, writing a
-    // script block with the cursor in its empty body, after the portal.
+    // script block with the cursor in its empty body.
     #[test]
     fn completions_offer_scripts() {
         let source = "# Home\n\n:::";
@@ -3611,22 +3640,16 @@ mod tests {
         assert_eq!(
             completion_edits(&completions),
             vec![
-                ("Open a portal to a page", fence, "::: [$1] :::"),
                 ("sort", fence, "::: sort\n$0\n:::"),
                 ("tidy", fence, "::: tidy\n$0\n:::"),
             ],
-        );
-        assert!(
-            completions
-                .iter()
-                .all(|completion| completion.sort_text.is_some()),
         );
         assert_eq!(
             completions
                 .iter()
                 .map(|completion| completion.filter_text.as_deref())
                 .collect::<Vec<_>>(),
-            vec![Some("::: portal"), Some("::: sort"), Some("::: tidy")],
+            vec![Some("::: sort"), Some("::: tidy")],
         );
     }
 
@@ -3644,17 +3667,17 @@ mod tests {
                 Position::new(3, 2),
             ),
         ] {
-            let completions =
-                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true)
-                    .unwrap()
-                    .items;
+            let wiki = wiki_with_script(source);
+            let completions = completion_for_document(
+                &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+                cursor,
+                true,
+            )
+            .unwrap()
+            .items;
             assert_eq!(
                 completion_edits(&completions),
-                vec![(
-                    "Open a portal to a page",
-                    Range::new(range_start, cursor),
-                    "::: [$1] :::",
-                )],
+                vec![("sort", Range::new(range_start, cursor), "::: sort\n$0\n:::")],
             );
         }
 
@@ -3662,29 +3685,50 @@ mod tests {
         // code.
         for (source, cursor) in [
             ("# Home\n\n::: so x", Position::new(2, 8)),
-            ("# Home\n\n::: [Other]\n:::so\n# Other", Position::new(3, 5)),
+            ("# Home\n\n::: sort\n:::so\n# Other", Position::new(3, 5)),
             ("# Home\n\n```\n:::so\n```", Position::new(3, 5)),
         ] {
+            let wiki = wiki_with_script(source);
             assert!(
-                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true).is_none(),
+                completion_for_document(
+                    &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+                    cursor,
+                    true,
+                )
+                .is_none(),
             );
         }
     }
 
-    // Offer no portal after colons which close a portal, are in code, are followed by other text on
-    // their line, or are too many to start a fence with the fewest colons.
+    // Offer nothing after colons which close a block, are in code, are followed by other text on
+    // their line, or are too many to start a fence with the fewest colons, or in a wiki without
+    // scripts.
     #[test]
-    fn completions_decline_portals() {
+    fn completions_decline_fences() {
         for (source, cursor) in [
-            ("# Home\n\n::: [Other]\n:::\n# Other", Position::new(3, 3)),
+            ("# Home\n\n::: sort\n:::\n# Other", Position::new(3, 3)),
             ("# Home\n\n```\n:::\n```", Position::new(3, 3)),
             ("# Home\n\n::: :::", Position::new(2, 3)),
             ("# Home\n\n::::", Position::new(2, 4)),
         ] {
+            let wiki = wiki_with_script(source);
             assert!(
-                completion_for_document(&snapshot(&untitled_uri(), source), cursor, true).is_none(),
+                completion_for_document(
+                    &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
+                    cursor,
+                    true,
+                )
+                .is_none(),
             );
         }
+        assert!(
+            completion_for_document(
+                &snapshot(&untitled_uri(), "# Home\n\n:::"),
+                Position::new(2, 3),
+                true,
+            )
+            .is_none(),
+        );
     }
 
     // Complete a filesystem link with the visible entries of the file root.
@@ -5584,7 +5628,7 @@ mod tests {
     // disagree without one unchanged, reporting them instead.
     #[test]
     fn formatting_propagates_changes() {
-        let source = "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix.\n";
+        let source = "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix.\n";
         let snapshot = snapshot(&untitled_uri(), source);
         let baseline = Baseline::from([(
             Target {
@@ -5596,7 +5640,7 @@ mod tests {
 
         assert_eq!(
             formatting_for_document(&snapshot, &baseline).unwrap()[0].new_text,
-            "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix well.\n",
+            "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix well.\n",
         );
         assert!(formatting_for_document(&snapshot, &Baseline::new()).is_none());
         assert_eq!(
@@ -5606,7 +5650,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 Range::new(Position::new(6, 2), Position::new(6, 10)),
-                Range::new(Position::new(2, 4), Position::new(2, 14)),
+                Range::new(Position::new(2, 3), Position::new(2, 13)),
             ],
         );
     }
@@ -5715,7 +5759,7 @@ mod tests {
 
         let _lock = lock_script_tests();
         let source = concat!(
-            "# Home\n\n:::: [Other]\n::: sort\n- d\n- c\n- e\n:::\n::::\n\n",
+            "# Home\n\n## [Other]\n\n::: sort\n- d\n- c\n- e\n:::\n\n",
             "# Other\n\n::: sort\n- d\n- c\n:::\n",
         );
         let wiki = TestWiki::new(source);
@@ -5739,7 +5783,7 @@ mod tests {
         assert_eq!(
             hide_hashes(&edits.unwrap()[0].new_text),
             concat!(
-                "# Home\n\n:::: [Other]\n::: sort\n- c\n- d\n- e\n::: #hash\n::::\n\n",
+                "# Home\n\n## [Other]\n\n::: sort\n- c\n- d\n- e\n::: #hash\n\n",
                 "# Other\n\n::: sort\n- c\n- d\n- e\n::: #hash\n",
             ),
         );
@@ -6335,24 +6379,24 @@ mod tests {
     #[test]
     fn completions_offer_section_titles_in_nested_copies() {
         let source = concat!(
-            "# Home\n\n:::: [Other]\n::: [Budget]\n[#Mo\n:::\n::::\n\n",
+            "# Home\n\n## [Other]\n\n### [Budget]\n\n[#Mo\n\n",
             "# Other\n\n## Morning\n\n# Budget\n\n## Monthly\n\n## Mortgage",
         );
         let uri = untitled_uri();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(4, 4), true).unwrap();
+            completion_for_document(&snapshot(&uri, source), Position::new(6, 4), true).unwrap();
 
         assert_eq!(
             completion_edits(&completions.items),
             vec![
                 (
                     "Monthly",
-                    Range::new(Position::new(4, 0), Position::new(4, 4)),
+                    Range::new(Position::new(6, 0), Position::new(6, 4)),
                     "[#Monthly]",
                 ),
                 (
                     "Mortgage",
-                    Range::new(Position::new(4, 0), Position::new(4, 4)),
+                    Range::new(Position::new(6, 0), Position::new(6, 4)),
                     "[#Mortgage]",
                 ),
             ],
@@ -6518,11 +6562,115 @@ mod tests {
         );
     }
 
+    // Fix a section or a portal at the wrong level by moving the title lines and closing lines
+    // within it along with its own, including those in a portal's copy, so what's within it stays
+    // within it.
+    #[test]
+    fn code_actions_move_contents_with_levels() {
+        for (source, fixed) in [
+            (
+                "# Home\n\n### Deep\n\n#### Deeper\n\nText.\n\n####\n\nAfter.\n\n###\n\nEnd.",
+                "# Home\n\n## Deep\n\n### Deeper\n\nText.\n\n###\n\nAfter.\n\n##\n\nEnd.",
+            ),
+            (
+                concat!(
+                    "# Home\n\n### [Other]\n\n#### Steps\n\n##### [Last]\n\n",
+                    "# Other\n\n## Steps\n\n### [Last]\n\n# Last",
+                ),
+                concat!(
+                    "# Home\n\n## [Other]\n\n### Steps\n\n#### [Last]\n\n",
+                    "# Other\n\n## Steps\n\n### [Last]\n\n# Last",
+                ),
+            ),
+        ] {
+            let uri = untitled_uri();
+            let level_diagnostics = diagnostics(&uri, source);
+            let actions =
+                code_action_for_document(&snapshot(&uri, source), &level_diagnostics, true)
+                    .unwrap();
+            let [CodeActionOrCommand::CodeAction(action)] = actions.as_slice() else {
+                panic!("There should be one code action.");
+            };
+            let mut edits = action.edit.as_ref().unwrap().changes.as_ref().unwrap()[&uri].clone();
+            edits.sort_by_key(|edit| byte_offset(source, edit.range.start).unwrap());
+            let mut applied = source.to_owned();
+            for edit in edits.iter().rev() {
+                applied.replace_range(
+                    byte_offset(source, edit.range.start).unwrap()
+                        ..byte_offset(source, edit.range.end).unwrap(),
+                    &edit.new_text,
+                );
+            }
+
+            assert_eq!(applied, fixed);
+            assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
+        }
+    }
+
+    // List each portal by its link as a symbol, nesting the sections and portals in its copy within
+    // it, in nested and flat symbols alike.
+    #[test]
+    fn document_symbols_list_portals() {
+        let source = concat!(
+            "# Home\n\n## [Other]\n\n### Notes\n\n### [Last]\n\n## After\n\n",
+            "# Other\n\n## Notes\n\n## [Last]\n\n# Last",
+        );
+        let uri = untitled_uri();
+        let DocumentSymbolResponse::Nested(symbols) =
+            document_symbol_for_document(&snapshot(&uri, source), true)
+        else {
+            panic!("Pages should be represented as nested document symbols.");
+        };
+
+        assert_eq!(
+            symbols[0]
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|child| {
+                    (
+                        child.name.as_str(),
+                        child.children.as_ref().map(|grandchildren| {
+                            grandchildren
+                                .iter()
+                                .map(|grandchild| grandchild.name.as_str())
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![("[Other]", Some(vec!["Notes", "[Last]"])), ("After", None)],
+        );
+        let DocumentSymbolResponse::Flat(symbols) =
+            document_symbol_for_document(&snapshot(&uri, source), false)
+        else {
+            panic!("Clients without hierarchy support should receive flat symbols.");
+        };
+        assert_eq!(
+            symbols
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.container_name.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Home", None),
+                ("[Other]", Some("Home")),
+                ("Notes", Some("Home")),
+                ("[Last]", Some("Home")),
+                ("After", Some("Home")),
+                ("Other", None),
+                ("Notes", Some("Other")),
+                ("[Last]", Some("Other")),
+                ("Last", None),
+            ],
+        );
+    }
+
     // Nest each section's symbol within the symbol of the page or section containing it, and list
     // sections after their pages in flat symbols.
     #[test]
     fn document_symbols_nest_sections() {
-        let source = "# Home\n\n## A\n\n### B\n\n::: ## C\n:::\n\n# Other";
+        let source = "# Home\n\n## A\n\n### B\n\n## C\n\n# Other";
         let uri = untitled_uri();
         let DocumentSymbolResponse::Nested(symbols) =
             document_symbol_for_document(&snapshot(&uri, source), true)

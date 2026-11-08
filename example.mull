@@ -39,14 +39,20 @@ When Mull formats the wiki, it orders the pages by the links between them, so yo
 
 A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. Here's a portal to the recipe for pancakes:
 
-::: [Pancakes]
+## [Pancakes]
+
 - 1 cup of flour
 - 1 cup of milk
 - 1 egg
 - A squeeze of lemon
-:::
 
-Edit the recipe here or on its own page, and formatting updates the other copy.
+### Steps
+
+Whisk everything together.
+
+##
+
+Like any section, a portal lasts until the next title at its level or higher, or until a matching line of `#`s, like the `##` above.
 
 # Pancakes
 
@@ -54,6 +60,10 @@ Edit the recipe here or on its own page, and formatting updates the other copy.
 - 1 cup of milk
 - 1 egg
 - A squeeze of lemon
+
+## Steps
+
+Whisk everything together.
 
 # Scripts
 
@@ -86,27 +96,31 @@ The `calc` script works out arithmetic. On each line with an `=`, it replaces wh
 
 # Sections
 
-A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
+A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings. It lasts until the next title at its level or higher, or until a matching line of `#`s, like the `###` under [#Breakfast].
 
 To link to a section, write `#` and the section title after the page title, like [Sections#Dinner]. You can leave out the page title when linking to a section on the same page, like [#Weekends]. A portal can show a section too:
 
-:::: [#Breakfast]
+## [#Breakfast]
+
 Usually [Pancakes].
 
-::: ### Weekends
+### Weekends
+
 With extra lemon.
-:::
+
+###
 
 Coffee every day.
-::::
 
 ## Breakfast
 
 Usually [Pancakes].
 
-::: ### Weekends
+### Weekends
+
 With extra lemon.
-:::
+
+###
 
 Coffee every day.
 

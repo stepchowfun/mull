@@ -807,20 +807,20 @@ mod tests {
     }
 
     // Reject a portal which closes each cycle of portals, including a portal to the page it's in,
-    // at the link in its opening fence. The search for cycles starts from pages in title order.
+    // at the link in its title line. The search for cycles starts from pages in title order.
     // Pages shown through several paths without a cycle are fine.
     #[test]
     fn portal_cycles() {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
             "# Home\n[Middle] [Self] [Top]\n",
-            "# Top\n::: [Left]\n:::\n::: [Right]\n:::\n",
-            "# Left\n::: [Bottom]\n:::\n",
-            "# Right\n::: [Bottom]\n:::\n",
+            "# Top\n## [Left]\n## [Right]\n",
+            "# Left\n## [Bottom]\n",
+            "# Right\n## [Bottom]\n",
             "# Bottom\n",
-            "# Middle\n::: [Last]\n:::\n",
-            "# Last\n::: [Middle]\n:::\n",
-            "# Self\n::: [Self]\n:::\n",
+            "# Middle\n## [Last]\n",
+            "# Last\n## [Middle]\n",
+            "# Self\n## [Self]\n",
         ))
         .unwrap();
 
@@ -867,8 +867,8 @@ mod tests {
     #[test]
     fn section_portal_cycles() {
         let wiki = parse(concat!(
-            "# Home\n[Other]\n::: [#Notes] :::\n## Notes\n::: [Other#Left] :::\n",
-            "# Other\n## Left\n::: [Home#Notes] :::\n## Right\n::: [#Left] :::\n",
+            "# Home\n[Other]\n## [#Notes]\n## Notes\n### [Other#Left]\n",
+            "# Other\n## Left\n### [Home#Notes]\n## Right\n### [#Left]\n",
         ))
         .unwrap();
 

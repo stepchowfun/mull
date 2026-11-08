@@ -27,7 +27,7 @@ pub struct Instances {
 
 // This is an instance of a page or a section shown in portals, which is either the original or a
 // copy of it, possibly within another copy. Errors about it are reported at the original's title,
-// or at the link in the copy's opening fence.
+// or at the link in the title line of the portal showing the copy.
 #[derive(Debug)]
 struct Instance {
     content: String,
@@ -72,8 +72,8 @@ pub fn instances(wiki: &Wiki) -> Instances {
 
 // Record the copy a portal shows in a wiki, which is either the wiki itself or a copy read as a
 // page with a map back to the wiki, and the copies within it, as instances of what they show. A
-// copy of a missing page or section isn't an instance of anything, and a portal written on one line
-// has no copy yet.
+// copy of a missing page or section isn't an instance of anything, and an empty portal hasn't been
+// filled in yet, so it stands for a copy which matches what it shows.
 fn collect_copies(
     wiki: &Wiki,
     containing_wiki: &Wiki,
@@ -85,15 +85,33 @@ fn collect_copies(
     let Some((page, section)) = wiki.resolve(&portal.target) else {
         return;
     };
-    let Some((copy, line_starts)) = containing_wiki.body(portal.source_range) else {
-        return;
-    };
+    let (copy, line_starts) = containing_wiki.copy(portal);
     let source_range = copy_map.map_or(portal.link_source_range, |copy_map| SourceRange {
         start: copy_map.offset(portal.link_source_range.start),
         end: copy_map.offset(portal.link_source_range.end),
     });
 
-    // Read the copy as the content of a page of its own, as deep as what it shows, which fails if a
+    // Record an empty portal's copy as matching the original, which comes first.
+    let original = || Instance {
+        content: wiki.own_content(page, section),
+        source_range: section.map_or(page.title_source_range, |section| {
+            section.title_source_range
+        }),
+    };
+    if copy.trim().is_empty() {
+        let target_instances = instances
+            .targets
+            .entry(portal.target.clone())
+            .or_insert_with(|| vec![original()]);
+        let content = target_instances[0].content.clone();
+        target_instances.push(Instance {
+            content,
+            source_range,
+        });
+        return;
+    }
+
+    // Read the copy as the content of a page of its own, as deep as the portal, which fails if a
     // line in it would start another page.
     let title_line = title_line(&page.title);
     let copy_source = format!("{title_line}{copy}");
@@ -101,7 +119,7 @@ fn collect_copies(
         None,
         &copy_source,
         &LineIndex::new(&copy_source),
-        section.map_or(1, |section| section.level),
+        portal.level,
     );
     let Some(copy_page) = copy_wiki
         .pages
@@ -114,20 +132,15 @@ fn collect_copies(
         return;
     };
 
-    // Record the copy after the original, followed by the copies within it.
+    // Record the copy after the original, with its title lines as deep as they are in what it
+    // shows, followed by the copies within it.
     instances
         .targets
         .entry(portal.target.clone())
-        .or_insert_with(|| {
-            vec![Instance {
-                content: wiki.own_content(page, section),
-                source_range: section.map_or(page.title_source_range, |section| {
-                    section.title_source_range
-                }),
-            }]
-        })
+        .or_insert_with(|| vec![original()])
         .push(Instance {
-            content: copy_wiki.own_content(copy_page, None),
+            content: copy_wiki
+                .own_content_at(copy_page, section.map_or(1, |section| section.level)),
             source_range,
         });
     let nested_copy_map = CopyMap {
@@ -205,10 +218,9 @@ pub fn propagate(
     };
     let mismatch_message = |target: &Target| {
         format!(
-            "{} and its copies don't match. Make them match, or replace a copy with {} to discard \
-             its changes.",
+            "{} and its copies don't match. Make them match, or delete a copy's contents to \
+             discard its changes.",
             target.code_str(),
-            format!("::: [{}] :::", target.link_text(false)).code_str(),
         )
     };
 
@@ -395,11 +407,13 @@ pub fn propagate(
     }
 
     // Report the changed instances of each target which would create a cycle of portals once its
-    // changes were propagated. Its copies couldn't be filled in.
-    for (target, (_content, source_ranges)) in &changes {
-        if !propagated_wiki
-            .cycle_closing_portals([(*target).clone()])
-            .is_empty()
+    // changes were propagated. Its copies couldn't be filled in. A target whose content matches its
+    // original, as one without a baseline whose instances all agree, hasn't changed at all.
+    for (target, (content, source_ranges)) in &changes {
+        if *content != instances.targets[*target][0].content
+            && !propagated_wiki
+                .cycle_closing_portals([(*target).clone()])
+                .is_empty()
         {
             errors.extend(source_ranges.iter().map(|source_range| {
                 error(
@@ -502,19 +516,34 @@ mod tests {
             .collect()
     }
 
-    // Compare instances as formatting would write them, so differences it erases aren't changes.
+    // Compare instances as formatting would write them, with their title lines as deep as they are
+    // in what they show, so differences it erases aren't changes.
     #[test]
     fn canonical_instances() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n  ::: [Pancakes]\n  Mix [ Home ].  \r\n\n  :::\n\n",
+                    "# Home\n\n## [Pancakes]\nMix [ Home ].  \r\n\n##\n\n",
                     "# Pancakes\n\nMix [Home].",
                 ),
                 &[],
             )
             .unwrap(),
-            "# Home\n\n  ::: [Pancakes]\n  Mix [Home].\n  :::\n\n# Pancakes\n\nMix [Home].\n",
+            "# Home\n\n## [Pancakes]\n\nMix [Home].\n\n##\n\n# Pancakes\n\nMix [Home].\n",
+        );
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n## [Pancakes]\nMix.\n### Steps\nStir.\n",
+                    "# Pancakes\n\nMix.\n\n## Steps\n\nStir.",
+                ),
+                &[],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
+                "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+            ),
         );
     }
 
@@ -523,23 +552,20 @@ mod tests {
     #[test]
     fn nested_copies() {
         let source = concat!(
-            "# Home\n\n::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n:::\n\n",
-            "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour.\n  :::\n\n",
+            "# Home\n\n## [Pancakes]\n\nMix.\n\n### [Syrup]\n\nPour lots.\n\n",
+            "# Pancakes\n\nMix.\n\n## [Syrup]\n\nPour.\n\n",
             "# Syrup\n\nPour.\n",
         );
 
         assert_eq!(
             format_test(
                 source,
-                &[
-                    ("Pancakes", "Mix.\n\n  ::: [Syrup]\n  :::"),
-                    ("Syrup", "Pour."),
-                ],
+                &[("Pancakes", "Mix.\n\n## [Syrup]"), ("Syrup", "Pour.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n:::: [Pancakes]\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n::::\n\n",
-                "# Pancakes\n\nMix.\n\n  ::: [Syrup]\n  Pour lots.\n  :::\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix.\n\n### [Syrup]\n\nPour lots.\n\n",
+                "# Pancakes\n\nMix.\n\n## [Syrup]\n\nPour lots.\n\n",
                 "# Syrup\n\nPour lots.\n",
             ),
         );
@@ -549,33 +575,74 @@ mod tests {
         );
     }
 
-    // Fill in a portal written on one line, which isn't an instance until then.
+    // Fill in an empty portal, which stands for a copy matching what it shows, whether a closing
+    // line ends it or not.
     #[test]
-    fn one_line_portals() {
+    fn empty_portals() {
         assert_eq!(
-            format_test("# Home\n\n::: [Pancakes] :::\n\n# Pancakes\n\nMix.\n", &[]).unwrap(),
-            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.\n",
+            format_test(
+                concat!(
+                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\n",
+                    "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+                ),
+                &[],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n##\n\n",
+                "## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
+                "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+            ),
         );
     }
 
-    // Report a copy with a line which would start another page if it were a page's content.
+    // Record an empty portal to an empty page as agreeing with it, so a change to the copy can be
+    // told apart from the page and propagated to it.
+    #[test]
+    fn copies_of_empty_pages() {
+        let source = "# Home\n\n## [Ideas]\n\n# Ideas\n";
+        let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
+        assert!(errors.is_empty());
+
+        assert_eq!(
+            agreements(&instances(&wiki))
+                .map(|(target, content)| (target.link_text(false), content))
+                .collect::<Vec<_>>(),
+            vec![("Ideas".to_owned(), "")],
+        );
+        assert_eq!(
+            format_test(
+                "# Home\n\n## [Ideas]\n\nFly.\n\n# Ideas\n",
+                &[("Ideas", "")],
+            )
+            .unwrap(),
+            "# Home\n\n## [Ideas]\n\nFly.\n\n# Ideas\n\nFly.\n",
+        );
+    }
+
+    // Report a copy with a title line which isn't one level deeper than the title it's under, or a
+    // closing line which doesn't end anything, once it's read as the content of what it shows.
     #[test]
     fn unreadable_copies() {
-        let source = "# Home\n\n  ::: [Pancakes]\n  # Mix.\n  :::\n\n# Pancakes\n\nMix.\n";
-        let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
+        for source in [
+            "# Home\n\n## [Pancakes]\n\n#### Mix.\n\n# Pancakes\n\nMix.\n",
+            "# Home\n\n## [Pancakes]\n\nMix.\n\n####\n\n# Pancakes\n\nMix.\n",
+        ] {
+            let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
 
-        assert_eq!(error_texts(source, &errors), vec!["[Pancakes]"]);
-        assert_fails!(
-            Err::<(), _>(errors),
-            "This copy of `Pancakes` can't be read as the content of a page.",
-        );
+            assert_eq!(error_texts(source, &errors), vec!["[Pancakes]"]);
+            assert_fails!(
+                Err::<(), _>(errors),
+                "This copy of `Pancakes` can't be read as the content of a page.",
+            );
+        }
     }
 
     // List the own content of the pages whose instances agree.
     #[test]
     fn agreeing_instances() {
         let source = concat!(
-            "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n::: [Syrup]\nPour lots.\n:::\n\n",
+            "# Home\n\n## [Pancakes]\n\nMix.\n\n## [Syrup]\n\nPour lots.\n\n",
             "# Pancakes\n\nMix.\n\n# Syrup\n\nPour.\n",
         );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
@@ -595,31 +662,34 @@ mod tests {
     fn page_changes() {
         assert_eq!(
             format_test(
-                "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix well.\n",
+                "# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix well.\n",
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
-            "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix well.\n",
+            "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix well.\n",
         );
     }
 
-    // Propagate a change to a copy to its page and the other copies.
+    // Propagate a change to a copy to its page and the other copies, moving the title lines in it
+    // as deep under each title as they are in the copy.
     #[test]
     fn copy_changes() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n[Other]\n\n",
-                    "# Other\n\n::: [Pancakes]\nMix.\n:::\n\n",
-                    "# Pancakes\n\nMix.\n",
+                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
+                    "[Other]\n\n",
+                    "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix.\n\n#### Tips\n\nRest.\n\n",
+                    "# Pancakes\n\nMix.\n\n## Tips\n\nRest.\n",
                 ),
-                &[("Pancakes", "Mix.")],
+                &[("Pancakes", "Mix.\n\n## Tips\n\nRest.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n[Other]\n\n",
-                "# Other\n\n::: [Pancakes]\nMix well.\n:::\n\n",
-                "# Pancakes\n\nMix well.\n",
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
+                "[Other]\n\n",
+                "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix well.\n\n#### Tips\n\nRest.\n\n",
+                "# Pancakes\n\nMix well.\n\n## Tips\n\nRest.\n",
             ),
         );
     }
@@ -630,31 +700,45 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n",
-                    "::: [Pancakes]\nMix well.\n:::\n\n",
+                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
+                    "## [Pancakes]\n\nMix well.\n\n",
                     "# Pancakes\n\nMix.\n",
                 ),
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n",
-                "::: [Pancakes]\nMix well.\n:::\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
+                "## [Pancakes]\n\nMix well.\n\n",
                 "# Pancakes\n\nMix well.\n",
             ),
         );
     }
 
-    // Propagate a copy which was emptied like any other change.
+    // Fill in a copy which was emptied, discarding its changes rather than emptying what it shows.
     #[test]
     fn emptied_copies() {
         assert_eq!(
             format_test(
-                "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n\nMix.\n",
+                "# Home\n\n## [Pancakes]\n\n# Pancakes\n\nMix.\n",
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
-            "# Home\n\n::: [Pancakes]\n:::\n\n# Pancakes\n",
+            "# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix.\n",
+        );
+        assert_eq!(
+            format_test(
+                concat!(
+                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
+                    "# Pancakes\n\nMix.\n",
+                ),
+                &[("Pancakes", "Mix.")],
+            )
+            .unwrap(),
+            concat!(
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
+                "# Pancakes\n\nMix well.\n",
+            ),
         );
     }
 
@@ -662,8 +746,8 @@ mod tests {
     #[test]
     fn different_changes() {
         let source = concat!(
-            "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n",
-            "::: [Pancakes]\nMix.\n:::\n\n",
+            "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
+            "## [Pancakes]\n\nMix.\n\n",
             "# Pancakes\n\nMix quickly.\n",
         );
         let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
@@ -678,7 +762,7 @@ mod tests {
     // Require the instances of a page without a baseline to match, reporting all of them otherwise.
     #[test]
     fn instances_without_baseline() {
-        let source = "# Home\n\n::: [Pancakes]\nMix well.\n:::\n\n# Pancakes\n\nMix.\n";
+        let source = "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix.\n";
         let errors = format_test(source, &[]).unwrap_err();
 
         assert_eq!(error_texts(source, &errors), vec!["Pancakes", "[Pancakes]"]);
@@ -686,13 +770,7 @@ mod tests {
             Err::<(), _>(errors),
             "`Pancakes` and its copies don't match.",
         );
-        assert!(
-            format_test(
-                "# Home\n\n::: [Pancakes]\nMix.\n:::\n\n# Pancakes\n\nMix.",
-                &[],
-            )
-            .is_ok(),
-        );
+        assert!(format_test("# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix.", &[]).is_ok());
     }
 
     // Report a change which would create a cycle of portals, putting a portal to a page inside
@@ -702,8 +780,8 @@ mod tests {
         for shown_title in ["Pancakes", "Syrup"] {
             let source = format!(
                 concat!(
-                    "# Home\n\n::: [Pancakes]\n::: [{}] :::\n\nMix.\n:::\n\n",
-                    "# Pancakes\n\nMix.\n\n# Syrup\n\n::: [Pancakes]\nMix.\n:::\n",
+                    "# Home\n\n## [Pancakes]\n\n### [{}]\n\n###\n\nMix.\n\n##\n\n",
+                    "# Pancakes\n\nMix.\n\n# Syrup\n\n## [Pancakes]\n\nMix.\n",
                 ),
                 shown_title,
             );
@@ -718,15 +796,15 @@ mod tests {
     }
 
     // Propagate a change to a copy of a section to the section in its page and to the copies of the
-    // page, and fill in a portal to a section written on one line.
+    // page, and fill in an empty portal to a section.
     #[test]
     fn section_copy_changes() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
-                    "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2000\n:::\n\n",
-                    "::: [#Notes] :::\n\n## Notes\n\nNone.\n\n",
+                    "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                    "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
+                    "## [#Notes]\n\n## Notes\n\nNone.\n\n",
                     "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
                 ),
                 &[
@@ -736,9 +814,9 @@ mod tests {
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
-                "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2100\n:::\n\n",
-                "::: [#Notes]\nNone.\n:::\n\n## Notes\n\nNone.\n\n",
+                "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
+                "## [#Notes]\n\nNone.\n\n## Notes\n\nNone.\n\n",
                 "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
             ),
         );
@@ -750,8 +828,8 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: [Budget#Monthly]\nRent: 2000\n:::\n\n",
-                    "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2000\n:::\n\n",
+                    "# Home\n\n## [Budget#Monthly]\n\nRent: 2000\n\n",
+                    "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
                     "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
                 ),
                 &[
@@ -761,23 +839,25 @@ mod tests {
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
-                "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2100\n:::\n\n",
+                "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+                "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
                 "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
             ),
         );
     }
 
-    // Propagate changes to copies of fenced sections nested in each other, writing each inner
-    // change into the instances of the sections containing it.
+    // Propagate changes to copies of sections nested in each other, writing each inner change into
+    // the instances of the sections containing it, including a copy shown less deep than its
+    // section.
     #[test]
     fn nested_section_changes() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: [Budget#Fixed]\nRent: 2000\n\n### Utilities\n\n",
-                    "Power: 90\n:::\n\n::: [Budget#Utilities]\nPower: 90\n:::\n\n",
-                    "# Budget\n\n:::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 80\n::::\n",
+                    "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
+                    "## [Budget#Utilities]\n\nPower: 90\n\n",
+                    "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 80\n\n##\n\n",
+                    "Later.\n",
                 ),
                 &[
                     ("Budget#Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
@@ -786,9 +866,10 @@ mod tests {
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: [Budget#Fixed]\nRent: 2000\n\n### Utilities\n\nPower: 90\n:::\n\n",
-                "::: [Budget#Utilities]\nPower: 90\n:::\n\n",
-                "# Budget\n\n::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 90\n:::\n",
+                "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
+                "## [Budget#Utilities]\n\nPower: 90\n\n",
+                "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n##\n\n",
+                "Later.\n",
             ),
         );
     }
@@ -798,8 +879,8 @@ mod tests {
     #[test]
     fn conflicting_section_changes() {
         let source = concat!(
-            "# Home\n\n::: [Budget#Monthly]\nRent: 2100\n:::\n\n",
-            "::: [Budget]\nIntro.\n\n## Monthly\n\nRent: 2200\n:::\n\n",
+            "# Home\n\n## [Budget#Monthly]\n\nRent: 2100\n\n",
+            "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2200\n\n",
             "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
         );
         let baseline = [
@@ -814,8 +895,8 @@ mod tests {
         );
 
         let source = source.replace(
-            "Intro.\n\n## Monthly\n\nRent: 2200",
-            "More.\n\n## Monthly\n\nRent: 2000",
+            "Intro.\n\n### Monthly\n\nRent: 2200",
+            "More.\n\n### Monthly\n\nRent: 2000",
         );
         let errors = format_test(&source, &baseline).unwrap_err();
         assert_eq!(error_texts(&source, &errors), vec!["Budget", "[Budget]"]);

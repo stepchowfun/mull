@@ -2,8 +2,9 @@
 // appears in a wiki's source, where `[` and `]` delimit links, backticks delimit code, `#`
 // separates a link's page from a section, and a backslash escapes the character after it
 // [ref:content_escapes]. Which characters a backslash can escape depends on the context, since
-// backticks are plain characters in a link's target, `#` is only special in one, and title lines
-// and code are taken as written.
+// backticks are plain characters in a link's target, `#` is only special in one, and code and the
+// titles of pages and sections are taken as written. A portal's title is a link, so it's escaped
+// like one.
 
 // This is where text appears in a wiki's source, which determines how it's escaped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
