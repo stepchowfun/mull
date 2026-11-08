@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0] - 2026-11-08
+
+### Changed
+
+- A link to a section now separates the page's title from the section's with `:` rather than `#`, like `[Pancakes:Steps]`, and a link to a section on the same page is written like `[:Steps]`. In a link, a backslash escapes `:` rather than `#`, which is now a plain character there, so a link to a page whose title has a colon escapes it, like `[Time\: 10\:30]`. A script given a link to a section as an argument receives the titles joined by `:` too. Existing links to sections must be rewritten by hand.
+
 ## [0.69.0] - 2026-11-07
 
 ### Changed

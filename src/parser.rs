@@ -123,7 +123,7 @@ enum FenceLine {
 // a page if its title is valid. In the content, code starts with a run of backticks and ends at the
 // next run of exactly as many backticks, on the same line for a run of one or two, and its text is
 // taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
-// plain characters in it. Its target is split at the first `#` which isn't escaped into a page and
+// plain characters in it. Its target is split at the first `:` which isn't escaped into a page and
 // a section of it, and a link which names a section without its page refers to the page whose
 // content it's in. Outside code and the titles of pages and sections, a backslash escapes the next
 // character, as allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which
@@ -241,7 +241,7 @@ pub fn parse_at_level(
                     &format!(
                         "A portal's title is a single link, like {} or {}.",
                         "## [Page]".code_str(),
-                        "## [Page#Section]".code_str(),
+                        "## [Page:Section]".code_str(),
                     ),
                     title_source_range,
                     None,
@@ -1209,7 +1209,7 @@ fn parse_link(
     }
 
     // Take any other target as the title of the page it links to, followed by the title of a
-    // section of it after the first `#` which isn't escaped. A link which names a section without
+    // section of it after the first `:` which isn't escaped. A link which names a section without
     // its page refers to the given page.
     let (title, section) = match unescaped_indices(target, SECTION_SEPARATOR, Context::Link).first()
     {
@@ -1291,7 +1291,7 @@ mod tests {
         error::{Error, Fix, SourceRange},
         escaping::Context,
         line_index::LineIndex,
-        wiki::{Link, Page, Wiki},
+        wiki::{Link, Page, SECTION_SEPARATOR, Wiki},
     };
     use std::{
         fmt::Write,
@@ -1345,7 +1345,7 @@ mod tests {
                     "text:{}{}",
                     target.title.text(Context::Verbatim),
                     target.section.as_ref().map_or_else(String::new, |section| {
-                        format!("#{}", section.text(Context::Verbatim))
+                        format!("{SECTION_SEPARATOR}{}", section.text(Context::Verbatim))
                     }),
                 )),
                 Link::Filesystem { target, .. } => Some(format!(
@@ -1792,7 +1792,7 @@ mod tests {
     fn invalid_portal_links() {
         assert_fails!(
             parse_test("# Home\n## [Other] more\n# Other"),
-            "A portal's title is a single link, like `## [Page]` or `## [Page#Section]`.",
+            "A portal's title is a single link, like `## [Page]` or `## [Page:Section]`.",
         );
         assert_eq!(
             parse_test("# Home\n## [Other] more\n# Other")
@@ -1802,7 +1802,7 @@ mod tests {
         );
         assert_fails!(
             parse_test("# Home\n## [Other] [Last]"),
-            "A portal's title is a single link, like `## [Page]` or `## [Page#Section]`.",
+            "A portal's title is a single link, like `## [Page]` or `## [Page:Section]`.",
         );
         assert_fails!(
             parse_test("# Home\n## [/notes.txt]"),
@@ -2096,8 +2096,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
     }
 
-    // Reject a backslash before `#` outside a link, which can't be escaped there, since only title
-    // markers at the start of a line are special.
+    // Reject a backslash before `#`, which can't be escaped, since only title markers at the start
+    // of a line are special.
     #[test]
     fn hashes_cant_be_escaped() {
         let (_wiki, errors) = parse_fixture("# Home\nC\\# and \\#1");
@@ -2582,51 +2582,51 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Split a link's target at the first `#` which isn't escaped into a page and a section, which
+    // Split a link's target at the first `:` which isn't escaped into a page and a section, which
     // can be named without its page to refer to the page whose content the link is in, or the page
     // shown by the innermost portal whose copy contains it, until a title line or a closing line
-    // ends that portal. A portal's own link is outside its copy.
+    // ends that portal. A portal's own link is outside its copy. A `#` is a plain character.
     #[test]
     fn section_links() {
         let source = concat!(
-            "# Home\n[Other#Notes] [ Other # Notes ] [#Notes] [C\\#\\# tips#A\\#B]\n",
-            "## [#Notes]\n[#Notes]\n##\n## [Other]\n[#Notes]\n### [Last]\n[#Notes]\n",
-            "### Notes\n[#Notes]\n",
-            "# Other\n# C## tips\n# Last",
+            "# Home\n[Other:Notes] [ Other : Notes ] [:Notes] [Time\\: 10\\:30:A\\:B] [C# tips]\n",
+            "## [:Notes]\n[:Notes]\n##\n## [Other]\n[:Notes]\n### [Last]\n[:Notes]\n",
+            "### Notes\n[:Notes]\n",
+            "# Other\n# Time: 10:30\n# C# tips\n# Last",
         );
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(
             link_targets(&wiki.page("Home").links),
             vec![
-                "text:Other#Notes",
-                "text:Other#Notes",
-                "text:Home#Notes",
-                "text:C## tips#A#B",
-                "text:Home#Notes",
-                "text:Home#Notes",
+                "text:Other:Notes",
+                "text:Other:Notes",
+                "text:Home:Notes",
+                "text:Time: 10:30:A:B",
+                "text:C# tips",
+                "text:Home:Notes",
+                "text:Home:Notes",
                 "text:Other",
-                "text:Other#Notes",
+                "text:Other:Notes",
                 "text:Last",
-                "text:Last#Notes",
-                "text:Other#Notes",
+                "text:Last:Notes",
+                "text:Other:Notes",
             ],
         );
         assert!(matches!(
             wiki.page("Home").links[2],
             Link::Text { is_local: true, .. },
         ));
-        assert!(
-            wiki.own_content(wiki.page("Home"), None)
-                .starts_with("[Other#Notes] [Other#Notes] [#Notes] [C\\#\\# tips#A\\#B]\n"),
-        );
+        assert!(wiki.own_content(wiki.page("Home"), None).starts_with(
+            "[Other:Notes] [Other:Notes] [:Notes] [Time\\: 10\\:30:A\\:B] [C# tips]\n",
+        ));
     }
 
     // Reject a page's title which starts with `[`, which would read like a portal's, and a link to
     // a page or a section with such a title, since a section's title line would start a portal.
     #[test]
     fn bracketed_titles() {
-        let (_wiki, errors) = parse_fixture("# [Draft]\n# Home\n[\\[Draft\\]] [Home#\\[X\\]]");
+        let (_wiki, errors) = parse_fixture("# [Draft]\n# Home\n[\\[Draft\\]] [Home:\\[X\\]]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2638,12 +2638,13 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
     }
 
-    // Take each `#` after the first one which isn't escaped as part of a section's title, and each
-    // `#` in a filesystem link as part of its path, which formatting escapes. Reject a link with an
+    // Take each `:` after the first one which isn't escaped as part of a section's title, and each
+    // `:` in a filesystem link as part of its path, which formatting escapes. Reject a link with an
     // empty section title.
     #[test]
-    fn section_link_hashes() {
-        let (wiki, errors) = parse_fixture("# Home\n[Home#A#B] [Home#] [#] [/a#b] [/a\\#b]");
+    fn section_link_colons() {
+        let (wiki, errors) =
+            parse_fixture("# Home\n[Home:A:B] [Home:] [:] [/10:30.txt] [/10\\:30.txt]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2654,12 +2655,12 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(
             link_targets(&wiki.page("Home").links),
-            vec!["text:Home#A#B", "file:a#b", "file:a#b"],
+            vec!["text:Home:A:B", "file:10:30.txt", "file:10:30.txt"],
         );
-        let wiki = parse_test("# Home\n[Home#A#B] [/a#b]").unwrap();
+        let wiki = parse_test("# Home\n[Home:A:B] [/10:30.txt]").unwrap();
         assert_eq!(
             wiki.own_content(wiki.page("Home"), None),
-            "[Home#A\\#B] [/a\\#b]",
+            "[Home:A\\:B] [/10\\:30.txt]",
         );
     }
 }

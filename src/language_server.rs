@@ -416,12 +416,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![
-                        "[".to_owned(),
-                        "/".to_owned(),
-                        ":".to_owned(),
-                        "#".to_owned(),
-                    ]),
+                    trigger_characters: Some(vec!["[".to_owned(), "/".to_owned(), ":".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -1170,8 +1165,8 @@ fn completion_for_document(
     }
 
     // Complete a text link with the titles of the pages in the wiki which match the typed text, or
-    // after a `#` which isn't escaped, with the titles of the sections of the page before it which
-    // match the text typed after it. A link without a page before the `#` names a section of the
+    // after a `:` which isn't escaped, with the titles of the sections of the page before it which
+    // match the text typed after it. A link without a page before the `:` names a section of the
     // page the link would refer to. Replace a closed link in its entirety and an unfinished link
     // through the cursor. Offer nothing while the typed text has a backslash which doesn't escape
     // anything.
@@ -3069,7 +3064,7 @@ fn text_link_target_source_range(source_contents: &str, source_range: SourceRang
 
 // Find the parts of a parsed text link's target, without surrounding whitespace: the part which
 // names its page, which is empty if the link names a section without it, and any part after the
-// first `#` which isn't escaped, which names a section, along with where the `#` is.
+// first `:` which isn't escaped, which names a section, along with where the `:` is.
 fn link_parts(
     source_contents: &str,
     source_range: SourceRange,
@@ -6335,12 +6330,12 @@ mod tests {
         );
     }
 
-    // Complete a link to a section with the titles of the sections of the page before its `#`, or
+    // Complete a link to a section with the titles of the sections of the page before its `:`, or
     // of the page the link is in if it names no page, in source order.
     #[test]
     fn completions_offer_section_titles() {
         let source = concat!(
-            "# Home\n\n[Budget#mo\n\n[#n\n\n## Notes\n\n",
+            "# Home\n\n[Budget:mo\n\n[:n\n\n## Notes\n\n",
             "# Budget\n\n## Monthly\n\n## Yearly\n\n## Mortgage",
         );
         let uri = untitled_uri();
@@ -6355,12 +6350,12 @@ mod tests {
                 (
                     "Monthly",
                     Range::new(Position::new(2, 0), Position::new(2, 10)),
-                    "[Budget#Monthly]",
+                    "[Budget:Monthly]",
                 ),
                 (
                     "Mortgage",
                     Range::new(Position::new(2, 0), Position::new(2, 10)),
-                    "[Budget#Mortgage]",
+                    "[Budget:Mortgage]",
                 ),
             ],
         );
@@ -6369,7 +6364,7 @@ mod tests {
             vec![(
                 "Notes",
                 Range::new(Position::new(4, 0), Position::new(4, 3)),
-                "[#Notes]",
+                "[:Notes]",
             )],
         );
     }
@@ -6379,7 +6374,7 @@ mod tests {
     #[test]
     fn completions_offer_section_titles_in_nested_copies() {
         let source = concat!(
-            "# Home\n\n## [Other]\n\n### [Budget]\n\n[#Mo\n\n",
+            "# Home\n\n## [Other]\n\n### [Budget]\n\n[:Mo\n\n",
             "# Other\n\n## Morning\n\n# Budget\n\n## Monthly\n\n## Mortgage",
         );
         let uri = untitled_uri();
@@ -6392,12 +6387,12 @@ mod tests {
                 (
                     "Monthly",
                     Range::new(Position::new(6, 0), Position::new(6, 4)),
-                    "[#Monthly]",
+                    "[:Monthly]",
                 ),
                 (
                     "Mortgage",
                     Range::new(Position::new(6, 0), Position::new(6, 4)),
-                    "[#Mortgage]",
+                    "[:Mortgage]",
                 ),
             ],
         );
@@ -6407,7 +6402,7 @@ mod tests {
     // preview the section as written.
     #[test]
     fn navigation_targets_sections() {
-        let source = "# Home\n\n[Budget#Monthly]\n\n# Budget\n\n## Monthly\n\nRent.\n\n## Yearly";
+        let source = "# Home\n\n[Budget:Monthly]\n\n# Budget\n\n## Monthly\n\nRent.\n\n## Yearly";
         let uri = untitled_uri();
         for (cursor, origin) in [
             (
@@ -6443,7 +6438,7 @@ mod tests {
     #[test]
     fn references_find_section_links() {
         let source = concat!(
-            "# Home\n\n[Budget#Monthly] [Budget] [Budget#Yearly]\n\n",
+            "# Home\n\n[Budget:Monthly] [Budget] [Budget:Yearly]\n\n",
             "# Budget\n\n## Monthly\n\n## Yearly",
         );
         let uri = untitled_uri();
@@ -6482,7 +6477,7 @@ mod tests {
     #[test]
     fn rename_updates_sections() {
         let source =
-            "# Home\n\n[Budget#Monthly] and [Budget]\n\n# Budget\n\n## Monthly\n\nSee [#Monthly].";
+            "# Home\n\n[Budget:Monthly] and [Budget]\n\n# Budget\n\n## Monthly\n\nSee [:Monthly].";
         let uri = untitled_uri();
         let edits = |cursor, new_name| {
             rename_for_document(
@@ -6503,19 +6498,19 @@ mod tests {
         let section_edits = vec![
             (
                 Range::new(Position::new(2, 8), Position::new(2, 15)),
-                "Each \\#".to_owned(),
+                "Each \\:".to_owned(),
             ),
             (
                 Range::new(Position::new(6, 3), Position::new(6, 10)),
-                "Each #".to_owned(),
+                "Each :".to_owned(),
             ),
             (
                 Range::new(Position::new(8, 6), Position::new(8, 13)),
-                "Each \\#".to_owned(),
+                "Each \\:".to_owned(),
             ),
         ];
-        assert_eq!(edits(Position::new(6, 4), "Each #"), section_edits);
-        assert_eq!(edits(Position::new(2, 10), "Each #"), section_edits);
+        assert_eq!(edits(Position::new(6, 4), "Each :"), section_edits);
+        assert_eq!(edits(Position::new(2, 10), "Each :"), section_edits);
         assert_eq!(
             edits(Position::new(4, 3), "Plan"),
             vec![

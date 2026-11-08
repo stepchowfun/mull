@@ -1,6 +1,6 @@
 [package]
 name = "mull"
-version = "0.69.0"
+version = "0.70.0"
 authors = ["Stephan Boyer <stephan@stephanboyer.com>"]
 edition = "2024"
 description = "Organize your notes in a plain text file."
