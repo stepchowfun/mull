@@ -70,28 +70,30 @@ To link to a section, write the page title, then `#`, and finally the section ti
 
 ### Opening a portal to another page or section
 
-A *portal* is a window into another page or section. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
+A *portal* is a window into another page or section. It's a section whose title is a link. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
 This is my favorite breakfast:
 
-::: [Pancakes] :::
+## [Pancakes]
 ```
 
-When the wiki is formatted (e.g., on save), that line will turn into a block containing a copy of the page:
+When the wiki is formatted (e.g., on save), the portal will be filled in with a copy of the page:
 
 ```md
 This is my favorite breakfast:
 
-::: [Pancakes]
+## [Pancakes]
+
 - 1 cup of flour
 - 1 cup of milk
 - 1 egg
 - A squeeze of [Lemons]
-:::
 ```
 
-Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
+Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original. To discard the edits in a portal instead, delete its contents, and formatting will fill it in again.
+
+Sections in the copy are marked one level deeper than in the original, so they sit under the portal. Like any section, a portal lasts until the next title at its level or higher, and you can put it in a block, like `::: ## [Pancakes]`, to end it early. You can also open a portal to a section, like `## [Pancakes#Steps]`.
 
 ### Linking to files and directories
 

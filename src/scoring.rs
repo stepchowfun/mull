@@ -87,7 +87,7 @@ pub fn traversal_order<'a>(
 }
 
 // Collect the distinct titles of a page's text links to whole pages in title order, skipping the
-// links in the copies its portals show but keeping the link in each portal's opening fence. A link
+// links in the copies its portals show but keeping the link in each portal's title line. A link
 // to a section of a page doesn't justify the page as a whole, so it's skipped too. Formatting
 // refreshes the copies, so counting their links would let formatting change the order it renders
 // pages in, and formatting again would reorder them.
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn links_in_portals() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\n::: [Zulu]\nSee [Alpha].\n:::\n",
+            "# Home\n## [Zulu]\nSee [Alpha].\n",
             "# Zulu\nSee [Alpha].\n",
             "# Alpha\n",
         ));

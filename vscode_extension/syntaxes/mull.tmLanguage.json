@@ -526,28 +526,68 @@
       }
     },
     "section-title-lines": {
-      "name": "markup.italic.heading.mull",
-      "match": "^(#{2,}) (.*)$",
-      "captures": {
-        "1": {
-          "name": "punctuation.definition.heading.mull"
+      "patterns": [
+        {
+          "name": "markup.italic.heading.mull",
+          "match": "^(#{2,}) ([ \\t]*\\[.*)$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#text"
+                }
+              ]
+            }
+          }
         },
-        "2": {
-          "name": "entity.name.section.mull"
+        {
+          "name": "markup.italic.heading.mull",
+          "match": "^(#{2,}) (.*)$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            },
+            "2": {
+              "name": "entity.name.section.mull"
+            }
+          }
         }
-      }
+      ]
     },
     "indented-section-title-lines": {
-      "name": "markup.italic.heading.mull",
-      "match": "^[ \\t]*(#{2,}) (.*)$",
-      "captures": {
-        "1": {
-          "name": "punctuation.definition.heading.mull"
+      "patterns": [
+        {
+          "name": "markup.italic.heading.mull",
+          "match": "^[ \\t]*(#{2,}) ([ \\t]*\\[.*)$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#text"
+                }
+              ]
+            }
+          }
         },
-        "2": {
-          "name": "entity.name.section.mull"
+        {
+          "name": "markup.italic.heading.mull",
+          "match": "^[ \\t]*(#{2,}) (.*)$",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.heading.mull"
+            },
+            "2": {
+              "name": "entity.name.section.mull"
+            }
+          }
         }
-      }
+      ]
     },
     "fences": {
       "patterns": [
@@ -561,6 +601,21 @@
             "2": {
               "name": "markup.italic.heading.mull",
               "patterns": [
+                {
+                  "match": "(#{2,})[ \\t]+(\\[.*)",
+                  "captures": {
+                    "1": {
+                      "name": "punctuation.definition.heading.mull"
+                    },
+                    "2": {
+                      "patterns": [
+                        {
+                          "include": "#text"
+                        }
+                      ]
+                    }
+                  }
+                },
                 {
                   "match": "(#{2,})[ \\t]+(.*)",
                   "captures": {
@@ -589,6 +644,21 @@
             "2": {
               "name": "markup.italic.heading.mull",
               "patterns": [
+                {
+                  "match": "(#{2,})[ \\t]+(\\[.*)",
+                  "captures": {
+                    "1": {
+                      "name": "punctuation.definition.heading.mull"
+                    },
+                    "2": {
+                      "patterns": [
+                        {
+                          "include": "#text"
+                        }
+                      ]
+                    }
+                  }
+                },
                 {
                   "match": "(#{2,})[ \\t]+(.*)",
                   "captures": {

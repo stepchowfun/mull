@@ -690,7 +690,7 @@ mod tests {
             ),
             &[
                 ("sort.sh", "#!/bin/sh\nsort\n"),
-                ("fence.sh", "#!/bin/sh\necho '::: [Other] :::'\n"),
+                ("fence.sh", "#!/bin/sh\necho '::: sort :::'\n"),
                 ("title.sh", "#!/bin/sh\necho '#### Deep'\n"),
             ],
         );
@@ -702,7 +702,7 @@ mod tests {
             concat!(
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
-                ":::: fence\n::: [Other] :::\n:::: #hash\n\n",
+                ":::: fence\n::: sort :::\n:::: #hash\n\n",
                 ":::: ## Section\n::: title\n#### Deep\n::: #hash\n::::\n\n",
                 "# Other\n",
             ),
