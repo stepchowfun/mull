@@ -105,7 +105,7 @@ Files go in a directory next to the wiki named after the wiki, with the `.mull` 
 
 Just as every page must be reachable from `Home`, every file in `<wiki>_files` (if it exists) must be linked to from the wiki. A link to a directory counts as linking to everything inside it.
 
-### Extending Mull with new block types
+### Extending Mull with blocks
 
 Suppose you have a list that you want to keep sorted:
 
@@ -142,7 +142,9 @@ The contents of my pantry:
 :::
 ```
 
-Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
+Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That example sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
+
+There's an [example wiki](https://github.com/stepchowfun/mull/blob/main/example.mull) which demonstrates some other useful block types, including a chronological log and a calculator block.
 
 ### Escaping and code
 
