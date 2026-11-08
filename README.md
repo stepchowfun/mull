@@ -54,14 +54,16 @@ A page can be divided into *sections*, which can be linked to directly. A sectio
 Whisk everything together.
 ```
 
-To end a section early, put it in a *block*:
+To end a section early, write its `#`s on a line by themselves. That ends any sections within it too, and what follows belongs to the section containing it:
 
 ```md
 ## Steps
 
-::: ### Tips
+### Tips
+
 Let the batter rest for a few minutes.
-:::
+
+###
 
 Whisk everything together.
 ```
@@ -93,7 +95,7 @@ This is my favorite breakfast:
 
 Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original. To discard the edits in a portal instead, delete its contents, and formatting will fill it in again.
 
-Sections in the copy are marked one level deeper than in the original, so they sit under the portal. Like any section, a portal lasts until the next title at its level or higher, and you can put it in a block, like `::: ## [Pancakes]`, to end it early. You can also open a portal to a section, like `## [Pancakes#Steps]`.
+Sections in the copy are marked one level deeper than in the original, so they sit under the portal. Like any section, a portal lasts until the next title at its level or higher, and you can end it early with its `#`s on a line by themselves, like `##`. You can also open a portal to a section, like `## [Pancakes#Steps]`.
 
 ### Linking to files and directories
 

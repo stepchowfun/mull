@@ -553,7 +553,7 @@ fn script_display(file_root: &FileRoot, script: &Path) -> String {
 }
 
 // Replace each hash after a closing fence with `#hash`, so tests needn't spell out hashes. A hash
-// has no whitespace in it, unlike a fenced section's title.
+// is `#` followed by anything but whitespace.
 #[cfg(all(test, unix))]
 pub fn hide_hashes(contents: &str) -> String {
     contents
@@ -674,8 +674,7 @@ mod tests {
 
     // Replace each block's body with its script's output, indented like the block and within
     // fences longer than any in it and followed by a hash, filling in a block written on one line.
-    // A block within a fenced section is run too, and title lines in the output don't start
-    // sections.
+    // A block within a section is run too, and title lines in the output don't start sections.
     #[cfg(unix)]
     #[test]
     fn runs_replace_bodies() {
@@ -685,7 +684,7 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - b\n  - a\n  :::\n\n",
                 "::: fence :::\n\n",
-                ":::: ## Section\n::: title :::\n::::\n\n",
+                "## Section\n\n::: title :::\n\n##\n\n",
                 "# Other\n",
             ),
             &[
@@ -703,7 +702,7 @@ mod tests {
                 "# Home\n\n[/scripts/] [Other]\n\n",
                 "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
                 ":::: fence\n::: sort :::\n:::: #hash\n\n",
-                ":::: ## Section\n::: title\n#### Deep\n::: #hash\n::::\n\n",
+                "## Section\n\n::: title\n#### Deep\n::: #hash\n\n##\n\n",
                 "# Other\n",
             ),
         );

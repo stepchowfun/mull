@@ -10,18 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The VS Code extension no longer turns on smooth scrolling in Mull files. It was meant for the snap-back scrolling, which is gone.
-- A fenced section's title must be marked with a space after its `#`s, like a title line's, rather than any whitespace.
-- A portal is now a section whose title is a link, like `## [Pancakes]`, rather than a block like `::: [Pancakes]`. Like any section, it lasts until the next title at its level or higher, a blank line separates its title line from its copy, and it can be put in a block to end it early, like `::: ## [Pancakes]`. Existing portals must be rewritten by hand, since `::: [Pancakes]` now reads as a script block with an invalid name.
-- The title lines in a portal's copy are marked as deep under the portal's title as they are under the title of what it shows, so a page's `## Steps` appears as `### Steps` under `## [Pancakes]`. Formatting moves them when the portal's level changes, and changes sync back at the original's levels.
+- Sections are no longer fenced. To end a section before the next title at its level or higher, write its `#`s on a line by themselves, like `###`, which ends the sections within it too. What follows belongs to the section or page containing it. Existing fenced sections must be rewritten by hand, since `::: ### Tips` now reads as a script block with an invalid name.
+- A portal is now a section whose title is a link, like `## [Pancakes]`, rather than a block like `::: [Pancakes]`. Like any section, it lasts until the next title at its level or higher, or until a line like `##` ends it, and a blank line separates its title line from its copy. Existing portals must be rewritten by hand, since `::: [Pancakes]` now reads as a script block with an invalid name.
+- The title lines and closing lines in a portal's copy are marked as deep under the portal's title as they are under the title of what it shows, so a page's `## Steps` appears as `### Steps` under `## [Pancakes]`. Formatting moves them when the portal's level changes, and changes sync back at the original's levels.
 - An empty portal is filled in by formatting, in place of a portal written on one line like `::: [Pancakes] :::`. Emptying a copy now discards its changes rather than emptying what it shows.
 - A page's or a section's title can't start with `[`, since a section's title line would then be a portal's.
-- A fenced section's title is taken as written, like a title line's, so links in it are no longer read.
-- The VS Code extension highlights the link in a portal's title line, and its outline lists portals along with the sections and portals in their copies. Completing a fence writes a fenced portal at the right level, and the quick fix for a title's level moves the title lines within its section or portal along with it.
+- The VS Code extension highlights the link in a portal's title line, and its outline lists portals along with the sections and portals in their copies. Completing a fence offers only scripts, and the quick fix for a title's level moves the title lines and closing lines within its section or portal along with it.
 
 ### Fixed
 
 - A change which would create a cycle of portals is no longer also reported at the pages and sections it doesn't change.
-
 - Completing a link like `[#...` in a portal's copy within another portal's copy now offers the sections of the page the inner portal shows, rather than the outer one.
 - After content before the first page's title is reported, later lines there which look like fences or section titles are no longer reported too.
 

@@ -522,13 +522,13 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n  ::: ## [Pancakes]\n  Mix [ Home ].  \r\n\n  :::\n\n",
+                    "# Home\n\n## [Pancakes]\nMix [ Home ].  \r\n\n##\n\n",
                     "# Pancakes\n\nMix [Home].",
                 ),
                 &[],
             )
             .unwrap(),
-            "# Home\n\n  ::: ## [Pancakes]\n  Mix [Home].\n  :::\n\n# Pancakes\n\nMix [Home].\n",
+            "# Home\n\n## [Pancakes]\n\nMix [Home].\n\n##\n\n# Pancakes\n\nMix [Home].\n",
         );
         assert_eq!(
             format_test(
@@ -574,22 +574,22 @@ mod tests {
         );
     }
 
-    // Fill in an empty portal, which stands for a copy matching what it shows, whether it's fenced
-    // or not.
+    // Fill in an empty portal, which stands for a copy matching what it shows, whether a closing
+    // line ends it or not.
     #[test]
     fn empty_portals() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\n::: ## [Pancakes]\n:::\n\n",
+                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\n",
                     "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
                 ),
                 &[],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
-                "::: ## [Pancakes]\nMix.\n\n### Steps\n\nStir.\n:::\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n##\n\n",
+                "## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
                 "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
             ),
         );
@@ -619,13 +619,13 @@ mod tests {
         );
     }
 
-    // Report a copy with a line which would start another page if it were a page's content, or a
-    // title line which isn't one level deeper than the portal's.
+    // Report a copy with a title line which isn't one level deeper than the title it's under, or a
+    // closing line which doesn't end anything, once it's read as the content of what it shows.
     #[test]
     fn unreadable_copies() {
         for source in [
-            "# Home\n\n  ::: ## [Pancakes]\n  # Mix.\n  :::\n\n# Pancakes\n\nMix.\n",
-            "# Home\n\n::: ## [Pancakes]\n## Mix.\n:::\n\n# Pancakes\n\nMix.\n",
+            "# Home\n\n## [Pancakes]\n\n#### Mix.\n\n# Pancakes\n\nMix.\n",
+            "# Home\n\n## [Pancakes]\n\nMix.\n\n####\n\n# Pancakes\n\nMix.\n",
         ] {
             let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
 
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: ## [Pancakes]\nMix well.\n\n### Tips\n\nRest.\n:::\n\n",
+                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
                     "[Other]\n\n",
                     "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix.\n\n#### Tips\n\nRest.\n\n",
                     "# Pancakes\n\nMix.\n\n## Tips\n\nRest.\n",
@@ -685,7 +685,7 @@ mod tests {
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: ## [Pancakes]\nMix well.\n\n### Tips\n\nRest.\n:::\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
                 "[Other]\n\n",
                 "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix well.\n\n#### Tips\n\nRest.\n\n",
                 "# Pancakes\n\nMix well.\n\n## Tips\n\nRest.\n",
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: ## [Pancakes]\nMix well.\n:::\n\n",
+                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
                     "## [Pancakes]\n\nMix well.\n\n",
                     "# Pancakes\n\nMix.\n",
                 ),
@@ -707,7 +707,7 @@ mod tests {
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: ## [Pancakes]\nMix well.\n:::\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
                 "## [Pancakes]\n\nMix well.\n\n",
                 "# Pancakes\n\nMix well.\n",
             ),
@@ -728,14 +728,14 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n::: ## [Pancakes]\n:::\n\n## [Pancakes]\n\nMix well.\n\n",
+                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
                     "# Pancakes\n\nMix.\n",
                 ),
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n::: ## [Pancakes]\nMix well.\n:::\n\n## [Pancakes]\n\nMix well.\n\n",
+                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
                 "# Pancakes\n\nMix well.\n",
             ),
         );
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn different_changes() {
         let source = concat!(
-            "# Home\n\n::: ## [Pancakes]\nMix well.\n:::\n\n",
+            "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
             "## [Pancakes]\n\nMix.\n\n",
             "# Pancakes\n\nMix quickly.\n",
         );
@@ -779,7 +779,7 @@ mod tests {
         for shown_title in ["Pancakes", "Syrup"] {
             let source = format!(
                 concat!(
-                    "# Home\n\n::: ## [Pancakes]\n::: ### [{}]\n:::\n\nMix.\n:::\n\n",
+                    "# Home\n\n## [Pancakes]\n\n### [{}]\n\n###\n\nMix.\n\n##\n\n",
                     "# Pancakes\n\nMix.\n\n# Syrup\n\n## [Pancakes]\n\nMix.\n",
                 ),
                 shown_title,
@@ -855,7 +855,8 @@ mod tests {
                 concat!(
                     "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
                     "## [Budget#Utilities]\n\nPower: 90\n\n",
-                    "# Budget\n\n:::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 80\n::::\n",
+                    "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 80\n\n##\n\n",
+                    "Later.\n",
                 ),
                 &[
                     ("Budget#Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
@@ -866,7 +867,8 @@ mod tests {
             concat!(
                 "# Home\n\n## [Budget#Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
                 "## [Budget#Utilities]\n\nPower: 90\n\n",
-                "# Budget\n\n::: ## Fixed\nRent: 2000\n\n### Utilities\n\nPower: 90\n:::\n",
+                "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n##\n\n",
+                "Later.\n",
             ),
         );
     }

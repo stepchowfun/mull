@@ -27,7 +27,7 @@ pub enum Fix {
     EscapeBackslash(usize),
 
     // Replace the `#`s marking a section's or a portal's title, from a byte offset to another, with
-    // those of a level, moving the title lines within it by as many levels.
+    // those of a level, moving the title lines and closing lines within it by as many levels.
     SetSectionLevel {
         start: usize,
         end: usize,
