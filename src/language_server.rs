@@ -3009,7 +3009,8 @@ fn occurrence_at(wiki: &Wiki, byte_offset: usize) -> Option<Occurrence<'_>> {
         return Some(Occurrence::Title(page));
     }
 
-    // Look for a section's title line, which never contains a link.
+    // Look for a section's title line, which never contains a link. A portal's title is a link,
+    // which is found among the page's links below.
     if let Some(section) = page.sections.iter().find(|section| {
         section.marked_title_source_range.start <= byte_offset
             && byte_offset <= section.marked_title_source_range.end
@@ -3626,8 +3627,9 @@ mod tests {
         );
     }
 
-    // Offer to open a portal to a page after the colons which start a fence, writing the portal on
-    // one line with the cursor in its link and, with VS Code commands, asking for titles there.
+    // Offer to open a portal to a page after the colons which start a fence, writing an empty
+    // fenced portal with the cursor in its link and, with VS Code commands, asking for titles
+    // there.
     #[test]
     fn completions_open_portals() {
         let source = "# Home\n\n- Item\n  :::\n\n# Other";

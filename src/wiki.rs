@@ -16,8 +16,9 @@ use std::{
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
 // relative to the file root, which names a directory if it ends with `/`. Otherwise, it names a
 // page, followed by a section of it after `#`. A section's title line marks its title with a run of
-// at least two of the title marker's `#`s, one for each level, followed by a space. The home page's
-// title identifies the root of every wiki's text-link graph.
+// at least two of the title marker's `#`s, one for each level, followed by a space, as does a
+// portal's, whose title is a link. The home page's title identifies the root of every wiki's
+// text-link graph.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
@@ -29,7 +30,7 @@ pub const FILESYSTEM_LINK_PREFIX: &str = "/";
 pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 
 // A line which starts with at least this many colons, after any indentation, is a fence: an opening
-// fence names what a portal shows, the title of a fenced section, or the script which computes
+// fence holds the title line of a fenced section or portal, or names the script which computes
 // its body, and a closing fence consists of colons alone or followed by a hash.
 pub const MIN_FENCE_LENGTH: usize = 3;
 

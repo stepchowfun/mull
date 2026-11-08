@@ -166,7 +166,7 @@ print("Thanks for playing!")
 ```
 ````
 
-No escaping is necessary inside titles or code.
+No escaping is necessary inside titles or code, apart from a portal's title, which is a link.
 
 ## Keyboard shortcuts
 

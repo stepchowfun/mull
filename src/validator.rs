@@ -807,7 +807,7 @@ mod tests {
     }
 
     // Reject a portal which closes each cycle of portals, including a portal to the page it's in,
-    // at the link in its opening fence. The search for cycles starts from pages in title order.
+    // at the link in its title line. The search for cycles starts from pages in title order.
     // Pages shown through several paths without a cycle are fine.
     #[test]
     fn portal_cycles() {

@@ -27,7 +27,7 @@ pub struct Instances {
 
 // This is an instance of a page or a section shown in portals, which is either the original or a
 // copy of it, possibly within another copy. Errors about it are reported at the original's title,
-// or at the link in the copy's opening fence.
+// or at the link in the title line of the portal showing the copy.
 #[derive(Debug)]
 struct Instance {
     content: String,
