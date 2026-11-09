@@ -14,9 +14,9 @@ use crate::{
     spelled_path::{DirectoryListings, FileRoot, SpelledPath, entry_identity},
     validator,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, MIN_SECTION_LEVEL, Page,
-        PageTitle, SECTION_SEPARATOR, Section, SectionTitle, TITLE_MARKER, TITLE_PREFIX, Target,
-        Wiki,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, INDENTATION_WIDTH, Link, MIN_FENCE_LENGTH, Page,
+        PageTitle, SECTION_SEPARATOR, Section, SectionTitle, TITLE_PREFIX, Target, Wiki,
+        line_indentation, reindent,
     },
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -915,8 +915,8 @@ enum Occurrence<'a> {
     // whitespace. Navigating to a page leaves the cursor before the `#`.
     Title(&'a Page),
 
-    // A section's title line, from its first `#` through its title's range. Navigating to a
-    // section leaves the cursor at its start.
+    // A section's title line, from its `#` through its title's range. Navigating to a section
+    // leaves the cursor at its start, after its indentation.
     SectionTitle(&'a Page, &'a Section),
 
     // A link of any kind in the page's content.
@@ -1479,14 +1479,19 @@ fn hover_for_document(snapshot: &Snapshot, cursor: Position) -> Option<Hover> {
     }
     let (page, section, source_range) = target_at(snapshot, byte_offset, LinkExtent::Whole)?;
 
-    // Show the page or section as written.
+    // Show the page or section as written, without the indentation of a section's title.
     let preview_source_range = section.map_or(page.source_range, |section| section.source_range);
+    let indentation = line_indentation(&snapshot.contents, preview_source_range.start).len();
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
             value: code_block(
                 "mull",
-                &snapshot.contents[preview_source_range.start..preview_source_range.end],
+                &reindent(
+                    &snapshot.contents[preview_source_range.start..preview_source_range.end],
+                    indentation,
+                    0,
+                ),
             ),
         }),
         range: Some(snapshot.range(source_range)),
@@ -2514,13 +2519,10 @@ fn outline_symbol(
     }
 }
 
-// This is a section or a portal of a page, or one in a portal's copy, as the editor navigates and
-// edits it: its name, which is a portal's link, its level, where its closing line starts if it has
-// one, and where it is, which starts with the `#`s marking its title.
+// This is a section or a portal of a page, or one in a portal's copy, as the editor navigates it:
+// its name, which is a portal's link, and where it is, which starts with the `#` marking its title.
 struct TitledPart {
     name: String,
-    level: usize,
-    closing_start: Option<usize>,
     source_range: SourceRange,
 }
 
@@ -2532,22 +2534,17 @@ fn titled_parts(page: &Page) -> Vec<TitledPart> {
         .chain(&page.copy_sections)
         .map(|section| TitledPart {
             name: section.title.text(Context::Verbatim),
-            level: section.level,
-            closing_start: section
-                .closing_source_range
-                .map(|closing_source_range| closing_source_range.start),
             source_range: section.source_range,
         })
-        .chain(page.portals.iter().chain(&page.copy_portals).map(|portal| {
-            TitledPart {
-                name: format!("[{}]", portal.target.link_text(portal.is_local)),
-                level: portal.level,
-                closing_start: portal
-                    .closing_source_range
-                    .map(|closing_source_range| closing_source_range.start),
-                source_range: portal.source_range,
-            }
-        }))
+        .chain(
+            page.portals
+                .iter()
+                .chain(&page.copy_portals)
+                .map(|portal| TitledPart {
+                    name: format!("[{}]", portal.target.link_text(portal.is_local)),
+                    source_range: portal.source_range,
+                }),
+        )
         .collect::<Vec<_>>();
     parts.sort_by_key(|part| part.source_range.start);
     parts
@@ -2681,52 +2678,30 @@ fn code_action_for_document(
                         None,
                     )
                 }
-                Fix::SetSectionLevel { start, end, level } => {
-                    // Write one `#` for each level, and move the title lines and closing lines
-                    // within the section or portal along with its own, including those in portals'
-                    // copies, so what's within it stays within it. A section without a valid title
-                    // isn't kept, so only its own title line moves.
-                    let marker = TITLE_MARKER.to_string().repeat(level);
-                    let parts = wiki
-                        .pages
-                        .values()
-                        .find(|page| {
-                            (page.source_range.start..page.source_range.end).contains(&start)
+                Fix::Indent { start, from, to } => {
+                    // Replace the line's indentation, along with that of the lines within it if
+                    // it's a section's or a portal's title line, including those in portals'
+                    // copies, so what's within it stays within it. Blank lines are left alone.
+                    let contents = &snapshot.contents;
+                    let is_title_line = parser::title_start(&contents[start..]).is_some();
+                    let edits = parser::content_lines(contents, start, from + INDENTATION_WIDTH)
+                        .take(if is_title_line { usize::MAX } else { 1 })
+                        .filter(|(_line_start, line)| !line.trim().is_empty())
+                        .map(|(line_start, _line)| {
+                            TextEdit::new(
+                                snapshot.range(SourceRange {
+                                    start: line_start,
+                                    end: line_start + from,
+                                }),
+                                " ".repeat(to),
+                            )
                         })
-                        .map(titled_parts)
-                        .unwrap_or_default();
-                    let edits = match parts.iter().find(|part| part.source_range.start == start) {
-                        Some(moved_part) => parts
-                            .iter()
-                            .filter(|part| {
-                                (moved_part.source_range.start..moved_part.source_range.end)
-                                    .contains(&part.source_range.start)
-                            })
-                            .flat_map(|part| {
-                                iter::once(part.source_range.start)
-                                    .chain(part.closing_start)
-                                    .map(move |marker_start| {
-                                        TextEdit::new(
-                                            snapshot.range(SourceRange {
-                                                start: marker_start,
-                                                end: marker_start + part.level,
-                                            }),
-                                            TITLE_MARKER.to_string().repeat(
-                                                (part.level + level)
-                                                    .saturating_sub(moved_part.level)
-                                                    .max(MIN_SECTION_LEVEL),
-                                            ),
-                                        )
-                                    })
-                            })
-                            .collect(),
-                        None => vec![TextEdit::new(
-                            snapshot.range(SourceRange { start, end }),
-                            marker.clone(),
-                        )],
-                    };
+                        .collect();
                     (
-                        format!("Mark the title with {}", marker.code_str()),
+                        format!(
+                            "Indent the {} {to} spaces",
+                            if is_title_line { "title" } else { "line" },
+                        ),
                         edits,
                         None,
                     )
@@ -3031,8 +3006,8 @@ fn target_at(
     }
 }
 
-// Find where navigating to a page or a section leads: an empty range at its start, right before a
-// page's `#`.
+// Find where navigating to a page or a section leads: an empty range at its start, right before
+// the `#` of its title line.
 fn target_start_range(snapshot: &Snapshot, page: &Page, section: Option<&Section>) -> Range {
     let start = snapshot.position(section.map_or(page.source_range.start, |section| {
         section.source_range.start
@@ -3419,35 +3394,35 @@ mod tests {
     // Analyze ordinary page structure in a new editor buffer.
     #[test]
     fn untitled_text_only_wikis_receive_diagnostics() {
-        let source = "# Home\nSee [Missing].";
+        let source = "# Home\n  See [Missing].";
         let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "Page `Missing` not found.");
         assert_eq!(
             diagnostics[0].range,
-            Range::new(Position::new(1, 4), Position::new(1, 13)),
+            Range::new(Position::new(1, 6), Position::new(1, 15)),
         );
     }
 
     // Report parser errors from a new editor buffer at their exact source locations.
     #[test]
     fn untitled_syntax_errors_receive_diagnostics() {
-        let source = "# Home\nUnexpected]";
+        let source = "# Home\n  Unexpected]";
         let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "Unexpected closing link delimiter.");
         assert_eq!(
             diagnostics[0].range,
-            Range::new(Position::new(1, 10), Position::new(1, 11)),
+            Range::new(Position::new(1, 12), Position::new(1, 13)),
         );
     }
 
     // Report validation errors in a new editor buffer despite its syntax errors.
     #[test]
     fn untitled_syntax_errors_accompany_validation_errors() {
-        let source = "# Home\nUnexpected] [Missing]";
+        let source = "# Home\n  Unexpected] [Missing]";
         let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(
@@ -3465,7 +3440,7 @@ mod tests {
     // Require a first save before resolving filesystem links from a new editor buffer.
     #[test]
     fn untitled_filesystem_links_receive_diagnostics() {
-        let source = "# Home\n[/notes.txt] [/images/]";
+        let source = "# Home\n  [/notes.txt] [/images/]";
         let diagnostics = diagnostics(&untitled_uri(), source);
 
         assert_eq!(diagnostics.len(), 2);
@@ -3478,15 +3453,15 @@ mod tests {
                 .map(|diagnostic| diagnostic.range)
                 .collect::<Vec<_>>(),
             vec![
-                Range::new(Position::new(1, 0), Position::new(1, 12)),
-                Range::new(Position::new(1, 13), Position::new(1, 23)),
+                Range::new(Position::new(1, 2), Position::new(1, 14)),
+                Range::new(Position::new(1, 15), Position::new(1, 25)),
             ],
         );
     }
 
     #[test]
     fn source_errors_become_precise_diagnostics() {
-        let source = "# Home\n😀 ]";
+        let source = "# Home\n  😀 ]";
         let error = parser::parse(
             Some(Path::new("wiki.mull")),
             source,
@@ -3500,7 +3475,7 @@ mod tests {
 
         assert_eq!(
             diagnostic.range,
-            Range::new(Position::new(1, 3), Position::new(1, 4)),
+            Range::new(Position::new(1, 5), Position::new(1, 6)),
         );
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.source.as_deref(), Some("mull"));
@@ -3525,7 +3500,7 @@ mod tests {
             index,
             name: name.to_owned(),
         };
-        let source = "# Home\n\nAdded above.\n\n::: sort :::\n\n::: tidy :::\n";
+        let source = "# Home\n\n  Added above.\n\n  ::: sort :::\n\n  ::: tidy :::\n";
         let snapshot = snapshot(&untitled_uri(), source);
         let check = |failures: &[ScriptFailure]| {
             diagnostics_for_document(
@@ -3551,9 +3526,12 @@ mod tests {
                 .map(|diagnostic| (diagnostic.range, diagnostic.message.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                (Range::new(Position::new(4, 4), Position::new(4, 8)), "nope"),
                 (
-                    Range::new(Position::new(6, 4), Position::new(6, 8)),
+                    Range::new(Position::new(4, 6), Position::new(4, 10)),
+                    "nope",
+                ),
+                (
+                    Range::new(Position::new(6, 6), Position::new(6, 10)),
                     "The script `/scripts/tidy.sh` failed. It isn't executable.",
                 ),
             ],
@@ -3599,8 +3577,8 @@ mod tests {
     fn completions_complete_portal_links() {
         assert_eq!(
             completion_for_document(
-                &snapshot(&untitled_uri(), "# Home\n\n## []\n\n# Other"),
-                Position::new(2, 4),
+                &snapshot(&untitled_uri(), "# Home\n\n  # []\n\n# Other"),
+                Position::new(2, 5),
                 true,
             )
             .unwrap()
@@ -3616,7 +3594,7 @@ mod tests {
     // script block with the cursor in its empty body.
     #[test]
     fn completions_offer_scripts() {
-        let source = "# Home\n\n:::";
+        let source = "# Home\n\n  :::";
         let wiki = TestWiki::new(source);
         let scripts = wiki.directory().join("scripts");
         fs::create_dir_all(&scripts).unwrap();
@@ -3625,13 +3603,13 @@ mod tests {
         fs::write(scripts.join("sort.py"), "").unwrap();
         let completions = completion_for_document(
             &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
-            Position::new(2, 3),
+            Position::new(2, 5),
             true,
         )
         .unwrap()
         .items;
 
-        let fence = Range::new(Position::new(2, 0), Position::new(2, 3));
+        let fence = Range::new(Position::new(2, 2), Position::new(2, 5));
         assert_eq!(
             completion_edits(&completions),
             vec![
@@ -3654,12 +3632,20 @@ mod tests {
     #[test]
     fn completions_resume_after_partial_names() {
         for (source, cursor, range_start) in [
-            ("# Home\n\n:::so", Position::new(2, 5), Position::new(2, 0)),
-            ("# Home\n\n::: so", Position::new(2, 6), Position::new(2, 0)),
             (
-                "# Home\n\n- List:\n  :::so",
-                Position::new(3, 7),
-                Position::new(3, 2),
+                "# Home\n\n  :::so",
+                Position::new(2, 7),
+                Position::new(2, 2),
+            ),
+            (
+                "# Home\n\n  ::: so",
+                Position::new(2, 8),
+                Position::new(2, 2),
+            ),
+            (
+                "# Home\n\n  - List:\n    :::so",
+                Position::new(3, 9),
+                Position::new(3, 4),
             ),
         ] {
             let wiki = wiki_with_script(source);
@@ -3679,9 +3665,12 @@ mod tests {
         // Decline text which isn't part of a name, and colons which would close a block or are in
         // code.
         for (source, cursor) in [
-            ("# Home\n\n::: so x", Position::new(2, 8)),
-            ("# Home\n\n::: sort\n:::so\n# Other", Position::new(3, 5)),
-            ("# Home\n\n```\n:::so\n```", Position::new(3, 5)),
+            ("# Home\n\n  ::: so x", Position::new(2, 10)),
+            (
+                "# Home\n\n  ::: sort\n  :::so\n# Other",
+                Position::new(3, 7),
+            ),
+            ("# Home\n\n  ```\n  :::so\n  ```", Position::new(3, 7)),
         ] {
             let wiki = wiki_with_script(source);
             assert!(
@@ -3701,10 +3690,10 @@ mod tests {
     #[test]
     fn completions_decline_fences() {
         for (source, cursor) in [
-            ("# Home\n\n::: sort\n:::\n# Other", Position::new(3, 3)),
-            ("# Home\n\n```\n:::\n```", Position::new(3, 3)),
-            ("# Home\n\n::: :::", Position::new(2, 3)),
-            ("# Home\n\n::::", Position::new(2, 4)),
+            ("# Home\n\n  ::: sort\n  :::\n# Other", Position::new(3, 5)),
+            ("# Home\n\n  ```\n  :::\n  ```", Position::new(3, 5)),
+            ("# Home\n\n  ::: :::", Position::new(2, 5)),
+            ("# Home\n\n  ::::", Position::new(2, 6)),
         ] {
             let wiki = wiki_with_script(source);
             assert!(
@@ -3718,8 +3707,8 @@ mod tests {
         }
         assert!(
             completion_for_document(
-                &snapshot(&untitled_uri(), "# Home\n\n:::"),
-                Position::new(2, 3),
+                &snapshot(&untitled_uri(), "# Home\n\n  :::"),
+                Position::new(2, 5),
                 true,
             )
             .is_none(),
@@ -3729,7 +3718,7 @@ mod tests {
     // Complete a filesystem link with the visible entries of the file root.
     #[test]
     fn completions_list_filesystem_entries() {
-        let source = "# Home\n\n[/]";
+        let source = "# Home\n\n  [/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -3739,13 +3728,13 @@ mod tests {
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), true)
                 .unwrap()
                 .items;
 
         // Close a file's link but leave a directory's link open for its children.
-        let empty_path = Range::new(Position::new(2, 2), Position::new(2, 2));
-        let closed_path = Range::new(Position::new(2, 2), Position::new(2, 3));
+        let empty_path = Range::new(Position::new(2, 4), Position::new(2, 4));
+        let closed_path = Range::new(Position::new(2, 4), Position::new(2, 5));
         assert_eq!(
             completion_edits(&completions),
             vec![
@@ -3767,7 +3756,7 @@ mod tests {
 
         // Leave asking for a directory's children to clients without VS Code commands.
         assert!(
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), false)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), false)
                 .unwrap()
                 .items
                 .iter()
@@ -3778,12 +3767,12 @@ mod tests {
     // Complete the path after the filesystem-link prefix, which the typed path includes.
     #[test]
     fn completions_follow_prefix() {
-        let source = "# Home\n\n[/no";
+        let source = "# Home\n\n  [/no";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 6), true)
                 .unwrap()
                 .items;
 
@@ -3791,7 +3780,7 @@ mod tests {
             completion_edits(&completions),
             vec![(
                 "notes.txt",
-                Range::new(Position::new(2, 2), Position::new(2, 4)),
+                Range::new(Position::new(2, 4), Position::new(2, 6)),
                 "notes.txt]",
             )],
         );
@@ -3801,12 +3790,12 @@ mod tests {
     // beside the wiki.
     #[test]
     fn completions_list_only_the_file_root() {
-        let source = "# Home\n\n[/";
+        let source = "# Home\n\n  [/";
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions = || {
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), true)
                 .unwrap()
                 .items
         };
@@ -3817,7 +3806,7 @@ mod tests {
             completion_edits(&completions()),
             vec![(
                 "within.txt",
-                Range::new(Position::new(2, 2), Position::new(2, 2)),
+                Range::new(Position::new(2, 4), Position::new(2, 4)),
                 "within.txt]",
             )],
         );
@@ -3827,7 +3816,7 @@ mod tests {
     // component being typed, including directories without files.
     #[test]
     fn completions_list_nested_directories() {
-        let source = "# Home\n\n[/images/r";
+        let source = "# Home\n\n  [/images/r";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw/large")).unwrap();
@@ -3836,11 +3825,11 @@ mod tests {
         fs::write(directory.join("images/photo.jpg"), "photo").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 10), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 12), true)
                 .unwrap()
                 .items;
 
-        let typed_component = Range::new(Position::new(2, 9), Position::new(2, 10));
+        let typed_component = Range::new(Position::new(2, 11), Position::new(2, 12));
         assert_eq!(
             completion_edits(&completions),
             vec![
@@ -3856,7 +3845,7 @@ mod tests {
     // completions leave untouched.
     #[test]
     fn completions_escape_path_delimiters() {
-        let source = "# Home\n\n[/a\\[b\\]/]";
+        let source = "# Home\n\n  [/a\\[b\\]/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir_all(directory.join("a[b]")).unwrap();
@@ -3864,27 +3853,27 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 2), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 4), true)
                 .unwrap()
                 .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
                 "a[b]/",
-                Range::new(Position::new(2, 2), Position::new(2, 9)),
+                Range::new(Position::new(2, 4), Position::new(2, 11)),
                 "a\\[b\\]/",
             )],
         );
 
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 9), true)
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 11), true)
                 .unwrap()
                 .items;
         assert_eq!(
             completion_edits(&completions),
             vec![(
                 "c[d].txt",
-                Range::new(Position::new(2, 9), Position::new(2, 10)),
+                Range::new(Position::new(2, 11), Position::new(2, 12)),
                 "c\\[d\\].txt]",
             )],
         );
@@ -3893,7 +3882,7 @@ mod tests {
     // Decline filesystem completions where the parser wouldn't recognize a valid link path.
     #[test]
     fn completions_ignore_invalid_filesystem_contexts() {
-        let source = "# [/\n\n[/../] \\[/";
+        let source = "# [/\n\n  [/../] \\[/";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -3901,8 +3890,8 @@ mod tests {
         // Ignore titles, escaping paths, and escaped delimiters.
         for cursor in [
             Position::new(0, 4),
-            Position::new(2, 5),
-            Position::new(2, 10),
+            Position::new(2, 7),
+            Position::new(2, 12),
         ] {
             assert!(
                 completion_for_document(&snapshot(&uri, source), cursor, true)
@@ -3911,11 +3900,11 @@ mod tests {
         }
 
         // Require a filesystem to list entries from.
-        let source = "# Home\n\n[/]";
+        let source = "# Home\n\n  [/]";
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 2),
+                Position::new(2, 4),
                 true,
             )
             .is_none(),
@@ -3925,10 +3914,10 @@ mod tests {
     // Complete a partial target by replacing the whole link, including its delimiters.
     #[test]
     fn completions_replace_closed_links() {
-        let source = "# Home\n\n[Gr]\n\n# Greeting\n\n# Other";
+        let source = "# Home\n\n  [Gr]\n\n# Greeting\n\n# Other";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 3),
+            Position::new(2, 5),
             true,
         )
         .unwrap()
@@ -3944,7 +3933,7 @@ mod tests {
         let Some(CompletionTextEdit::Edit(edit)) = &completions[0].text_edit else {
             panic!("A completion should replace the link.");
         };
-        let link_range = Range::new(Position::new(2, 0), Position::new(2, 4));
+        let link_range = Range::new(Position::new(2, 2), Position::new(2, 6));
         assert_eq!(edit.range, link_range);
         assert_eq!(edit.new_text, "[Greeting]");
 
@@ -3952,7 +3941,7 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 0),
+                Position::new(2, 2),
                 true,
             )
             .is_none(),
@@ -3962,10 +3951,10 @@ mod tests {
     // Complete an unfinished link despite a syntax error elsewhere in the wiki.
     #[test]
     fn completions_recover_from_syntax_errors() {
-        let source = "# Home\n\n[Gre\n\n# Greeting\n\nUnexpected]";
+        let source = "# Home\n\n  [Gre\n\n# Greeting\n\n  Unexpected]";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             true,
         )
         .unwrap()
@@ -3981,10 +3970,10 @@ mod tests {
     // Replace an unfinished link from its opening delimiter through the cursor.
     #[test]
     fn completions_support_unfinished_links() {
-        let source = "# Home\n\n[Gre\n\n# Greeting";
+        let source = "# Home\n\n  [Gre\n\n# Greeting";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             true,
         )
         .unwrap()
@@ -3999,7 +3988,7 @@ mod tests {
 
         assert_eq!(
             edit.range,
-            Range::new(Position::new(2, 0), Position::new(2, 4)),
+            Range::new(Position::new(2, 2), Position::new(2, 6)),
         );
         assert_eq!(edit.new_text, "[Greeting]");
     }
@@ -4007,10 +3996,10 @@ mod tests {
     // Find an unfinished link's opening delimiter after a closed link on the same line.
     #[test]
     fn completions_follow_closed_links_on_the_same_line() {
-        let source = "# Home\n\nSee [Home] and [Gre\n\n# Greeting";
+        let source = "# Home\n\n  See [Home] and [Gre\n\n# Greeting";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 19),
+            Position::new(2, 21),
             true,
         )
         .unwrap()
@@ -4025,7 +4014,7 @@ mod tests {
 
         assert_eq!(
             edit.range,
-            Range::new(Position::new(2, 15), Position::new(2, 19)),
+            Range::new(Position::new(2, 17), Position::new(2, 21)),
         );
     }
 
@@ -4033,10 +4022,10 @@ mod tests {
     // with the typed text first.
     #[test]
     fn completions_filter_titles() {
-        let source = "# Home\n\n[gre\n\n# Greeting\n\n# Agree\n\n# Greek\n\n# Other";
+        let source = "# Home\n\n  [gre\n\n# Greeting\n\n# Agree\n\n# Greek\n\n# Other";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             true,
         )
         .unwrap();
@@ -4055,10 +4044,10 @@ mod tests {
     // Match escaped link delimiters in the typed text against the titles that contain them.
     #[test]
     fn completions_filter_titles_with_escapes() {
-        let source = "# Home\n\n[A\\[\n\n# A[B]\n\n# AB";
+        let source = "# Home\n\n  [A\\[\n\n# A[B]\n\n# AB";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             true,
         )
         .unwrap();
@@ -4077,13 +4066,13 @@ mod tests {
     // the list as incomplete.
     #[test]
     fn completions_limit_titles() {
-        let mut source = "# Home\n\n[x\n\n# X\n".to_owned();
+        let mut source = "# Home\n\n  [x\n\n# X\n".to_owned();
         for i in 0_usize..200 {
             writeln!(source, "\n# Ax {i:03}").unwrap();
         }
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), &source),
-            Position::new(2, 2),
+            Position::new(2, 4),
             true,
         )
         .unwrap();
@@ -4102,12 +4091,12 @@ mod tests {
     // outside of any link.
     #[test]
     fn completions_at_the_end_of_the_document() {
-        let source = "# Home\n\n[";
+        let source = "# Home\n\n  [";
 
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 0),
+                Position::new(2, 2),
                 true,
             )
             .is_none(),
@@ -4115,15 +4104,15 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 1),
+                Position::new(2, 3),
                 true,
             )
             .is_some(),
         );
         assert!(
             completion_for_document(
-                &snapshot(&untitled_uri(), "# Home\n\nx"),
-                Position::new(2, 1),
+                &snapshot(&untitled_uri(), "# Home\n\n  x"),
+                Position::new(2, 3),
                 true,
             )
             .is_none(),
@@ -4134,10 +4123,10 @@ mod tests {
     #[test]
     fn completions_do_not_duplicate_closing_delimiters() {
         // Model an editor that has already auto-closed the link the cursor sits inside.
-        let source = "# Home\n\n[Gr]\n\n# Greeting";
+        let source = "# Home\n\n  [Gr]\n\n# Greeting";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 3),
+            Position::new(2, 5),
             true,
         )
         .unwrap()
@@ -4155,16 +4144,16 @@ mod tests {
         let end = byte_offset(source, edit.range.end).unwrap();
         let mut applied = source.to_owned();
         applied.replace_range(start..end, &edit.new_text);
-        assert_eq!(applied, "# Home\n\n[Greeting]\n\n# Greeting");
+        assert_eq!(applied, "# Home\n\n  [Greeting]\n\n# Greeting");
     }
 
     // Escape link delimiters when inserting a page title as a completion.
     #[test]
     fn completions_escape_title_delimiters() {
-        let source = "# Home\n\n[]\n\n# A[B]";
+        let source = "# Home\n\n  []\n\n# A[B]";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 1),
+            Position::new(2, 3),
             true,
         )
         .unwrap()
@@ -4185,13 +4174,13 @@ mod tests {
     // right after typing a backslash, but offer them again once the escape is complete.
     #[test]
     fn completions_wait_for_complete_escapes() {
-        let incomplete = "# Home\n\n[A\\\n\n# A[B]";
-        let complete = "# Home\n\n[A\\[\n\n# A[B]";
+        let incomplete = "# Home\n\n  [A\\\n\n# A[B]";
+        let complete = "# Home\n\n  [A\\[\n\n# A[B]";
 
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), incomplete),
-                Position::new(2, 3),
+                Position::new(2, 5),
                 true,
             )
             .is_none(),
@@ -4199,7 +4188,7 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), complete),
-                Position::new(2, 4),
+                Position::new(2, 6),
                 true,
             )
             .unwrap()
@@ -4212,12 +4201,12 @@ mod tests {
     // Offer no completions in code, even in what looks like a link, but offer them after it.
     #[test]
     fn completions_ignore_code() {
-        let source = "# Home\n\n```\n[]\n```\n\n`[` []";
+        let source = "# Home\n\n  ```\n  []\n  ```\n\n  `[` []";
 
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(3, 1),
+                Position::new(3, 3),
                 true,
             )
             .is_none(),
@@ -4225,7 +4214,7 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(6, 2),
+                Position::new(6, 4),
                 true,
             )
             .is_none(),
@@ -4233,7 +4222,7 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(6, 5),
+                Position::new(6, 7),
                 true,
             )
             .is_some(),
@@ -4244,10 +4233,10 @@ mod tests {
     // title which contains the delimiter escapes it and repairs the link.
     #[test]
     fn completions_repair_unexpected_opening_delimiters() {
-        let source = "# Home\n\n[a [b\n\n# a [b";
+        let source = "# Home\n\n  [a [b\n\n# a [b";
         let completions = completion_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 5),
+            Position::new(2, 7),
             true,
         )
         .unwrap();
@@ -4256,7 +4245,7 @@ mod tests {
             completion_edits(&completions.items),
             vec![(
                 "a [b",
-                Range::new(Position::new(2, 0), Position::new(2, 5)),
+                Range::new(Position::new(2, 2), Position::new(2, 7)),
                 "[a \\[b]",
             )],
         );
@@ -4265,12 +4254,12 @@ mod tests {
     // Offer page completions only while the cursor is inside a text link target.
     #[test]
     fn completions_ignore_other_contexts() {
-        let source = "# Home\n\nprose [/notes.txt]";
+        let source = "# Home\n\n  prose [/notes.txt]";
 
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 2),
+                Position::new(2, 4),
                 true,
             )
             .is_none(),
@@ -4278,7 +4267,7 @@ mod tests {
         assert!(
             completion_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 10),
+                Position::new(2, 12),
                 true,
             )
             .is_none(),
@@ -4306,7 +4295,7 @@ mod tests {
     // Treat a title as its own definition, which lets editors fall back to finding references.
     #[test]
     fn definitions_of_titles_target_themselves() {
-        let source = "# Home\n\n[Home]";
+        let source = "# Home\n\n  [Home]";
         let definition =
             goto_definition_for_document(&snapshot(&untitled_uri(), source), Position::new(0, 3))
                 .unwrap();
@@ -4330,11 +4319,11 @@ mod tests {
     // Jump from a text link to the start of its destination page.
     #[test]
     fn definitions_target_page_titles() {
-        let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nHello!";
+        let source = "# Home\n\n  😀 [Greeting]\n\n# Greeting\n\n  Hello!";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let definition =
-            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
+            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 7)).unwrap();
 
         let GotoDefinitionResponse::Link(links) = definition else {
             panic!("A text link should have one definition.");
@@ -4345,7 +4334,7 @@ mod tests {
         assert_eq!(link.target_uri, uri);
         assert_eq!(
             link.origin_selection_range,
-            Some(Range::new(Position::new(2, 3), Position::new(2, 13))),
+            Some(Range::new(Position::new(2, 5), Position::new(2, 15))),
         );
         assert_eq!(
             link.target_range,
@@ -4360,10 +4349,11 @@ mod tests {
     // Preview the complete destination page as written while highlighting the source link.
     #[test]
     fn hovers_preview_pages() {
-        let source = "# Home\n\n😀 [Greeting]\n\n# Greeting\n\nLiteral \\[brackets\\] and [Home].";
+        let source =
+            "# Home\n\n  😀 [Greeting]\n\n# Greeting\n\n  Literal \\[brackets\\] and [Home].";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
+        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 7)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
             panic!("A page preview should use markup content.");
@@ -4371,35 +4361,35 @@ mod tests {
         assert_eq!(contents.kind, MarkupKind::Markdown);
         assert_eq!(
             contents.value,
-            "```mull\n# Greeting\n\nLiteral \\[brackets\\] and [Home].\n```",
+            "```mull\n# Greeting\n\n  Literal \\[brackets\\] and [Home].\n```",
         );
         assert_eq!(
             hover.range,
-            Some(Range::new(Position::new(2, 3), Position::new(2, 13))),
+            Some(Range::new(Position::new(2, 5), Position::new(2, 15))),
         );
     }
 
     // Fence a preview with more backticks than any run in the page, so the page can't end it.
     #[test]
     fn hovers_fence_backticks() {
-        let source = "# Home\n\n[Code]\n\n# Code\n\n````\nfn main() {}\n````";
+        let source = "# Home\n\n  [Code]\n\n# Code\n\n  ````\n  fn main() {}\n  ````";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
-        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 2)).unwrap();
+        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 4)).unwrap();
 
         let HoverContents::Markup(contents) = hover.contents else {
             panic!("A page preview should use markup content.");
         };
         assert_eq!(
             contents.value,
-            "`````mull\n# Code\n\n````\nfn main() {}\n````\n`````",
+            "`````mull\n# Code\n\n  ````\n  fn main() {}\n  ````\n`````",
         );
     }
 
     // Preview a page directly from its title declaration.
     #[test]
     fn hovers_preview_page_titles() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello!";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting\n\n  Hello!";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let hover = hover_for_document(&snapshot(&uri, source), Position::new(4, 4)).unwrap();
@@ -4408,7 +4398,7 @@ mod tests {
             panic!("A page preview should use markup content.");
         };
         assert_eq!(contents.kind, MarkupKind::Markdown);
-        assert_eq!(contents.value, "```mull\n# Greeting\n\nHello!\n```");
+        assert_eq!(contents.value, "```mull\n# Greeting\n\n  Hello!\n```");
         assert_eq!(
             hover.range,
             Some(Range::new(Position::new(4, 2), Position::new(4, 10))),
@@ -4419,7 +4409,7 @@ mod tests {
     // entries. A missing directory has no preview.
     #[test]
     fn hovers_preview_directories() {
-        let source = "# Home\n\n[/] [/b/] [/missing/]";
+        let source = "# Home\n\n  [/] [/b/] [/missing/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -4431,27 +4421,27 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 1)).unwrap(),
+            hover_markdown(&uri, source, Position::new(2, 3)).unwrap(),
             "```mull\n[/b/]\n[/empty/]\n[/.gitignore]\n[/a.txt]\n```",
         );
         assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
+            hover_markdown(&uri, source, Position::new(2, 7)).unwrap(),
             "```mull\n[/b/c \\[1\\].txt]\n```",
         );
-        assert!(hover_markdown(&uri, source, Position::new(2, 12)).is_none());
+        assert!(hover_markdown(&uri, source, Position::new(2, 14)).is_none());
     }
 
     // List only so many of a directory's entries, followed by a count of the rest.
     #[test]
     fn hovers_preview_large_directories() {
-        let source = "# Home\n\n[/]";
+        let source = "# Home\n\n  [/]";
         let wiki = TestWiki::new(source);
         for index in 0..MAX_DIRECTORY_PREVIEW_ENTRIES + 2 {
             fs::write(wiki.directory().join(format!("{index:03}.txt")), "").unwrap();
         }
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let markdown = hover_markdown(&uri, source, Position::new(2, 1)).unwrap();
+        let markdown = hover_markdown(&uri, source, Position::new(2, 3)).unwrap();
         let lines = markdown.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), MAX_DIRECTORY_PREVIEW_ENTRIES + 3);
         assert_eq!(lines[1], "[/000.txt]");
@@ -4462,7 +4452,7 @@ mod tests {
     // in an unsaved wiki. A directory with an image's extension is previewed as a directory.
     #[test]
     fn hovers_preview_images() {
-        let source = "# Home\n\n[/photo.PNG] [/data.bin] [/images.png/] [/missing.png]";
+        let source = "# Home\n\n  [/photo.PNG] [/data.bin] [/images.png/] [/missing.png]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("photo.PNG"), png_header(100, 50)).unwrap();
@@ -4470,7 +4460,7 @@ mod tests {
         fs::create_dir(directory.join("images.png")).unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 3)).unwrap();
+        let hover = hover_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
         let HoverContents::Markup(contents) = hover.contents else {
             panic!("An image preview should use markup content.");
         };
@@ -4486,7 +4476,7 @@ mod tests {
         );
         assert_eq!(
             hover.range,
-            Some(Range::new(Position::new(2, 0), Position::new(2, 12))),
+            Some(Range::new(Position::new(2, 2), Position::new(2, 14))),
         );
         for column in [15, 45] {
             assert!(
@@ -4494,7 +4484,7 @@ mod tests {
             );
         }
         let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(&uri, source), Position::new(2, 30))
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 32))
                 .unwrap()
                 .contents
         else {
@@ -4502,14 +4492,14 @@ mod tests {
         };
         assert_eq!(contents.value, "This directory contains no files.");
         assert!(
-            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 3)).is_none(),
+            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 5)).is_none(),
         );
     }
 
     // Size an image which its EXIF orientation turns a quarter turn as it's shown.
     #[test]
     fn hovers_turn_images_by_their_orientation() {
-        let source = "# Home\n\n[/upright.jpg] [/turned.jpg]";
+        let source = "# Home\n\n  [/upright.jpg] [/turned.jpg]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(
@@ -4541,13 +4531,13 @@ mod tests {
     // Give an image whose size can't be read the maximum preview width.
     #[test]
     fn hovers_preview_unreadable_images() {
-        let source = "# Home\n\n[/drawing.svg]";
+        let source = "# Home\n\n  [/drawing.svg]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("drawing.svg"), "<svg/>").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(&uri, source), Position::new(2, 3))
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 5))
                 .unwrap()
                 .contents
         else {
@@ -4580,7 +4570,7 @@ mod tests {
     // characters other than line breaks and tabs.
     #[test]
     fn hovers_preview_text_files() {
-        let source = "# Home\n\n[/notes.txt] [/empty.txt] [/control.txt] [/latin1.txt]";
+        let source = "# Home\n\n  [/notes.txt] [/empty.txt] [/control.txt] [/latin1.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "a\tb\r\n```\nc").unwrap();
@@ -4590,11 +4580,11 @@ mod tests {
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 3)).unwrap(),
+            hover_markdown(&uri, source, Position::new(2, 5)).unwrap(),
             "````txt\na\tb\n```\nc\n````",
         );
         assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 16)).unwrap(),
+            hover_markdown(&uri, source, Position::new(2, 18)).unwrap(),
             "This file is empty.",
         );
         for column in [28, 43] {
@@ -4606,7 +4596,7 @@ mod tests {
     // cuts off a character, followed by an ellipsis.
     #[test]
     fn hovers_preview_large_text_files() {
-        let source = "# Home\n\n[/long.txt] [/large.txt]";
+        let source = "# Home\n\n  [/long.txt] [/large.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(
@@ -4624,7 +4614,7 @@ mod tests {
         .unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        let markdown = hover_markdown(&uri, source, Position::new(2, 3)).unwrap();
+        let markdown = hover_markdown(&uri, source, Position::new(2, 5)).unwrap();
         let lines = markdown.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), MAX_TEXT_PREVIEW_LINES + 4);
         assert_eq!(
@@ -4633,7 +4623,7 @@ mod tests {
         );
         assert_eq!(lines[MAX_TEXT_PREVIEW_LINES + 3], "…");
         assert_eq!(
-            hover_markdown(&uri, source, Position::new(2, 15)).unwrap(),
+            hover_markdown(&uri, source, Position::new(2, 17)).unwrap(),
             format!(
                 "```txt\na{}\n```\n\n…",
                 "é".repeat(MAX_TEXT_PREVIEW_BYTES / 2 - 1),
@@ -4646,9 +4636,9 @@ mod tests {
     fn references_find_text_links() {
         let source = concat!(
             "# Home\n\n",
-            "[Greeting] and [Greeting].\n\n",
+            "  [Greeting] and [Greeting].\n\n",
             "# Other\n\n",
-            "[Greeting]\n\n",
+            "  [Greeting]\n\n",
             "# Greeting",
         );
         let wiki = TestWiki::new(source);
@@ -4656,7 +4646,7 @@ mod tests {
         let from_title =
             references_for_document(&snapshot(&uri, source), Position::new(8, 3), false).unwrap();
         let from_link =
-            references_for_document(&snapshot(&uri, source), Position::new(2, 3), false).unwrap();
+            references_for_document(&snapshot(&uri, source), Position::new(2, 5), false).unwrap();
 
         assert_eq!(from_title, from_link);
         assert!(from_title.iter().all(|location| location.uri == uri));
@@ -4666,9 +4656,9 @@ mod tests {
                 .map(|location| location.range)
                 .collect::<Vec<_>>(),
             vec![
-                Range::new(Position::new(2, 0), Position::new(2, 10)),
-                Range::new(Position::new(2, 15), Position::new(2, 25)),
-                Range::new(Position::new(6, 0), Position::new(6, 10)),
+                Range::new(Position::new(2, 2), Position::new(2, 12)),
+                Range::new(Position::new(2, 17), Position::new(2, 27)),
+                Range::new(Position::new(6, 2), Position::new(6, 12)),
             ],
         );
     }
@@ -4676,7 +4666,7 @@ mod tests {
     // Include the declaration only when the language client requests it.
     #[test]
     fn references_optionally_include_declarations() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let locations =
@@ -4688,7 +4678,7 @@ mod tests {
                 .map(|location| location.range)
                 .collect::<Vec<_>>(),
             vec![
-                Range::new(Position::new(2, 0), Position::new(2, 10)),
+                Range::new(Position::new(2, 2), Position::new(2, 12)),
                 Range::new(Position::new(4, 2), Position::new(4, 10)),
             ],
         );
@@ -4697,7 +4687,7 @@ mod tests {
     // Distinguish a known page with no references from a cursor that denotes no page.
     #[test]
     fn references_can_be_empty() {
-        let source = "# Home\n\nText [Missing] [/notes.txt]";
+        let source = "# Home\n\n  Text [Missing] [/notes.txt]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -4719,27 +4709,27 @@ mod tests {
     // between pages. A link in the page still denotes the page it names.
     #[test]
     fn references_find_links_to_the_current_page() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nHello, [Home]!\n\nGoodbye.";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting\n\n  Hello, [Home]!\n\n  Goodbye.";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
-        for position in [Position::new(6, 2), Position::new(8, 8)] {
+        for position in [Position::new(6, 4), Position::new(8, 10)] {
             assert_eq!(
                 references_for_document(&snapshot(&uri, source), position, false)
                     .unwrap()
                     .iter()
                     .map(|location| location.range)
                     .collect::<Vec<_>>(),
-                vec![Range::new(Position::new(2, 0), Position::new(2, 10))],
+                vec![Range::new(Position::new(2, 2), Position::new(2, 12))],
             );
         }
         assert_eq!(
-            references_for_document(&snapshot(&uri, source), Position::new(6, 9), false)
+            references_for_document(&snapshot(&uri, source), Position::new(6, 11), false)
                 .unwrap()
                 .iter()
                 .map(|location| location.range)
                 .collect::<Vec<_>>(),
-            vec![Range::new(Position::new(6, 7), Position::new(6, 13))],
+            vec![Range::new(Position::new(6, 9), Position::new(6, 15))],
         );
         assert!(
             references_for_document(&snapshot(&uri, source), Position::new(3, 0), false).is_none(),
@@ -4749,28 +4739,28 @@ mod tests {
     // Leave filesystem links to ordinary editor and filesystem navigation.
     #[test]
     fn navigation_ignores_filesystem_links() {
-        let source = "# Home\n\n[/notes.txt]";
+        let source = "# Home\n\n  [/notes.txt]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         assert!(
-            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 4)).is_none(),
+            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 6)).is_none(),
         );
-        assert!(hover_for_document(&snapshot(&uri, source), Position::new(2, 4)).is_none());
+        assert!(hover_for_document(&snapshot(&uri, source), Position::new(2, 6)).is_none());
         assert!(
-            references_for_document(&snapshot(&uri, source), Position::new(2, 4), false).is_none(),
+            references_for_document(&snapshot(&uri, source), Position::new(2, 6), false).is_none(),
         );
     }
 
     // Keep navigating a wiki with syntax errors, previewing a page with them as written.
     #[test]
     fn navigation_recovers_from_syntax_errors() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting\n\nUnexpected] [Home]";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting\n\n  Unexpected] [Home]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
         let Some(GotoDefinitionResponse::Link(links)) =
-            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 4))
+            goto_definition_for_document(&snapshot(&uri, source), Position::new(2, 6))
         else {
             panic!("Navigation should produce a location link.");
         };
@@ -4785,7 +4775,7 @@ mod tests {
             1,
         );
         let HoverContents::Markup(contents) =
-            hover_for_document(&snapshot(&uri, source), Position::new(2, 4))
+            hover_for_document(&snapshot(&uri, source), Position::new(2, 6))
                 .unwrap()
                 .contents
         else {
@@ -4793,26 +4783,26 @@ mod tests {
         };
         assert_eq!(
             contents.value,
-            "```mull\n# Greeting\n\nUnexpected] [Home]\n```",
+            "```mull\n# Greeting\n\n  Unexpected] [Home]\n```",
         );
     }
 
     // Navigate among pages without requiring a new editor buffer to have a path.
     #[test]
     fn untitled_wikis_support_navigation() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting";
 
         assert!(
-            goto_definition_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4))
+            goto_definition_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 6))
                 .is_some(),
         );
         assert!(
-            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 4)).is_some(),
+            hover_for_document(&snapshot(&untitled_uri(), source), Position::new(2, 6)).is_some(),
         );
         assert!(
             references_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 4),
+                Position::new(2, 6),
                 false,
             )
             .is_some(),
@@ -4824,27 +4814,27 @@ mod tests {
     fn document_highlights_find_page_occurrences() {
         let source = concat!(
             "# Home\n\n",
-            "[Greeting] and [Greeting].\n\n",
+            "  [Greeting] and [Greeting].\n\n",
             "# Other\n\n",
-            "[Greeting]\n\n",
+            "  [Greeting]\n\n",
             "# Greeting",
         );
         let uri = untitled_uri();
         let from_title =
             document_highlight_for_document(&snapshot(&uri, source), Position::new(8, 3)).unwrap();
         let from_link =
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 3)).unwrap();
+            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
         let expected = vec![
             DocumentHighlight {
-                range: Range::new(Position::new(2, 0), Position::new(2, 10)),
+                range: Range::new(Position::new(2, 2), Position::new(2, 12)),
                 kind: Some(DocumentHighlightKind::READ),
             },
             DocumentHighlight {
-                range: Range::new(Position::new(2, 15), Position::new(2, 25)),
+                range: Range::new(Position::new(2, 17), Position::new(2, 27)),
                 kind: Some(DocumentHighlightKind::READ),
             },
             DocumentHighlight {
-                range: Range::new(Position::new(6, 0), Position::new(6, 10)),
+                range: Range::new(Position::new(6, 2), Position::new(6, 12)),
                 kind: Some(DocumentHighlightKind::READ),
             },
             DocumentHighlight {
@@ -4860,7 +4850,7 @@ mod tests {
     // Highlight an unreferenced declaration while ignoring a cursor outside page occurrences.
     #[test]
     fn document_highlights_distinguish_unreferenced_pages() {
-        let source = "# Home\n\nText";
+        let source = "# Home\n\n  Text";
         let uri = untitled_uri();
 
         for column in [0, 3] {
@@ -4873,19 +4863,19 @@ mod tests {
             );
         }
         assert!(
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 1)).is_none(),
+            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 3)).is_none(),
         );
     }
 
     // Highlight nothing for a text link whose target doesn't exist.
     #[test]
     fn document_highlights_ignore_unresolved_text_links() {
-        let source = "# Home\n\n[Missing]";
+        let source = "# Home\n\n  [Missing]";
 
         assert!(
             document_highlight_for_document(
                 &snapshot(&untitled_uri(), source),
-                Position::new(2, 3),
+                Position::new(2, 5),
             )
             .is_none(),
         );
@@ -4896,25 +4886,25 @@ mod tests {
     fn document_highlights_find_filesystem_links() {
         let source = concat!(
             "# Home\n\n",
-            "[/foo] [/foo] [/bar/]\n\n",
+            "  [/foo] [/foo] [/bar/]\n\n",
             "# Other\n\n",
-            "[/bar/]",
+            "  [/bar/]",
         );
         let uri = untitled_uri();
         let file_highlights =
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 3)).unwrap();
+            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 5)).unwrap();
         let directory_highlights =
-            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 15)).unwrap();
+            document_highlight_for_document(&snapshot(&uri, source), Position::new(2, 17)).unwrap();
 
         assert_eq!(
             file_highlights,
             vec![
                 DocumentHighlight {
-                    range: Range::new(Position::new(2, 0), Position::new(2, 6)),
+                    range: Range::new(Position::new(2, 2), Position::new(2, 8)),
                     kind: Some(DocumentHighlightKind::READ),
                 },
                 DocumentHighlight {
-                    range: Range::new(Position::new(2, 7), Position::new(2, 13)),
+                    range: Range::new(Position::new(2, 9), Position::new(2, 15)),
                     kind: Some(DocumentHighlightKind::READ),
                 },
             ],
@@ -4923,11 +4913,11 @@ mod tests {
             directory_highlights,
             vec![
                 DocumentHighlight {
-                    range: Range::new(Position::new(2, 14), Position::new(2, 21)),
+                    range: Range::new(Position::new(2, 16), Position::new(2, 23)),
                     kind: Some(DocumentHighlightKind::READ),
                 },
                 DocumentHighlight {
-                    range: Range::new(Position::new(6, 0), Position::new(6, 7)),
+                    range: Range::new(Position::new(6, 2), Position::new(6, 9)),
                     kind: Some(DocumentHighlightKind::READ),
                 },
             ],
@@ -4937,7 +4927,7 @@ mod tests {
     // Prepare rename from either a declaration or text link without selecting its delimiters.
     #[test]
     fn rename_preparation_selects_title_text() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting";
         let from_title = prepare_rename_for_document(
             &snapshot(&untitled_uri(), source),
             Position::new(4, 3),
@@ -4947,7 +4937,7 @@ mod tests {
         .unwrap();
         let from_link = prepare_rename_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             false,
         )
         .unwrap()
@@ -4963,7 +4953,7 @@ mod tests {
         assert_eq!(
             from_link,
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 1), Position::new(2, 9)),
+                range: Range::new(Position::new(2, 3), Position::new(2, 11)),
                 placeholder: "Greeting".to_owned(),
             },
         );
@@ -4976,12 +4966,12 @@ mod tests {
     #[test]
     fn rename_from_the_edges_of_titles() {
         for (source, column, title_end) in [
-            ("# Home\n\n[Greeting]\n\n# Greeting", 0, 10),
-            ("# Home\n\n[Greeting]\n\n# Greeting", 1, 10),
-            ("# Home\n\n[Greeting]\n\n# Greeting", 10, 10),
-            ("# Home\n\n[Greeting]\n\n# Greeting  \n\nHi", 12, 12),
+            ("# Home\n\n  [Greeting]\n\n# Greeting", 0, 10),
+            ("# Home\n\n  [Greeting]\n\n# Greeting", 1, 10),
+            ("# Home\n\n  [Greeting]\n\n# Greeting", 10, 10),
+            ("# Home\n\n  [Greeting]\n\n# Greeting  \n\n  Hi", 12, 12),
             (
-                "# Home\r\n\r\n[Greeting]\r\n\r\n# Greeting  \r\n\r\nHi",
+                "# Home\r\n\r\n  [Greeting]\r\n\r\n# Greeting  \r\n\r\n  Hi",
                 12,
                 12,
             ),
@@ -5012,7 +5002,7 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec![
                     (
-                        Range::new(Position::new(2, 1), Position::new(2, 9)),
+                        Range::new(Position::new(2, 3), Position::new(2, 11)),
                         "Salutation",
                     ),
                     (
@@ -5027,7 +5017,7 @@ mod tests {
     // Rename in a wiki with syntax errors, leaving malformed links unchanged.
     #[test]
     fn rename_recovers_from_syntax_errors() {
-        let source = "# Home\n\n[Greeting] [Gree[ting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting] [Gree[ting]\n\n# Greeting";
 
         assert_eq!(
             prepare_rename_for_document(
@@ -5055,14 +5045,14 @@ mod tests {
                 .iter()
                 .map(|edit| edit.range.start)
                 .collect::<Vec<_>>(),
-            vec![Position::new(2, 1), Position::new(4, 2)],
+            vec![Position::new(2, 3), Position::new(4, 2)],
         );
     }
 
     // Rename a declaration and every text link while trimming the requested title.
     #[test]
     fn rename_updates_every_occurrence() {
-        let source = "# Home\n\n[Greeting] and [Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting] and [Greeting]\n\n# Greeting";
         let workspace_edit = rename_for_document(
             &snapshot(&untitled_uri(), source),
             Position::new(4, 3),
@@ -5075,9 +5065,9 @@ mod tests {
 
         assert_eq!(edits.len(), 3);
         assert_eq!(edits[0].new_text, "Salutation");
-        assert_eq!(edits[0].range.start, Position::new(2, 1));
+        assert_eq!(edits[0].range.start, Position::new(2, 3));
         assert_eq!(edits[1].new_text, "Salutation");
-        assert_eq!(edits[1].range.start, Position::new(2, 16));
+        assert_eq!(edits[1].range.start, Position::new(2, 18));
         assert_eq!(edits[2].new_text, "Salutation");
         assert_eq!(edits[2].range.start, Position::new(4, 2));
     }
@@ -5085,10 +5075,10 @@ mod tests {
     // Preserve renamed titles containing delimiters by escaping only their link occurrences.
     #[test]
     fn rename_escapes_link_delimiters() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting";
         let workspace_edit = rename_for_document(
             &snapshot(&untitled_uri(), source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             "A[B]",
             ALL_FILE_OPERATIONS,
         )
@@ -5121,7 +5111,7 @@ mod tests {
     // Reject only syntactically unusable or duplicate page titles during rename.
     #[test]
     fn rename_rejects_invalid_titles() {
-        let source = "# Home\n\n[Greeting]\n\n# Greeting";
+        let source = "# Home\n\n  [Greeting]\n\n# Greeting";
         let cursor = Position::new(4, 3);
 
         assert_eq!(
@@ -5169,7 +5159,7 @@ mod tests {
     // Rename whichever kind of target the link at the cursor names.
     #[test]
     fn rename_dispatches_by_target_kind() {
-        let source = "# Home\n\n[Home] [/notes.txt]";
+        let source = "# Home\n\n  [Home] [/notes.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -5184,23 +5174,23 @@ mod tests {
         };
 
         // A page is renamed with plain text edits, and a filesystem entry with file operations.
-        let page_edit = rename(2, "Start").unwrap();
+        let page_edit = rename(4, "Start").unwrap();
         assert!(page_edit.changes.is_some() && page_edit.document_changes.is_none());
-        let filesystem_entry_edit = rename(10, "renamed.txt").unwrap();
+        let filesystem_entry_edit = rename(12, "renamed.txt").unwrap();
         assert!(
             filesystem_entry_edit.changes.is_none()
                 && filesystem_entry_edit.document_changes.is_some(),
         );
 
         // Other positions have nothing to rename.
-        assert!(rename(6, "Start").is_none());
+        assert!(rename(8, "Start").is_none());
     }
 
     // Prepare to rename a filesystem link by selecting its decoded path as written, without its
     // leading `/` or a directory's trailing `/`.
     #[test]
     fn rename_preparation_selects_filesystem_paths() {
-        let source = "# Home\n\n[ /a\\[1\\].txt ] [/images/raw/]";
+        let source = "# Home\n\n  [ /a\\[1\\].txt ] [/images/raw/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("a[1].txt"), "a").unwrap();
@@ -5215,14 +5205,14 @@ mod tests {
         assert_eq!(
             prepare(4),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 3), Position::new(2, 13)),
+                range: Range::new(Position::new(2, 5), Position::new(2, 15)),
                 placeholder: "a[1].txt".to_owned(),
             },
         );
         assert_eq!(
             prepare(18),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 18), Position::new(2, 28)),
+                range: Range::new(Position::new(2, 20), Position::new(2, 30)),
                 placeholder: "images/raw".to_owned(),
             },
         );
@@ -5231,7 +5221,7 @@ mod tests {
     // Explain why a filesystem entry can't be renamed before asking for a new name.
     #[test]
     fn rename_preparation_rejects_unrenamable_entries() {
-        let source = "# Home\n\n[/notes.txt] [/missing.txt] [/]";
+        let source = "# Home\n\n  [/notes.txt] [/missing.txt] [/]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -5245,21 +5235,21 @@ mod tests {
         };
 
         assert_eq!(
-            prepare(&untitled_uri(), 2, true),
+            prepare(&untitled_uri(), 4, true),
             "Save the wiki before renaming the files it links to.",
         );
         assert_eq!(
-            prepare(&uri, 2, false),
+            prepare(&uri, 4, false),
             "This editor doesn't support renaming files.",
         );
-        assert_eq!(prepare(&uri, 14, true), "File `/missing.txt` not found.");
-        assert_eq!(prepare(&uri, 29, true), "`wiki_files` can't be renamed.");
+        assert_eq!(prepare(&uri, 16, true), "File `/missing.txt` not found.");
+        assert_eq!(prepare(&uri, 31, true), "`wiki_files` can't be renamed.");
     }
 
     // Rename a linked file and update each link to it in the style it was written.
     #[test]
     fn rename_moves_linked_files() {
-        let source = "# Home\n\n[/notes.txt] [/notes.txt] [/notes/]";
+        let source = "# Home\n\n  [/notes.txt] [/notes.txt] [/notes/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -5268,7 +5258,7 @@ mod tests {
 
         let workspace_edit = rename_for_document(
             &snapshot(&uri, source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             " notes/a[1].txt ",
             ALL_FILE_OPERATIONS,
         )
@@ -5277,7 +5267,7 @@ mod tests {
         assert_eq!(
             apply_filesystem_rename(source, workspace_edit),
             (
-                "# Home\n\n[/notes/a\\[1\\].txt] [/notes/a\\[1\\].txt] [/notes/]".to_owned(),
+                "# Home\n\n  [/notes/a\\[1\\].txt] [/notes/a\\[1\\].txt] [/notes/]".to_owned(),
                 Uri::from_file_path(directory.join("notes.txt")).unwrap(),
                 Uri::from_file_path(directory.join("notes/a[1].txt")).unwrap(),
                 Vec::new(),
@@ -5288,7 +5278,7 @@ mod tests {
     // Rename a linked directory and update links to it and to everything within it.
     #[test]
     fn rename_moves_linked_directories() {
-        let source = "# Home\n\n[/images/] [/images/raw/] [/images/photo.jpg] [/images.txt]";
+        let source = "# Home\n\n  [/images/] [/images/raw/] [/images/photo.jpg] [/images.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw")).unwrap();
@@ -5298,7 +5288,7 @@ mod tests {
 
         let workspace_edit = rename_for_document(
             &snapshot(&uri, source),
-            Position::new(2, 4),
+            Position::new(2, 6),
             "/photos",
             ALL_FILE_OPERATIONS,
         )
@@ -5307,7 +5297,8 @@ mod tests {
         assert_eq!(
             apply_filesystem_rename(source, workspace_edit),
             (
-                "# Home\n\n[/photos/] [/photos/raw/] [/photos/photo.jpg] [/images.txt]".to_owned(),
+                "# Home\n\n  [/photos/] [/photos/raw/] [/photos/photo.jpg] [/images.txt]"
+                    .to_owned(),
                 Uri::from_file_path(directory.join("images")).unwrap(),
                 Uri::from_file_path(directory.join("photos")).unwrap(),
                 Vec::new(),
@@ -5318,7 +5309,7 @@ mod tests {
     // Treat renaming a filesystem entry to its own path, however it's written, as a no-op.
     #[test]
     fn rename_to_same_path_does_nothing() {
-        let source = "# Home\n\n[/notes.txt]";
+        let source = "# Home\n\n  [/notes.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -5326,7 +5317,7 @@ mod tests {
         assert_eq!(
             rename_for_document(
                 &snapshot(&uri, source),
-                Position::new(2, 3),
+                Position::new(2, 5),
                 "/notes.txt",
                 ALL_FILE_OPERATIONS,
             )
@@ -5339,7 +5330,7 @@ mod tests {
     // nothing but the renamed entry, keeping any which will contain the new path.
     #[test]
     fn rename_creates_and_deletes_directories() {
-        let source = "# Home\n\n[/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
+        let source = "# Home\n\n  [/a/b/photo.jpg] [/c/d/e.txt] [/f/] [/f/g/h.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir_all(directory.join("a/b")).unwrap();
@@ -5408,7 +5399,7 @@ mod tests {
     fn rename_through_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let source = "# Home\n\n[/d/x.txt] [/d/] [/alias/]";
+        let source = "# Home\n\n  [/d/x.txt] [/d/] [/alias/]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir(directory.join("d")).unwrap();
@@ -5426,7 +5417,7 @@ mod tests {
 
         let (applied, _old_uri, _new_uri, deleted_uris) =
             apply_filesystem_rename(source, rename(2, "alias/y.txt").unwrap().unwrap());
-        assert_eq!(applied, "# Home\n\n[/alias/y.txt] [/d/] [/alias/]");
+        assert_eq!(applied, "# Home\n\n  [/alias/y.txt] [/d/] [/alias/]");
         assert_eq!(deleted_uris, Vec::<Uri>::new());
         assert_eq!(
             rename(13, "alias/sub").unwrap_err(),
@@ -5438,7 +5429,7 @@ mod tests {
     // the two renames, and update links to the directory and to everything within it.
     #[test]
     fn rename_moves_directories_into_themselves() {
-        let source = "# Home\n\n[/images/] [/images/photo.jpg] [/notes.txt]";
+        let source = "# Home\n\n  [/images/] [/images/photo.jpg] [/notes.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::create_dir_all(directory.join("images/raw")).unwrap();
@@ -5449,7 +5440,7 @@ mod tests {
 
         let workspace_edit = rename_for_document(
             &snapshot(&uri, source),
-            Position::new(2, 2),
+            Position::new(2, 4),
             "images/raw",
             ALL_FILE_OPERATIONS,
         )
@@ -5496,14 +5487,14 @@ mod tests {
         }
         assert_eq!(
             applied,
-            "# Home\n\n[/images/raw/] [/images/raw/photo.jpg] [/notes.txt]",
+            "# Home\n\n  [/images/raw/] [/images/raw/photo.jpg] [/notes.txt]",
         );
     }
 
     // Reject filesystem renames which the parser, the filesystem, or the editor can't support.
     #[test]
     fn rename_rejects_invalid_filesystem_renames() {
-        let source = "# Home\n\n[/notes.txt] [/images/] [/missing.txt] [/] [/NOTES.txt]";
+        let source = "# Home\n\n  [/notes.txt] [/images/] [/missing.txt] [/] [/NOTES.txt]";
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -5521,13 +5512,13 @@ mod tests {
         };
 
         assert_eq!(
-            rename(&untitled_uri(), 2, "other.txt", ALL_FILE_OPERATIONS),
+            rename(&untitled_uri(), 4, "other.txt", ALL_FILE_OPERATIONS),
             "Save the wiki before renaming the files it links to.",
         );
         assert_eq!(
             rename(
                 &uri,
-                2,
+                4,
                 "renamed.txt",
                 FileOperationSupport {
                     rename: false,
@@ -5537,27 +5528,27 @@ mod tests {
             "This editor doesn't support renaming files.",
         );
         assert_eq!(
-            rename(&uri, 2, "../notes.txt", ALL_FILE_OPERATIONS),
+            rename(&uri, 4, "../notes.txt", ALL_FILE_OPERATIONS),
             "Path `../notes.txt` must not contain `..`.",
         );
         assert_eq!(
-            rename(&uri, 2, "/", ALL_FILE_OPERATIONS),
+            rename(&uri, 4, "/", ALL_FILE_OPERATIONS),
             "A file or directory can't be renamed to `/`.",
         );
         assert_eq!(
-            rename(&uri, 2, "other.txt", ALL_FILE_OPERATIONS),
+            rename(&uri, 4, "other.txt", ALL_FILE_OPERATIONS),
             "`/other.txt` already exists.",
         );
         assert_eq!(
-            rename(&uri, 2, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
+            rename(&uri, 4, "notes.txt/inner.txt", ALL_FILE_OPERATIONS),
             "Path `/notes.txt` isn't a directory.",
         );
         assert_eq!(
-            rename(&uri, 25, "found.txt", ALL_FILE_OPERATIONS),
+            rename(&uri, 27, "found.txt", ALL_FILE_OPERATIONS),
             "File `/missing.txt` not found.",
         );
         assert_eq!(
-            rename(&uri, 40, "elsewhere", ALL_FILE_OPERATIONS),
+            rename(&uri, 42, "elsewhere", ALL_FILE_OPERATIONS),
             "`wiki_files` can't be renamed.",
         );
 
@@ -5565,26 +5556,26 @@ mod tests {
         // disk, which only a filesystem that ignores case finds.
         if fs::metadata(directory.join("IMAGES")).is_ok() {
             assert_eq!(
-                rename(&uri, 45, "renamed.txt", ALL_FILE_OPERATIONS),
+                rename(&uri, 47, "renamed.txt", ALL_FILE_OPERATIONS),
                 "`/NOTES.txt` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
-                rename(&uri, 2, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
+                rename(&uri, 4, "IMAGES/notes.txt", ALL_FILE_OPERATIONS),
                 "`/IMAGES` doesn't match the spelling of any name on disk.",
             );
             assert_eq!(
-                rename(&uri, 15, "IMAGES/raw", ALL_FILE_OPERATIONS),
+                rename(&uri, 17, "IMAGES/raw", ALL_FILE_OPERATIONS),
                 "`/IMAGES` doesn't match the spelling of any name on disk.",
             );
 
             // Reject a rename which only changes the case of a name, which VS Code would skip.
             assert_eq!(
-                rename(&uri, 2, "NOTES.txt", ALL_FILE_OPERATIONS),
+                rename(&uri, 4, "NOTES.txt", ALL_FILE_OPERATIONS),
                 "`/notes.txt` and `/NOTES.txt` differ only in case, which VS Code can't rename. \
                     Rename it in the explorer instead, then fix its links.",
             );
             assert_eq!(
-                rename(&uri, 15, "Images", ALL_FILE_OPERATIONS),
+                rename(&uri, 17, "Images", ALL_FILE_OPERATIONS),
                 "`/images` and `/Images` differ only in case, which VS Code can't rename. Rename \
                     it in the explorer instead, then fix its links.",
             );
@@ -5593,7 +5584,7 @@ mod tests {
 
     #[test]
     fn formatting_replaces_noncanonical_source() {
-        let source = "# Zulu\n\n😀\n\n# Home\n\n[Zulu]";
+        let source = "# Zulu\n\n  😀\n\n# Home\n\n  [Zulu]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
         let edits = formatting_for_document(&snapshot(&uri, source), &Baseline::new()).unwrap();
@@ -5602,9 +5593,9 @@ mod tests {
         let edit = &edits[0];
         assert_eq!(
             edit.range,
-            Range::new(Position::new(0, 0), Position::new(6, 6)),
+            Range::new(Position::new(0, 0), Position::new(6, 8)),
         );
-        assert_eq!(edit.new_text, "# Home\n\n[Zulu]\n\n# Zulu\n\n😀\n");
+        assert_eq!(edit.new_text, "# Home\n\n  [Zulu]\n\n# Zulu\n\n  😀\n");
     }
 
     #[test]
@@ -5623,7 +5614,7 @@ mod tests {
     // disagree without one unchanged, reporting them instead.
     #[test]
     fn formatting_propagates_changes() {
-        let source = "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix.\n";
+        let source = "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n# Pancakes\n\n  Mix.\n";
         let snapshot = snapshot(&untitled_uri(), source);
         let baseline = Baseline::from([(
             Target {
@@ -5635,7 +5626,7 @@ mod tests {
 
         assert_eq!(
             formatting_for_document(&snapshot, &baseline).unwrap()[0].new_text,
-            "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix well.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n# Pancakes\n\n  Mix well.\n",
         );
         assert!(formatting_for_document(&snapshot, &Baseline::new()).is_none());
         assert_eq!(
@@ -5645,14 +5636,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 Range::new(Position::new(6, 2), Position::new(6, 10)),
-                Range::new(Position::new(2, 3), Position::new(2, 13)),
+                Range::new(Position::new(2, 4), Position::new(2, 14)),
             ],
         );
     }
 
     #[test]
     fn formatting_rejects_unparsable_source() {
-        let source = "# Home\n😀 ]";
+        let source = "# Home\n  😀 ]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -5663,7 +5654,7 @@ mod tests {
     // page.
     #[test]
     fn formatting_rejects_source_it_would_lose() {
-        let source = "# Home\n\n# Home\n\nThis would be lost.\n";
+        let source = "# Home\n\n# Home\n\n  This would be lost.\n";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -5685,17 +5676,17 @@ mod tests {
     // Format a new editor buffer without requiring a filesystem path.
     #[test]
     fn formatting_supports_untitled_wikis() {
-        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let source = "# Zulu\n\n# Home\n\n  [Zulu]";
         let edits =
             formatting_for_document(&snapshot(&untitled_uri(), source), &Baseline::new()).unwrap();
 
         assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].new_text, "# Home\n\n[Zulu]\n\n# Zulu\n");
+        assert_eq!(edits[0].new_text, "# Home\n\n  [Zulu]\n\n# Zulu\n");
     }
 
     #[test]
     fn formatting_differences_are_not_diagnostics() {
-        let source = "# Zulu\n\n# Home\n\n[Zulu]";
+        let source = "# Zulu\n\n# Home\n\n  [Zulu]";
         let wiki = TestWiki::new(source);
         let uri = Uri::from_file_path(wiki.path()).unwrap();
 
@@ -5710,7 +5701,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let _lock = lock_script_tests();
-        let source = "# Home\n\n::: sort\n- b\n- a\n:::\n\n::: fail :::\n";
+        let source = "# Home\n\n  ::: sort\n  - b\n  - a\n  :::\n\n  ::: fail :::\n";
         let wiki = TestWiki::new(source);
         let scripts = wiki.directory().join("scripts");
         fs::create_dir_all(&scripts).unwrap();
@@ -5728,7 +5719,7 @@ mod tests {
         );
         assert_eq!(
             hide_hashes(&edits.unwrap()[0].new_text),
-            "# Home\n\n::: sort\n- a\n- b\n::: #hash\n\n::: fail :::\n",
+            "# Home\n\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n  ::: fail :::\n",
         );
         assert_eq!(
             failures
@@ -5754,8 +5745,8 @@ mod tests {
 
         let _lock = lock_script_tests();
         let source = concat!(
-            "# Home\n\n## [Other]\n\n::: sort\n- d\n- c\n- e\n:::\n\n",
-            "# Other\n\n::: sort\n- d\n- c\n:::\n",
+            "# Home\n\n  # [Other]\n\n    ::: sort\n    - d\n    - c\n    - e\n    :::\n\n",
+            "# Other\n\n  ::: sort\n  - d\n  - c\n  :::\n",
         );
         let wiki = TestWiki::new(source);
         let script = wiki.directory().join("scripts").join("sort.sh");
@@ -5778,8 +5769,9 @@ mod tests {
         assert_eq!(
             hide_hashes(&edits.unwrap()[0].new_text),
             concat!(
-                "# Home\n\n## [Other]\n\n::: sort\n- c\n- d\n- e\n::: #hash\n\n",
-                "# Other\n\n::: sort\n- c\n- d\n- e\n::: #hash\n",
+                "# Home\n\n  # [Other]\n\n    ::: sort\n    - c\n    - d\n    - e\n    ::: #hash\n",
+                "\n",
+                "# Other\n\n  ::: sort\n  - c\n  - d\n  - e\n  ::: #hash\n",
             ),
         );
     }
@@ -5787,7 +5779,7 @@ mod tests {
     // Keep the outline of a wiki with syntax errors.
     #[test]
     fn document_symbols_recover_from_syntax_errors() {
-        let source = "# Zebra\n\nUnexpected]\n\n# Alpha";
+        let source = "# Zebra\n\n  Unexpected]\n\n# Alpha";
         let DocumentSymbolResponse::Nested(symbols) =
             document_symbol_for_document(&snapshot(&untitled_uri(), source), true)
         else {
@@ -5806,7 +5798,7 @@ mod tests {
     // Expose pages in source order for saved and untitled editor outlines.
     #[test]
     fn document_symbols_describe_pages() {
-        let source = "# Zebra\n\nFirst\n\n# Alpha\n\nSecond";
+        let source = "# Zebra\n\n  First\n\n# Alpha\n\n  Second";
         let wiki = TestWiki::new(source);
         let uris = [untitled_uri(), Uri::from_file_path(wiki.path()).unwrap()];
 
@@ -5830,7 +5822,7 @@ mod tests {
             }));
             assert_eq!(
                 symbols[0].range,
-                Range::new(Position::new(0, 0), Position::new(2, 5)),
+                Range::new(Position::new(0, 0), Position::new(2, 7)),
             );
             assert_eq!(
                 symbols[0].selection_range,
@@ -5838,7 +5830,7 @@ mod tests {
             );
             assert_eq!(
                 symbols[1].range,
-                Range::new(Position::new(4, 0), Position::new(6, 6)),
+                Range::new(Position::new(4, 0), Position::new(6, 8)),
             );
             assert_eq!(
                 symbols[1].selection_range,
@@ -5872,7 +5864,7 @@ mod tests {
     // and no others.
     #[test]
     fn code_actions_create_missing_pages() {
-        let source = "# Home\n\n[Greeting] [Greeting]";
+        let source = "# Home\n\n  [Greeting] [Greeting]";
         let uri = untitled_uri();
         let link_diagnostics = diagnostics(&uri, source);
         assert_eq!(link_diagnostics.len(), 2);
@@ -5899,7 +5891,7 @@ mod tests {
 
         // Confirm that the created page makes the wiki valid.
         let applied = apply_code_action(&uri, source, action);
-        assert_eq!(applied, "# Home\n\n[Greeting] [Greeting]\n\n|# Greeting");
+        assert_eq!(applied, "# Home\n\n  [Greeting] [Greeting]\n\n|# Greeting");
         assert_eq!(
             diagnostics(&uri, &applied.replace('|', "")),
             Vec::<Diagnostic>::new(),
@@ -5909,7 +5901,7 @@ mod tests {
     // Create a missing page without revealing it for clients without VS Code commands.
     #[test]
     fn code_actions_create_missing_pages_without_vscode_commands() {
-        let source = "# Home\n\n[Greeting]";
+        let source = "# Home\n\n  [Greeting]";
         let uri = untitled_uri();
         let actions =
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), false)
@@ -5925,7 +5917,7 @@ mod tests {
     // Offer to create a missing page despite a syntax error elsewhere in the wiki.
     #[test]
     fn code_actions_recover_from_syntax_errors() {
-        let source = "# Home\n\n[Greeting] Unexpected]";
+        let source = "# Home\n\n  [Greeting] Unexpected]";
         let uri = untitled_uri();
         let actions =
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
@@ -5936,7 +5928,7 @@ mod tests {
 
         assert_eq!(
             apply_code_action(&uri, source, action),
-            "# Home\n\n[Greeting] Unexpected]\n\n|# Greeting",
+            "# Home\n\n  [Greeting] Unexpected]\n\n|# Greeting",
         );
     }
 
@@ -5945,8 +5937,8 @@ mod tests {
     #[test]
     fn code_actions_insert_in_rendering_order() {
         let source = concat!(
-            "# Home\n\n[Apple] [Cherry] [Banana]\n\n",
-            "# Apple\n\n[Apricot]\n\n",
+            "# Home\n\n  [Apple] [Cherry] [Banana]\n\n",
+            "# Apple\n\n  [Apricot]\n\n",
             "# Apricot\n\n",
             "# Cherry\n",
         );
@@ -5959,8 +5951,8 @@ mod tests {
         assert_eq!(
             applied,
             concat!(
-                "# Home\n\n[Apple] [Cherry] [Banana]\n\n",
-                "# Apple\n\n[Apricot]\n\n",
+                "# Home\n\n  [Apple] [Cherry] [Banana]\n\n",
+                "# Apple\n\n  [Apricot]\n\n",
                 "# Apricot\n\n",
                 "|# Banana\n\n",
                 "# Cherry\n",
@@ -5975,7 +5967,7 @@ mod tests {
     // Insert a page that only unreachable pages link to among them in title order.
     #[test]
     fn code_actions_insert_unreachable_pages_in_title_order() {
-        let source = "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n# Zebra\n";
+        let source = "# Home\n\n  [First]\n\n# First\n\n# Alpha\n\n  [Missing]\n\n# Zebra\n";
         let uri = untitled_uri();
         let actions =
             code_action_for_document(&snapshot(&uri, source), &diagnostics(&uri, source), true)
@@ -5984,7 +5976,7 @@ mod tests {
         let applied = apply_code_action(&uri, source, &actions[0]);
         assert_eq!(
             applied,
-            "# Home\n\n[First]\n\n# First\n\n# Alpha\n\n[Missing]\n\n|# Missing\n\n# Zebra\n",
+            "# Home\n\n  [First]\n\n# First\n\n# Alpha\n\n  [Missing]\n\n|# Missing\n\n# Zebra\n",
         );
         assert_eq!(
             formatting_for_document(&snapshot(&uri, &applied.replace('|', "")), &Baseline::new()),
@@ -5997,7 +5989,7 @@ mod tests {
     #[test]
     fn code_actions_append_without_linking_pages() {
         let uri = untitled_uri();
-        let stale_diagnostics = diagnostics(&uri, "# Home\n\nSome text first, then [Greeting]\n");
+        let stale_diagnostics = diagnostics(&uri, "# Home\n\n  Some text first, then [Greeting]\n");
         let source = "# Home\n";
 
         let actions =
@@ -6067,7 +6059,7 @@ mod tests {
     // Offer no fixes for diagnostics that declaring a page wouldn't resolve.
     #[test]
     fn code_actions_ignore_other_diagnostics() {
-        let source = "# Home\n\n[Home] [] [/notes.txt] prose";
+        let source = "# Home\n\n  [Home] [] [/notes.txt] prose";
         let uri = untitled_uri();
         let source_diagnostics = diagnostics(&uri, source);
         assert_ne!(source_diagnostics, Vec::<Diagnostic>::new());
@@ -6081,7 +6073,7 @@ mod tests {
     // once a stale diagnostic's backslash is escaped.
     #[test]
     fn code_actions_escape_backslashes() {
-        let source = "# Home\n\nC:\\Users\\me";
+        let source = "# Home\n\n  C:\\Users\\me";
         let uri = untitled_uri();
         let escape_diagnostics = diagnostics(&uri, source);
         assert_eq!(escape_diagnostics.len(), 2);
@@ -6107,7 +6099,7 @@ mod tests {
                 &edit.new_text,
             );
         }
-        assert_eq!(applied, "# Home\n\nC:\\\\Users\\\\me");
+        assert_eq!(applied, "# Home\n\n  C:\\\\Users\\\\me");
         assert_eq!(diagnostics(&uri, &applied), Vec::<Diagnostic>::new());
         assert!(
             code_action_for_document(&snapshot(&uri, &applied), &escape_diagnostics, true)
@@ -6118,7 +6110,7 @@ mod tests {
     // Keep filesystem links clickable in a wiki with syntax errors.
     #[test]
     fn document_links_recover_from_syntax_errors() {
-        let source = "# Home\n\n[/notes.txt] Unexpected]";
+        let source = "# Home\n\n  [/notes.txt] Unexpected]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.directory().join("notes.txt"), "notes").unwrap();
         let uri = Uri::from_file_path(wiki.path()).unwrap();
@@ -6136,8 +6128,11 @@ mod tests {
     // spelled differently than on disk.
     #[test]
     fn document_links_open_existing_targets() {
-        let source =
-            "# Home\n\n[Home] [/missing.txt] [/notes.txt]\n[/notes.txt/] [/images/] [/NOTES.txt]";
+        let source = concat!(
+            "# Home\n\n",
+            "  [Home] [/missing.txt] [/notes.txt]\n",
+            "  [/notes.txt/] [/images/] [/NOTES.txt]",
+        );
         let wiki = TestWiki::new(source);
         let directory = wiki.directory();
         fs::write(directory.join("notes.txt"), "notes").unwrap();
@@ -6151,7 +6146,7 @@ mod tests {
         };
         assert_eq!(
             file_link.range,
-            Range::new(Position::new(2, 22), Position::new(2, 34)),
+            Range::new(Position::new(2, 24), Position::new(2, 36)),
         );
         assert_eq!(
             file_link.target,
@@ -6159,7 +6154,7 @@ mod tests {
         );
         assert_eq!(
             directory_link.range,
-            Range::new(Position::new(3, 14), Position::new(3, 24)),
+            Range::new(Position::new(3, 16), Position::new(3, 26)),
         );
         let directory_uri = Uri::from_file_path(directory.join("images")).unwrap();
         assert_eq!(
@@ -6196,7 +6191,7 @@ mod tests {
     // Resolve filesystem links within the file root rather than beside the wiki.
     #[test]
     fn document_links_resolve_within_the_file_root() {
-        let source = "# Home\n\n[/beside.txt] [/within.txt]";
+        let source = "# Home\n\n  [/beside.txt] [/within.txt]";
         let wiki = TestWiki::new(source);
         fs::write(wiki.path().with_file_name("beside.txt"), "beside").unwrap();
         fs::write(wiki.directory().join("within.txt"), "within").unwrap();
@@ -6214,7 +6209,7 @@ mod tests {
     // names no entry or other attached file has.
     #[test]
     fn attaching_files_links_or_copies_them() {
-        let source = "# Home\n\nTart.\n";
+        let source = "# Home\n\n  Tart.\n";
         let wiki = TestWiki::new(source);
         fs::create_dir(wiki.directory().join("photos")).unwrap();
         fs::write(wiki.directory().join("photos/beach.jpg"), "beach").unwrap();
@@ -6289,11 +6284,11 @@ mod tests {
         );
     }
 
-    // Fix a section at the wrong level by rewriting the `#`s marking its title, applying each fix's
-    // edit from the end. A fix isn't offered once its error is gone.
+    // Fix a section indented wrongly by moving its title line, applying each fix's edits from the
+    // end. A fix isn't offered once its error is gone.
     #[test]
-    fn code_actions_fix_section_levels() {
-        let source = "# Home\n\n### Deep\n\n## Fine\n\n#### Deeper";
+    fn code_actions_fix_section_indentation() {
+        let source = "# Home\n\n    # Deep\n\n  # Fine\n\n      # Deeper";
         let uri = untitled_uri();
         let section_diagnostics = diagnostics(&uri, source);
         assert_eq!(section_diagnostics.len(), 2);
@@ -6312,7 +6307,7 @@ mod tests {
         }
         assert_eq!(
             titles,
-            vec!["Mark the title with `##`", "Mark the title with `###`"],
+            vec!["Indent the title 2 spaces", "Indent the title 4 spaces"],
         );
         edits.sort_by_key(|edit| byte_offset(source, edit.range.start).unwrap());
         let mut applied = source.to_owned();
@@ -6323,7 +6318,7 @@ mod tests {
                 &edit.new_text,
             );
         }
-        assert_eq!(applied, "# Home\n\n## Deep\n\n## Fine\n\n### Deeper");
+        assert_eq!(applied, "# Home\n\n  # Deep\n\n  # Fine\n\n    # Deeper");
         assert!(
             code_action_for_document(&snapshot(&uri, &applied), &section_diagnostics, true)
                 .is_none(),
@@ -6335,26 +6330,26 @@ mod tests {
     #[test]
     fn completions_offer_section_titles() {
         let source = concat!(
-            "# Home\n\n[Budget:mo\n\n[:n\n\n## Notes\n\n",
-            "# Budget\n\n## Monthly\n\n## Yearly\n\n## Mortgage",
+            "# Home\n\n  [Budget:mo\n\n  [:n\n\n  # Notes\n\n",
+            "# Budget\n\n  # Monthly\n\n  # Yearly\n\n  # Mortgage",
         );
         let uri = untitled_uri();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(2, 10), true).unwrap();
+            completion_for_document(&snapshot(&uri, source), Position::new(2, 12), true).unwrap();
         let local_completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(4, 3), true).unwrap();
+            completion_for_document(&snapshot(&uri, source), Position::new(4, 5), true).unwrap();
 
         assert_eq!(
             completion_edits(&completions.items),
             vec![
                 (
                     "Monthly",
-                    Range::new(Position::new(2, 0), Position::new(2, 10)),
+                    Range::new(Position::new(2, 2), Position::new(2, 12)),
                     "[Budget:Monthly]",
                 ),
                 (
                     "Mortgage",
-                    Range::new(Position::new(2, 0), Position::new(2, 10)),
+                    Range::new(Position::new(2, 2), Position::new(2, 12)),
                     "[Budget:Mortgage]",
                 ),
             ],
@@ -6363,7 +6358,7 @@ mod tests {
             completion_edits(&local_completions.items),
             vec![(
                 "Notes",
-                Range::new(Position::new(4, 0), Position::new(4, 3)),
+                Range::new(Position::new(4, 2), Position::new(4, 5)),
                 "[:Notes]",
             )],
         );
@@ -6374,24 +6369,24 @@ mod tests {
     #[test]
     fn completions_offer_section_titles_in_nested_copies() {
         let source = concat!(
-            "# Home\n\n## [Other]\n\n### [Budget]\n\n[:Mo\n\n",
-            "# Other\n\n## Morning\n\n# Budget\n\n## Monthly\n\n## Mortgage",
+            "# Home\n\n  # [Other]\n\n    # [Budget]\n\n      [:Mo\n\n",
+            "# Other\n\n  # Morning\n\n# Budget\n\n  # Monthly\n\n  # Mortgage",
         );
         let uri = untitled_uri();
         let completions =
-            completion_for_document(&snapshot(&uri, source), Position::new(6, 4), true).unwrap();
+            completion_for_document(&snapshot(&uri, source), Position::new(6, 10), true).unwrap();
 
         assert_eq!(
             completion_edits(&completions.items),
             vec![
                 (
                     "Monthly",
-                    Range::new(Position::new(6, 0), Position::new(6, 4)),
+                    Range::new(Position::new(6, 6), Position::new(6, 10)),
                     "[:Monthly]",
                 ),
                 (
                     "Mortgage",
-                    Range::new(Position::new(6, 0), Position::new(6, 4)),
+                    Range::new(Position::new(6, 6), Position::new(6, 10)),
                     "[:Mortgage]",
                 ),
             ],
@@ -6402,16 +6397,17 @@ mod tests {
     // preview the section as written.
     #[test]
     fn navigation_targets_sections() {
-        let source = "# Home\n\n[Budget:Monthly]\n\n# Budget\n\n## Monthly\n\nRent.\n\n## Yearly";
+        let source =
+            "# Home\n\n  [Budget:Monthly]\n\n# Budget\n\n  # Monthly\n\n    Rent.\n\n  # Yearly";
         let uri = untitled_uri();
         for (cursor, origin) in [
             (
-                Position::new(2, 3),
-                Range::new(Position::new(2, 0), Position::new(2, 16)),
+                Position::new(2, 5),
+                Range::new(Position::new(2, 2), Position::new(2, 18)),
             ),
             (
-                Position::new(6, 4),
-                Range::new(Position::new(6, 3), Position::new(6, 10)),
+                Position::new(6, 5),
+                Range::new(Position::new(6, 4), Position::new(6, 11)),
             ),
         ] {
             let Some(GotoDefinitionResponse::Link(links)) =
@@ -6422,14 +6418,14 @@ mod tests {
             assert_eq!(links[0].origin_selection_range, Some(origin));
             assert_eq!(
                 links[0].target_range,
-                Range::new(Position::new(6, 0), Position::new(6, 0)),
+                Range::new(Position::new(6, 2), Position::new(6, 2)),
             );
 
             let hover = hover_for_document(&snapshot(&uri, source), cursor).unwrap();
             let HoverContents::Markup(contents) = hover.contents else {
                 panic!("A section preview should use markup content.");
             };
-            assert_eq!(contents.value, "```mull\n## Monthly\n\nRent.\n```");
+            assert_eq!(contents.value, "```mull\n# Monthly\n\n  Rent.\n```");
         }
     }
 
@@ -6438,8 +6434,8 @@ mod tests {
     #[test]
     fn references_find_section_links() {
         let source = concat!(
-            "# Home\n\n[Budget:Monthly] [Budget] [Budget:Yearly]\n\n",
-            "# Budget\n\n## Monthly\n\n## Yearly",
+            "# Home\n\n  [Budget:Monthly] [Budget] [Budget:Yearly]\n\n",
+            "# Budget\n\n  # Monthly\n\n  # Yearly",
         );
         let uri = untitled_uri();
         let ranges = |cursor, include_declaration| {
@@ -6451,22 +6447,22 @@ mod tests {
         };
 
         assert_eq!(
-            ranges(Position::new(6, 4), true),
+            ranges(Position::new(6, 5), true),
             vec![
-                Range::new(Position::new(2, 0), Position::new(2, 16)),
-                Range::new(Position::new(6, 3), Position::new(6, 10)),
+                Range::new(Position::new(2, 2), Position::new(2, 18)),
+                Range::new(Position::new(6, 4), Position::new(6, 11)),
             ],
         );
         assert_eq!(
-            ranges(Position::new(2, 3), false),
-            vec![Range::new(Position::new(2, 0), Position::new(2, 16))],
+            ranges(Position::new(2, 5), false),
+            vec![Range::new(Position::new(2, 2), Position::new(2, 18))],
         );
         assert_eq!(
             ranges(Position::new(4, 3), false),
             vec![
-                Range::new(Position::new(2, 0), Position::new(2, 16)),
-                Range::new(Position::new(2, 17), Position::new(2, 25)),
-                Range::new(Position::new(2, 26), Position::new(2, 41)),
+                Range::new(Position::new(2, 2), Position::new(2, 18)),
+                Range::new(Position::new(2, 19), Position::new(2, 27)),
+                Range::new(Position::new(2, 28), Position::new(2, 43)),
             ],
         );
     }
@@ -6476,8 +6472,10 @@ mod tests {
     // it, but not links which name its sections without it.
     #[test]
     fn rename_updates_sections() {
-        let source =
-            "# Home\n\n[Budget:Monthly] and [Budget]\n\n# Budget\n\n## Monthly\n\nSee [:Monthly].";
+        let source = concat!(
+            "# Home\n\n  [Budget:Monthly] and [Budget]\n\n",
+            "# Budget\n\n  # Monthly\n\n    See [:Monthly].",
+        );
         let uri = untitled_uri();
         let edits = |cursor, new_name| {
             rename_for_document(
@@ -6497,29 +6495,29 @@ mod tests {
 
         let section_edits = vec![
             (
-                Range::new(Position::new(2, 8), Position::new(2, 15)),
+                Range::new(Position::new(2, 10), Position::new(2, 17)),
                 "Each \\:".to_owned(),
             ),
             (
-                Range::new(Position::new(6, 3), Position::new(6, 10)),
+                Range::new(Position::new(6, 4), Position::new(6, 11)),
                 "Each :".to_owned(),
             ),
             (
-                Range::new(Position::new(8, 6), Position::new(8, 13)),
+                Range::new(Position::new(8, 10), Position::new(8, 17)),
                 "Each \\:".to_owned(),
             ),
         ];
-        assert_eq!(edits(Position::new(6, 4), "Each :"), section_edits);
-        assert_eq!(edits(Position::new(2, 10), "Each :"), section_edits);
+        assert_eq!(edits(Position::new(6, 5), "Each :"), section_edits);
+        assert_eq!(edits(Position::new(2, 12), "Each :"), section_edits);
         assert_eq!(
             edits(Position::new(4, 3), "Plan"),
             vec![
                 (
-                    Range::new(Position::new(2, 1), Position::new(2, 7)),
+                    Range::new(Position::new(2, 3), Position::new(2, 9)),
                     "Plan".to_owned(),
                 ),
                 (
-                    Range::new(Position::new(2, 22), Position::new(2, 28)),
+                    Range::new(Position::new(2, 24), Position::new(2, 30)),
                     "Plan".to_owned(),
                 ),
                 (
@@ -6529,27 +6527,27 @@ mod tests {
             ],
         );
         assert_eq!(
-            prepare_rename_for_document(&snapshot(&uri, source), Position::new(2, 10), false)
+            prepare_rename_for_document(&snapshot(&uri, source), Position::new(2, 12), false)
                 .unwrap()
                 .unwrap(),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 8), Position::new(2, 15)),
+                range: Range::new(Position::new(2, 10), Position::new(2, 17)),
                 placeholder: "Monthly".to_owned(),
             },
         );
         assert_eq!(
-            prepare_rename_for_document(&snapshot(&uri, source), Position::new(2, 3), false)
+            prepare_rename_for_document(&snapshot(&uri, source), Position::new(2, 5), false)
                 .unwrap()
                 .unwrap(),
             PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range::new(Position::new(2, 1), Position::new(2, 7)),
+                range: Range::new(Position::new(2, 3), Position::new(2, 9)),
                 placeholder: "Budget".to_owned(),
             },
         );
         assert!(
             rename_for_document(
-                &snapshot(&uri, &source.replace("See", "## Taken\n\nSee")),
-                Position::new(6, 4),
+                &snapshot(&uri, &source.replace("See", "# Taken\n\n    See")),
+                Position::new(6, 5),
                 "Taken",
                 ALL_FILE_OPERATIONS,
             )
@@ -6557,31 +6555,35 @@ mod tests {
         );
     }
 
-    // Fix a section or a portal at the wrong level by moving the title lines and closing lines
-    // within it along with its own, including those in a portal's copy, so what's within it stays
-    // within it.
+    // Fix a section or a portal indented wrongly by moving the lines within it along with its title
+    // line, including those in a portal's copy, so what's within it stays within it, and leave the
+    // lines after it alone. The fix for a line which isn't a title line moves only that line.
     #[test]
-    fn code_actions_move_contents_with_levels() {
+    fn code_actions_move_contents_with_titles() {
         for (source, fixed) in [
             (
-                "# Home\n\n### Deep\n\n#### Deeper\n\nText.\n\n####\n\nAfter.\n\n###\n\nEnd.",
-                "# Home\n\n## Deep\n\n### Deeper\n\nText.\n\n###\n\nAfter.\n\n##\n\nEnd.",
+                "# Home\n\n    # Deep\n\n      # Deeper\n\n        Text.\n\n      After.\n\n  End.",
+                "# Home\n\n  # Deep\n\n    # Deeper\n\n      Text.\n\n    After.\n\n  End.",
             ),
             (
                 concat!(
-                    "# Home\n\n### [Other]\n\n#### Steps\n\n##### [Last]\n\n",
-                    "# Other\n\n## Steps\n\n### [Last]\n\n# Last",
+                    "# Home\n\n    # [Other]\n\n      # Steps\n\n        # [Last]\n\n",
+                    "# Other\n\n  # Steps\n\n    # [Last]\n\n# Last",
                 ),
                 concat!(
-                    "# Home\n\n## [Other]\n\n### Steps\n\n#### [Last]\n\n",
-                    "# Other\n\n## Steps\n\n### [Last]\n\n# Last",
+                    "# Home\n\n  # [Other]\n\n    # Steps\n\n      # [Last]\n\n",
+                    "# Other\n\n  # Steps\n\n    # [Last]\n\n# Last",
                 ),
+            ),
+            (
+                "# Home\n\nStray.\n    More.",
+                "# Home\n\n  Stray.\n    More.",
             ),
         ] {
             let uri = untitled_uri();
-            let level_diagnostics = diagnostics(&uri, source);
+            let indentation_diagnostics = diagnostics(&uri, source);
             let actions =
-                code_action_for_document(&snapshot(&uri, source), &level_diagnostics, true)
+                code_action_for_document(&snapshot(&uri, source), &indentation_diagnostics, true)
                     .unwrap();
             let [CodeActionOrCommand::CodeAction(action)] = actions.as_slice() else {
                 panic!("There should be one code action.");
@@ -6607,8 +6609,8 @@ mod tests {
     #[test]
     fn document_symbols_list_portals() {
         let source = concat!(
-            "# Home\n\n## [Other]\n\n### Notes\n\n### [Last]\n\n## After\n\n",
-            "# Other\n\n## Notes\n\n## [Last]\n\n# Last",
+            "# Home\n\n  # [Other]\n\n    # Notes\n\n    # [Last]\n\n  # After\n\n",
+            "# Other\n\n  # Notes\n\n  # [Last]\n\n# Last",
         );
         let uri = untitled_uri();
         let DocumentSymbolResponse::Nested(symbols) =
@@ -6665,7 +6667,7 @@ mod tests {
     // sections after their pages in flat symbols.
     #[test]
     fn document_symbols_nest_sections() {
-        let source = "# Home\n\n## A\n\n### B\n\n## C\n\n# Other";
+        let source = "# Home\n\n  # A\n\n    # B\n\n  # C\n\n# Other";
         let uri = untitled_uri();
         let DocumentSymbolResponse::Nested(symbols) =
             document_symbol_for_document(&snapshot(&uri, source), true)
@@ -6709,7 +6711,7 @@ mod tests {
         );
         assert_eq!(
             symbols[0].children.as_ref().unwrap()[1].selection_range,
-            Range::new(Position::new(6, 0), Position::new(6, 0)),
+            Range::new(Position::new(6, 2), Position::new(6, 2)),
         );
         let DocumentSymbolResponse::Flat(symbols) =
             document_symbol_for_document(&snapshot(&uri, source), false)

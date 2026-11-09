@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0] - 2026-11-09
+
+### Changed
+
+- Sections are now nested by indentation rather than by their number of `#`s, so the structure of a page is visible at a glance. Every title is marked with a single `#`. A page's contents are indented by two spaces, and a section's title is indented like the rest of the contents it's in, with its own contents indented by two more spaces. A section ends at the first line indented less than its contents, so closing lines like `###` are gone. A title indented differently than the contents it's in is reported, with a quick fix that moves the section along with its contents, and so is a line in a page indented less than two spaces. Existing wikis must be re-indented.
+- A portal's copy is indented under the portal's title like the contents of any section, and formatting re-indents it when the portal moves, rather than re-marking its title lines.
+- Code and script blocks must end within the page, section, or portal they start in, so a line indented less than the contents they're in leaves them unclosed rather than being hidden in them.
+- The VS Code extension indents the line after a title, folds sections by their indentation, and always indents Mull files with two spaces.
+
+### Fixed
+
+- Formatting no longer crashes on a page without content whose title line ends with whitespace.
+
 ## [0.70.0] - 2026-11-08
 
 ### Changed

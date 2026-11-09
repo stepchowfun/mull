@@ -1,7 +1,7 @@
 {
   "name": "mull",
   "displayName": "Mull",
-  "version": "0.70.0",
+  "version": "0.71.0",
   "description": "Organize your notes in a plain text file.",
   "categories": [
     "Programming Languages"
@@ -225,8 +225,10 @@
     "configurationDefaults": {
       "[mull]": {
         "editor.defaultFormatter": "stepchowfun.mull",
+        "editor.detectIndentation": false,
         "editor.formatOnSave": true,
         "editor.glyphMargin": false,
+        "editor.insertSpaces": true,
         "editor.lineNumbers": "off",
         "editor.rulers": [
           80

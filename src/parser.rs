@@ -5,12 +5,16 @@ use crate::{
     line_index::LineIndex,
     scoring::populate_traversal_order,
     wiki::{
-        FILESYSTEM_LINK_PREFIX, FilesystemTarget, Link, MIN_FENCE_LENGTH, MIN_SECTION_LEVEL, Page,
-        PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section, SectionTitle, TITLE_MARKER,
-        TITLE_PREFIX, Target, Wiki, line_indentation,
+        FILESYSTEM_LINK_PREFIX, FilesystemTarget, INDENTATION_WIDTH, Link, MIN_FENCE_LENGTH, Page,
+        PageTitle, Portal, SECTION_SEPARATOR, ScriptBlock, Section, SectionTitle, TITLE_PREFIX,
+        Target, Wiki, indentation_of,
     },
 };
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    iter,
+    path::Path,
+};
 
 // Code which starts with a run of at least this many backticks can span lines.
 const MIN_MULTILINE_CODE_LENGTH: usize = 3;
@@ -64,9 +68,9 @@ struct OpenBlock {
 struct OpenSection {
     kind: OpenSectionKind,
     is_in_copy: bool,
-    level: usize,
-    start: usize,      // The offset of its first `#`
-    body_start: usize, // The offset of the line after its title line
+    indentation: usize, // The number of spaces before its title line's `#`
+    start: usize,       // The offset of its `#`
+    body_start: usize,  // The offset of the line after its title line
 }
 
 // These are the kinds of open sections: a section, whose title is known if it's valid and, outside
@@ -119,56 +123,46 @@ enum FenceLine {
 }
 
 // Parse source contents into a scored wiki in a single pass, with source ranges for every page and
-// link, along with any syntax errors in source order. A page's title line starts a region, which is
-// a page if its title is valid. In the content, code starts with a run of backticks and ends at the
-// next run of exactly as many backticks, on the same line for a run of one or two, and its text is
-// taken as written. A link starts at `[` and ends at `]` or the end of its line, and backticks are
-// plain characters in it. Its target is split at the first `:` which isn't escaped into a page and
-// a section of it, and a link which names a section without its page refers to the page whose
-// content it's in. Outside code and the titles of pages and sections, a backslash escapes the next
-// character, as allowed by whether it's in a link [ref:content_escapes]. Outside code, a line which
-// starts with a run of at least two `#`s and a space, after the indentation of the innermost block
-// containing it, is a title line. A title which starts with `[` is a link, and the line starts a
-// portal, which shows a copy of the page or section the link names. Otherwise, the line starts a
-// section, whose title is taken as written. A line with such a run alone is a closing line. Outside
-// script blocks, a title line ends the sections and portals it follows at its level or a deeper
-// one, and a closing line ends the section or portal at its level, along with those within it.
-// Within a portal, either line is part of the copy. Otherwise, a title line must be one level
-// deeper than the section or page it's in, a section's title must be new to the page, and a closing
-// line must end a section or a portal. Outside code, a line which starts with a run of colons,
-// after any indentation, is a fence. An opening fence starts a script block, named by the script
-// which computes its body, followed by the script's arguments. A closing fence consists of colons,
-// optionally followed by a hash, and closes the innermost open block with a fence of the same
-// length. A script block can also be written on one line, closed by a run of colons after its
-// argument, for its script to fill in. The wiki retains as much of the source as possible so it can
-// still be validated and navigated, but it omits the content of duplicate pages, invalid titles,
-// and anything before the first title, so it mustn't be rendered if there are any syntax errors.
-// The line index locates syntax errors in their source listings.
-pub fn parse(
-    source_path: Option<&Path>,
-    source_contents: &str,
-    line_index: &LineIndex,
-) -> (Wiki, Vec<Error>) {
-    parse_at_level(source_path, source_contents, line_index, 1)
-}
-
-// Parse source contents as `parse` does, as if each page's title were at a level, so the sections
-// in a page start one level deeper, as for a portal's copy read as a page's content at the portal's
-// level. The wiki renders its pages at that level.
+// link, along with any syntax errors in source order. A page's title line, which starts with `# `,
+// starts a region, which is a page if its title is valid and lasts until the next page's title
+// line. Each line in it which isn't blank must be indented at least two spaces. In the region, a
+// line which starts with `# ` after its indentation is a title line. A title which starts with `[`
+// is a link, and the line starts a portal, which shows a copy of the page or section the link
+// names. Otherwise, the line starts a section, whose title is taken as written. A section or a
+// portal contains the lines after its title line which are blank or indented at least two spaces
+// more than its title, so the first line which isn't ends it. A title line must be indented two
+// spaces more than the title of the section or page it's in, and a section's title must be new to
+// the page, except within a portal, where the lines are part of the copy, which is checked once
+// it's read as the content of what the portal shows. In the content, code starts with a run of
+// backticks and ends at the next run of exactly as many backticks, on the same line for a run of
+// one or two, and its text is taken as written. A link starts at `[` and ends at `]` or the end of
+// its line, and backticks are plain characters in it. Its target is split at the first `:` which
+// isn't escaped into a page and a section of it, and a link which names a section without its page
+// refers to the page whose content it's in. Outside code and the titles of pages and sections, a
+// backslash escapes the next character, as allowed by whether it's in a link
+// [ref:content_escapes]. Outside code, a line which starts with a run of colons, after any
+// indentation, is a fence. An opening fence starts a script block, named by the script which
+// computes its body, followed by the script's arguments, and within it, a title line is taken as
+// written. A closing fence consists of colons, optionally followed by a hash, and closes the
+// innermost open block with a fence of the same length. A script block can also be written on one
+// line, closed by a run of colons after its argument, for its script to fill in. Code and blocks
+// must end within the page, section, or portal they start in. The wiki retains as much of the
+// source as possible so it can still be validated and navigated, but it omits the content of
+// duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
+// if there are any syntax errors. The line index locates syntax errors in their source listings.
 #[allow(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
               blocks, sections, and line being read."
 )]
-pub fn parse_at_level(
+pub fn parse(
     source_path: Option<&Path>,
     source_contents: &str,
     line_index: &LineIndex,
-    title_level: usize,
 ) -> (Wiki, Vec<Error>) {
     // Accumulate parsed pages, errors, and the state of the scan. The region being read starts as
     // the untitled region before the first title.
-    let mut wiki = Wiki::new(source_contents, title_level);
+    let mut wiki = Wiki::new(source_contents);
     let mut errors = Vec::<Error>::new();
     let mut pending_page = PendingPage::new(None, 0);
     let mut is_before_first_title = true;
@@ -177,7 +171,7 @@ pub fn parse_at_level(
     let mut open_blocks = Vec::<OpenBlock>::new();
     let mut open_sections = Vec::<OpenSection>::new();
     let mut line_links_before = None::<usize>; // Links before the rest of the line being read
-    let mut unclosable_lengths = HashSet::new();
+    let mut unclosable_runs = HashMap::<usize, usize>::new(); // Lengths and where searches ended
     let mut is_at_line_start = true;
     let mut position = 0;
 
@@ -240,8 +234,8 @@ pub fn parse_at_level(
                 errors.push(syntax_error(
                     &format!(
                         "A portal's title is a single link, like {} or {}.",
-                        "## [Page]".code_str(),
-                        "## [Page:Section]".code_str(),
+                        "# [Page]".code_str(),
+                        "# [Page:Section]".code_str(),
                     ),
                     title_source_range,
                     None,
@@ -265,52 +259,35 @@ pub fn parse_at_level(
         }
     };
 
-    // Start a section or a portal at a title line of a level, which starts at an offset, with its
-    // body starting at another, after ending the sections and portals it follows at its level or a
-    // deeper one. Within a portal, it's part of the copy, which is checked once it's read as the
-    // content of what the portal shows. Otherwise, require it to be one level deeper than the
-    // section or page it's in, and a section's title to be valid and new to the page.
+    // Start a section or a portal at a title line, given its indentation, where the line is, and
+    // where its body starts, once the sections and portals it isn't in have ended. Within a portal,
+    // it's part of the copy, which is checked once it's read as the content of what the portal
+    // shows. Otherwise, require it to be indented like the content of the section or page it's in,
+    // and a section's title to be valid and new to the page.
     let start_section = |open_sections: &mut Vec<OpenSection>,
                          pending_page: &mut PendingPage,
                          errors: &mut Vec<Error>,
-                         level: usize,
+                         indentation: usize,
                          title_line_kind: TitleLineKind,
-                         start: usize,
+                         line_source_range: SourceRange,
                          body_start: usize| {
-        // End the sections and portals it follows, at the start of its line.
-        while let Some(open_section) = open_sections.last()
-            && open_section.level >= level
-        {
-            let open_section = open_sections
-                .pop()
-                .expect("The last open section should exist.");
-            finish_section(pending_page, open_section, start, None, source_contents);
-        }
-
-        // Outside portals, require the section or portal to be one level deeper than the section
-        // or page it's in, which rewriting the `#`s marking its title would fix.
+        // Outside portals, require the section or portal to be indented like the content it's in,
+        // which moving it and the lines within it would fix.
         let is_in_copy = open_sections
             .iter()
             .any(|open_section| matches!(open_section.kind, OpenSectionKind::Portal(_)));
-        let expected_level = open_sections
-            .last()
-            .map_or(title_level, |open_section| open_section.level)
-            + 1;
-        if !is_in_copy && level != expected_level {
+        let expected_indentation = content_indentation(open_sections);
+        if !is_in_copy && indentation != expected_indentation {
             errors.push(syntax_error(
                 &format!(
-                    "This title should be marked with {}, one level deeper than the title it's \
-                     under.",
-                    TITLE_MARKER.to_string().repeat(expected_level).code_str(),
+                    "This title should be indented {expected_indentation} spaces, one level deeper \
+                     than the title it's under.",
                 ),
-                SourceRange {
-                    start,
-                    end: start + level,
-                },
-                Some(Fix::SetSectionLevel {
-                    start,
-                    end: start + level,
-                    level: expected_level,
+                trim_source_range(source_contents, line_source_range),
+                Some(Fix::Indent {
+                    start: line_source_range.start,
+                    from: indentation,
+                    to: expected_indentation,
                 }),
             ));
         }
@@ -347,68 +324,10 @@ pub fn parse_at_level(
         open_sections.push(OpenSection {
             kind,
             is_in_copy,
-            level,
-            start,
+            indentation,
+            start: line_source_range.start + indentation,
             body_start,
         });
-    };
-
-    // End the section or portal at a closing line's level, which starts at an offset, along with
-    // those within it, which end at the start of the line. Within a portal, the line is part of the
-    // copy, which is checked once it's read as the content of what the portal shows. Otherwise,
-    // there must be a section or a portal at that level to end.
-    let close_section = |open_sections: &mut Vec<OpenSection>,
-                         pending_page: &mut PendingPage,
-                         errors: &mut Vec<Error>,
-                         level: usize,
-                         line_start: usize| {
-        // End the sections and portals within the one at the level, at the start of the line.
-        while let Some(open_section) = open_sections.last()
-            && open_section.level > level
-        {
-            let open_section = open_sections
-                .pop()
-                .expect("The last open section should exist.");
-            finish_section(
-                pending_page,
-                open_section,
-                line_start,
-                None,
-                source_contents,
-            );
-        }
-
-        // End the section or portal at the level with the line, or report that there isn't one.
-        let marker_source_range = SourceRange {
-            start: line_start,
-            end: line_start + level,
-        };
-        if let Some(open_section) = open_sections.last()
-            && open_section.level == level
-        {
-            let open_section = open_sections
-                .pop()
-                .expect("The last open section should exist.");
-            finish_section(
-                pending_page,
-                open_section,
-                line_start,
-                Some(marker_source_range),
-                source_contents,
-            );
-        } else if !open_sections
-            .iter()
-            .any(|open_section| matches!(open_section.kind, OpenSectionKind::Portal(_)))
-        {
-            errors.push(syntax_error(
-                &format!(
-                    "There's no section marked with {} for this line to end.",
-                    TITLE_MARKER.to_string().repeat(level).code_str(),
-                ),
-                marker_source_range,
-                None,
-            ));
-        }
     };
 
     // Close the block at an index among those open, reporting any open within it. Keep a script
@@ -479,9 +398,9 @@ pub fn parse_at_level(
     };
 
     while let Some(character) = source_contents[position..].chars().next() {
-        // At the start of a line, which is never within code or a link, read a page's title line,
-        // which starts a new region, a section's or a portal's title line, a closing line, or a
-        // fence line.
+        // At the start of a line, which is never within code or a link, read the line's
+        // indentation, which can end sections, portals, and blocks, a page's title line, which
+        // starts a new region, a section's or a portal's title line, or a fence line.
         if is_at_line_start {
             is_at_line_start = false;
             let line_end = source_contents[position..]
@@ -494,22 +413,33 @@ pub fn parse_at_level(
                 end: position + line.len(),
             };
             let next_line_start = source_contents.len().min(line_end + '\n'.len_utf8());
-            if let Some(raw_title) = title_line_text(line) {
-                // Finish the preceding region, then start one which belongs to a page if its title
-                // is valid and hasn't been used. Content after a page's title line is in a region.
-                is_before_first_title = false;
+
+            // A line which isn't blank and is indented less than the innermost content leaves the
+            // blocks in that content unclosed, and it ends the sections and portals whose content
+            // is indented more than it. A page's title line, which isn't indented, ends them all.
+            let indentation = indentation_of(line);
+            let title_start = title_start(line);
+            if ends_content(line, content_indentation(&open_sections)) {
                 report_unclosed_blocks(&mut open_blocks, &mut errors);
-                end_sections(
-                    &mut open_sections,
-                    &mut pending_page,
-                    position,
-                    source_contents,
-                );
+                while ends_content(line, content_indentation(&open_sections))
+                    && let Some(open_section) = open_sections.pop()
+                {
+                    finish_section(&mut pending_page, open_section, position, source_contents);
+                }
+            }
+
+            // Finish the preceding region at a page's title line, then start one which belongs to
+            // a page if its title is valid and hasn't been used. Content after a page's title line
+            // is in a region.
+            if indentation == 0
+                && let Some(title_start) = title_start
+            {
+                is_before_first_title = false;
                 finish_page(&mut wiki, pending_page, position, source_contents);
                 let title = match read_name(
                     PageTitle::parse,
                     SourceRange {
-                        start: line_source_range.end - raw_title.len(),
+                        start: position + title_start,
                         end: line_source_range.end,
                     },
                     line_source_range.end,
@@ -537,38 +467,38 @@ pub fn parse_at_level(
                 continue;
             }
 
-            // Read a closing line within a page, which ends the section or portal at its level
-            // unless it's within a script block, which takes it as text.
-            let indentation = open_blocks.last().map_or("", |open_block| {
-                line_indentation(source_contents, open_block.start)
-            });
-            if !is_before_first_title && let Some(level) = closing_line(line, indentation) {
-                if open_blocks.is_empty() {
-                    close_section(
-                        &mut open_sections,
-                        &mut pending_page,
-                        &mut errors,
-                        level,
-                        position,
-                    );
-                }
-                position = line_end;
-                continue;
+            // Report a line within a page indented less than a page's content, other than a title
+            // line, whose indentation is checked once it's read, and keep it in the page, since
+            // only a page's title line ends one.
+            if !is_before_first_title
+                && title_start.is_none()
+                && ends_content(line, INDENTATION_WIDTH)
+            {
+                errors.push(syntax_error(
+                    &format!(
+                        "This line should be indented at least {INDENTATION_WIDTH} spaces, like \
+                         the rest of its page.",
+                    ),
+                    trim_source_range(source_contents, line_source_range),
+                    Some(Fix::Indent {
+                        start: position,
+                        from: indentation,
+                        to: INDENTATION_WIDTH,
+                    }),
+                ));
             }
 
             // Read a section's or a portal's title line within a page, and start it there unless
             // it's within a script block, which takes it as written. A section's title is taken as
             // written, and a portal's is read with the rest of the line for the link which names
             // what it shows.
-            if !is_before_first_title
-                && let Some((level, title_offset)) = section_title_line(line, indentation)
-            {
+            if !is_before_first_title && let Some(title_start) = title_start {
                 if open_blocks.is_empty() {
                     let title_source_range = SourceRange {
-                        start: position + title_offset,
+                        start: position + title_start,
                         end: line_source_range.end,
                     };
-                    let (kind, link_start) = if is_portal_title(&line[title_offset..]) {
+                    let (kind, link_start) = if is_portal_title(&line[title_start..]) {
                         let trimmed_title_source_range =
                             trim_source_range(source_contents, title_source_range);
                         (
@@ -593,9 +523,9 @@ pub fn parse_at_level(
                         &mut open_sections,
                         &mut pending_page,
                         &mut errors,
-                        level,
+                        indentation,
                         kind,
-                        position,
+                        line_source_range,
                         next_line_start,
                     );
                     if let Some(link_start) = link_start {
@@ -835,22 +765,33 @@ pub fn parse_at_level(
                 }
             }
             '`' if open_link.is_none() => {
-                // Take code as written, skipping to the end of its closing run. A run which isn't
-                // closed is reported and otherwise ignored, so it can't hide the rest of the wiki.
-                // Once a long run can't be closed, a later run of the same length can't be either,
-                // since the text after it was already searched.
+                // Take code as written, skipping to the end of its closing run, which must come
+                // before the end of the content it's in. A run which isn't closed is reported and
+                // otherwise ignored, so it can't hide the rest of the wiki. Once a run can't be
+                // closed, a later run of the same length before the end of that search can't be
+                // either, since the text after it was already searched, and the content it's in
+                // ends no later.
                 let length = backtick_run_length(&source_contents[position..]);
-                let can_close =
-                    length < MIN_MULTILINE_CODE_LENGTH || !unclosable_lengths.contains(&length);
-                let closing_end = can_close
-                    .then(|| closing_run_end(source_contents, position + length, length))
-                    .flatten();
+                let closing_end = if unclosable_runs
+                    .get(&length)
+                    .is_some_and(|&search_end| position < search_end)
+                {
+                    None
+                } else {
+                    closing_run_end(
+                        source_contents,
+                        position + length,
+                        length,
+                        content_indentation(&open_sections),
+                    )
+                    .inspect_err(|&search_end| {
+                        unclosable_runs.insert(length, search_end);
+                    })
+                    .ok()
+                };
                 if let Some(end) = closing_end {
                     position = end;
                 } else {
-                    if length >= MIN_MULTILINE_CODE_LENGTH {
-                        unclosable_lengths.insert(length);
-                    }
                     errors.push(syntax_error(
                         "Unclosed code.",
                         SourceRange {
@@ -908,29 +849,51 @@ pub fn parse_at_level(
     (wiki, errors)
 }
 
-// Find the text after the prefix of a page's title line, which is a title marker followed by a
-// space. A line that isn't a page's title line has none, including a bare title marker or a
-// section's title line.
-fn title_line_text(line: &str) -> Option<&str> {
-    line.strip_prefix(TITLE_PREFIX)
+// Read a line as a title line: the title prefix after any spaces, followed by its title. It's a
+// page's title line if it isn't indented, and a section's or a portal's otherwise. Find where its
+// title starts in the line.
+pub fn title_start(line: &str) -> Option<usize> {
+    let indentation = indentation_of(line);
+    line[indentation..]
+        .starts_with(TITLE_PREFIX)
+        .then_some(indentation + TITLE_PREFIX.len())
 }
 
-// Read a line as a section's title line written after an indentation: a run of at least two `#`s,
-// one for each level, followed by a space and its title. Find its level and where its title starts
-// in the line.
-fn section_title_line(line: &str, indentation: &str) -> Option<(usize, usize)> {
-    let rest = line.strip_prefix(indentation)?;
-    let level = rest.len() - rest.trim_start_matches(TITLE_MARKER).len();
-    (level >= MIN_SECTION_LEVEL && rest[level..].starts_with(' '))
-        .then_some((level, indentation.len() + level + ' '.len_utf8()))
+// Determine whether a line ends content indented by a number of spaces: it isn't blank, and it's
+// indented less.
+fn ends_content(line: &str, content_indentation: usize) -> bool {
+    !line.trim().is_empty() && indentation_of(line) < content_indentation
 }
 
-// Read a line as a closing line written after an indentation: a run of at least two `#`s alone, one
-// for each level of the section or portal it ends. Find its level.
-fn closing_line(line: &str, indentation: &str) -> Option<usize> {
-    let rest = line.strip_prefix(indentation)?.trim_end();
-    let level = rest.len() - rest.trim_start_matches(TITLE_MARKER).len();
-    (level >= MIN_SECTION_LEVEL && level == rest.len()).then_some(level)
+// List the rest of the line containing an offset, then each following line until one ends content
+// indented by a number of spaces, along with where each line starts.
+pub fn content_lines(
+    source: &str,
+    start: usize,
+    content_indentation: usize,
+) -> impl Iterator<Item = (usize, &str)> {
+    let mut line_start = Some(start);
+    iter::from_fn(move || {
+        let current_start = line_start?;
+        let line_end = source[current_start..]
+            .find('\n')
+            .map_or(source.len(), |index| current_start + index);
+        let line = &source[current_start..line_end];
+        if current_start > start && ends_content(line, content_indentation) {
+            return None;
+        }
+        line_start = (line_end < source.len()).then_some(line_end + '\n'.len_utf8());
+        Some((current_start, line))
+    })
+}
+
+// Find how many spaces indent the content of the innermost open section or portal, or that of a
+// page if there isn't one.
+fn content_indentation(open_sections: &[OpenSection]) -> usize {
+    open_sections
+        .last()
+        .map_or(0, |open_section| open_section.indentation)
+        + INDENTATION_WIDTH
 }
 
 // Determine whether a title line's title makes it a portal's: one which starts with `[`, opening
@@ -940,34 +903,28 @@ fn is_portal_title(title: &str) -> bool {
 }
 
 // Finish a section or a portal whose content ends at an offset, without any whitespace before it,
-// along with its body. A closing line which ends it is part of it too, through its `#`s. Keep a
-// section if its title is valid and, outside copies, new to the page, and a portal if its title
-// line names what it shows, keeping those in copies apart from the page's own.
+// along with its body. Keep a section if its title is valid and, outside copies, new to the page,
+// and a portal if its title line names what it shows, keeping those in copies apart from the
+// page's own.
 fn finish_section(
     pending_page: &mut PendingPage,
     open_section: OpenSection,
     end: usize,
-    closing_source_range: Option<SourceRange>,
     source_contents: &str,
 ) {
-    let body_end = open_section.start + source_contents[open_section.start..end].trim_end().len();
+    let end = open_section.start + source_contents[open_section.start..end].trim_end().len();
     let source_range = SourceRange {
         start: open_section.start,
-        end: closing_source_range.map_or(body_end, |closing_source_range| closing_source_range.end),
+        end,
     };
-    let body_source_range = SourceRange {
-        start: open_section.body_start.min(body_end),
-        end: body_end,
-    };
+    let body_start = open_section.body_start.min(end);
     match open_section.kind {
         OpenSectionKind::Section(Some((title, title_source_range))) => {
             let section = Section {
                 title,
-                level: open_section.level,
                 source_range,
                 title_source_range,
-                body_source_range,
-                closing_source_range,
+                body_start,
             };
             if open_section.is_in_copy {
                 pending_page.copy_sections.push(section);
@@ -979,11 +936,9 @@ fn finish_section(
             let portal = Portal {
                 target,
                 is_local,
-                level: open_section.level,
                 source_range,
                 link_source_range,
-                body_source_range,
-                closing_source_range,
+                body_start,
             };
             if open_section.is_in_copy {
                 pending_page.copy_portals.push(portal);
@@ -1004,7 +959,7 @@ fn end_sections(
     source_contents: &str,
 ) {
     for open_section in open_sections.drain(..) {
-        finish_section(pending_page, open_section, end, None, source_contents);
+        finish_section(pending_page, open_section, end, source_contents);
     }
 }
 
@@ -1246,26 +1201,34 @@ pub fn backtick_run_length(text: &str) -> usize {
 }
 
 // Find the end of the run of exactly the given number of backticks which closes code whose text
-// starts at an offset, searching only the rest of the line for a run of one or two backticks.
-pub fn closing_run_end(source: &str, start: usize, length: usize) -> Option<usize> {
-    let end = if length < MIN_MULTILINE_CODE_LENGTH {
-        source[start..]
-            .find('\n')
-            .map_or(source.len(), |index| start + index)
+// starts at an offset. Code which starts with a run of one or two backticks must close on the same
+// line, and longer code must close before the first following line which isn't blank and is
+// indented less than the content it's in. Without a closing run, find where the search ended.
+pub fn closing_run_end(
+    source: &str,
+    start: usize,
+    length: usize,
+    content_indentation: usize,
+) -> Result<usize, usize> {
+    let lines = if length < MIN_MULTILINE_CODE_LENGTH {
+        1
     } else {
-        source.len()
+        usize::MAX
     };
-    let text = &source[start..end];
-    let mut index = 0;
-    while let Some(found) = text[index..].find('`') {
-        let run_start = index + found;
-        let run_length = backtick_run_length(&text[run_start..]);
-        if run_length == length {
-            return Some(start + run_start + run_length);
+    let mut search_end = start;
+    for (line_start, line) in content_lines(source, start, content_indentation).take(lines) {
+        let mut index = 0;
+        while let Some(found) = line[index..].find('`') {
+            let run_start = index + found;
+            let run_length = backtick_run_length(&line[run_start..]);
+            if run_length == length {
+                return Ok(line_start + run_start + run_length);
+            }
+            index = run_start + run_length;
         }
-        index = run_start + run_length;
+        search_end = line_start + line.len();
     }
-    None
+    Err(search_end)
 }
 
 // Remove surrounding whitespace from a source range without losing its original coordinates.
@@ -1285,7 +1248,7 @@ fn trim_source_range(source_contents: &str, source_range: SourceRange) -> Source
 
 #[cfg(test)]
 mod tests {
-    use super::{FenceLine, fence_line, parse, parse_at_level, title_line_text};
+    use super::{FenceLine, content_lines, fence_line, parse, title_start};
     use crate::{
         assert_fails,
         error::{Error, Fix, SourceRange},
@@ -1318,18 +1281,15 @@ mod tests {
         }
     }
 
-    // Describe a page's sections by their titles, levels, whether closing lines end them, and their
-    // sources and bodies as written.
-    fn sections<'a>(source: &'a str, page: &Page) -> Vec<(String, usize, bool, &'a str, &'a str)> {
+    // Describe a page's sections by their titles and their sources and bodies as written.
+    fn sections<'a>(source: &'a str, page: &Page) -> Vec<(String, &'a str, &'a str)> {
         page.sections
             .iter()
             .map(|section| {
                 (
                     section.title.text(Context::Verbatim),
-                    section.level,
-                    section.closing_source_range.is_some(),
                     &source[section.source_range.start..section.source_range.end],
-                    &source[section.body_source_range.start..section.body_source_range.end],
+                    &source[section.body_start..section.source_range.end],
                 )
             })
             .collect()
@@ -1358,16 +1318,34 @@ mod tests {
             .collect()
     }
 
-    // Recognize a title marker followed by a space, but not a bare title marker or a section's.
+    // Recognize a title line by a `#` followed by a space after any spaces, finding where its title
+    // starts, but not a bare `#`, a run of `#`s, or a `#` after a tab.
     #[test]
     fn title_lines() {
-        assert_eq!(title_line_text("# "), Some(""));
-        assert_eq!(title_line_text("# Greeting  "), Some("Greeting  "));
-        assert_eq!(title_line_text("#"), None);
-        assert_eq!(title_line_text("#\tGreeting"), None);
-        assert_eq!(title_line_text("#Greeting"), None);
-        assert_eq!(title_line_text("## Greeting"), None);
-        assert_eq!(title_line_text(""), None);
+        assert_eq!(title_start("# "), Some(2));
+        assert_eq!(title_start("# Greeting  "), Some(2));
+        assert_eq!(title_start("  # Greeting"), Some(4));
+        assert_eq!(title_start(" # "), Some(3));
+        assert_eq!(title_start("#"), None);
+        assert_eq!(title_start("  #"), None);
+        assert_eq!(title_start("#\tGreeting"), None);
+        assert_eq!(title_start("#Greeting"), None);
+        assert_eq!(title_start("## Greeting"), None);
+        assert_eq!(title_start("  ## Greeting"), None);
+        assert_eq!(title_start("\t# Greeting"), None);
+        assert_eq!(title_start(""), None);
+    }
+
+    // List the rest of a line and the following lines in content until one is indented less, but
+    // not a blank line.
+    #[test]
+    fn lines_of_content() {
+        let source = "# A\n  b\n\n    c\n d\n  e";
+        assert_eq!(
+            content_lines(source, 2, 2).collect::<Vec<_>>(),
+            vec![(2, "A"), (4, "  b"), (8, ""), (9, "    c")],
+        );
+        assert_eq!(content_lines(source, 0, 0).last(), Some((18, "  e")));
     }
 
     // Parse titles and multiline content while retaining exact source ranges. A title's range
@@ -1376,7 +1354,7 @@ mod tests {
     #[test]
     fn pages() {
         let source =
-            "  \n#   Home  \n\n Check out the [Greeting]. \n\n# Greeting\n Hello,\nworld! \n";
+            "  \n#   Home  \n\n   Check out the [Greeting]. \n\n# Greeting\n   Hello,\n  world! \n";
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
@@ -1387,12 +1365,12 @@ mod tests {
         );
         assert_eq!(
             wiki.to_string(),
-            "# Home\n\n Check out the [Greeting].\n\n# Greeting\n\n Hello,\nworld!\n",
+            "# Home\n\n   Check out the [Greeting].\n\n# Greeting\n\n   Hello,\n  world!\n",
         );
         assert_eq!(wiki.page("Home").title_source_range.start, 7);
         assert_eq!(wiki.page("Home").title_source_range.end, 13);
         assert_eq!(wiki.page("Home").source_range.start, 3);
-        assert_eq!(wiki.page("Home").source_range.end, 41);
+        assert_eq!(wiki.page("Home").source_range.end, 43);
         let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
             panic!("The parsed link should be a text link.");
         };
@@ -1402,7 +1380,7 @@ mod tests {
     // Keep source ranges on UTF-8 boundaries when titles and links contain multibyte characters.
     #[test]
     fn unicode_source_ranges() {
-        let source = "# Home\nSee [Grüße].\n# Grüße";
+        let source = "# Home\n  See [Grüße].\n# Grüße";
         let wiki = parse_test(source).unwrap();
         let Link::Text { source_range, .. } = &wiki.page("Home").links[0] else {
             panic!("The parsed link should be a text link.");
@@ -1419,9 +1397,9 @@ mod tests {
     // Parse Windows line endings without retaining carriage returns.
     #[test]
     fn windows_line_endings() {
-        let wiki = parse_test("# Greeting\r\n\r\nHello, world!\r\n").unwrap();
+        let wiki = parse_test("# Greeting\r\n\r\n  Hello, world!\r\n").unwrap();
 
-        assert_eq!(wiki.to_string(), "# Greeting\n\nHello, world!\n");
+        assert_eq!(wiki.to_string(), "# Greeting\n\n  Hello, world!\n");
     }
 
     // Accept empty and whitespace-only wikis.
@@ -1439,24 +1417,24 @@ mod tests {
     // Remove whitespace at the end of each line, including after a link and on blank lines.
     #[test]
     fn trailing_whitespace() {
-        let wiki =
-            parse_test("# Home\r\nFirst  \t\r\n   \nSee [Home]  \nand [Home] later.\t\nLast")
-                .unwrap();
+        let wiki = parse_test(
+            "# Home\r\n  First  \t\r\n   \n  See [Home]  \n  and [Home] later.\t\n  Last",
+        )
+        .unwrap();
 
         assert_eq!(
             wiki.to_string(),
-            "# Home\n\nFirst\n\nSee [Home]\nand [Home] later.\nLast\n",
+            "# Home\n\n  First\n\n  See [Home]\n  and [Home] later.\n  Last\n",
         );
     }
 
-    // Keep an indented line which starts with a title marker as content, even as the first line of
-    // a page's content, so rendering the wiki doesn't turn it into a title.
+    // Keep the indentation of a page's first line of content beyond what a page's content needs, so
+    // rendering the wiki doesn't change what's under that line.
     #[test]
-    fn indented_title_markers() {
-        let source = "# Home\n\n  # Not a title\n";
+    fn extra_indentation() {
+        let source = "# Home\n\n      - Indented\n  - Not\n";
         let wiki = parse_test(source).unwrap();
 
-        assert_eq!(wiki.pages.len(), 1);
         assert_eq!(wiki.to_string(), source);
     }
 
@@ -1464,11 +1442,12 @@ mod tests {
     // content.
     #[test]
     fn non_title_hashes() {
-        let wiki = parse_test("# Home\n\n## Subtitle\n#not a title\n##not a title").unwrap();
+        let wiki =
+            parse_test("# Home\n\n  # Subtitle\n    #not a title\n    ##not a title").unwrap();
 
         assert_eq!(
             wiki.to_string(),
-            "# Home\n\n## Subtitle\n\n#not a title\n##not a title\n",
+            "# Home\n\n  # Subtitle\n\n    #not a title\n    ##not a title\n",
         );
     }
 
@@ -1476,19 +1455,19 @@ mod tests {
     // formatting can't turn it into a title.
     #[test]
     fn bare_title_markers() {
-        let wiki = parse_test("# Home\n\n#\n#\t\n# \tx").unwrap();
+        let wiki = parse_test("# Home\n\n  #\n  #\t\n# \tx").unwrap();
 
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(wiki.page("Home").links.len(), 0);
         let formatted = wiki.to_string();
-        assert!(formatted.starts_with("# Home\n\n#\n#\n"));
+        assert!(formatted.starts_with("# Home\n\n  #\n  #\n"));
         assert_eq!(parse_test(&formatted).unwrap().pages.len(), 2);
     }
 
     // Reject titles that are empty after whitespace is stripped.
     #[test]
     fn empty_title() {
-        let errors = parse_test("#   \nContent").unwrap_err();
+        let errors = parse_test("#   \n  Content").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -1516,7 +1495,7 @@ mod tests {
     // Reject duplicate titles and identify the later declaration.
     #[test]
     fn duplicate_title() {
-        let errors = parse_test("# Home\nFirst\n# Home\nSecond").unwrap_err();
+        let errors = parse_test("# Home\n  First\n# Home\n  Second").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -1540,7 +1519,7 @@ mod tests {
     // looks like a fence or a section's title line.
     #[test]
     fn repeated_content_before_title() {
-        let errors = parse_test("First\n:::\n::: sort\n## Second\n# Home").unwrap_err();
+        let errors = parse_test("First\n:::\n::: sort\n  # Second\n# Home").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -1553,7 +1532,7 @@ mod tests {
     // Don't reinterpret content after an invalid title as content before the first title.
     #[test]
     fn content_after_empty_title() {
-        let errors = parse_test("# Home\n\nfoo\n\n# \n\nbar").unwrap_err();
+        let errors = parse_test("# Home\n\n  foo\n\n# \n\n  bar").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -1679,15 +1658,22 @@ mod tests {
         );
     }
 
-    // Read a portal from its title line through where a section with that title line would end,
-    // with the link in its title line among the page's links, and its copy after the title line.
-    // The sections and portals in the copy belong to what the portal shows, so they're kept apart
-    // from the page's own.
+    // Read a portal from its title line through the lines indented under it, with the link in its
+    // title line among the page's links, and its copy after the title line. The sections and
+    // portals in the copy belong to what the portal shows, so they're kept apart from the page's
+    // own.
     #[test]
     fn portals() {
         let source = concat!(
-            "# Home\n\n## [ Other ]  \n\nSee [Last].\n\n### Notes\n\n### [Last]\n\nMore.\n\n",
-            "## After\n\n# Other\n# Last",
+            "# Home\n\n",
+            "  # [ Other ]  \n\n",
+            "    See [Last].\n\n",
+            "    # Notes\n\n",
+            "    # [Last]\n\n",
+            "      More.\n\n",
+            "  # After\n\n",
+            "# Other\n",
+            "# Last",
         );
         let wiki = parse_test(source).unwrap();
         let home = wiki.page("Home");
@@ -1702,21 +1688,17 @@ mod tests {
                 .map(|portal| {
                     (
                         portal.target.title.text(Context::Verbatim),
-                        portal.level,
-                        portal.closing_source_range.is_some(),
                         &source[portal.source_range.start..portal.source_range.end],
                         &source[portal.link_source_range.start..portal.link_source_range.end],
-                        &source[portal.body_source_range.start..portal.body_source_range.end],
+                        &source[portal.body_start..portal.source_range.end],
                     )
                 })
                 .collect::<Vec<_>>(),
             vec![(
                 "Other".to_owned(),
-                2,
-                false,
-                "## [ Other ]  \n\nSee [Last].\n\n### Notes\n\n### [Last]\n\nMore.",
+                "# [ Other ]  \n\n    See [Last].\n\n    # Notes\n\n    # [Last]\n\n      More.",
                 "[ Other ]",
-                "\nSee [Last].\n\n### Notes\n\n### [Last]\n\nMore.",
+                "\n    See [Last].\n\n    # Notes\n\n    # [Last]\n\n      More.",
             )],
         );
         assert_eq!(
@@ -1742,11 +1724,12 @@ mod tests {
         );
     }
 
-    // Read a portal which a closing line ends through that line, after which the section containing
-    // it continues.
+    // End a portal at the first line indented less than its copy, after which the section
+    // containing it continues.
     #[test]
-    fn closed_portals() {
-        let source = "# Home\n## Notes\n### [Other]\n#### Inner\n###\nMore.\n# Other\n## Inner";
+    fn portals_end_where_their_indentation_does() {
+        let source =
+            "# Home\n  # Notes\n    # [Other]\n      # Inner\n    More.\n# Other\n  # Inner";
         let wiki = parse_test(source).unwrap();
         let home = wiki.page("Home");
 
@@ -1755,23 +1738,19 @@ mod tests {
                 .iter()
                 .map(|portal| {
                     (
-                        portal.level,
-                        portal.closing_source_range.is_some(),
                         &source[portal.source_range.start..portal.source_range.end],
-                        &source[portal.body_source_range.start..portal.body_source_range.end],
+                        &source[portal.body_start..portal.source_range.end],
                     )
                 })
                 .collect::<Vec<_>>(),
-            vec![(3, true, "### [Other]\n#### Inner\n###", "#### Inner")],
+            vec![("# [Other]\n      # Inner", "      # Inner")],
         );
         assert_eq!(
             sections(source, home),
             vec![(
                 "Notes".to_owned(),
-                2,
-                false,
-                "## Notes\n### [Other]\n#### Inner\n###\nMore.",
-                "### [Other]\n#### Inner\n###\nMore.",
+                "# Notes\n    # [Other]\n      # Inner\n    More.",
+                "    # [Other]\n      # Inner\n    More.",
             )],
         );
         assert_eq!(home.copy_sections.len(), 1);
@@ -1780,7 +1759,7 @@ mod tests {
     // Take fence lines as written in code, and take lines which only resemble fences as text.
     #[test]
     fn text_resembling_fences() {
-        let wiki = parse_test("# Home\n```\n::: ## [Other]\n```\n:: x\n").unwrap();
+        let wiki = parse_test("# Home\n  ```\n  ::: ## [Other]\n  ```\n  :: x\n").unwrap();
 
         assert!(wiki.page("Home").portals.is_empty());
         assert!(wiki.page("Home").links.is_empty());
@@ -1791,21 +1770,21 @@ mod tests {
     #[test]
     fn invalid_portal_links() {
         assert_fails!(
-            parse_test("# Home\n## [Other] more\n# Other"),
-            "A portal's title is a single link, like `## [Page]` or `## [Page:Section]`.",
+            parse_test("# Home\n  # [Other] more\n# Other"),
+            "A portal's title is a single link, like `# [Page]` or `# [Page:Section]`.",
         );
         assert_eq!(
-            parse_test("# Home\n## [Other] more\n# Other")
+            parse_test("# Home\n  # [Other] more\n# Other")
                 .unwrap_err()
                 .len(),
             1,
         );
         assert_fails!(
-            parse_test("# Home\n## [Other] [Last]"),
-            "A portal's title is a single link, like `## [Page]` or `## [Page:Section]`.",
+            parse_test("# Home\n  # [Other] [Last]"),
+            "A portal's title is a single link, like `# [Page]` or `# [Page:Section]`.",
         );
         assert_fails!(
-            parse_test("# Home\n## [/notes.txt]"),
+            parse_test("# Home\n  # [/notes.txt]"),
             "A portal can only show a page or a section.",
         );
     }
@@ -1818,8 +1797,8 @@ mod tests {
     fn script_blocks() {
         let source = concat!(
             "# Home\n",
-            "  ::: sort -f [Other] `x`\n  - b\n  ::: tidy\n  :::\n  ::: #0a1b\n",
-            "::: back-links_2.0 :::\n",
+            "    ::: sort -f [Other] `x`\n    - b\n    ::: tidy\n    :::\n    ::: #0a1b\n",
+            "  ::: back-links_2.0 :::\n",
             "# Other",
         );
         let wiki = parse_test(source).unwrap();
@@ -1842,7 +1821,7 @@ mod tests {
             vec![
                 (
                     "sort",
-                    "::: sort -f [Other] `x`\n  - b\n  ::: tidy\n  :::\n  ::: #0a1b",
+                    "::: sort -f [Other] `x`\n    - b\n    ::: tidy\n    :::\n    ::: #0a1b",
                     "sort",
                     "-f [Other] `x`",
                     Some("0a1b"),
@@ -1864,7 +1843,7 @@ mod tests {
     // still match its closing fence.
     #[test]
     fn invalid_script_names() {
-        let errors = parse_test("# Home\n::: so(rt) -f\n:::").unwrap_err();
+        let errors = parse_test("# Home\n  ::: so(rt) -f\n  :::").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -1872,7 +1851,7 @@ mod tests {
                 .to_string()
                 .contains("A script's name can only contain letters, digits, `-`, `_`, and `.`."),
         );
-        assert!(errors[0].to_string().contains("2 │ ::: so(rt) -f"));
+        assert!(errors[0].to_string().contains("2 │   ::: so(rt) -f"));
     }
 
     // Reject closing fences which don't close a block, and blocks which aren't closed by the end of
@@ -1880,13 +1859,13 @@ mod tests {
     #[test]
     fn invalid_fences() {
         assert_fails!(
-            parse_test("# Home\n::: sort\n::::\n:::"),
+            parse_test("# Home\n  ::: sort\n  ::::\n  :::"),
             "Unexpected closing fence.",
         );
-        assert_fails!(parse_test("# Home\n::: sort\n# Other"), "Unclosed block.");
+        assert_fails!(parse_test("# Home\n  ::: sort\n# Other"), "Unclosed block.");
         assert_eq!(
-            parse_test("# Home\n:::sort  \n").unwrap_err()[0].source_range(),
-            Some(SourceRange { start: 7, end: 14 }),
+            parse_test("# Home\n  :::sort  \n").unwrap_err()[0].source_range(),
+            Some(SourceRange { start: 9, end: 16 }),
         );
     }
 
@@ -1894,7 +1873,7 @@ mod tests {
     #[test]
     fn links() {
         let wiki = parse_test(concat!(
-            "# Home\nSee [Greeting], [ About ], and [Greeting].",
+            "# Home\n  See [Greeting], [ About ], and [Greeting].",
             "\n# About\n# Greeting",
         ))
         .unwrap();
@@ -1905,17 +1884,17 @@ mod tests {
         );
         assert_eq!(
             wiki.to_string(),
-            "# Home\n\nSee [Greeting], [About], and [Greeting].\n\n# About\n\n# Greeting\n",
+            "# Home\n\n  See [Greeting], [About], and [Greeting].\n\n# About\n\n# Greeting\n",
         );
     }
 
     // Parse file and directory links separately from text links.
     #[test]
     fn filesystem_links() {
-        let wiki = parse_test(
-            "# Home\nSee [/notes.txt], [/images/], [/images/./raw/], [/], [//docs/], and \
-                [/ spaced.txt].",
-        )
+        let wiki = parse_test(concat!(
+            "# Home\n",
+            "  See [/notes.txt], [/images/], [/images/./raw/], [/], [//docs/], and [/ spaced.txt].",
+        ))
         .unwrap();
 
         assert_eq!(
@@ -1935,15 +1914,15 @@ mod tests {
     // with a trailing `/` and the file root as `/`.
     #[test]
     fn formatted_links() {
-        let wiki = parse_test(
-            "# Home\n[ Home ] [ /a//b/./c\\[1\\].txt ] [/images/] [/images/./raw//] [/] [/./] \
-                [///]",
-        )
+        let wiki = parse_test(concat!(
+            "# Home\n",
+            "  [ Home ] [ /a//b/./c\\[1\\].txt ] [/images/] [/images/./raw//] [/] [/./] [///]",
+        ))
         .unwrap();
 
         assert_eq!(
             wiki.to_string(),
-            "# Home\n\n[Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]\n",
+            "# Home\n\n  [Home] [/a/b/c\\[1\\].txt] [/images/] [/images/raw/] [/] [/] [/]\n",
         );
     }
 
@@ -1951,7 +1930,7 @@ mod tests {
     // links.
     #[test]
     fn empty_text_links() {
-        let (wiki, errors) = parse_fixture("# Home\nSee [] and [  ] and [Home].");
+        let (wiki, errors) = parse_fixture("# Home\n  See [] and [  ] and [Home].");
 
         assert_eq!(errors.len(), 2);
         assert!(
@@ -1965,7 +1944,7 @@ mod tests {
     // Reject filesystem links whose paths contain parent components.
     #[test]
     fn invalid_filesystem_link_paths() {
-        let result = parse_test("# Home\n[/../notes.txt] [/notes/../notes.txt]");
+        let result = parse_test("# Home\n  [/../notes.txt] [/notes/../notes.txt]");
 
         assert_fails!(result.clone(), "Path `../notes.txt` must not contain `..`.");
         assert_fails!(result, "Path `notes/../notes.txt` must not contain `..`.");
@@ -1974,7 +1953,7 @@ mod tests {
     // Reject opening link delimiters that aren't closed.
     #[test]
     fn unclosed_link() {
-        assert_fails!(parse_test("# Home\nSee [Greeting."), "Unclosed link.");
+        assert_fails!(parse_test("# Home\n  See [Greeting."), "Unclosed link.");
     }
 
     // End an unclosed link at the end of its line, reading the following lines as usual, so a later
@@ -1982,11 +1961,11 @@ mod tests {
     #[test]
     fn unclosed_links_end_at_line_breaks() {
         let (wiki, errors) =
-            parse_fixture("# Home\nSee [Greeting\ncontinued]. [Home] and [Other]\n# Other");
+            parse_fixture("# Home\n  See [Greeting\n  continued]. [Home] and [Other]\n# Other");
 
         assert_eq!(errors.len(), 2);
         assert!(errors[0].to_string().contains("Unclosed link."));
-        assert!(errors[0].to_string().contains("2 \u{2502} See [Greeting"));
+        assert!(errors[0].to_string().contains("2 \u{2502}   See [Greeting"));
         assert!(
             errors[1]
                 .to_string()
@@ -2002,7 +1981,7 @@ mod tests {
     #[test]
     fn unexpected_opening_delimiter() {
         assert_fails!(
-            parse_test("# Home\nSee [nested[Greeting]."),
+            parse_test("# Home\n  See [nested[Greeting]."),
             "Unexpected opening link delimiter.",
         );
     }
@@ -2010,14 +1989,18 @@ mod tests {
     // Reject unescaped closing delimiters outside links.
     #[test]
     fn unexpected_closing_delimiter() {
-        let errors = parse_test("# Home\nSee Greeting].").unwrap_err();
+        let errors = parse_test("# Home\n  See Greeting].").unwrap_err();
 
         assert!(
             errors[0]
                 .to_string()
                 .contains("Unexpected closing link delimiter"),
         );
-        assert!(errors[0].to_string().contains("2 \u{2502} See Greeting]."));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("2 \u{2502}   See Greeting]."),
+        );
     }
 
     // Treat escaped square brackets as literal link-title characters.
@@ -2025,7 +2008,7 @@ mod tests {
     fn escaped_link_delimiters() {
         let wiki = parse_test(
             r"# Home
-See \[Ignored\], [One\]Two], [Three\[], [Four], and \[also ignored\].
+  See \[Ignored\], [One\]Two], [Three\[], [Four], and \[also ignored\].
 # Four
 # One]Two
 # Three[",
@@ -2044,7 +2027,7 @@ See \[Ignored\], [One\]Two], [Three\[], [Four], and \[also ignored\].
     fn escaped_backslashes() {
         let wiki = parse_test(
             r"# Home
-See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
+  See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
 # Four
 # Five\
 # A\B",
@@ -2061,15 +2044,16 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // page, offering to escape it, while keeping the page's links.
     #[test]
     fn invalid_escapes() {
-        let (wiki, errors) = parse_fixture("# Home\nC:\\Users \\\\ [Other] \\a\\\nend\\\n# Other");
+        let (wiki, errors) =
+            parse_fixture("# Home\n  C:\\Users \\\\ [Other] \\a\\\n  end\\\n# Other");
 
         assert_eq!(
             errors.iter().map(Error::fix).collect::<Vec<_>>(),
             vec![
-                Some(&Fix::EscapeBackslash(9)),
-                Some(&Fix::EscapeBackslash(27)),
+                Some(&Fix::EscapeBackslash(11)),
                 Some(&Fix::EscapeBackslash(29)),
-                Some(&Fix::EscapeBackslash(34)),
+                Some(&Fix::EscapeBackslash(31)),
+                Some(&Fix::EscapeBackslash(38)),
             ],
         );
         assert!(errors.iter().all(|error| {
@@ -2084,29 +2068,29 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // reporting only the backslash.
     #[test]
     fn links_with_invalid_escapes() {
-        let (wiki, errors) = parse_fixture("# Home\n[A\\B] [/c\\d.txt] [Other]\n# Other");
+        let (wiki, errors) = parse_fixture("# Home\n  [A\\B] [/c\\d.txt] [Other]\n# Other");
 
         assert_eq!(
             errors.iter().map(Error::fix).collect::<Vec<_>>(),
             vec![
-                Some(&Fix::EscapeBackslash(9)),
-                Some(&Fix::EscapeBackslash(16)),
+                Some(&Fix::EscapeBackslash(11)),
+                Some(&Fix::EscapeBackslash(18)),
             ],
         );
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Other"]);
     }
 
-    // Reject a backslash before `#`, which can't be escaped, since only title markers at the start
-    // of a line are special.
+    // Reject a backslash before `#`, which can't be escaped, since a `#` is only special right
+    // after a line's indentation.
     #[test]
     fn hashes_cant_be_escaped() {
-        let (_wiki, errors) = parse_fixture("# Home\nC\\# and \\#1");
+        let (_wiki, errors) = parse_fixture("# Home\n  C\\# and \\#1");
 
         assert_eq!(
             errors.iter().map(Error::fix).collect::<Vec<_>>(),
             vec![
-                Some(&Fix::EscapeBackslash(8)),
-                Some(&Fix::EscapeBackslash(15)),
+                Some(&Fix::EscapeBackslash(10)),
+                Some(&Fix::EscapeBackslash(17)),
             ],
         );
     }
@@ -2116,7 +2100,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // escape is accepted.
     #[test]
     fn escaped_backticks_in_links() {
-        let (wiki, errors) = parse_fixture("# Home\n\\` [a\\`b] \\` [Home]");
+        let (wiki, errors) = parse_fixture("# Home\n  \\` [a\\`b] \\` [Home]");
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -2124,7 +2108,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .to_string()
                 .contains("In a link, a backslash must be followed by"),
         );
-        assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(12)));
+        assert_eq!(errors[0].fix(), Some(&Fix::EscapeBackslash(14)));
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
     }
 
@@ -2134,9 +2118,9 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     fn code_spans() {
         let source = concat!(
             "# Home\n\n",
-            "Run `[a] C:\\Users`, not ``x ` y``.\n\n",
-            "```sh\n# A comment\n[Not a link] C:\\Users \\[ ]\n```\n\n",
-            "See [Other].\n\n",
+            "  Run `[a] C:\\Users`, not ``x ` y``.\n\n",
+            "  ```sh\n  # A comment\n  [Not a link] C:\\Users \\[ ]\n  ```\n\n",
+            "  See [Other].\n\n",
             "# Other\n",
         );
         let wiki = parse_test(source).unwrap();
@@ -2147,15 +2131,15 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     }
 
     // End code at a closing run of exactly as many backticks, letting code of three or more
-    // backticks cross lines, including title lines, and keeping any language name as part of the
-    // code. The text after code is read as usual.
+    // backticks cross lines, including title lines within the content it's in, and keeping any
+    // language name as part of the code. The text after code is read as usual.
     #[test]
     fn code_closing_runs() {
         let wiki = parse_test(concat!(
             "# Home\n",
-            "a `[x]` [Home] ``d ` [x]`` [Home]\n",
-            "```sh\n# x\n[x] `` ```` \n```\n",
-            "[Home]\n",
+            "  a `[x]` [Home] ``d ` [x]`` [Home]\n",
+            "  ```sh\n  # x\n  [x] `` ```` \n  ```\n",
+            "  [Home]\n",
         ))
         .unwrap();
 
@@ -2170,7 +2154,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // leaves them as written, and accept an escaped backtick outside links.
     #[test]
     fn plain_backticks() {
-        let source = "# The `ls` command\n\n[The `ls` command] and \\`.\n";
+        let source = "# The `ls` command\n\n  [The `ls` command] and \\`.\n";
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(
@@ -2184,7 +2168,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // but not elsewhere.
     #[test]
     fn backticks_outside_code() {
-        let wiki = parse_test("# A `title\n[A `title] \\`b\\` `[c]`").unwrap();
+        let wiki = parse_test("# A `title\n  [A `title] \\`b\\` `[c]`").unwrap();
 
         assert_eq!(
             link_targets(&wiki.page("A `title").links),
@@ -2196,7 +2180,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // a later line, and parse the text after it as usual, so it can't hide the rest of the wiki.
     #[test]
     fn unclosed_code() {
-        let (wiki, errors) = parse_fixture("# Home\n```\n[Home] `a\nb`\n# Other");
+        let (wiki, errors) = parse_fixture("# Home\n  ```\n  [Home] `a\n  b`\n# Other");
 
         assert_eq!(errors.len(), 3);
         assert!(
@@ -2204,16 +2188,61 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .all(|error| error.to_string().contains("Unclosed code.")),
         );
-        assert!(errors[0].to_string().contains("2 \u{2502} ```"));
+        assert!(errors[0].to_string().contains("2 \u{2502}   ```"));
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
+    }
+
+    // Require code and blocks to end within the section, portal, or page they start in, so a line
+    // indented less than its content leaves them unclosed. Code which starts later, outside that
+    // content, can still be closed by a run of the same length.
+    #[test]
+    fn code_and_blocks_end_with_their_content() {
+        let (wiki, errors) = parse_fixture(concat!(
+            "# Home\n",
+            "  # A\n",
+            "    ```\n",
+            "  ```\n",
+            "  # Not a title\n",
+            "  ```\n",
+            "  # B\n",
+            "    ::: sort\n",
+            "    - b\n",
+            "  - a\n",
+            "  :::\n",
+            "# Other\n",
+            "  ::: sort\n",
+            "# Last",
+        ));
+
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| (error.message(), error.source_range().unwrap().start))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Unclosed code.", 17),
+                ("Unclosed block.", 59),
+                ("Unexpected closing fence.", 84),
+                ("Unclosed block.", 98),
+            ],
+        );
+        assert_eq!(
+            wiki.page("Home")
+                .sections
+                .iter()
+                .map(|section| section.title.text(Context::Verbatim))
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+        );
+        assert_eq!(wiki.pages.len(), 3);
     }
 
     // Report each run of backticks which isn't closed, including a short run whose closing run is
     // on a later line, at the run itself.
     #[test]
     fn unclosed_code_source_ranges() {
-        let errors = parse_test("# Home\na `b\nc` ``` d").unwrap_err();
+        let errors = parse_test("# Home\n  a `b\n  c` ``` d").unwrap_err();
 
         assert_eq!(
             errors
@@ -2221,9 +2250,9 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .map(|error| error.source_range().unwrap())
                 .collect::<Vec<_>>(),
             vec![
-                SourceRange { start: 9, end: 10 },
-                SourceRange { start: 13, end: 14 },
-                SourceRange { start: 15, end: 18 },
+                SourceRange { start: 11, end: 12 },
+                SourceRange { start: 17, end: 18 },
+                SourceRange { start: 19, end: 22 },
             ],
         );
     }
@@ -2231,7 +2260,8 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Report errors from every invalid page in source order.
     #[test]
     fn multiple_page_errors() {
-        let errors = parse_test("# First\nUnexpected].\n# Second\nUnclosed [link.").unwrap_err();
+        let errors =
+            parse_test("# First\n  Unexpected].\n# Second\n  Unclosed [link.").unwrap_err();
 
         assert_eq!(errors.len(), 2);
         assert!(
@@ -2246,7 +2276,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // before the errors within it.
     #[test]
     fn multiple_errors_in_page() {
-        let errors = parse_test("# Home\nUnexpected] and [nested[link.").unwrap_err();
+        let errors = parse_test("# Home\n  Unexpected] and [nested[link.").unwrap_err();
 
         assert_eq!(errors.len(), 3);
         assert!(
@@ -2268,11 +2298,11 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         let errors = parse_test(concat!(
             "Introduction\n",
             "#   \n",
-            "Content\n",
+            "  Content\n",
             "# First\n",
-            "Unexpected].\n",
+            "  Unexpected].\n",
             "# Second\n",
-            "Unclosed [link.",
+            "  Unclosed [link.",
         ))
         .unwrap_err();
 
@@ -2298,9 +2328,10 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Keep a page with a syntax error, along with the targets of the links in it which parsed.
     #[test]
     fn recovered_page_keeps_valid_links() {
-        let (wiki, errors) = parse_fixture(
-            "# Home\nStray] [Greeting] [Bad\nlink] [nested[link] [/../up] [/notes.txt] [unclosed",
-        );
+        let (wiki, errors) = parse_fixture(concat!(
+            "# Home\n  Stray] [Greeting] [Bad\n",
+            "  link] [nested[link] [/../up] [/notes.txt] [unclosed",
+        ));
 
         assert_eq!(errors.len(), 6);
         assert_eq!(
@@ -2315,7 +2346,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // Score a wiki with syntax errors so its reachability can be validated.
     #[test]
     fn recovered_wiki_has_traversal_order() {
-        let (wiki, errors) = parse_fixture("# Home\nStray] [Greeting]\n# Greeting");
+        let (wiki, errors) = parse_fixture("# Home\n  Stray] [Greeting]\n# Greeting");
 
         assert_eq!(errors.len(), 1);
         assert_eq!(wiki.page("Greeting").traversal_index, Some(1));
@@ -2326,7 +2357,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     #[test]
     fn recovered_wiki_omits_untitled_regions() {
         let (wiki, errors) = parse_fixture(
-            "Before]\n# Home\n[Home]\n# Home\n[Greeting] a]\n# \n[Greeting] b]\n# Greeting",
+            "Before]\n# Home\n  [Home]\n# Home\n  [Greeting] a]\n# \n  [Greeting] b]\n# Greeting",
         );
 
         assert_eq!(errors.len(), 6);
@@ -2341,13 +2372,13 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .to_string()
                 .contains("Page `Home` already exists."),
         );
-        assert!(errors[3].to_string().contains("5 \u{2502} [Greeting] a]"));
+        assert!(errors[3].to_string().contains("5 \u{2502}   [Greeting] a]"));
         assert!(
             errors[4]
                 .to_string()
                 .contains("A page title can't be empty."),
         );
-        assert!(errors[5].to_string().contains("7 \u{2502} [Greeting] b]"));
+        assert!(errors[5].to_string().contains("7 \u{2502}   [Greeting] b]"));
         assert_eq!(wiki.pages.len(), 2);
         assert_eq!(link_targets(&wiki.page("Home").links), vec!["text:Home"]);
         assert_eq!(wiki.page("Greeting").traversal_index, None);
@@ -2359,7 +2390,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // isn't one.
     #[test]
     fn malformed_links() {
-        let (wiki, _errors) = parse_fixture("# Home\na `[b]` [] [c\\`] [d [e] [f");
+        let (wiki, _errors) = parse_fixture("# Home\n  a `[b]` [] [c\\`] [d [e] [f");
         let links = &wiki.page("Home").links;
 
         assert_eq!(
@@ -2375,25 +2406,38 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 })
                 .collect::<Vec<_>>(),
             vec![
-                (15, 17, true),
-                (18, 23, true),
-                (24, 30, true),
-                (31, 33, false),
+                (17, 19, true),
+                (20, 25, true),
+                (26, 32, true),
+                (33, 35, false),
             ],
         );
-        assert_eq!(links[0].closing_delimiter(), Some(16));
+        assert_eq!(links[0].closing_delimiter(), Some(18));
         assert_eq!(links[3].closing_delimiter(), None);
     }
 
-    // Start a section at each title line, which ends at the next title line of the same or a higher
-    // level, at the end of its page, or at a closing line, after which the section containing it
-    // continues. Portals and blocks within sections are kept.
+    // Start a section at each title line, which contains the lines after it which are blank or
+    // indented more than its title, so the first line indented less ends it, after which the
+    // section containing it continues. Portals and blocks within sections are kept.
     #[test]
     fn sections_of_pages() {
         let source = concat!(
-            "# Home\nIntro.\n## Monthly  \nNotes.\n\n### Fixed\nRent.\n#### Utilities\n",
-            "Power.\n##### [Other]\n###\nMore.\n### Variable\nFood.\n",
-            "## Yearly\n::: sort\n:::\n",
+            "# Home\n",
+            "  Intro.\n",
+            "  # Monthly  \n",
+            "    Notes.\n",
+            "\n",
+            "    # Fixed\n",
+            "      Rent.\n",
+            "      # Utilities\n",
+            "        Power.\n",
+            "        # [Other]\n",
+            "    More.\n",
+            "    # Variable\n",
+            "      Food.\n",
+            "  # Yearly\n",
+            "    ::: sort\n",
+            "    :::\n",
             "# Other",
         );
         let wiki = parse_test(source).unwrap();
@@ -2404,40 +2448,34 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             vec![
                 (
                     "Monthly".to_owned(),
-                    2,
-                    false,
-                    "## Monthly  \nNotes.\n\n### Fixed\nRent.\n#### Utilities\nPower.\n\
-                     ##### [Other]\n###\nMore.\n### Variable\nFood.",
-                    "Notes.\n\n### Fixed\nRent.\n#### Utilities\nPower.\n##### [Other]\n###\n\
-                     More.\n### Variable\nFood.",
+                    concat!(
+                        "# Monthly  \n    Notes.\n\n    # Fixed\n      Rent.\n      # Utilities\n",
+                        "        Power.\n        # [Other]\n    More.\n    # Variable\n      Food.",
+                    ),
+                    concat!(
+                        "    Notes.\n\n    # Fixed\n      Rent.\n      # Utilities\n",
+                        "        Power.\n        # [Other]\n    More.\n    # Variable\n      Food.",
+                    ),
                 ),
                 (
                     "Fixed".to_owned(),
-                    3,
-                    true,
-                    "### Fixed\nRent.\n#### Utilities\nPower.\n##### [Other]\n###",
-                    "Rent.\n#### Utilities\nPower.\n##### [Other]",
+                    "# Fixed\n      Rent.\n      # Utilities\n        Power.\n        # [Other]",
+                    "      Rent.\n      # Utilities\n        Power.\n        # [Other]",
                 ),
                 (
                     "Utilities".to_owned(),
-                    4,
-                    false,
-                    "#### Utilities\nPower.\n##### [Other]",
-                    "Power.\n##### [Other]",
+                    "# Utilities\n        Power.\n        # [Other]",
+                    "        Power.\n        # [Other]",
                 ),
                 (
                     "Variable".to_owned(),
-                    3,
-                    false,
-                    "### Variable\nFood.",
-                    "Food.",
+                    "# Variable\n      Food.",
+                    "      Food.",
                 ),
                 (
                     "Yearly".to_owned(),
-                    2,
-                    false,
-                    "## Yearly\n::: sort\n:::",
-                    "::: sort\n:::",
+                    "# Yearly\n    ::: sort\n    :::",
+                    "    ::: sort\n    :::",
                 ),
             ],
         );
@@ -2448,34 +2486,63 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         );
         assert_eq!(
             &source[page.sections[1].source_range.start..page.sections[1].title_source_range.end],
-            "### Fixed",
+            "# Fixed",
         );
         assert_eq!(page.portals.len(), 1);
         assert_eq!(page.script_blocks.len(), 1);
     }
 
-    // Require each section to be one level deeper than the title it's under. Sections still nest as
-    // their levels say.
+    // Require each title to be indented two spaces more than the title it's under, offering to move
+    // it and the lines within it there. Sections still nest as they're indented. Titles in a
+    // portal's copy are checked once it's read as the content of what the portal shows.
     #[test]
-    fn section_levels() {
-        let (wiki, errors) =
-            parse_fixture("# Home\n### Skipped\n## Fine\n#### Deeper\n##\nAfter.\n## Sibling\n");
+    fn section_indentation() {
+        let (wiki, errors) = parse_fixture(
+            "# Home\n    # Skipped\n  # Fine\n      # Deeper\n # Shallow\n  # Sibling\n",
+        );
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
             vec![
-                "This title should be marked with `##`, one level deeper than the title it's \
+                "This title should be indented 2 spaces, one level deeper than the title it's \
                  under.",
-                "This title should be marked with `###`, one level deeper than the title it's \
+                "This title should be indented 4 spaces, one level deeper than the title it's \
+                 under.",
+                "This title should be indented 2 spaces, one level deeper than the title it's \
                  under.",
             ],
         );
         assert_eq!(
             errors
                 .iter()
-                .map(|error| error.source_range().unwrap().start)
+                .map(|error| (error.source_range().unwrap().start, error.fix().cloned()))
                 .collect::<Vec<_>>(),
-            vec![7, 27],
+            vec![
+                (
+                    11,
+                    Some(Fix::Indent {
+                        start: 7,
+                        from: 4,
+                        to: 2,
+                    }),
+                ),
+                (
+                    36,
+                    Some(Fix::Indent {
+                        start: 30,
+                        from: 6,
+                        to: 4,
+                    }),
+                ),
+                (
+                    46,
+                    Some(Fix::Indent {
+                        start: 45,
+                        from: 1,
+                        to: 2,
+                    }),
+                ),
+            ],
         );
         assert_eq!(
             wiki.page("Home")
@@ -2483,31 +2550,52 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
                 .iter()
                 .map(|section| section.title.text(Context::Verbatim))
                 .collect::<Vec<_>>(),
-            vec!["Skipped", "Fine", "Deeper", "Sibling"],
+            vec!["Skipped", "Fine", "Deeper", "Shallow", "Sibling"],
         );
+        assert!(parse_test("# Home\n  # [Other]\n        # Deep\n# Other").is_ok());
     }
 
-    // Read the sections of content shown as a section, whose titles start deeper.
+    // Require each line of a page's content which isn't blank to be indented at least two spaces,
+    // offering to indent it. The line ends the sections it's indented too little to be in, but it's
+    // still in the page, since only a page's title line ends one.
     #[test]
-    fn deeper_sections() {
-        let source = "# Home\n### Deeper\n";
-        let (wiki, errors) = parse_at_level(None, source, &LineIndex::new(source), 2);
+    fn under_indented_lines() {
+        let source = "# Home\n  # Notes\n    [Home]\nStray [Home].\n \n  After.\n# Other";
+        let (wiki, errors) = parse_fixture(source);
 
-        assert!(errors.is_empty());
-        assert_eq!(wiki.page("Home").sections[0].level, 3);
-        assert!(
-            !parse_at_level(None, "# Home\n## Shallow", &LineIndex::new(source), 2)
-                .1
-                .is_empty(),
+        assert_eq!(
+            errors.iter().map(Error::message).collect::<Vec<_>>(),
+            vec!["This line should be indented at least 2 spaces, like the rest of its page."],
+        );
+        assert_eq!(
+            errors[0].source_range(),
+            Some(SourceRange { start: 28, end: 41 }),
+        );
+        assert_eq!(
+            errors[0].fix(),
+            Some(&Fix::Indent {
+                start: 28,
+                from: 0,
+                to: 2,
+            }),
+        );
+        assert_eq!(
+            sections(source, wiki.page("Home")),
+            vec![("Notes".to_owned(), "# Notes\n    [Home]", "    [Home]")],
+        );
+        assert_eq!(
+            link_targets(&wiki.page("Home").links),
+            vec!["text:Home", "text:Home"],
         );
     }
 
     // Reject a title used by another section of the same page, keeping the first, but allow it in
-    // another page. A title line's `#`s are followed by a space, so other text after them is text.
+    // another page. A title line's `#` is followed by a space, so other text after it is text.
     #[test]
     fn invalid_section_titles() {
-        let (wiki, errors) =
-            parse_fixture("# Home\n## Notes\n## Notes\n##\tTab\n# Other\n## Notes");
+        let (wiki, errors) = parse_fixture(
+            "# Home\n  # Notes\n  # Notes\n    #\tTab\n    #Tight\n# Other\n  # Notes",
+        );
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2517,52 +2605,53 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
         assert_eq!(wiki.page("Other").sections.len(), 1);
     }
 
-    // End a section or a portal at a closing line, which is marked like its title line, along with
-    // the sections and portals within it, after which the section or page containing it continues.
-    // An indented line isn't a closing line, and neither is a title line.
+    // End a section at the first line indented less than its content, along with the sections
+    // within it, after which the section or page containing it continues. Blank lines don't end a
+    // section, and lines indented more than its content are in it. A title can start with `#`.
     #[test]
-    fn closing_lines() {
-        let source = "# Home\n## A\n### B\n##  \nAfter.\n## C\n  ##\n## ## D\n";
+    fn ending_sections() {
+        let source =
+            "# Home\n  # A\n    # B\n\n        Deeper.\n  After.\n  # C\n     Extra.\n  # ## D\n";
         let wiki = parse_test(source).unwrap();
 
         assert_eq!(
             sections(source, wiki.page("Home")),
             vec![
-                ("A".to_owned(), 2, true, "## A\n### B\n##", "### B"),
-                ("B".to_owned(), 3, false, "### B", ""),
-                ("C".to_owned(), 2, false, "## C\n  ##", "  ##"),
-                ("## D".to_owned(), 2, false, "## ## D", ""),
+                (
+                    "A".to_owned(),
+                    "# A\n    # B\n\n        Deeper.",
+                    "    # B\n\n        Deeper.",
+                ),
+                (
+                    "B".to_owned(),
+                    "# B\n\n        Deeper.",
+                    "\n        Deeper.",
+                ),
+                ("C".to_owned(), "# C\n     Extra.", "     Extra."),
+                ("## D".to_owned(), "# ## D", ""),
             ],
         );
     }
 
-    // Reject a closing line which doesn't end a section or a portal, except in a portal's copy,
-    // which is checked once it's read as the content of what the portal shows.
-    #[test]
-    fn invalid_closing_lines() {
-        let (_wiki, errors) = parse_fixture("# Home\n##\n## A\n####\n");
-
-        assert_eq!(
-            errors.iter().map(Error::message).collect::<Vec<_>>(),
-            vec![
-                "There's no section marked with `##` for this line to end.",
-                "There's no section marked with `####` for this line to end.",
-            ],
-        );
-        assert!(parse_test("# Home\n## [Other]\n####\n# Other").is_ok());
-    }
-
-    // Take a title line or a closing line within a script block as written, with no links in it,
-    // without starting or ending a section there, and a title line within a portal as part of its
-    // copy, where a section's title is still taken as written. A title line within a script block
-    // is indented like its opening fence, so a line indented otherwise is text, as is an indented
-    // line outside blocks.
+    // Take a title line within a script block as written, with no links in it, without starting a
+    // section there, and a title line within a portal as part of its copy, where a section's title
+    // is still taken as written. A line whose `#`s aren't a title's is text.
     #[test]
     fn title_lines_within_blocks() {
         let source = concat!(
-            "# Home\n## [Other]\n### See [Missing]\n##\n::: sort\n## [Missing]\n##\n:::\n",
-            "- Item\n  ::: sort\n  ### Inner [Other]\n    ### Text [Other]\n  :::\n",
-            "  ## Text [Other]\n",
+            "# Home\n",
+            "  # [Other]\n",
+            "    # See [Missing]\n",
+            "  ::: sort\n",
+            "  # [Missing]\n",
+            "  :::\n",
+            "  - Item\n",
+            "    ::: sort\n",
+            "    # Inner [Missing]\n",
+            "      # Deeper [Missing]\n",
+            "    ## Text [Other]\n",
+            "    :::\n",
+            "  #Text [Other]\n",
             "# Other",
         );
         let wiki = parse_test(source).unwrap();
@@ -2584,14 +2673,15 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
 
     // Split a link's target at the first `:` which isn't escaped into a page and a section, which
     // can be named without its page to refer to the page whose content the link is in, or the page
-    // shown by the innermost portal whose copy contains it, until a title line or a closing line
-    // ends that portal. A portal's own link is outside its copy. A `#` is a plain character.
+    // shown by the innermost portal whose copy contains it, until a line indented less than the
+    // copy ends that portal. A portal's own link is outside its copy. A `#` is a plain character.
     #[test]
     fn section_links() {
         let source = concat!(
-            "# Home\n[Other:Notes] [ Other : Notes ] [:Notes] [Time\\: 10\\:30:A\\:B] [C# tips]\n",
-            "## [:Notes]\n[:Notes]\n##\n## [Other]\n[:Notes]\n### [Last]\n[:Notes]\n",
-            "### Notes\n[:Notes]\n",
+            "# Home\n",
+            "  [Other:Notes] [ Other : Notes ] [:Notes] [Time\\: 10\\:30:A\\:B] [C# tips]\n",
+            "  # [:Notes]\n    [:Notes]\n  # [Other]\n    [:Notes]\n    # [Last]\n      [:Notes]\n",
+            "    # Notes\n      [:Notes]\n",
             "# Other\n# Time: 10:30\n# C# tips\n# Last",
         );
         let wiki = parse_test(source).unwrap();
@@ -2626,7 +2716,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     // a page or a section with such a title, since a section's title line would start a portal.
     #[test]
     fn bracketed_titles() {
-        let (_wiki, errors) = parse_fixture("# [Draft]\n# Home\n[\\[Draft\\]] [Home:\\[X\\]]");
+        let (_wiki, errors) = parse_fixture("# [Draft]\n# Home\n  [\\[Draft\\]] [Home:\\[X\\]]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2644,7 +2734,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
     #[test]
     fn section_link_colons() {
         let (wiki, errors) =
-            parse_fixture("# Home\n[Home:A:B] [Home:] [:] [/10:30.txt] [/10\\:30.txt]");
+            parse_fixture("# Home\n  [Home:A:B] [Home:] [:] [/10:30.txt] [/10\\:30.txt]");
 
         assert_eq!(
             errors.iter().map(Error::message).collect::<Vec<_>>(),
@@ -2657,7 +2747,7 @@ See \\[Four], [Five\\], [A\\B], and \\\[ignored\].
             link_targets(&wiki.page("Home").links),
             vec!["text:Home:A:B", "file:10:30.txt", "file:10:30.txt"],
         );
-        let wiki = parse_test("# Home\n[Home:A:B] [/10:30.txt]").unwrap();
+        let wiki = parse_test("# Home\n  [Home:A:B] [/10:30.txt]").unwrap();
         assert_eq!(
             wiki.own_content(wiki.page("Home"), None),
             "[Home:A\\:B] [/10\\:30.txt]",

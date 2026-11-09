@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn validation_errors_accompany_syntax_errors() {
         let errors =
-            analyze_test("# Home\nSee [Missing] and [Greeting].\n# Greeting\nUnexpected].")
+            analyze_test("# Home\n  See [Missing] and [Greeting].\n# Greeting\n  Unexpected].")
                 .unwrap_err();
 
         assert_eq!(errors.len(), 2);
@@ -84,9 +84,12 @@ mod tests {
     // Keep a page with a syntax error from making the pages it links to unreachable.
     #[test]
     fn syntax_errors_preserve_reachability() {
-        let errors =
-            analyze_test("# Home\nSee [Greeting].\n# Greeting\nStray] and [Farewell].\n# Farewell")
-                .unwrap_err();
+        let errors = analyze_test(concat!(
+            "# Home\n  See [Greeting].\n",
+            "# Greeting\n  Stray] and [Farewell].\n",
+            "# Farewell",
+        ))
+        .unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -99,7 +102,7 @@ mod tests {
     // Don't validate the target of a link with a syntax error.
     #[test]
     fn malformed_links_are_not_validated() {
-        let errors = analyze_test("# Home\nSee [Missing[Home].").unwrap_err();
+        let errors = analyze_test("# Home\n  See [Missing[Home].").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         assert!(
@@ -112,6 +115,6 @@ mod tests {
     // Accept a valid wiki.
     #[test]
     fn valid_wiki() {
-        assert!(analyze_test("# Home\nSee [Greeting].\n# Greeting").is_ok());
+        assert!(analyze_test("# Home\n  See [Greeting].\n# Greeting").is_ok());
     }
 }

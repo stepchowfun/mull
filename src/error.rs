@@ -26,12 +26,12 @@ pub enum Fix {
     // Escape the backslash at this byte offset in the wiki's source.
     EscapeBackslash(usize),
 
-    // Replace the `#`s marking a section's or a portal's title, from a byte offset to another, with
-    // those of a level, moving the title lines and closing lines within it by as many levels.
-    SetSectionLevel {
+    // Indent the line which starts at a byte offset by a number of spaces instead of another,
+    // moving the lines within it by as many spaces if it's a section's or a portal's title line.
+    Indent {
         start: usize,
-        end: usize,
-        level: usize,
+        from: usize,
+        to: usize,
     },
 }
 

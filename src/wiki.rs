@@ -15,15 +15,14 @@ use std::{
 // These strings define the wiki format's extension, the suffix that names a wiki's file
 // root, and structural markers. A link whose target starts with `/` is a filesystem link,
 // relative to the file root, which names a directory if it ends with `/`. Otherwise, it names a
-// page, followed by a section of it after `:`. A section's title line marks its title with a run of
-// at least two of the title marker's `#`s, one for each level, followed by a space, as does a
-// portal's, whose title is a link, and that run alone is a closing line, which ends one. The home
-// page's title identifies the root of every wiki's text-link graph.
+// page, followed by a section of it after `:`. Every title line marks its title with the title
+// prefix: a page's at the start of the line, and a section's or a portal's, whose title is a link,
+// after spaces. The content under a title is indented the indentation width further than the
+// title. The home page's title identifies the root of every wiki's text-link graph.
 pub const WIKI_EXTENSION: &str = "mull";
 pub const FILE_ROOT_SUFFIX: &str = "_files";
 pub const TITLE_PREFIX: &str = "# ";
-pub const TITLE_MARKER: char = '#';
-pub const MIN_SECTION_LEVEL: usize = 2;
+pub const INDENTATION_WIDTH: usize = 2;
 pub const SECTION_SEPARATOR: char = ':';
 pub const HOME_TITLE: &str = "Home";
 pub const FILESYSTEM_LINK_PREFIX: &str = "/";
@@ -35,22 +34,19 @@ pub const DIRECTORY_LINK_SUFFIX: &str = "/";
 pub const MIN_FENCE_LENGTH: usize = 3;
 
 // This struct represents a parsed wiki, along with the source it was parsed from, which its pages'
-// source ranges address and which it's rendered from, and the level of its pages' titles, which is
-// deeper than the first for a portal's copy read as a page's content.
+// source ranges address and which it's rendered from.
 #[derive(Clone, Debug)]
 pub struct Wiki {
     pub pages: HashMap<PageTitle, Page>,
     source: String,
-    title_level: usize,
 }
 
 impl Wiki {
-    // Start a wiki without any pages for the given source, with its pages' titles at a level.
-    pub fn new(source: &str, title_level: usize) -> Self {
+    // Start a wiki without any pages for the given source.
+    pub fn new(source: &str) -> Self {
         Self {
             pages: HashMap::new(),
             source: source.to_owned(),
-            title_level,
         }
     }
 
@@ -135,28 +131,29 @@ impl Wiki {
         cycle_closing_portals
     }
 
-    // Render a page's content in its canonical form, with each portal refreshed.
+    // Render a page's content in its canonical form, indented as a page's content is, with each
+    // portal refreshed.
     pub fn page_content(&self, page: &Page) -> String {
-        self.rendered_content(page, None, self.title_level, &mut Vec::new())
+        self.rendered_content(page, None, INDENTATION_WIDTH, &mut Vec::new())
     }
 
-    // Render the content of a page or a section of it from the source in its canonical form, as if
-    // its title were at a level, with each portal refreshed. The targets being rendered, which show
-    // this one in portals, are listed so a cycle of portals is left as written.
+    // Render the content of a page or a section of it from the source in its canonical form,
+    // indented by a number of spaces, with each portal refreshed. The targets being rendered, which
+    // show this one in portals, are listed so a cycle of portals is left as written.
     fn rendered_content(
         &self,
         page: &Page,
         section: Option<&Section>,
-        title_level: usize,
+        indentation: usize,
         enclosing_targets: &mut Vec<Target>,
     ) -> String {
         enclosing_targets.push(page.target(section));
         let content = self.canonical_content(
             page,
             section,
-            title_level,
+            indentation,
             &HashMap::new(),
-            &mut |portal, portal_level| {
+            &mut |portal, portal_indentation| {
                 if enclosing_targets.contains(&portal.target) {
                     return None;
                 }
@@ -164,7 +161,7 @@ impl Wiki {
                 Some(self.rendered_content(
                     shown_page,
                     shown_section,
-                    portal_level,
+                    portal_indentation,
                     enclosing_targets,
                 ))
             },
@@ -174,75 +171,61 @@ impl Wiki {
     }
 
     // Render the own content of a page or a section of it in its canonical form, leaving out the
-    // copies its portals show, which belong to what they show. Instances of a page or a section
-    // with the same own content differ only in ways formatting erases.
+    // copies its portals show, which belong to what they show, and without the indentation of its
+    // content. Instances of a page or a section with the same own content differ only in ways
+    // formatting erases.
     pub fn own_content(&self, page: &Page, section: Option<&Section>) -> String {
         self.own_content_with(page, section, &HashMap::new())
     }
 
-    // Render the own content of a page as if its title were at a level, as for a portal's copy read
-    // as a page's content at the portal's level and compared with what the portal shows.
-    pub fn own_content_at(&self, page: &Page, title_level: usize) -> String {
-        self.canonical_content(
-            page,
-            None,
-            title_level,
-            &HashMap::new(),
-            &mut |_portal, _portal_level| Some(String::new()),
-        )
-    }
-
     // Render the own content of a page or a section of it as if each section given content had
-    // that content instead.
+    // that content instead, which is also without the indentation of its content.
     pub fn own_content_with(
         &self,
         page: &Page,
         section: Option<&Section>,
         section_contents: &HashMap<SectionTitle, String>,
     ) -> String {
-        self.canonical_content(
-            page,
-            section,
-            self.level(section),
-            section_contents,
-            &mut |_portal, _portal_level| Some(String::new()),
-        )
-    }
-
-    // Find the level of a page's title, or of a section's.
-    fn level(&self, section: Option<&Section>) -> usize {
-        section.map_or(self.title_level, |section| section.level)
+        self.canonical_content(page, section, 0, section_contents, &mut |_portal, _| {
+            Some(String::new())
+        })
     }
 
     // Render the content of a page or a section of it from the source, from after its title line
-    // but without the blank lines around it, as if its title were at a level, which moves each
-    // title line and closing line in it as many levels. Each section given content, which is only
-    // done at the section's own level, is written with that content instead. Links, title lines,
-    // closing lines, and fences are written in their canonical forms, with Unix line endings, no
-    // whitespace at the end of a line, and a blank line around each title line and closing line.
-    // Each portal shows the body given for it at its level, or is copied as written if it has none.
+    // but without the blank lines around it, indented by a number of spaces rather than as it is in
+    // the source. Each section given content, without the indentation of its content, is written
+    // with that content instead. Links, title lines, and fences are written in their canonical
+    // forms, with Unix line endings, no whitespace at the end of a line, and a blank line around
+    // each title line. Each portal shows the copy given for it at the indentation of its content
+    // in the source, or is copied as written if it has none.
     fn canonical_content(
         &self,
         page: &Page,
         section: Option<&Section>,
-        title_level: usize,
+        indentation: usize,
         section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal, usize) -> Option<String>,
     ) -> String {
         // Use the content given for the section, if any.
         if let Some(content) = section.and_then(|section| section_contents.get(&section.title)) {
-            return content.clone();
+            return reindent(content, 0, indentation);
         }
 
-        // Find the content after the title line, skipping the blank lines around it but
-        // keeping the indentation of its first line, so an indented line which starts with a title
-        // marker doesn't become a title.
-        let (start, end) = match section {
+        // Find the content after the title line, skipping the blank lines around it but keeping
+        // the indentation of its first line. A page's title line extends through any whitespace
+        // after its title, which can be past the end of a page without content.
+        let (start, end, content_indentation) = match section {
             Some(section) => (
-                section.body_source_range.start,
-                section.body_source_range.end,
+                section.body_start,
+                section.source_range.end,
+                line_indentation(&self.source, section.source_range.start).len()
+                    + INDENTATION_WIDTH,
             ),
-            None => (page.title_source_range.end, page.source_range.end),
+            None => (
+                page.title_source_range.end.min(page.source_range.end),
+                page.source_range.end,
+                INDENTATION_WIDTH,
+            ),
         };
         let text = &self.source[start..end];
         let Some(first_character) = text.find(|character: char| !character.is_whitespace()) else {
@@ -254,45 +237,23 @@ impl Wiki {
                 .map_or(0, |index| index + '\n'.len_utf8());
         let end = start + self.source[start..end].trim_end().len();
 
-        // Write the content, then remove the whitespace at the end of each line, using Unix line
-        // endings. Links can't contain line breaks, and each ends with a delimiter, so this never
-        // changes one.
+        // Write the content as it's indented in the source, then move it to the indentation. Links
+        // can't contain line breaks, and each ends with a delimiter, so removing the whitespace at
+        // the end of each line never changes one.
         let mut content = String::new();
-        self.write_region(
-            page,
-            start,
-            end,
-            Releveling {
-                from: self.level(section),
-                to: title_level,
-            },
-            section_contents,
-            body,
-            &mut content,
-        );
-        content
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.write_region(page, start, end, section_contents, body, &mut content);
+        reindent(&content, content_indentation, indentation)
     }
 
     // Write a region of a page's content, interleaving its portals, script blocks, and sections in
-    // source order, and moving its title lines and closing lines as a releveling says. What's
-    // within a section is written with it. A section can contain portals and script blocks, but
-    // nothing is ever within a portal or a script block, since what's within those is part of their
-    // text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The region is written with the content and copies given for its sections and \
-                  portals, as deep as the content containing it."
-    )]
+    // source order. What's within a section is written with it. A section can contain portals and
+    // script blocks, but nothing is ever within a portal or a script block, since what's within
+    // those is part of their text.
     fn write_region(
         &self,
         page: &Page,
         start: usize,
         end: usize,
-        releveling: Releveling,
         section_contents: &HashMap<SectionTitle, String>,
         body: &mut dyn FnMut(&Portal, usize) -> Option<String>,
         content: &mut String,
@@ -321,9 +282,8 @@ impl Wiki {
 
         // Copy the region, writing each portal with its body, each script block with its fences in
         // their canonical form, within a fence longer than any in it, and each section or portal
-        // after a blank line. What follows a section or a portal comes after a blank line too.
-        // Unless a closing line ends it, that's only whitespace or a portal copied as written,
-        // since it would contain anything else.
+        // after a blank line, with its body indented under its title as in the source. What
+        // follows a section or a portal comes after a blank line too.
         let mut copied_through = start;
         let mut follows_section = false;
         for (source_range, part) in parts {
@@ -333,9 +293,11 @@ impl Wiki {
             }
 
             // Leave a portal without a body to be copied as written.
+            let indentation = line_indentation(&self.source, source_range.start);
+            let body_indentation = indentation.len() + INDENTATION_WIDTH;
             let portal_body = match part {
                 Part::Portal(portal) => {
-                    let Some(portal_body) = body(portal, releveling.level(portal.level)) else {
+                    let Some(portal_body) = body(portal, body_indentation) else {
                         continue;
                     };
                     Some(portal_body)
@@ -344,22 +306,9 @@ impl Wiki {
             };
 
             // Copy what precedes the part.
-            let indentation = line_indentation(&self.source, source_range.start);
             if !follows_section {
-                self.copy_text(
-                    page,
-                    copied_through,
-                    source_range.start,
-                    releveling,
-                    content,
-                );
-            } else if !self.copy_after_section(
-                page,
-                copied_through,
-                source_range.start,
-                releveling,
-                content,
-            ) {
+                self.copy_text(page, copied_through, source_range.start, content);
+            } else if !self.copy_after_section(page, copied_through, source_range.start, content) {
                 separate(content);
                 content.push_str(indentation);
             }
@@ -367,26 +316,30 @@ impl Wiki {
             // Write the part.
             follows_section = match part {
                 Part::Portal(portal) => {
-                    let level = releveling.level(portal.level);
                     write_titled(
                         content,
-                        &portal.title_line(level),
+                        indentation,
+                        &portal.title_line(),
                         &portal_body.expect("A portal's body should have been found."),
-                        portal.closing_source_range.map(|_| level),
                     );
                     true
                 }
                 Part::Script(script_block) => {
-                    self.copy_script_block(page, script_block, releveling, content);
+                    self.copy_script_block(page, script_block, content);
                     false
                 }
                 Part::Section(section) => {
-                    let level = releveling.level(section.level);
                     write_titled(
                         content,
-                        &section.title_line(level),
-                        &self.canonical_content(page, Some(section), level, section_contents, body),
-                        section.closing_source_range.map(|_| level),
+                        indentation,
+                        &section.title_line(),
+                        &self.canonical_content(
+                            page,
+                            Some(section),
+                            body_indentation,
+                            section_contents,
+                            body,
+                        ),
                     );
                     true
                 }
@@ -396,21 +349,20 @@ impl Wiki {
 
         // Copy the rest of the region.
         if follows_section {
-            self.copy_after_section(page, copied_through, end, releveling, content);
+            self.copy_after_section(page, copied_through, end, content);
         } else if copied_through < end {
-            self.copy_text(page, copied_through, end, releveling, content);
+            self.copy_text(page, copied_through, end, content);
         }
     }
 
-    // Copy part of a page's content which follows a section or a portal after a blank line, which
-    // is whitespace or portals copied as written unless a closing line ends the section or portal.
-    // Report whether there was anything but whitespace to copy.
+    // Copy part of a page's content which follows a section or a portal after a blank line, from
+    // the start of its first line which isn't blank. Report whether there was anything but
+    // whitespace to copy.
     fn copy_after_section(
         &self,
         page: &Page,
         start: usize,
         end: usize,
-        releveling: Releveling,
         content: &mut String,
     ) -> bool {
         let text = &self.source[start..end];
@@ -425,7 +377,6 @@ impl Wiki {
                     .rfind('\n')
                     .map_or(0, |index| index + '\n'.len_utf8()),
             end,
-            releveling,
             content,
         );
         true
@@ -433,13 +384,7 @@ impl Wiki {
 
     // Copy a script block with its fences in their canonical form, keeping its body as written
     // apart from its links. A block written on one line stays on one line.
-    fn copy_script_block(
-        &self,
-        page: &Page,
-        script_block: &ScriptBlock,
-        releveling: Releveling,
-        content: &mut String,
-    ) {
+    fn copy_script_block(&self, page: &Page, script_block: &ScriptBlock, content: &mut String) {
         // Find the lines which start and end the block's body, writing a block written on one line,
         // which has no body, with the fences for an empty body.
         let SourceRange { start, end } = script_block.source_range;
@@ -462,7 +407,7 @@ impl Wiki {
         for part in [&fence, " ", &argument, "\n"] {
             content.push_str(part);
         }
-        self.copy_text(page, body_start, body_end, releveling, content);
+        self.copy_text(page, body_start, body_end, content);
         content.push_str(line_indentation(&self.source, start));
         content.push_str(&fence);
         if let Some(hash) = &script_block.hash {
@@ -473,76 +418,26 @@ impl Wiki {
 
     // Copy part of a page's content, replacing each link within it with its canonical form: a text
     // link's target escaped, and a filesystem link's normalized target. A malformed link, which a
-    // wiki without syntax errors doesn't have, is copied as written. The `#`s marking each portal's
-    // title line and closing line within it, and those of each section and portal in a portal's
-    // copy, are rewritten as a releveling says, for a portal which is copied as written.
-    fn copy_text(
-        &self,
-        page: &Page,
-        start: usize,
-        end: usize,
-        releveling: Releveling,
-        content: &mut String,
-    ) {
-        // List what's rewritten within the part in source order.
-        let is_within =
-            |source_range: SourceRange| start <= source_range.start && source_range.end <= end;
-        let markers = page
-            .portals
-            .iter()
-            .chain(&page.copy_portals)
-            .map(|portal| {
-                (
-                    portal.level,
-                    portal.source_range.start,
-                    portal.closing_source_range,
-                )
-            })
-            .chain(page.copy_sections.iter().map(|section| {
-                (
-                    section.level,
-                    section.source_range.start,
-                    section.closing_source_range,
-                )
-            }))
-            .flat_map(|(level, title_marker_start, closing_source_range)| {
-                iter::once(title_marker_start)
-                    .chain(
-                        closing_source_range.map(|closing_source_range| closing_source_range.start),
-                    )
-                    .map(move |marker_start| {
-                        (
-                            SourceRange {
-                                start: marker_start,
-                                end: marker_start + level,
-                            },
-                            TITLE_MARKER.to_string().repeat(releveling.level(level)),
-                        )
-                    })
-            });
-        let mut replacements = page
+    // wiki without syntax errors doesn't have, is copied as written.
+    fn copy_text(&self, page: &Page, start: usize, end: usize, content: &mut String) {
+        let mut copied_through = start;
+        for link in page
             .links
             .iter()
-            .filter_map(|link| {
-                let target = match link {
-                    Link::Text {
-                        target, is_local, ..
-                    } => target.link_text(*is_local),
-                    Link::Filesystem { target, .. } => target.text(Context::Link),
-                    Link::Malformed { .. } => return None,
-                };
-                Some((link.source_range(), format!("[{target}]")))
-            })
-            .chain(markers)
-            .filter(|(source_range, _replacement)| is_within(*source_range))
-            .collect::<Vec<_>>();
-        replacements.sort_by_key(|(source_range, _replacement)| source_range.start);
-
-        // Copy the part with each replacement.
-        let mut copied_through = start;
-        for (source_range, replacement) in replacements {
+            .filter(|link| start <= link.source_range().start && link.source_range().end <= end)
+        {
+            let target = match link {
+                Link::Text {
+                    target, is_local, ..
+                } => target.link_text(*is_local),
+                Link::Filesystem { target, .. } => target.text(Context::Link),
+                Link::Malformed { .. } => continue,
+            };
+            let source_range = link.source_range();
             content.push_str(&self.source[copied_through..source_range.start]);
-            content.push_str(&replacement);
+            content.push('[');
+            content.push_str(&target);
+            content.push(']');
             copied_through = source_range.end;
         }
         content.push_str(&self.source[copied_through..end]);
@@ -562,13 +457,14 @@ impl Wiki {
         ))
     }
 
-    // Find the copy a portal shows, along with where each line of the copy starts in it and in the
-    // source.
+    // Find the copy a portal shows, with the indentation of the portal's title removed from each
+    // line so it's indented like a page's content, along with where each line of the copy starts
+    // in it and in the source.
     pub fn copy(&self, portal: &Portal) -> (String, Vec<(usize, usize)>) {
         self.unindented_lines(
-            portal.body_source_range.start,
-            portal.body_source_range.end,
-            "",
+            portal.body_start,
+            portal.source_range.end,
+            line_indentation(&self.source, portal.source_range.start),
         )
     }
 
@@ -635,7 +531,7 @@ impl fmt::Display for Wiki {
 #[derive(Clone, Debug)]
 pub struct Page {
     pub title: PageTitle,
-    pub links: Vec<Link>,
+    pub links: Vec<Link>,                // In source order
     pub portals: Vec<Portal>,            // In source order
     pub script_blocks: Vec<ScriptBlock>, // In source order
     pub sections: Vec<Section>,          // In source order, each with a distinct title
@@ -672,57 +568,44 @@ impl Page {
     }
 }
 
-// This struct represents a section of a page's content, which a title line starts. Its title is
-// marked with a run of `#`s, one for each level: a page's title is at the first level, and each
-// section is one level deeper than the section or page it's in. A section ends at the next title
-// line of the same or a higher level, at the end of the page, or at a closing line, which consists
-// of the `#`s marking its title alone and ends the sections within it too.
+// This struct represents a section of a page's content, which a title line starts. A page's title
+// line starts at the start of its line, and each section's is indented the indentation width more
+// than the title of the section or page it's in. A section contains the lines after its title line
+// which are blank or indented at least the indentation width more than its title, so it ends at the
+// first line which isn't.
 #[derive(Clone, Debug)]
 pub struct Section {
     pub title: SectionTitle,
-    pub level: usize,
-    pub source_range: SourceRange, // From the first `#` through its content or closing line
+    pub source_range: SourceRange, // From the `#` through its content
     pub title_source_range: SourceRange, // From the title through the line's end
-    pub body_source_range: SourceRange, // After the title line through its content
-    pub closing_source_range: Option<SourceRange>, // Its closing line's `#`s, if it has one
+    pub body_start: usize,         // The start of the line after its title line, or its end
 }
 
 impl Section {
-    // Write the section's title line in its canonical form at a level.
-    pub fn title_line(&self, level: usize) -> String {
-        format!(
-            "{} {}",
-            TITLE_MARKER.to_string().repeat(level),
-            self.title.text(Context::Verbatim),
-        )
+    // Write the section's title line in its canonical form, without its indentation.
+    pub fn title_line(&self) -> String {
+        format!("{TITLE_PREFIX}{}", self.title.text(Context::Verbatim))
     }
 }
 
 // This struct represents a portal in a page's content, which shows a page or a section of one. It's
 // a section whose title is a link naming what it shows, and it holds a copy of that content, which
-// formatting keeps in sync, along with any portals within it. The title lines and closing lines in
-// the copy are as deep under the portal's title as they are under the title of what it shows. A
-// portal to a section can name it without its page, which is then the page whose content the
-// portal is in.
+// formatting keeps in sync, along with any portals within it. The copy is indented as deep under
+// the portal's title as the original is under its own title. A portal to a section can name it
+// without its page, which is then the page whose content the portal is in.
 #[derive(Clone, Debug)]
 pub struct Portal {
     pub target: Target,
     pub is_local: bool,
-    pub level: usize,
-    pub source_range: SourceRange, // From the first `#` through its copy or closing line
+    pub source_range: SourceRange,      // From the `#` through its copy
     pub link_source_range: SourceRange, // The link in its title line which names the target
-    pub body_source_range: SourceRange, // After the title line through its copy
-    pub closing_source_range: Option<SourceRange>, // Its closing line's `#`s, if it has one
+    pub body_start: usize,              // The start of the line after its title line, or its end
 }
 
 impl Portal {
-    // Write the portal's title line in its canonical form at a level.
-    pub fn title_line(&self, level: usize) -> String {
-        format!(
-            "{} [{}]",
-            TITLE_MARKER.to_string().repeat(level),
-            self.target.link_text(self.is_local),
-        )
+    // Write the portal's title line in its canonical form, without its indentation.
+    pub fn title_line(&self) -> String {
+        format!("{TITLE_PREFIX}[{}]", self.target.link_text(self.is_local))
     }
 }
 
@@ -758,22 +641,6 @@ enum Part<'a> {
     Portal(&'a Portal),
     Script(&'a ScriptBlock),
     Section(&'a Section),
-}
-
-// This is how the levels of title lines change as content is written: content under a title at one
-// level is written as if its title were at another, so each title line in it moves as many levels.
-#[derive(Clone, Copy)]
-struct Releveling {
-    from: usize,
-    to: usize,
-}
-
-impl Releveling {
-    // Find the level a title line at a level is written at. It's deeper than the title the content
-    // is under, so it stays deeper than the title's new level.
-    fn level(self, level: usize) -> usize {
-        level + self.to - self.from
-    }
 }
 
 // This is a page's title, which text links name it by: non-empty, one line, trimmed, and not
@@ -1128,19 +995,39 @@ fn separate(content: &mut String) {
     }
 }
 
-// Write a section or a portal after a blank line: its title line, any body after another blank
-// line, and, if a closing line ends it, that line at a level after another blank line.
-fn write_titled(content: &mut String, title_line: &str, body: &str, closing_level: Option<usize>) {
+// Write a section or a portal after a blank line: its title line after its indentation, and any
+// body, which is indented already, after another blank line.
+fn write_titled(content: &mut String, indentation: &str, title_line: &str, body: &str) {
     separate(content);
+    content.push_str(indentation);
     content.push_str(title_line);
     if !body.is_empty() {
         content.push_str("\n\n");
         content.push_str(body);
     }
-    if let Some(level) = closing_level {
-        separate(content);
-        content.push_str(&TITLE_MARKER.to_string().repeat(level));
+}
+
+// Count the spaces which indent a line.
+pub fn indentation_of(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+// Move each line of some text from one indentation to another, removing up to a number of spaces
+// from its start and adding another number. Blank lines are left empty, the whitespace at the end
+// of each line is removed, and the lines are joined with Unix line endings.
+pub fn reindent(text: &str, from: usize, to: usize) -> String {
+    let mut reindented = String::with_capacity(text.len());
+    for (index, line) in text.lines().enumerate() {
+        if index > 0 {
+            reindented.push('\n');
+        }
+        let line = line.trim_end();
+        if !line.is_empty() {
+            reindented.extend(iter::repeat_n(' ', to));
+            reindented.push_str(&line[indentation_of(line).min(from)..]);
+        }
     }
+    reindented
 }
 
 // Make the fence for a block with a body: longer than any run of colons starting a line of the
@@ -1176,15 +1063,15 @@ mod tests {
     fn wiki_display() {
         let wiki = parse_wiki(concat!(
             "# Orphan\n",
-            "# Greeting\n\nHello, world!\n",
-            "# Home\n\nCheck out the [Greeting].",
+            "# Greeting\n\n  Hello, world!\n",
+            "# Home\n\n  Check out the [Greeting].",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\nCheck out the [Greeting].\n\n",
-                "# Greeting\n\nHello, world!\n\n",
+                "# Home\n\n  Check out the [Greeting].\n\n",
+                "# Greeting\n\n  Hello, world!\n\n",
                 "# Orphan\n",
             ),
         );
@@ -1193,14 +1080,18 @@ mod tests {
     // Ensure an empty wiki has no output.
     #[test]
     fn empty_wiki_display() {
-        assert_eq!(Wiki::new("", 1).to_string(), "");
+        assert_eq!(Wiki::new("").to_string(), "");
     }
 
     // Ensure a wiki containing an empty page has only its trailing line break, without a redundant
-    // content separator.
+    // content separator, even if the page's title line ends with whitespace.
     #[test]
     fn empty_page_wiki_display() {
         assert_eq!(parse_wiki("# Greeting\n\n\n").to_string(), "# Greeting\n");
+        assert_eq!(
+            parse_wiki("# Home\n  See [A].\n# A   \n").to_string(),
+            "# Home\n\n  See [A].\n\n# A\n",
+        );
     }
 
     // Write content as written, apart from links in their canonical forms, blank lines around the
@@ -1208,64 +1099,66 @@ mod tests {
     #[test]
     fn content_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\r\n\r\n\r\n  # Indented  \r\n",
-            "See [ Other ] and [//images/./raw//].  \r\n\r\n",
-            "\tDone.\r\n\r\n",
+            "# Home\r\n\r\n\r\n    Indented  \r\n",
+            "  See [ Other ] and [//images/./raw//].  \r\n\r\n",
+            "  \tDone.\r\n\r\n",
             "# Other",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n  # Indented\nSee [Other] and [/images/raw/].\n\n\tDone.\n\n",
+                "# Home\n\n    Indented\n  See [Other] and [/images/raw/].\n\n  \tDone.\n\n",
                 "# Other\n",
             ),
         );
     }
 
     // Refresh each portal with a copy of the content of the page it shows, including the portals in
-    // it, with the title lines in it re-marked to sit under the portal's. A portal to a missing
-    // page or one which would complete a cycle is left as written.
+    // it, indented under the portal's title. A portal to a missing page or one which would complete
+    // a cycle is left as written.
     #[test]
     fn portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n## [ Other ]\nstale\n",
-            "## [Missing]\nkept\n### Sub\n",
-            "##   [Home]\nkept\n",
-            "# Other\n\nSee [ Last ].\n\n## [Last]\n\n## Notes\n\n",
-            "# Last\n\nThe end.\n\n## Details\n\nMore.",
+            "# Home\n\n  # [ Other ]\n    stale\n",
+            "  # [Missing]\n    kept\n    # Sub\n",
+            "  #   [Home]\n    kept\n",
+            "# Other\n\n  See [ Last ].\n\n  # [Last]\n\n  # Notes\n\n",
+            "# Last\n\n  The end.\n\n  # Details\n\n    More.",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
                 "# Home\n\n",
-                "## [Other]\n\nSee [Last].\n\n### [Last]\n\nThe end.\n\n#### Details\n\nMore.\n\n",
-                "### Notes\n\n",
-                "## [Missing]\nkept\n### Sub\n",
-                "##   [Home]\nkept\n\n",
-                "# Other\n\nSee [Last].\n\n## [Last]\n\nThe end.\n\n### Details\n\nMore.\n\n",
-                "## Notes\n\n",
-                "# Last\n\nThe end.\n\n## Details\n\nMore.\n",
+                "  # [Other]\n\n    See [Last].\n\n    # [Last]\n\n      The end.\n\n",
+                "      # Details\n\n        More.\n\n",
+                "    # Notes\n\n",
+                "  # [Missing]\n    kept\n    # Sub\n",
+                "  #   [Home]\n    kept\n\n",
+                "# Other\n\n  See [Last].\n\n  # [Last]\n\n    The end.\n\n    # Details\n\n",
+                "      More.\n\n",
+                "  # Notes\n\n",
+                "# Last\n\n  The end.\n\n  # Details\n\n    More.\n",
             ),
         );
     }
 
-    // Write the closing line which ends a portal after its copy, at the portal's level, and re-mark
-    // the closing lines in the copy like its title lines.
+    // Write what follows a portal outside its copy, after a blank line, and what follows a section
+    // within the copy at the copy's indentation.
     #[test]
-    fn closed_portals_display() {
+    fn content_after_portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n## [Other]\nstale\n##\nAfter.\n\n",
-            "# Other\n\nSee:\n\n## More\nYes.\n##\nThe end.",
+            "# Home\n\n  # [Other]\n    stale\n  After.\n\n",
+            "# Other\n\n  See:\n\n  # More\n    Yes.\n  The end.",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n## [Other]\n\nSee:\n\n### More\n\nYes.\n\n###\n\nThe end.\n\n##\n\n",
-                "After.\n\n",
-                "# Other\n\nSee:\n\n## More\n\nYes.\n\n##\n\nThe end.\n",
+                "# Home\n\n  # [Other]\n\n    See:\n\n    # More\n\n      Yes.\n\n    The end.\n\n",
+                "  After.\n\n",
+                "# Other\n\n  See:\n\n  # More\n\n    Yes.\n\n  The end.\n",
             ),
         );
     }
@@ -1276,89 +1169,97 @@ mod tests {
     #[test]
     fn script_blocks_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n:::sort\n- b\n:::\n\n",
-            ":::    sort    desc\n- a\n:::#0a1b2c3d4e5f\n\n",
-            ":::::: tidy\n::: sort :::\n::::::\n\n",
-            "- List:\n  :::sort:::\n\n  ::::: tidy   x  y\n  See [ Home ].\n  :::::\n",
+            "# Home\n\n  :::sort\n  - b\n  :::\n\n",
+            "  :::    sort    desc\n  - a\n  :::#0a1b2c3d4e5f\n\n",
+            "  :::::: tidy\n  ::: sort :::\n  ::::::\n\n",
+            "  - List:\n    :::sort:::\n\n    ::::: tidy   x  y\n    See [ Home ].\n    :::::\n",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n::: sort\n- b\n:::\n\n",
-                "::: sort desc\n- a\n::: #0a1b2c3d4e5f\n\n",
-                ":::: tidy\n::: sort :::\n::::\n\n",
-                "- List:\n  ::: sort :::\n\n  ::: tidy x  y\n  See [Home].\n  :::\n",
+                "# Home\n\n  ::: sort\n  - b\n  :::\n\n",
+                "  ::: sort desc\n  - a\n  ::: #0a1b2c3d4e5f\n\n",
+                "  :::: tidy\n  ::: sort :::\n  ::::\n\n",
+                "  - List:\n    ::: sort :::\n\n    ::: tidy x  y\n    See [Home].\n    :::\n",
             ),
         );
     }
 
-    // Write each title line and closing line in its canonical form, with one blank line between it
-    // and what's around it.
+    // Write each title line in its canonical form, with one blank line between it and what's around
+    // it.
     #[test]
     fn sections_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n##   Monthly  \nNotes.\n\n\n###   Fixed\n\nRent.\n#### Utilities\n",
-            "Power.\n\n###  \nBack.\n### Variable\n\n\nFood.\n## Yearly\n## Empty\n\n",
+            "# Home\n  #   Monthly  \n    Notes.\n\n\n    #   Fixed\n\n      Rent.\n",
+            "      # Utilities\n",
+            "        Power.\n\n    Back.\n    # Variable\n\n\n      Food.\n  # Yearly\n  # Empty\n",
+            "\n",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n## Monthly\n\nNotes.\n\n### Fixed\n\nRent.\n\n#### Utilities\n\n",
-                "Power.\n\n###\n\nBack.\n\n### Variable\n\nFood.\n\n## Yearly\n\n## Empty\n",
+                "# Home\n\n  # Monthly\n\n    Notes.\n\n    # Fixed\n\n      Rent.\n\n",
+                "      # Utilities\n\n",
+                "        Power.\n\n    Back.\n\n    # Variable\n\n      Food.\n\n  # Yearly\n\n",
+                "  # Empty\n",
             ),
         );
     }
 
     // Leave a portal to a missing page, or one which would complete a cycle, as written within a
-    // copy, but with its title lines and closing lines re-marked like the rest of the copy.
+    // copy, but indented like the rest of the copy.
     #[test]
     fn copies_with_portals_as_written_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n## Breakfast\n\n### [Pancakes]\n\n",
-            "# Pancakes\n\nMix.\n\n## [Missing]\n\nKept [ Home ].\n\n### Notes\n\nKept too.\n\n",
-            "###\n\nStill kept.\n\n## [Pancakes]\n\nKept.\n",
+            "# Home\n\n  # Breakfast\n\n    # [Pancakes]\n\n",
+            "# Pancakes\n\n  Mix.\n\n  # [Missing]\n\n    Kept [ Home ].\n\n    # Notes\n\n",
+            "      Kept too.\n\n",
+            "    Still kept.\n\n  # [Pancakes]\n\n    Kept.\n",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n## Breakfast\n\n### [Pancakes]\n\nMix.\n\n",
-                "#### [Missing]\n\nKept [Home].\n\n##### Notes\n\nKept too.\n\n",
-                "#####\n\nStill kept.\n\n#### [Pancakes]\n\nKept.\n\n",
-                "# Pancakes\n\nMix.\n\n## [Missing]\n\nKept [Home].\n\n### Notes\n\nKept too.\n\n",
-                "###\n\nStill kept.\n\n## [Pancakes]\n\nKept.\n",
+                "# Home\n\n  # Breakfast\n\n    # [Pancakes]\n\n      Mix.\n\n",
+                "      # [Missing]\n\n        Kept [Home].\n\n        # Notes\n\n",
+                "          Kept too.\n\n",
+                "        Still kept.\n\n      # [Pancakes]\n\n        Kept.\n\n",
+                "# Pancakes\n\n  Mix.\n\n  # [Missing]\n\n    Kept [Home].\n\n    # Notes\n\n",
+                "      Kept too.\n\n",
+                "    Still kept.\n\n  # [Pancakes]\n\n    Kept.\n",
             ),
         );
     }
 
     // Refresh each portal to a section with a copy of the section's content after its title line,
-    // along with the portals in it, with the title lines in it re-marked to sit under the portal's,
-    // which may move them up. A portal to a section which doesn't exist is left as written.
+    // along with the portals in it, indented under the portal's title, which may move it left. A
+    // portal to a section which doesn't exist is left as written.
     #[test]
     fn section_portals_display() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\n## [Other:Monthly]\n\n## [Other:Closed]\n\nstale\n\n",
-            "## [Other:Missing]\n\nkept\n\n## [:Notes]\n\n## Notes\n\nNone.\n\n",
-            "# Other\n\n## Closed\n\nItem.\n  More.\n\n##\n\nBetween.\n\n",
-            "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home:Notes]\n\n",
-            "## Yearly\n\n### Taxes\n\nDue.\n\n#### Forms\n\nMany.\n\n",
-            "## [Other:Taxes]\n",
+            "# Home\n\n  # [Other:Monthly]\n\n  # [Other:Closed]\n\n    stale\n\n",
+            "  # [Other:Missing]\n\n    kept\n\n  # [:Notes]\n\n  # Notes\n\n    None.\n\n",
+            "# Other\n\n  # Closed\n\n    Item.\n      More.\n\n  Between.\n\n",
+            "  # Monthly\n\n    Rent.\n\n    # Fixed\n\n      # [Home:Notes]\n\n",
+            "  # Yearly\n\n    # Taxes\n\n      Due.\n\n      # Forms\n\n        Many.\n\n",
+            "  # [Other:Taxes]\n",
         ));
 
         assert_eq!(
             wiki.to_string(),
             concat!(
-                "# Home\n\n## [Other:Monthly]\n\nRent.\n\n### Fixed\n\n",
-                "#### [Home:Notes]\n\nNone.\n\n",
-                "## [Other:Closed]\n\nItem.\n  More.\n\n",
-                "## [Other:Missing]\n\nkept\n\n## [:Notes]\n\nNone.\n\n",
-                "## Notes\n\nNone.\n\n",
-                "# Other\n\n## Closed\n\nItem.\n  More.\n\n##\n\nBetween.\n\n",
-                "## Monthly\n\nRent.\n\n### Fixed\n\n#### [Home:Notes]\n\nNone.\n\n",
-                "## Yearly\n\n### Taxes\n\nDue.\n\n#### Forms\n\nMany.\n\n",
-                "## [Other:Taxes]\n\nDue.\n\n### Forms\n\nMany.\n",
+                "# Home\n\n  # [Other:Monthly]\n\n    Rent.\n\n    # Fixed\n\n",
+                "      # [Home:Notes]\n\n        None.\n\n",
+                "  # [Other:Closed]\n\n    Item.\n      More.\n\n",
+                "  # [Other:Missing]\n\n    kept\n\n  # [:Notes]\n\n    None.\n\n",
+                "  # Notes\n\n    None.\n\n",
+                "# Other\n\n  # Closed\n\n    Item.\n      More.\n\n  Between.\n\n",
+                "  # Monthly\n\n    Rent.\n\n    # Fixed\n\n      # [Home:Notes]\n\n",
+                "        None.\n\n",
+                "  # Yearly\n\n    # Taxes\n\n      Due.\n\n      # Forms\n\n        Many.\n\n",
+                "  # [Other:Taxes]\n\n    Due.\n\n    # Forms\n\n      Many.\n",
             ),
         );
     }
@@ -1367,26 +1268,27 @@ mod tests {
     #[test]
     fn own_content() {
         let wiki = parse_wiki(concat!(
-            "# Home\n\nSee [ Other ].  \r\n\n",
-            "## [Other]\nStale.\n### [Last]\n###\nMore.\n##\n\nAfter.\n\n",
-            "## [Last]\n\nStale too.\n",
+            "# Home\n\n  See [ Other ].  \r\n\n",
+            "  # [Other]\n    Stale.\n    # [Last]\n    More.\n\n  After.\n\n",
+            "  # [Last]\n\n    Stale too.\n",
             "# Other\n# Last",
         ));
 
         assert_eq!(
             wiki.own_content(&wiki.pages[&PageTitle::parse("Home").unwrap()], None),
-            "See [Other].\n\n## [Other]\n\n##\n\nAfter.\n\n## [Last]",
+            "See [Other].\n\n# [Other]\n\nAfter.\n\n# [Last]",
         );
     }
 
-    // Find a block's body without its indentation, and a portal's copy after its title line, with
-    // where each line starts in the body or copy and in the source. A line indented less than the
-    // opening fence loses its indentation, and a block written on one line has no body.
+    // Find a block's body without its indentation, and a portal's copy after its title line without
+    // the portal's indentation, with where each line starts in the body or copy and in the source.
+    // A line indented less than the opening fence loses its indentation, and a block written on one
+    // line has no body.
     #[test]
     fn bodies() {
         let source = concat!(
-            "# Home\n  ::: sort\n  First\n\n Second\n  :::\n::: sort :::\n",
-            "## [Other]\n\nThird\n# Other",
+            "# Home\n    ::: sort\n    First\n\n   Second\n    :::\n  ::: sort :::\n",
+            "  # [Other]\n\n    Third\n# Other",
         );
         let wiki = parse_wiki(source);
         let home = &wiki.pages[&PageTitle::parse("Home").unwrap()];
@@ -1395,17 +1297,17 @@ mod tests {
             wiki.body(home.script_blocks[0].source_range),
             Some((
                 "First\n\nSecond\n".to_owned(),
-                vec![(0, 20), (6, 26), (7, 28)],
+                vec![(0, 24), (6, 30), (7, 34)],
             )),
         );
-        assert_eq!(&source[20..25], "First");
-        assert_eq!(&source[28..34], "Second");
+        assert_eq!(&source[24..29], "First");
+        assert_eq!(&source[34..40], "Second");
         assert_eq!(wiki.body(home.script_blocks[1].source_range), None);
         assert_eq!(
             wiki.copy(&home.portals[0]),
-            ("\nThird".to_owned(), vec![(0, 65), (1, 66)]),
+            ("\n  Third".to_owned(), vec![(0, 76), (1, 79)]),
         );
-        assert_eq!(&source[66..71], "Third");
+        assert_eq!(&source[81..86], "Third");
     }
 
     // Trim a page title, and reject one which is empty, spans lines, or starts with `/`.
