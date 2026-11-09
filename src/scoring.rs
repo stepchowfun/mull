@@ -141,12 +141,12 @@ mod tests {
     #[test]
     fn depth_first_preorder() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\nSee [A] and [B].\n",
-            "# A\nSee [A1] and [A2].\n",
-            "# A1\nSee [A1a].\n",
+            "# Home\n  See [A] and [B].\n",
+            "# A\n  See [A1] and [A2].\n",
+            "# A1\n  See [A1a].\n",
             "# A1a\n",
             "# A2\n",
-            "# B\nSee [B1].\n",
+            "# B\n  See [B1].\n",
             "# B1\n",
         ));
 
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn siblings_in_title_order() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\nSee [Charlie], [Alpha], [Bravo], and [Alpha] again.\n",
+            "# Home\n  See [Charlie], [Alpha], [Bravo], and [Alpha] again.\n",
             "# Alpha\n",
             "# Bravo\n",
             "# Charlie\n",
@@ -171,9 +171,9 @@ mod tests {
     #[test]
     fn shortest_paths_only() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\nSee [A], [M], and [Z].\n",
-            "# A\nSee [B].\n",
-            "# B\nSee [Z].\n",
+            "# Home\n  See [A], [M], and [Z].\n",
+            "# A\n  See [B].\n",
+            "# B\n  See [Z].\n",
             "# M\n",
             "# Z\n",
         ));
@@ -185,9 +185,9 @@ mod tests {
     #[test]
     fn first_parent_at_same_depth() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\nSee [B] and [A].\n",
-            "# A\nSee [X].\n",
-            "# B\nSee [X].\n",
+            "# Home\n  See [B] and [A].\n",
+            "# A\n  See [X].\n",
+            "# B\n  See [X].\n",
             "# X\n",
         ));
 
@@ -198,10 +198,10 @@ mod tests {
     #[test]
     fn multiple_paths_and_cycles() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\nSee [Left] and [Target].\n",
-            "# Left\nSee [Middle].\n",
-            "# Middle\nSee [Target].\n",
-            "# Target\nSee [Home] and [Left].\n",
+            "# Home\n  See [Left] and [Target].\n",
+            "# Left\n  See [Middle].\n",
+            "# Middle\n  See [Target].\n",
+            "# Target\n  See [Home] and [Left].\n",
         ));
 
         assert_eq!(titles, vec!["Home", "Left", "Middle", "Target"]);
@@ -212,8 +212,8 @@ mod tests {
     #[test]
     fn links_in_portals() {
         let (_, titles) = traversal_order(concat!(
-            "# Home\n## [Zulu]\nSee [Alpha].\n",
-            "# Zulu\nSee [Alpha].\n",
+            "# Home\n  # [Zulu]\n    See [Alpha].\n",
+            "# Zulu\n  See [Alpha].\n",
             "# Alpha\n",
         ));
 
@@ -223,7 +223,7 @@ mod tests {
     // Leave pages which can't be reached from the home page without a position.
     #[test]
     fn unreachable_pages() {
-        let (wiki, titles) = traversal_order("# Home\nSee [Greeting].\n# Greeting\n# Orphan\n");
+        let (wiki, titles) = traversal_order("# Home\n  See [Greeting].\n# Greeting\n# Orphan\n");
 
         assert_eq!(titles, vec!["Home", "Greeting"]);
         assert_eq!(wiki.page("Orphan").traversal_index, None);

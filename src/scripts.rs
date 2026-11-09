@@ -8,8 +8,8 @@ use crate::{
     parser::{self, backtick_run_length, closing_run_end},
     spelled_path::{FileRoot, code_file_path},
     wiki::{
-        Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX, Wiki,
-        line_indentation, write_block,
+        INDENTATION_WIDTH, Link, Page, PageTitle, SECTION_SEPARATOR, ScriptBlock, TITLE_PREFIX,
+        Wiki, line_indentation, reindent, write_block,
     },
 };
 use sha2::{Digest, Sha256};
@@ -265,20 +265,15 @@ fn run_block(
     let output_source = format!(
         "{TITLE_PREFIX}{}\n\n{}",
         page.title.text(Context::Verbatim),
-        write_block("", &block.name, &output),
+        reindent(&write_block("", &block.name, &output), 0, INDENTATION_WIDTH),
     );
-    let (output_wiki, errors) =
-        parser::parse(None, &output_source, &LineIndex::new(&output_source));
-    if !errors.is_empty() || output_wiki.pages.len() != 1 {
+    let errors = parser::parse(None, &output_source, &LineIndex::new(&output_source)).1;
+    if !errors.is_empty() {
         return Err(Failure::new(
             format!(
-                "The output of {} can't be read as the content of a page.{}",
+                "The output of {} can't be read as the content of a page.\n\n{}",
                 script_display(file_root, &script),
-                if errors.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n\n{}", format_errors(&errors))
-                },
+                format_errors(&errors),
             ),
             None,
         ));
@@ -352,11 +347,11 @@ fn arguments(
             // Code ends at the next run of exactly as many backticks, or else with the arguments.
             let length = backtick_run_length(rest);
             let code_start = position + length;
-            let (code_end, code_run_end) = closing_run_end(source_contents, code_start, length)
-                .filter(|&run_end| run_end <= source_range.end)
-                .map_or((source_range.end, source_range.end), |run_end| {
-                    (run_end - length, run_end)
-                });
+            let (code_end, code_run_end) =
+                closing_run_end(&source_contents[..source_range.end], code_start, length, 0)
+                    .map_or((source_range.end, source_range.end), |run_end| {
+                        (run_end - length, run_end)
+                    });
             argument
                 .get_or_insert_default()
                 .push_str(&source_contents[code_start..code_end]);
@@ -681,16 +676,16 @@ mod tests {
         let _lock = lock_script_tests();
         let wiki = TestWiki::new(
             concat!(
-                "# Home\n\n[/scripts/] [Other]\n\n",
-                "- List:\n  ::: sort\n  - b\n  - a\n  :::\n\n",
-                "::: fence :::\n\n",
-                "## Section\n\n::: title :::\n\n##\n\n",
+                "# Home\n\n  [/scripts/] [Other]\n\n",
+                "  - List:\n    ::: sort\n    - b\n    - a\n    :::\n\n",
+                "  ::: fence :::\n\n",
+                "  # Section\n\n    ::: title :::\n\n",
                 "# Other\n",
             ),
             &[
                 ("sort.sh", "#!/bin/sh\nsort\n"),
                 ("fence.sh", "#!/bin/sh\necho '::: sort :::'\n"),
-                ("title.sh", "#!/bin/sh\necho '#### Deep'\n"),
+                ("title.sh", "#!/bin/sh\necho '# Deep'\n"),
             ],
         );
 
@@ -699,10 +694,10 @@ mod tests {
         assert_eq!(
             contents,
             concat!(
-                "# Home\n\n[/scripts/] [Other]\n\n",
-                "- List:\n  ::: sort\n  - a\n  - b\n  ::: #hash\n\n",
-                ":::: fence\n::: sort :::\n:::: #hash\n\n",
-                "## Section\n\n::: title\n#### Deep\n::: #hash\n\n##\n\n",
+                "# Home\n\n  [/scripts/] [Other]\n\n",
+                "  - List:\n    ::: sort\n    - a\n    - b\n    ::: #hash\n\n",
+                "  :::: fence\n  ::: sort :::\n  :::: #hash\n\n",
+                "  # Section\n\n    ::: title\n    # Deep\n    ::: #hash\n\n",
                 "# Other\n",
             ),
         );
@@ -717,8 +712,8 @@ mod tests {
         let _lock = lock_script_tests();
         let wiki = TestWiki::new(
             concat!(
-                "# Home\n\n[/scripts/]\n\n",
-                "::: fail :::\n\n::: bracket :::\n\n::: plain :::\n\n::: quiet :::\n",
+                "# Home\n\n  [/scripts/]\n\n",
+                "  ::: fail :::\n\n  ::: bracket :::\n\n  ::: plain :::\n\n  ::: quiet :::\n",
             ),
             &[
                 ("fail.sh", "#!/bin/sh\necho nope >&2\nexit 3\n"),
@@ -771,7 +766,7 @@ mod tests {
     fn runs_skip_unchanged_blocks() {
         let _lock = lock_script_tests();
         let wiki = TestWiki::new(
-            "# Home\n\n[/runs] [/scripts/]\n\n::: count a\n- b\n:::\n",
+            "# Home\n\n  [/runs] [/scripts/]\n\n  ::: count a\n  - b\n  :::\n",
             &[("count.sh", "#!/bin/sh\necho run >> runs\ncat\n")],
         );
         fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
@@ -797,8 +792,8 @@ mod tests {
     #[test]
     fn script_arguments() {
         let source = concat!(
-            "# Home\n::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] ",
-            "[:Notes] :::\n## Notes",
+            "# Home\n  ::: tidy [Home] [/notes.txt] `a\\d b` x\\]y two  words --page=[Home] ",
+            "[:Notes] :::\n  # Notes",
         );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());

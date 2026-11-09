@@ -15,21 +15,21 @@ A *wiki* is a text file with a `.mull` extension. It contains *pages* which link
 ```md
 # Home
 
-My go-to breakfast is [Pancakes] with fresh [Lemons].
+  My go-to breakfast is [Pancakes] with fresh [Lemons].
 
 # Lemons
 
-Great on [Pancakes].
+  Great on [Pancakes].
 
 # Pancakes
 
-- 1 cup of flour
-- 1 cup of milk
-- 1 egg
-- A squeeze of [Lemons]
+  - 1 cup of flour
+  - 1 cup of milk
+  - 1 egg
+  - A squeeze of [Lemons]
 ```
 
-Each page starts with a `# Title`, followed by the contents of the page. To link to a page, use square brackets like `[Lemons]`.
+Each page starts with a `# Title`, followed by the contents of the page, indented by two spaces. To link to a page, use square brackets like `[Lemons]`.
 
 ![Autocomplete.](https://raw.githubusercontent.com/stepchowfun/mull/main/screenshots/completions.png)
 
@@ -39,33 +39,33 @@ Mull formats the wiki when you save the file (default behavior), or when you exp
 
 ### Dividing a page into sections
 
-A page can be divided into *sections*, which can be linked to directly. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings.
+A page can be divided into *sections*, which can be linked to directly. A section starts with a `# Title` indented like the rest of the page, and the contents of the section are indented by two more spaces.
 
 ```md
 # Pancakes
 
-## Ingredients
+  # Ingredients
 
-- 1 cup of flour
-- 1 cup of milk
+    - 1 cup of flour
+    - 1 cup of milk
 
-## Steps
+  # Steps
 
-Whisk everything together.
+    Whisk everything together.
 ```
 
-To close a section explicitly, write a matching string of `#`s on a line by themselves:
+Sections can be nested. A section ends at the first line that's indented less than its contents, so the indentation shows where each section starts and ends:
 
 ```md
-## Steps
+# Pancakes
 
-### Tips
+  # Steps
 
-Let the batter rest for a few minutes.
+    # Tips
 
-###
+      Let the batter rest for a few minutes.
 
-Whisk everything together.
+    Whisk everything together.
 ```
 
 To link to a section, write the page title, then `:`, and finally the section title, like `[Pancakes:Steps]`. You can leave out the page title when linking to a section on the same page, like `[:Tips]`.
@@ -75,22 +75,26 @@ To link to a section, write the page title, then `:`, and finally the section ti
 A *portal* is a window into another page or section. To open a portal, create a section whose title is a link. For example, if you have a page called `Pancakes`, you can open a portal to it from another page like this:
 
 ```md
-This is my favorite breakfast:
+# Home
 
-## [Pancakes]
+  This is my favorite breakfast:
+
+  # [Pancakes]
 ```
 
 When the wiki is formatted (e.g., on save), the portal will be filled in with a copy of the page:
 
 ```md
-This is my favorite breakfast:
+# Home
 
-## [Pancakes]
+  This is my favorite breakfast:
 
-- 1 cup of flour
-- 1 cup of milk
-- 1 egg
-- A squeeze of [Lemons]
+  # [Pancakes]
+
+    - 1 cup of flour
+    - 1 cup of milk
+    - 1 egg
+    - A squeeze of [Lemons]
 ```
 
 Any edits to the original page will be propagated to the portal when the wiki is formatted. You can also edit the content in the portal directly, and the edits will sync back to the original.
@@ -110,13 +114,15 @@ Just as every page must be reachable from `Home`, every file in `<wiki>_files` (
 Suppose you have a list that you want to keep sorted:
 
 ```md
-The contents of my pantry:
+# Home
 
-- Garlic
-- Kosher salt
-- Miso
-- Olive oil
-- Rice
+  The contents of my pantry:
+
+  - Garlic
+  - Kosher salt
+  - Miso
+  - Olive oil
+  - Rice
 ```
 
 Mull can help with this; you just have to teach it about sorting. Create a file called `<wiki>_files/scripts/sort.sh` with the following contents:
@@ -131,15 +137,17 @@ Make it executable with `chmod +x <wiki>_files/scripts/sort.sh`.
 Now you can put the list in a `sort` block:
 
 ```md
-The contents of my pantry:
+# Home
 
-::: sort
-- Garlic
-- Kosher salt
-- Miso
-- Olive oil
-- Rice
-:::
+  The contents of my pantry:
+
+  ::: sort
+  - Garlic
+  - Kosher salt
+  - Miso
+  - Olive oil
+  - Rice
+  :::
 ```
 
 Mull will then sort the list automatically whenever the wiki is formatted (e.g., on save). That example sorting script accepts arguments, so you can, for example, sort in reverse order with `::: sort -r`.
@@ -153,19 +161,19 @@ To use a special symbol like `[` or `]` literally, put a backslash before it, li
 ````md
 # Home
 
-I'm learning Python, currently working on a [Dice game].
+  I'm learning Python, currently working on a [Dice game].
 
 # Dice game
 
-```python
-import random
+  ```python
+  import random
 
-for turn in range(3):
-    roll = random.randint(1, 6)
-    print(f"Roll {turn + 1}: {roll}")
+  for turn in range(3):
+      roll = random.randint(1, 6)
+      print(f"Roll {turn + 1}: {roll}")
 
-print("Thanks for playing!")
-```
+  print("Thanks for playing!")
+  ```
 ````
 
 No escaping is necessary inside titles or code.

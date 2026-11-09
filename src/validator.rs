@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn missing_text_link() {
         let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Zulu] and [Alpha].").unwrap();
+        let wiki = parse("# Home\n  See [Zulu] and [Alpha].").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn repeated_missing_text_link() {
         let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Missing] and [Missing].").unwrap();
+        let wiki = parse("# Home\n  See [Missing] and [Missing].").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn unreachable_pages() {
         let directory = TestDirectory::new();
-        let wiki = parse("# Home\nSee [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
+        let wiki = parse("# Home\n  See [Middle].\n# Middle\n# Zulu\n# Alpha").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
@@ -813,14 +813,14 @@ mod tests {
     fn portal_cycles() {
         let directory = TestDirectory::new();
         let wiki = parse(concat!(
-            "# Home\n[Middle] [Self] [Top]\n",
-            "# Top\n## [Left]\n## [Right]\n",
-            "# Left\n## [Bottom]\n",
-            "# Right\n## [Bottom]\n",
+            "# Home\n  [Middle] [Self] [Top]\n",
+            "# Top\n  # [Left]\n  # [Right]\n",
+            "# Left\n  # [Bottom]\n",
+            "# Right\n  # [Bottom]\n",
             "# Bottom\n",
-            "# Middle\n## [Last]\n",
-            "# Last\n## [Middle]\n",
-            "# Self\n## [Self]\n",
+            "# Middle\n  # [Last]\n",
+            "# Last\n  # [Middle]\n",
+            "# Self\n  # [Self]\n",
         ))
         .unwrap();
 
@@ -839,8 +839,8 @@ mod tests {
     #[test]
     fn section_links() {
         let wiki = parse(concat!(
-            "# Home\n[Notes:Missing] [Notes:Present] [:Local] [:Absent]\n## Local\n",
-            "# Notes\n## Present",
+            "# Home\n  [Notes:Missing] [Notes:Present] [:Local] [:Absent]\n  # Local\n",
+            "# Notes\n  # Present",
         ))
         .unwrap();
 
@@ -867,8 +867,8 @@ mod tests {
     #[test]
     fn section_portal_cycles() {
         let wiki = parse(concat!(
-            "# Home\n[Other]\n## [:Notes]\n## Notes\n### [Other:Left]\n",
-            "# Other\n## Left\n### [Home:Notes]\n## Right\n### [:Left]\n",
+            "# Home\n  [Other]\n  # [:Notes]\n  # Notes\n    # [Other:Left]\n",
+            "# Other\n  # Left\n    # [Home:Notes]\n  # Right\n    # [:Left]\n",
         ))
         .unwrap();
 
@@ -883,7 +883,7 @@ mod tests {
     // Validate syntax and graph structure without requiring an untitled wiki to be saved.
     #[test]
     fn untitled_text_only_wiki() {
-        let wiki = parse("# Home\nSee [Greeting].\n# Greeting").unwrap();
+        let wiki = parse("# Home\n  See [Greeting].\n# Greeting").unwrap();
 
         assert!(validate_untitled(&wiki).is_ok());
     }
@@ -891,7 +891,7 @@ mod tests {
     // Report every filesystem link at its source location until an untitled wiki is saved.
     #[test]
     fn untitled_filesystem_links() {
-        let source = "# Home\n[/notes.txt] [/images/]";
+        let source = "# Home\n  [/notes.txt] [/images/]";
         let wiki = parse(source).unwrap();
 
         let errors = validate_untitled(&wiki).unwrap_err();
@@ -920,8 +920,8 @@ mod tests {
         directory.write("scripts/tidy.py", "");
         directory.write("scripts/tidy.sh", "");
         let wiki = parse(concat!(
-            "# Home\n[/scripts/]\n",
-            "::: sort -f\n:::\n::: tidy :::\n::: missing :::\n",
+            "# Home\n  [/scripts/]\n",
+            "  ::: sort -f\n  :::\n  ::: tidy :::\n  ::: missing :::\n",
         ))
         .unwrap();
 
@@ -941,7 +941,7 @@ mod tests {
     // Ask for an unsaved wiki to be saved before finding its scripts.
     #[test]
     fn untitled_scripts() {
-        let wiki = parse("# Home\n::: sort :::").unwrap();
+        let wiki = parse("# Home\n  ::: sort :::").unwrap();
 
         let errors = validate_untitled(&wiki).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -967,7 +967,7 @@ mod tests {
     fn links_without_file_root() {
         let directory = TestDirectory::new();
         fs::write(directory.path().join("notes.txt"), "notes").unwrap();
-        let wiki = parse("# Home\n[/notes.txt] [/]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt] [/]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
@@ -1023,7 +1023,7 @@ mod tests {
                 "file",
             )
             .unwrap();
-            let wiki = parse("# Home\n[/file.txt]").unwrap();
+            let wiki = parse("# Home\n  [/file.txt]").unwrap();
 
             assert!(validate(&wiki, &wiki_path).is_ok(), "{wiki_name}");
         }
@@ -1035,7 +1035,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("nested.mull", "# Home\n");
         directory.write("nested/file.txt", "file");
-        let wiki = parse("# Home\n[/nested.mull]").unwrap();
+        let wiki = parse("# Home\n  [/nested.mull]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -1053,7 +1053,7 @@ mod tests {
         directory.write(".secret", "secret");
         directory.write("ignored.txt", "ignored");
         directory.write("images/photo.jpg", "photo");
-        let wiki = parse("# Home\n[/.gitignore] [/.secret] [/images/]").unwrap();
+        let wiki = parse("# Home\n  [/.gitignore] [/.secret] [/images/]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1080,7 +1080,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("notes.txt", "notes");
         directory.write("images/photo.jpg", "photo");
-        let wiki = parse("# Home\n[/]").unwrap();
+        let wiki = parse("# Home\n  [/]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1092,7 +1092,7 @@ mod tests {
         directory.write("notes.txt", "notes");
         let wiki_path = directory.wiki_path();
         fs::remove_file(&wiki_path).unwrap();
-        let wiki = parse("# Home\n[/notes.txt]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt]").unwrap();
 
         assert!(validate(&wiki, &wiki_path).is_ok());
     }
@@ -1103,7 +1103,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("notes.txt", "notes");
         fs::create_dir(directory.path().join("nested")).unwrap();
-        let wiki = parse("# Home\n[/notes.txt]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt]").unwrap();
 
         assert!(validate(&wiki, &directory.path().join("nested/../wiki.mull")).is_ok());
     }
@@ -1119,7 +1119,7 @@ mod tests {
         let alias_parent = TestDirectory::new();
         let alias = alias_parent.path().join("alias");
         symlink(directory.path(), &alias).unwrap();
-        let wiki = parse("# Home\n[/notes.txt]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt]").unwrap();
 
         assert!(validate(&wiki, &alias.join("wiki.mull")).is_ok());
     }
@@ -1135,7 +1135,7 @@ mod tests {
         target.write("notes.txt", "notes");
         target.write("unreferenced.txt", "unreferenced");
         symlink(target.join(""), directory.path().join("wiki_files")).unwrap();
-        let wiki = parse("# Home\n[/notes.txt]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -1156,7 +1156,7 @@ mod tests {
         directory.write("locked/file.txt", "file");
         let locked = directory.join("locked");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o311)).unwrap();
-        let wiki = parse("# Home\n[/locked/file.txt]").unwrap();
+        let wiki = parse("# Home\n  [/locked/file.txt]").unwrap();
 
         let listable = fs::read_dir(&locked).is_ok();
         let result = validate(&wiki, &directory.wiki_path());
@@ -1176,7 +1176,7 @@ mod tests {
     fn misspelled_paths() {
         let directory = TestDirectory::new();
         directory.write("images/photo.jpg", "photo");
-        let wiki = parse("# Home\n[/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
+        let wiki = parse("# Home\n  [/Images/] [/images/Photo.jpg] [/IMAGES/PHOTO.JPG]").unwrap();
 
         // Report the first misspelled name along each path.
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
@@ -1201,7 +1201,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("images/photo.jpg", "photo");
         directory.write("notes.txt", "notes");
-        let wiki = parse("# Home\n[/images] [/notes.txt/]").unwrap();
+        let wiki = parse("# Home\n  [/images] [/notes.txt/]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 4);
@@ -1223,7 +1223,7 @@ mod tests {
         directory.create_dir("empty/nested");
         directory.write("logs/debug.log", "debug");
         directory.write("deep/nested/file.txt", "file");
-        let wiki = parse("# Home\n[/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
+        let wiki = parse("# Home\n  [/.gitignore] [/empty/] [/logs/] [/deep/]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1237,7 +1237,7 @@ mod tests {
         directory.write("build/output.txt", "output");
         directory.write(".git/config", "config");
         let wiki = parse(
-            "# Home\n[/.gitignore] [/secret.txt] [/build/] [/build/output.txt] [/.git/config]",
+            "# Home\n  [/.gitignore] [/secret.txt] [/build/] [/build/output.txt] [/.git/config]",
         )
         .unwrap();
 
@@ -1259,7 +1259,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("scripts/sort.sh", "");
         directory.write("scripts/unused.sh", "");
-        let wiki = parse("# Home\n::: sort :::\n").unwrap();
+        let wiki = parse("# Home\n  ::: sort :::\n").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -1295,7 +1295,7 @@ mod tests {
             .chain(["[/]".to_owned()])
             .collect::<Vec<_>>()
             .join(" ");
-        let wiki = parse(&format!("# Home\n{links}")).unwrap();
+        let wiki = parse(&format!("# Home\n  {links}")).unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS + 1);
@@ -1314,7 +1314,7 @@ mod tests {
             directory.write(&format!("unreferenced-{index}.txt"), "");
         }
         directory.create_dir("empty");
-        let wiki = parse("# Home\n[/missing.txt]").unwrap();
+        let wiki = parse("# Home\n  [/missing.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), MAX_FILESYSTEM_ERRORS + 1);
@@ -1337,7 +1337,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("notes/current.txt", "current");
         directory.write("notes/archive/old.txt", "old");
-        let wiki = parse("# Home\n[/notes/current.txt] [/notes/archive/old.txt]").unwrap();
+        let wiki = parse("# Home\n  [/notes/current.txt] [/notes/archive/old.txt]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1353,7 +1353,7 @@ mod tests {
         directory.create_dir("empty/nested");
         directory.create_dir("outer/inner");
         directory.create_dir("linked/inside");
-        let wiki = parse("# Home\n[/notes.txt] [/outer/inner/] [/linked/]").unwrap();
+        let wiki = parse("# Home\n  [/notes.txt] [/outer/inner/] [/linked/]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 2);
@@ -1377,7 +1377,7 @@ mod tests {
             &validate(&parse("# Home").unwrap(), &directory.wiki_path()).unwrap_err(),
             "Directory `/` isn't linked to. Link to it, or delete it.",
         ));
-        assert!(validate(&parse("# Home\n[/]").unwrap(), &directory.wiki_path()).is_ok());
+        assert!(validate(&parse("# Home\n  [/]").unwrap(), &directory.wiki_path()).is_ok());
         directory.create_dir("empty");
         let errors = validate(&parse("# Home").unwrap(), &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -1397,7 +1397,7 @@ mod tests {
         directory.write("target.txt", "content");
         symlink("target.txt", directory.join("first.txt")).unwrap();
         symlink("target.txt", directory.join("second.txt")).unwrap();
-        let wiki = parse("# Home\n[/target.txt] [/first.txt]").unwrap();
+        let wiki = parse("# Home\n  [/target.txt] [/first.txt]").unwrap();
 
         let errors = validate(&wiki, &directory.wiki_path()).unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -1416,7 +1416,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("target/file.txt", "content");
         symlink("target", directory.join("alias")).unwrap();
-        let wiki = parse("# Home\n[/target/] [/alias/file.txt]").unwrap();
+        let wiki = parse("# Home\n  [/target/] [/alias/file.txt]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1431,7 +1431,7 @@ mod tests {
         let directory = TestDirectory::new();
         let external_directory = TestDirectory::new();
         symlink(external_directory.path(), directory.join("external")).unwrap();
-        let wiki = parse("# Home\n[/external/wiki.mull]").unwrap();
+        let wiki = parse("# Home\n  [/external/wiki.mull]").unwrap();
 
         assert!(validate(&wiki, &directory.wiki_path()).is_ok());
     }
@@ -1474,7 +1474,7 @@ mod tests {
         let directory = TestDirectory::new();
         directory.write("unreferenced.txt", "content");
         let wiki = parse(concat!(
-            "# Home\nSee [Missing] and [/missing.txt].\n",
+            "# Home\n  See [Missing] and [/missing.txt].\n",
             "# Orphan",
         ))
         .unwrap();

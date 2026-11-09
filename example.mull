@@ -1,129 +1,123 @@
 # Home
 
-This wiki is a short tour of Mull, written in Mull. Each page shows one feature:
+  This wiki is a short tour of Mull, written in Mull. Each page shows one feature:
 
-- [Pages and links]
-- [Sections]
-- [Files]
-- [Portals]
-- [Scripts]
-- [Code and escaping]
+  - [Pages and links]
+  - [Sections]
+  - [Files]
+  - [Portals]
+  - [Scripts]
+  - [Code and escaping]
 
 # Code and escaping
 
-Text between backticks is taken as written, so `[Home]` here isn't a link. To write a bracket elsewhere, put a backslash before it, like \[this\].
+  Text between backticks is taken as written, so `[Home]` here isn't a link. To write a bracket elsewhere, put a backslash before it, like \[this\].
 
-Code blocks are taken as written too, and highlighted in the editor:
+  Code blocks are taken as written too, and highlighted in the editor:
 
-```python
-print("Hello from a code block!")
-```
+  ```python
+  print("Hello from a code block!")
+  ```
 
 # Files
 
-A wiki's files go in a directory next to it, named after the wiki with `_files` in place of `.mull`. This wiki's files are in `example_files`.
+  A wiki's files go in a directory next to it, named after the wiki with `_files` in place of `.mull`. This wiki's files are in `example_files`.
 
-To link to a file, start the link with `/`, like this photo of the Mona Lisa: [/photos/paris/mona_lisa.jpg]. Hover over the link to preview the file.
+  To link to a file, start the link with `/`, like this photo of the Mona Lisa: [/photos/paris/mona_lisa.jpg]. Hover over the link to preview the file.
 
-A link to a directory ends with `/`, like [/documents/], and covers everything inside it. Every file must be linked to, directly or through a directory. A script used in a block, like the ones in [Scripts], counts as linked.
+  A link to a directory ends with `/`, like [/documents/], and covers everything inside it. Every file must be linked to, directly or through a directory. A script used in a block, like the ones in [Scripts], counts as linked.
 
 # Pages and links
 
-Each page starts with a title line, like `# Pages and links` at the top of this one. To link to a page, put its title in square brackets, like this link back to [Home].
+  Each page starts with a title line, like `# Pages and links` at the top of this one, and its contents are indented by two spaces. To link to a page, put its title in square brackets, like this link back to [Home].
 
-Every page must be reachable from `Home` by following links. Delete the link to this page from [Home], and Mull reports that this page can't be reached. A link to a page that doesn't exist, like `[Lemon tart]` would be, is an error too, with a quick fix in the editor that creates the page.
+  Every page must be reachable from `Home` by following links. Delete the link to this page from [Home], and Mull reports that this page can't be reached. A link to a page that doesn't exist, like `[Lemon tart]` would be, is an error too, with a quick fix in the editor that creates the page.
 
-When Mull formats the wiki, it orders the pages by the links between them, so you never have to arrange them yourself.
+  When Mull formats the wiki, it orders the pages by the links between them, so you never have to arrange them yourself.
 
 # Portals
 
-A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. Here's a portal to the recipe for pancakes:
+  A portal is a window into another page. It holds a copy of the page's contents, and Mull keeps them in sync. Here's a portal to the recipe for pancakes:
 
-## [Pancakes]
+  # [Pancakes]
 
-- 1 cup of flour
-- 1 cup of milk
-- 1 egg
-- A squeeze of lemon
+    - 1 cup of flour
+    - 1 cup of milk
+    - 1 egg
+    - A squeeze of lemon
 
-### Steps
+    # Steps
 
-Whisk everything together.
+      Whisk everything together.
 
-##
-
-Like any section, a portal lasts until the next title at its level or higher, or until a matching line of `#`s, like the `##` above.
+  Like any section, a portal ends at the first line indented less than its contents, like this one.
 
 # Pancakes
 
-- 1 cup of flour
-- 1 cup of milk
-- 1 egg
-- A squeeze of lemon
+  - 1 cup of flour
+  - 1 cup of milk
+  - 1 egg
+  - A squeeze of lemon
 
-## Steps
+  # Steps
 
-Whisk everything together.
+    Whisk everything together.
 
 # Scripts
 
-A script block runs one of the wiki's scripts, which are in `example_files/scripts`, whenever the wiki is formatted. The script reads the block's contents and replaces them with its output. The hash after the closing fence notes that the output is up to date, so the script doesn't run again until the block or the script changes.
+  A script block runs one of the wiki's scripts, which are in `example_files/scripts`, whenever the wiki is formatted. The script reads the block's contents and replaces them with its output. The hash after the closing fence notes that the output is up to date, so the script doesn't run again until the block or the script changes.
 
-The `sort` script keeps a list in order, moving nested lines with the line above them. Write `::: sort desc` to sort in reverse.
+  The `sort` script keeps a list in order, moving nested lines with the line above them. Write `::: sort desc` to sort in reverse.
 
-::: sort
-- Apples
-  - Honeycrisp
-  - Granny Smith
-- Cherries
-- Pears
-::: #2ed65aadf508
+  ::: sort
+  - Apples
+    - Honeycrisp
+    - Granny Smith
+  - Cherries
+  - Pears
+  ::: #2ed65aadf508
 
-The `chrono` script sorts dates and writes them in a standard form.
+  The `chrono` script sorts dates and writes them in a standard form.
 
-::: chrono
-- 2026-03-01: Spring cleaning
-- 2026-07-04: Picnic in the park
-- 2027-01-15: Car registration renewal
-::: #df07de3fc6a7
+  ::: chrono
+  - 2026-03-01: Spring cleaning
+  - 2026-07-04: Picnic in the park
+  - 2027-01-15: Car registration renewal
+  ::: #df07de3fc6a7
 
-The `calc` script works out arithmetic. On each line with an `=`, it replaces whatever follows the `=` with the result.
+  The `calc` script works out arithmetic. On each line with an `=`, it replaces whatever follows the `=` with the result.
 
-::: calc
-36 - 2 * 0.75 = 34.5
-(3 + 5) * 2 ^ 3 = 64
-::: #d5a18e0631bc
+  ::: calc
+  36 - 2 * 0.75 = 34.5
+  (3 + 5) * 2 ^ 3 = 64
+  ::: #d5a18e0631bc
 
 # Sections
 
-A page can be divided into *sections*. A section starts with a `## Title`, with another `#` for each level of nesting, just like Markdown headings. It lasts until the next title at its level or higher, or until a matching line of `#`s, like the `###` under [:Breakfast].
+  A page can be divided into *sections*. A section starts with a title line like `# Dinner`, indented like the rest of the page, and its contents are indented by two more spaces. Sections can be nested, and a section ends at the first line indented less than its contents, like the line after [:Weekends] below.
 
-To link to a section, write `:` and the section title after the page title, like [Sections:Dinner]. You can leave out the page title when linking to a section on the same page, like [:Weekends]. A portal can show a section too:
+  To link to a section, write `:` and the section title after the page title, like [Sections:Dinner]. You can leave out the page title when linking to a section on the same page, like [:Weekends]. A portal can show a section too:
 
-## [:Breakfast]
+  # [:Breakfast]
 
-Usually [Pancakes].
+    Usually [Pancakes].
 
-### Weekends
+    # Weekends
 
-With extra lemon.
+      With extra lemon.
 
-###
+    Coffee every day.
 
-Coffee every day.
+  # Breakfast
 
-## Breakfast
+    Usually [Pancakes].
 
-Usually [Pancakes].
+    # Weekends
 
-### Weekends
+      With extra lemon.
 
-With extra lemon.
+    Coffee every day.
 
-###
+  # Dinner
 
-Coffee every day.
-
-## Dinner
-
-Whatever's in the fridge.
+    Whatever's in the fridge.

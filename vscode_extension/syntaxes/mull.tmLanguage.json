@@ -51,7 +51,7 @@
               "name": "punctuation.definition.fenced_code.begin.mull"
             }
           },
-          "end": "(?<!`)\\1(?!`)",
+          "end": "(?<!`)\\1(?!`)|^(?=\\S)",
           "endCaptures": {
             "0": {
               "name": "punctuation.definition.fenced_code.end.mull"
@@ -74,7 +74,7 @@
         {
           "contentName": "meta.embedded.block.bat.mull",
           "begin": "\\G(?i:bat|batch|cmd)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.batchfile"
@@ -84,7 +84,7 @@
         {
           "contentName": "meta.embedded.block.c.mull",
           "begin": "\\G(?i:c|h)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.c"
@@ -94,7 +94,7 @@
         {
           "contentName": "meta.embedded.block.clojure.mull",
           "begin": "\\G(?i:clojure|clj|cljs)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.clojure"
@@ -104,7 +104,7 @@
         {
           "contentName": "meta.embedded.block.cpp.mull",
           "begin": "\\G(?i:cpp|c\\+\\+|cc|cxx|hpp)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.cpp"
@@ -114,7 +114,7 @@
         {
           "contentName": "meta.embedded.block.csharp.mull",
           "begin": "\\G(?i:csharp|cs|c#)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.cs"
@@ -124,7 +124,7 @@
         {
           "contentName": "meta.embedded.block.css.mull",
           "begin": "\\G(?i:css)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.css"
@@ -134,7 +134,7 @@
         {
           "contentName": "meta.embedded.block.dart.mull",
           "begin": "\\G(?i:dart)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.dart"
@@ -144,7 +144,7 @@
         {
           "contentName": "meta.embedded.block.diff.mull",
           "begin": "\\G(?i:diff|patch)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.diff"
@@ -154,7 +154,7 @@
         {
           "contentName": "meta.embedded.block.dockerfile.mull",
           "begin": "\\G(?i:dockerfile|docker|containerfile)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.dockerfile"
@@ -164,7 +164,7 @@
         {
           "contentName": "meta.embedded.block.dotenv.mull",
           "begin": "\\G(?i:dotenv|env)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.dotenv"
@@ -174,7 +174,7 @@
         {
           "contentName": "meta.embedded.block.fsharp.mull",
           "begin": "\\G(?i:fsharp|fs|f#)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.fsharp"
@@ -184,7 +184,7 @@
         {
           "contentName": "meta.embedded.block.go.mull",
           "begin": "\\G(?i:go|golang)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.go"
@@ -194,7 +194,7 @@
         {
           "contentName": "meta.embedded.block.groovy.mull",
           "begin": "\\G(?i:groovy|gradle)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.groovy"
@@ -204,7 +204,7 @@
         {
           "contentName": "meta.embedded.block.html.mull",
           "begin": "\\G(?i:html|htm|xhtml)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "text.html.basic"
@@ -214,7 +214,7 @@
         {
           "contentName": "meta.embedded.block.ini.mull",
           "begin": "\\G(?i:ini|cfg|conf)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.ini"
@@ -224,7 +224,7 @@
         {
           "contentName": "meta.embedded.block.java.mull",
           "begin": "\\G(?i:java)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.java"
@@ -234,7 +234,7 @@
         {
           "contentName": "meta.embedded.block.javascript.mull",
           "begin": "\\G(?i:javascript|js|mjs|cjs)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.js"
@@ -244,7 +244,7 @@
         {
           "contentName": "meta.embedded.block.javascriptreact.mull",
           "begin": "\\G(?i:jsx)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.js.jsx"
@@ -254,7 +254,7 @@
         {
           "contentName": "meta.embedded.block.json.mull",
           "begin": "\\G(?i:json)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.json"
@@ -264,7 +264,7 @@
         {
           "contentName": "meta.embedded.block.jsonc.mull",
           "begin": "\\G(?i:jsonc)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.json.comments"
@@ -274,7 +274,7 @@
         {
           "contentName": "meta.embedded.block.julia.mull",
           "begin": "\\G(?i:julia|jl)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.julia"
@@ -284,7 +284,7 @@
         {
           "contentName": "meta.embedded.block.latex.mull",
           "begin": "\\G(?i:latex|tex)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "text.tex.latex"
@@ -294,7 +294,7 @@
         {
           "contentName": "meta.embedded.block.less.mull",
           "begin": "\\G(?i:less)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.css.less"
@@ -304,7 +304,7 @@
         {
           "contentName": "meta.embedded.block.lua.mull",
           "begin": "\\G(?i:lua)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.lua"
@@ -314,7 +314,7 @@
         {
           "contentName": "meta.embedded.block.makefile.mull",
           "begin": "\\G(?i:makefile|make|mk)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.makefile"
@@ -324,7 +324,7 @@
         {
           "contentName": "meta.embedded.block.markdown.mull",
           "begin": "\\G(?i:markdown|md)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "text.html.markdown"
@@ -334,7 +334,7 @@
         {
           "contentName": "meta.embedded.block.mull.mull",
           "begin": "\\G(?i:mull)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "$self"
@@ -344,7 +344,7 @@
         {
           "contentName": "meta.embedded.block.objective-c.mull",
           "begin": "\\G(?i:objective-c|objc|m)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.objc"
@@ -354,7 +354,7 @@
         {
           "contentName": "meta.embedded.block.perl.mull",
           "begin": "\\G(?i:perl|pl)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.perl"
@@ -364,7 +364,7 @@
         {
           "contentName": "meta.embedded.block.php.mull",
           "begin": "\\G(?i:php)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.php"
@@ -374,7 +374,7 @@
         {
           "contentName": "meta.embedded.block.powershell.mull",
           "begin": "\\G(?i:powershell|ps1|pwsh)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.powershell"
@@ -384,7 +384,7 @@
         {
           "contentName": "meta.embedded.block.python.mull",
           "begin": "\\G(?i:python|py)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.python"
@@ -394,7 +394,7 @@
         {
           "contentName": "meta.embedded.block.r.mull",
           "begin": "\\G(?i:r)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.r"
@@ -404,7 +404,7 @@
         {
           "contentName": "meta.embedded.block.ruby.mull",
           "begin": "\\G(?i:ruby|rb)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.ruby"
@@ -414,7 +414,7 @@
         {
           "contentName": "meta.embedded.block.rust.mull",
           "begin": "\\G(?i:rust|rs)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.rust"
@@ -424,7 +424,7 @@
         {
           "contentName": "meta.embedded.block.scss.mull",
           "begin": "\\G(?i:scss)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.css.scss"
@@ -434,7 +434,7 @@
         {
           "contentName": "meta.embedded.block.shellscript.mull",
           "begin": "\\G(?i:shell|sh|bash|zsh)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.shell"
@@ -444,7 +444,7 @@
         {
           "contentName": "meta.embedded.block.sql.mull",
           "begin": "\\G(?i:sql)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.sql"
@@ -454,7 +454,7 @@
         {
           "contentName": "meta.embedded.block.swift.mull",
           "begin": "\\G(?i:swift)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.swift"
@@ -464,7 +464,7 @@
         {
           "contentName": "meta.embedded.block.toml.mull",
           "begin": "\\G(?i:toml)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.toml"
@@ -474,7 +474,7 @@
         {
           "contentName": "meta.embedded.block.typescript.mull",
           "begin": "\\G(?i:typescript|ts|mts|cts)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.ts"
@@ -484,7 +484,7 @@
         {
           "contentName": "meta.embedded.block.typescriptreact.mull",
           "begin": "\\G(?i:tsx)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.tsx"
@@ -494,7 +494,7 @@
         {
           "contentName": "meta.embedded.block.xml.mull",
           "begin": "\\G(?i:xml)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "text.xml"
@@ -504,7 +504,7 @@
         {
           "contentName": "meta.embedded.block.yaml.mull",
           "begin": "\\G(?i:yaml|yml)[ \\t]*$",
-          "while": "^(?!.*`{3})",
+          "while": "^(?!\\S)(?!.*`{3})",
           "patterns": [
             {
               "include": "source.yaml"
@@ -529,16 +529,7 @@
       "patterns": [
         {
           "name": "markup.italic.heading.mull",
-          "match": "^(#{2,})[ \\t]*$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.mull",
-          "match": "^(#{2,}) ([ \\t]*\\[.*)$",
+          "match": "^ +(#) ([ \\t]*\\[.*)$",
           "captures": {
             "1": {
               "name": "punctuation.definition.heading.mull"
@@ -553,59 +544,21 @@
           }
         },
         {
-          "name": "markup.italic.heading.mull",
-          "match": "^(#{2,}) (.*)$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            },
-            "2": {
-              "name": "entity.name.section.mull"
-            }
-          }
+          "include": "#plain-title-lines"
         }
       ]
     },
-    "indented-section-title-lines": {
-      "patterns": [
-        {
-          "name": "markup.italic.heading.mull",
-          "match": "^[ \\t]*(#{2,})[ \\t]*$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            }
-          }
+    "plain-title-lines": {
+      "name": "markup.italic.heading.mull",
+      "match": "^ +(#) (.*)$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.heading.mull"
         },
-        {
-          "name": "markup.italic.heading.mull",
-          "match": "^[ \\t]*(#{2,}) ([ \\t]*\\[.*)$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            },
-            "2": {
-              "patterns": [
-                {
-                  "include": "#text"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "markup.italic.heading.mull",
-          "match": "^[ \\t]*(#{2,}) (.*)$",
-          "captures": {
-            "1": {
-              "name": "punctuation.definition.heading.mull"
-            },
-            "2": {
-              "name": "entity.name.section.mull"
-            }
-          }
+        "2": {
+          "name": "entity.name.section.mull"
         }
-      ]
+      }
     },
     "fences": {
       "patterns": [
@@ -645,7 +598,7 @@
               ]
             }
           },
-          "end": "^[ \\t]*(\\1)(?:[ \\t]*(#[^ \\t]*))?[ \\t]*$|^(?=# )",
+          "end": "^[ \\t]*(\\1)(?:[ \\t]*(#[^ \\t]*))?[ \\t]*$|^(?=\\S)",
           "endCaptures": {
             "1": {
               "name": "punctuation.definition.block.end.mull"
@@ -656,7 +609,7 @@
           },
           "patterns": [
             {
-              "include": "#indented-section-title-lines"
+              "include": "#plain-title-lines"
             },
             {
               "include": "#fences"

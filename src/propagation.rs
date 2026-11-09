@@ -3,7 +3,9 @@ use crate::{
     format::CodeStr,
     line_index::LineIndex,
     parser,
-    wiki::{PageTitle, Portal, SectionTitle, TITLE_PREFIX, Target, Wiki},
+    wiki::{
+        INDENTATION_WIDTH, PageTitle, Portal, SectionTitle, TITLE_PREFIX, Target, Wiki, reindent,
+    },
 };
 use std::{
     cmp::Reverse,
@@ -111,20 +113,15 @@ fn collect_copies(
         return;
     }
 
-    // Read the copy as the content of a page of its own, as deep as the portal, which fails if a
-    // line in it would start another page.
+    // Read the copy as the content of a page of its own, which fails if the copy has a syntax
+    // error, like a title indented differently than the content it's in.
     let title_line = title_line(&page.title);
     let copy_source = format!("{title_line}{copy}");
-    let (copy_wiki, errors) = parser::parse_at_level(
-        None,
-        &copy_source,
-        &LineIndex::new(&copy_source),
-        portal.level,
-    );
+    let (copy_wiki, errors) = parser::parse(None, &copy_source, &LineIndex::new(&copy_source));
     let Some(copy_page) = copy_wiki
         .pages
         .get(&page.title)
-        .filter(|_| errors.is_empty() && copy_wiki.pages.len() == 1)
+        .filter(|_| errors.is_empty())
     else {
         instances
             .unreadable_copies
@@ -132,15 +129,13 @@ fn collect_copies(
         return;
     };
 
-    // Record the copy after the original, with its title lines as deep as they are in what it
-    // shows, followed by the copies within it.
+    // Record the copy after the original, followed by the copies within it.
     instances
         .targets
         .entry(portal.target.clone())
         .or_insert_with(|| vec![original()])
         .push(Instance {
-            content: copy_wiki
-                .own_content_at(copy_page, section.map_or(1, |section| section.level)),
+            content: copy_wiki.own_content(copy_page, None),
             source_range,
         });
     let nested_copy_map = CopyMap {
@@ -323,7 +318,6 @@ pub fn propagate(
                 {
                     continue;
                 }
-                let level = outer_section.map_or(1, |outer_section| outer_section.level);
                 for (index, outer_content) in contents
                     .get_mut(outer_target)
                     .expect("Each target should have contents.")
@@ -333,7 +327,6 @@ pub fn propagate(
                     if let Some(new_content) = write_section(
                         outer_content,
                         &page.title,
-                        level,
                         &section.title,
                         &content,
                         target_baseline,
@@ -366,8 +359,8 @@ pub fn propagate(
 
     // Find the new content of each page with changes: its own changes, which include those of its
     // sections, or else its own content with the changes of its sections. Replace the content of
-    // each page whose content changes, from the end so earlier offsets stay valid, and read the
-    // result.
+    // each page whose content changes, indented as a page's content, from the end so earlier
+    // offsets stay valid, and read the result.
     let mut section_changes = HashMap::<&PageTitle, HashMap<SectionTitle, String>>::new();
     for (target, (content, _source_ranges)) in &changes {
         if let Some(section) = &target.section {
@@ -396,7 +389,7 @@ pub fn propagate(
     for (page, content) in &replacements {
         propagated_contents.replace_range(
             page.title_source_range.end..page.source_range.end,
-            &format!("\n\n{content}"),
+            &format!("\n\n{}", reindent(content, 0, INDENTATION_WIDTH)),
         );
     }
     let propagated_line_index = LineIndex::new(&propagated_contents);
@@ -431,20 +424,22 @@ pub fn propagate(
     }
 }
 
-// Write a section's propagated content into an instance of the page or a section containing it, at
-// a level, unless the instance doesn't have the section or has changed it since its baseline, or at
-// all without one.
+// Write a section's propagated content into an instance of the page or a section containing it,
+// unless the instance doesn't have the section or has changed it since its baseline, or at all
+// without one. The instance is read as the content of a page.
 fn write_section(
     instance: &str,
     title: &PageTitle,
-    level: usize,
     section_title: &SectionTitle,
     content: &str,
     baseline: Option<&str>,
 ) -> Option<String> {
-    let source = format!("{}{instance}", title_line(title));
-    let (instance_wiki, errors) =
-        parser::parse_at_level(None, &source, &LineIndex::new(&source), level);
+    let source = format!(
+        "{}{}",
+        title_line(title),
+        reindent(instance, 0, INDENTATION_WIDTH),
+    );
+    let (instance_wiki, errors) = parser::parse(None, &source, &LineIndex::new(&source));
     let page = instance_wiki
         .pages
         .get(title)
@@ -516,33 +511,33 @@ mod tests {
             .collect()
     }
 
-    // Compare instances as formatting would write them, with their title lines as deep as they are
-    // in what they show, so differences it erases aren't changes.
+    // Compare instances as formatting would write them, without the indentation of their content,
+    // so differences it erases aren't changes.
     #[test]
     fn canonical_instances() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\nMix [ Home ].  \r\n\n##\n\n",
-                    "# Pancakes\n\nMix [Home].",
+                    "# Home\n\n  # [Pancakes]\n    Mix [ Home ].  \r\n\n",
+                    "# Pancakes\n\n  Mix [Home].",
                 ),
                 &[],
             )
             .unwrap(),
-            "# Home\n\n## [Pancakes]\n\nMix [Home].\n\n##\n\n# Pancakes\n\nMix [Home].\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix [Home].\n\n# Pancakes\n\n  Mix [Home].\n",
         );
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\nMix.\n### Steps\nStir.\n",
-                    "# Pancakes\n\nMix.\n\n## Steps\n\nStir.",
+                    "# Home\n\n  # [Pancakes]\n    Mix.\n    # Steps\n      Stir.\n",
+                    "# Pancakes\n\n  Mix.\n\n  # Steps\n\n    Stir.",
                 ),
                 &[],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
-                "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n    # Steps\n\n      Stir.\n\n",
+                "# Pancakes\n\n  Mix.\n\n  # Steps\n\n    Stir.\n",
             ),
         );
     }
@@ -552,21 +547,21 @@ mod tests {
     #[test]
     fn nested_copies() {
         let source = concat!(
-            "# Home\n\n## [Pancakes]\n\nMix.\n\n### [Syrup]\n\nPour lots.\n\n",
-            "# Pancakes\n\nMix.\n\n## [Syrup]\n\nPour.\n\n",
-            "# Syrup\n\nPour.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n    # [Syrup]\n\n      Pour lots.\n\n",
+            "# Pancakes\n\n  Mix.\n\n  # [Syrup]\n\n    Pour.\n\n",
+            "# Syrup\n\n  Pour.\n",
         );
 
         assert_eq!(
             format_test(
                 source,
-                &[("Pancakes", "Mix.\n\n## [Syrup]"), ("Syrup", "Pour.")],
+                &[("Pancakes", "Mix.\n\n# [Syrup]"), ("Syrup", "Pour.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix.\n\n### [Syrup]\n\nPour lots.\n\n",
-                "# Pancakes\n\nMix.\n\n## [Syrup]\n\nPour lots.\n\n",
-                "# Syrup\n\nPour lots.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n    # [Syrup]\n\n      Pour lots.\n\n",
+                "# Pancakes\n\n  Mix.\n\n  # [Syrup]\n\n    Pour lots.\n\n",
+                "# Syrup\n\n  Pour lots.\n",
             ),
         );
         assert_eq!(
@@ -575,23 +570,24 @@ mod tests {
         );
     }
 
-    // Fill in an empty portal, which stands for a copy matching what it shows, whether a closing
-    // line ends it or not.
+    // Fill in an empty portal, which stands for a copy matching what it shows, whether content
+    // follows it or not.
     #[test]
     fn empty_portals() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\n",
-                    "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+                    "# Home\n\n  # [Pancakes]\n\n  Between.\n\n  # [Pancakes]\n\n",
+                    "# Pancakes\n\n  Mix.\n\n  # Steps\n\n    Stir.\n",
                 ),
                 &[],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n##\n\n",
-                "## [Pancakes]\n\nMix.\n\n### Steps\n\nStir.\n\n",
-                "# Pancakes\n\nMix.\n\n## Steps\n\nStir.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n    # Steps\n\n      Stir.\n\n",
+                "  Between.\n\n",
+                "  # [Pancakes]\n\n    Mix.\n\n    # Steps\n\n      Stir.\n\n",
+                "# Pancakes\n\n  Mix.\n\n  # Steps\n\n    Stir.\n",
             ),
         );
     }
@@ -600,7 +596,7 @@ mod tests {
     // told apart from the page and propagated to it.
     #[test]
     fn copies_of_empty_pages() {
-        let source = "# Home\n\n## [Ideas]\n\n# Ideas\n";
+        let source = "# Home\n\n  # [Ideas]\n\n# Ideas\n";
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
 
@@ -612,21 +608,21 @@ mod tests {
         );
         assert_eq!(
             format_test(
-                "# Home\n\n## [Ideas]\n\nFly.\n\n# Ideas\n",
+                "# Home\n\n  # [Ideas]\n\n    Fly.\n\n# Ideas\n",
                 &[("Ideas", "")],
             )
             .unwrap(),
-            "# Home\n\n## [Ideas]\n\nFly.\n\n# Ideas\n\nFly.\n",
+            "# Home\n\n  # [Ideas]\n\n    Fly.\n\n# Ideas\n\n  Fly.\n",
         );
     }
 
-    // Report a copy with a title line which isn't one level deeper than the title it's under, or a
-    // closing line which doesn't end anything, once it's read as the content of what it shows.
+    // Report a copy with a title line which isn't indented two spaces more than the title it's
+    // under, or with a section title used twice, once it's read as the content of what it shows.
     #[test]
     fn unreadable_copies() {
         for source in [
-            "# Home\n\n## [Pancakes]\n\n#### Mix.\n\n# Pancakes\n\nMix.\n",
-            "# Home\n\n## [Pancakes]\n\nMix.\n\n####\n\n# Pancakes\n\nMix.\n",
+            "# Home\n\n  # [Pancakes]\n\n      # Mix.\n\n# Pancakes\n\n  Mix.\n",
+            "# Home\n\n  # [Pancakes]\n\n    # Mix\n\n    # Mix\n\n# Pancakes\n\n  Mix.\n",
         ] {
             let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
 
@@ -642,8 +638,8 @@ mod tests {
     #[test]
     fn agreeing_instances() {
         let source = concat!(
-            "# Home\n\n## [Pancakes]\n\nMix.\n\n## [Syrup]\n\nPour lots.\n\n",
-            "# Pancakes\n\nMix.\n\n# Syrup\n\nPour.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n  # [Syrup]\n\n    Pour lots.\n\n",
+            "# Pancakes\n\n  Mix.\n\n# Syrup\n\n  Pour.\n",
         );
         let (wiki, errors) = parser::parse(None, source, &LineIndex::new(source));
         assert!(errors.is_empty());
@@ -662,34 +658,36 @@ mod tests {
     fn page_changes() {
         assert_eq!(
             format_test(
-                "# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix well.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n# Pancakes\n\n  Mix well.\n",
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
-            "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix well.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n# Pancakes\n\n  Mix well.\n",
         );
     }
 
-    // Propagate a change to a copy to its page and the other copies, moving the title lines in it
-    // as deep under each title as they are in the copy.
+    // Propagate a change to a copy to its page and the other copies, indenting the lines in it as
+    // deep under each title as they are in the copy.
     #[test]
     fn copy_changes() {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
-                    "[Other]\n\n",
-                    "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix.\n\n#### Tips\n\nRest.\n\n",
-                    "# Pancakes\n\nMix.\n\n## Tips\n\nRest.\n",
+                    "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n    # Tips\n\n      Rest.\n\n",
+                    "  [Other]\n\n",
+                    "# Other\n\n  # Recipes\n\n    # [Pancakes]\n\n      Mix.\n\n      # Tips\n\n",
+                    "        Rest.\n\n",
+                    "# Pancakes\n\n  Mix.\n\n  # Tips\n\n    Rest.\n",
                 ),
-                &[("Pancakes", "Mix.\n\n## Tips\n\nRest.")],
+                &[("Pancakes", "Mix.\n\n# Tips\n\n  Rest.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix well.\n\n### Tips\n\nRest.\n\n##\n\n",
-                "[Other]\n\n",
-                "# Other\n\n## Recipes\n\n### [Pancakes]\n\nMix well.\n\n#### Tips\n\nRest.\n\n",
-                "# Pancakes\n\nMix well.\n\n## Tips\n\nRest.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n    # Tips\n\n      Rest.\n\n",
+                "  [Other]\n\n",
+                "# Other\n\n  # Recipes\n\n    # [Pancakes]\n\n      Mix well.\n\n      # Tips\n\n",
+                "        Rest.\n\n",
+                "# Pancakes\n\n  Mix well.\n\n  # Tips\n\n    Rest.\n",
             ),
         );
     }
@@ -700,17 +698,17 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
-                    "## [Pancakes]\n\nMix well.\n\n",
-                    "# Pancakes\n\nMix.\n",
+                    "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n",
+                    "  # [Pancakes]\n\n    Mix well.\n\n",
+                    "# Pancakes\n\n  Mix.\n",
                 ),
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
-                "## [Pancakes]\n\nMix well.\n\n",
-                "# Pancakes\n\nMix well.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n",
+                "  # [Pancakes]\n\n    Mix well.\n\n",
+                "# Pancakes\n\n  Mix well.\n",
             ),
         );
     }
@@ -720,24 +718,24 @@ mod tests {
     fn emptied_copies() {
         assert_eq!(
             format_test(
-                "# Home\n\n## [Pancakes]\n\n# Pancakes\n\nMix.\n",
+                "# Home\n\n  # [Pancakes]\n\n# Pancakes\n\n  Mix.\n",
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
-            "# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n# Pancakes\n\n  Mix.\n",
         );
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
-                    "# Pancakes\n\nMix.\n",
+                    "# Home\n\n  # [Pancakes]\n\n  # [Pancakes]\n\n    Mix well.\n\n",
+                    "# Pancakes\n\n  Mix.\n",
                 ),
                 &[("Pancakes", "Mix.")],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n## [Pancakes]\n\nMix well.\n\n",
-                "# Pancakes\n\nMix well.\n",
+                "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n  # [Pancakes]\n\n    Mix well.\n\n",
+                "# Pancakes\n\n  Mix well.\n",
             ),
         );
     }
@@ -746,9 +744,9 @@ mod tests {
     #[test]
     fn different_changes() {
         let source = concat!(
-            "# Home\n\n## [Pancakes]\n\nMix well.\n\n##\n\n",
-            "## [Pancakes]\n\nMix.\n\n",
-            "# Pancakes\n\nMix quickly.\n",
+            "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n",
+            "  # [Pancakes]\n\n    Mix.\n\n",
+            "# Pancakes\n\n  Mix quickly.\n",
         );
         let errors = format_test(source, &[("Pancakes", "Mix.")]).unwrap_err();
 
@@ -762,7 +760,7 @@ mod tests {
     // Require the instances of a page without a baseline to match, reporting all of them otherwise.
     #[test]
     fn instances_without_baseline() {
-        let source = "# Home\n\n## [Pancakes]\n\nMix well.\n\n# Pancakes\n\nMix.\n";
+        let source = "# Home\n\n  # [Pancakes]\n\n    Mix well.\n\n# Pancakes\n\n  Mix.\n";
         let errors = format_test(source, &[]).unwrap_err();
 
         assert_eq!(error_texts(source, &errors), vec!["Pancakes", "[Pancakes]"]);
@@ -770,7 +768,13 @@ mod tests {
             Err::<(), _>(errors),
             "`Pancakes` and its copies don't match.",
         );
-        assert!(format_test("# Home\n\n## [Pancakes]\n\nMix.\n\n# Pancakes\n\nMix.", &[]).is_ok());
+        assert!(
+            format_test(
+                "# Home\n\n  # [Pancakes]\n\n    Mix.\n\n# Pancakes\n\n  Mix.",
+                &[],
+            )
+            .is_ok(),
+        );
     }
 
     // Report a change which would create a cycle of portals, putting a portal to a page inside
@@ -780,8 +784,8 @@ mod tests {
         for shown_title in ["Pancakes", "Syrup"] {
             let source = format!(
                 concat!(
-                    "# Home\n\n## [Pancakes]\n\n### [{}]\n\n###\n\nMix.\n\n##\n\n",
-                    "# Pancakes\n\nMix.\n\n# Syrup\n\n## [Pancakes]\n\nMix.\n",
+                    "# Home\n\n  # [Pancakes]\n\n    # [{}]\n\n    Mix.\n\n",
+                    "# Pancakes\n\n  Mix.\n\n# Syrup\n\n  # [Pancakes]\n\n    Mix.\n",
                 ),
                 shown_title,
             );
@@ -802,22 +806,22 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
-                    "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
-                    "## [:Notes]\n\n## Notes\n\nNone.\n\n",
-                    "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
+                    "# Home\n\n  # [Budget:Monthly]\n\n    Rent: 2100\n\n",
+                    "  # [Budget]\n\n    Intro.\n\n    # Monthly\n\n      Rent: 2000\n\n",
+                    "  # [:Notes]\n\n  # Notes\n\n    None.\n\n",
+                    "# Budget\n\n  Intro.\n\n  # Monthly\n\n    Rent: 2000\n",
                 ),
                 &[
-                    ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+                    ("Budget", "Intro.\n\n# Monthly\n\n  Rent: 2000"),
                     ("Budget:Monthly", "Rent: 2000"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
-                "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
-                "## [:Notes]\n\nNone.\n\n## Notes\n\nNone.\n\n",
-                "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+                "# Home\n\n  # [Budget:Monthly]\n\n    Rent: 2100\n\n",
+                "  # [Budget]\n\n    Intro.\n\n    # Monthly\n\n      Rent: 2100\n\n",
+                "  # [:Notes]\n\n    None.\n\n  # Notes\n\n    None.\n\n",
+                "# Budget\n\n  Intro.\n\n  # Monthly\n\n    Rent: 2100\n",
             ),
         );
     }
@@ -828,20 +832,20 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget:Monthly]\n\nRent: 2000\n\n",
-                    "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2000\n\n",
-                    "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+                    "# Home\n\n  # [Budget:Monthly]\n\n    Rent: 2000\n\n",
+                    "  # [Budget]\n\n    Intro.\n\n    # Monthly\n\n      Rent: 2000\n\n",
+                    "# Budget\n\n  Intro.\n\n  # Monthly\n\n    Rent: 2100\n",
                 ),
                 &[
-                    ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+                    ("Budget", "Intro.\n\n# Monthly\n\n  Rent: 2000"),
                     ("Budget:Monthly", "Rent: 2000"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
-                "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2100\n\n",
-                "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2100\n",
+                "# Home\n\n  # [Budget:Monthly]\n\n    Rent: 2100\n\n",
+                "  # [Budget]\n\n    Intro.\n\n    # Monthly\n\n      Rent: 2100\n\n",
+                "# Budget\n\n  Intro.\n\n  # Monthly\n\n    Rent: 2100\n",
             ),
         );
     }
@@ -854,22 +858,25 @@ mod tests {
         assert_eq!(
             format_test(
                 concat!(
-                    "# Home\n\n## [Budget:Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
-                    "## [Budget:Utilities]\n\nPower: 90\n\n",
-                    "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 80\n\n##\n\n",
-                    "Later.\n",
+                    "# Home\n\n  # [Budget:Fixed]\n\n    Rent: 2000\n\n    # Utilities\n\n",
+                    "      Power: 90\n\n",
+                    "  # [Budget:Utilities]\n\n    Power: 90\n\n",
+                    "# Budget\n\n  # Fixed\n\n    Rent: 2000\n\n    # Utilities\n\n",
+                    "      Power: 80\n\n",
+                    "  Later.\n",
                 ),
                 &[
-                    ("Budget:Fixed", "Rent: 2000\n\n### Utilities\n\nPower: 80"),
+                    ("Budget:Fixed", "Rent: 2000\n\n# Utilities\n\n  Power: 80"),
                     ("Budget:Utilities", "Power: 80"),
                 ],
             )
             .unwrap(),
             concat!(
-                "# Home\n\n## [Budget:Fixed]\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n",
-                "## [Budget:Utilities]\n\nPower: 90\n\n",
-                "# Budget\n\n## Fixed\n\nRent: 2000\n\n### Utilities\n\nPower: 90\n\n##\n\n",
-                "Later.\n",
+                "# Home\n\n  # [Budget:Fixed]\n\n    Rent: 2000\n\n    # Utilities\n\n",
+                "      Power: 90\n\n",
+                "  # [Budget:Utilities]\n\n    Power: 90\n\n",
+                "# Budget\n\n  # Fixed\n\n    Rent: 2000\n\n    # Utilities\n\n      Power: 90\n\n",
+                "  Later.\n",
             ),
         );
     }
@@ -879,12 +886,12 @@ mod tests {
     #[test]
     fn conflicting_section_changes() {
         let source = concat!(
-            "# Home\n\n## [Budget:Monthly]\n\nRent: 2100\n\n",
-            "## [Budget]\n\nIntro.\n\n### Monthly\n\nRent: 2200\n\n",
-            "# Budget\n\nIntro.\n\n## Monthly\n\nRent: 2000\n",
+            "# Home\n\n  # [Budget:Monthly]\n\n    Rent: 2100\n\n",
+            "  # [Budget]\n\n    Intro.\n\n    # Monthly\n\n      Rent: 2200\n\n",
+            "# Budget\n\n  Intro.\n\n  # Monthly\n\n    Rent: 2000\n",
         );
         let baseline = [
-            ("Budget", "Intro.\n\n## Monthly\n\nRent: 2000"),
+            ("Budget", "Intro.\n\n# Monthly\n\n  Rent: 2000"),
             ("Budget:Monthly", "Rent: 2000"),
         ];
         let errors = format_test(source, &baseline).unwrap_err();
@@ -895,8 +902,8 @@ mod tests {
         );
 
         let source = source.replace(
-            "Intro.\n\n### Monthly\n\nRent: 2200",
-            "More.\n\n### Monthly\n\nRent: 2000",
+            "Intro.\n\n    # Monthly\n\n      Rent: 2200",
+            "More.\n\n    # Monthly\n\n      Rent: 2000",
         );
         let errors = format_test(&source, &baseline).unwrap_err();
         assert_eq!(error_texts(&source, &errors), vec!["Budget", "[Budget]"]);
