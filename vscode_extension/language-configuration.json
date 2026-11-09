@@ -6,7 +6,5 @@
   // symbols that can be used to surround a selection
   "surroundingPairs": [["[", "]"]],
   // rules for indenting the line after a title line, where the content under the title starts
-  "onEnterRules": [{ "beforeText": "^ *# ", "action": { "indent": "indent" } }],
-  // folding by indentation, leaving the blank lines after a section out of its fold
-  "folding": { "offSide": true }
+  "onEnterRules": [{ "beforeText": "^ *# ", "action": { "indent": "indent" } }]
 }

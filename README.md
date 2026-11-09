@@ -190,8 +190,6 @@ These common keyboard shortcuts are helpful when navigating and editing a wiki:
 | Jump forward to the next visited page | `Command + ]` | `Alt + Right` |
 | Jump to the start of the current page | `Command + Up` | `Control + Home` |
 | Jump to the end of the current page | `Command + Down` | `Control + End` |
-| Fold the current section | `Command + Option + [` | `Control + Shift + [` |
-| Unfold the current section | `Command + Option + ]` | `Control + Shift + ]` |
 | Jump to the next error | `F8` | `F8` |
 | Jump to the previous error | `Shift + F8` | `Shift + F8` |
 | Find a page or section | `Command + Shift + O` | `Control + Shift + O` |
