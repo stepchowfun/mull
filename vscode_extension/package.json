@@ -20,10 +20,10 @@
     "@types/node": "^26.6.6",
     "@types/vscode": "1.125.0",
     "typescript": "^7.0.2",
-    "vite-plus": "^1.4.0"
+    "vite-plus": "^1.6.0"
   },
   "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@^1.4.0"
+    "vite": "npm:@voidzero-dev/vite-plus-core@^1.6.0"
   },
   "contributes": {
     "languages": [
