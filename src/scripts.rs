@@ -195,8 +195,7 @@ fn hash(
         &source_contents[block.arguments_source_range.start..block.arguments_source_range.end];
     let body = wiki
         .body(block.source_range)
-        .map(|(body, _line_starts)| body)
-        .unwrap_or_default();
+        .map_or_default(|(body, _line_starts)| body);
     let mut hasher = Sha256::new();
     for part in [script.as_slice(), arguments.as_bytes(), body.as_bytes()] {
         hasher.update((part.len() as u64).to_le_bytes());
@@ -236,8 +235,7 @@ fn run_block(
     let arguments = arguments(source_contents, page, block, &absolute_file_root);
     let input = wiki
         .body(block.source_range)
-        .map(|(body, _line_starts)| body)
-        .unwrap_or_default();
+        .map_or_default(|(body, _line_starts)| body);
     let output = execute(
         &absolute_script,
         &arguments,

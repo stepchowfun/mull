@@ -38,12 +38,7 @@ pub fn traversal_order<'a>(
             .map(|(existing_title, _page)| existing_title)
             .or_else(|| extra_title.filter(|&extra_title| extra_title == title))
     };
-    let link_titles = |title: &PageTitle| {
-        wiki.pages
-            .get(title)
-            .map(text_link_titles)
-            .unwrap_or_default()
-    };
+    let link_titles = |title: &PageTitle| wiki.pages.get(title).map_or_default(text_link_titles);
 
     // Start from the home page, leaving every page unreachable if there's none.
     let Some(home_title) = find(&PageTitle::home()) else {

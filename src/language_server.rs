@@ -985,16 +985,13 @@ fn lock(
 
 // Copy the baseline recorded for an open document, which is empty if it isn't open.
 fn baseline(documents: &Mutex<HashMap<Uri, OpenDocument>>, uri: &Uri) -> Baseline {
-    lock(documents)
-        .get(uri)
-        .map(|document| {
-            document
-                .baseline
-                .iter()
-                .map(|(target, (_generation, content))| (target.clone(), Arc::clone(content)))
-                .collect()
-        })
-        .unwrap_or_default()
+    lock(documents).get(uri).map_or_default(|document| {
+        document
+            .baseline
+            .iter()
+            .map(|(target, (_generation, content))| (target.clone(), Arc::clone(content)))
+            .collect()
+    })
 }
 
 // Analyze an editor snapshot without checking its formatting, comparing the instances of each
@@ -1284,10 +1281,7 @@ fn fence_completions(snapshot: &Snapshot, cursor: usize) -> Option<Vec<Completio
         .path
         .as_deref()
         .and_then(|wiki_path| FileRoot::new(wiki_path).ok());
-    for name in file_root
-        .map(|file_root| scripts::script_names(&file_root))
-        .unwrap_or_default()
-    {
+    for name in file_root.map_or_default(|file_root| scripts::script_names(&file_root)) {
         completions.push(CompletionItem {
             label: name.clone(),
             kind: Some(CompletionItemKind::FUNCTION),
