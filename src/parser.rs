@@ -150,7 +150,7 @@ enum FenceLine {
 // source as possible so it can still be validated and navigated, but it omits the content of
 // duplicate pages, invalid titles, and anything before the first title, so it mustn't be rendered
 // if there are any syntax errors. The line index locates syntax errors in their source listings.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "The function reads the source in one pass, tracking the state of the region, link, \
               blocks, sections, and line being read."
