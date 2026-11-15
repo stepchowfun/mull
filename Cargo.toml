@@ -6,7 +6,6 @@ edition = "2024"
 description = "Take notes and organize knowledge in a plain text file."
 license = "MIT"
 documentation = "https://github.com/stepchowfun/mull"
-homepage = "https://github.com/stepchowfun/mull"
 repository = "https://github.com/stepchowfun/mull"
 readme = "README.md"
 
