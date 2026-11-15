@@ -111,7 +111,7 @@ async fn main() {
 }
 
 // Run the requested operation.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "The function dispatches each subcommand once the wiki they share is loaded."
 )]

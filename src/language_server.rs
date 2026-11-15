@@ -353,7 +353,7 @@ impl Backend {
 
 // Respond to protocol requests and notifications for document synchronization, diagnostics, and
 // language features.
-#[allow(
+#[expect(
     clippy::unused_async_trait_impl,
     reason = "Some methods mirror the asynchronous language-server interface without awaiting."
 )]
@@ -947,7 +947,7 @@ struct RenamableFilesystemEntry {
 
 // These are the ways the extension can reveal a range, numbered as in VS Code's
 // `TextEditorRevealType`.
-#[allow(
+#[expect(
     dead_code,
     reason = "The type mirrors VS Code's, including the ways not chosen yet."
 )]
@@ -2410,7 +2410,7 @@ fn whole_document_edits(snapshot: &Snapshot, contents: String) -> Vec<TextEdit> 
 
 // Describe every parsed page and its sections and portals, including those in portals' copies, for
 // editor outlines and document-symbol navigation.
-#[allow(
+#[expect(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
 )]
@@ -2477,7 +2477,7 @@ fn document_symbol_for_document(
 
 // Describe a page, or a section or a portal in it, as a symbol, along with the symbols of the
 // sections and portals directly within it, which are next among those of the page, in source order.
-#[allow(
+#[expect(
     deprecated,
     reason = "The protocol's DocumentSymbol type retains a required legacy field."
 )]
@@ -2546,7 +2546,7 @@ fn titled_parts(page: &Page) -> Vec<TitledPart> {
 
 // Offer the fixes that the checker attached to the diagnostics at an editor range, each resolving
 // every diagnostic it was attached to. With VS Code commands, a created page is revealed too.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "Each kind of fix is described where the fixes are turned into code actions."
 )]

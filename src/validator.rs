@@ -450,7 +450,7 @@ fn visibility_error(
 // Find unreferenced files and directories, up to a limit so pathological directories remain
 // manageable, while pruning covered directories. A directory needs a link of its own unless it
 // contains a file or a linked directory, and only the outermost of those needing one is reported.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "The function walks the file tree once, noting what each directory contains as it \
               reports unreferenced files."

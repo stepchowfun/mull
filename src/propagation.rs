@@ -189,7 +189,7 @@ pub fn agreements(instances: &Instances) -> impl Iterator<Item = (&Target, &str)
 // are propagated to those before they're compared, unless they were changed there differently.
 // Report the instances which were changed differently, changes which would create a cycle of
 // portals, and copies which can't be compared with their originals.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "Each step of propagation is described where the changes are found and written."
 )]
