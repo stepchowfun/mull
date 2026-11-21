@@ -1,19 +1,12 @@
 [package]
 name = "mull"
 version = "0.71.0"
-authors = ["Stephan Boyer <stephan@stephanboyer.com>"]
 edition = "2024"
 description = "Take notes and organize knowledge in a plain text file."
-license = "MIT"
 documentation = "https://github.com/stepchowfun/mull"
-repository = "https://github.com/stepchowfun/mull"
 readme = "README.md"
-
-[lints]
-clippy.all = { level = "deny", priority = -1 }
-clippy.default_numeric_fallback = "deny"
-clippy.pedantic = { level = "deny", priority = -1 }
-rust.warnings = "deny"
+repository = "https://github.com/stepchowfun/mull"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.6.8", features = ["derive"] }
@@ -28,3 +21,9 @@ sha2 = "0.11.1"
 similar = "3.2.1"
 tokio = { version = "1.54.1", features = ["io-std", "macros", "rt-multi-thread", "sync", "time"] }
 tower-lsp-server = "0.23.0"
+
+[lints]
+clippy.all = { level = "deny", priority = -1 }
+clippy.default_numeric_fallback = "deny"
+clippy.pedantic = { level = "deny", priority = -1 }
+rust.warnings = "deny"
