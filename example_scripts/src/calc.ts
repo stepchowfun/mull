@@ -15,7 +15,11 @@
 //
 // The arithmetic can use numbers with decimals and commas between their digits, like `2,400.50`,
 // as well as `+`, `-`, `*`, `/`, `^` for powers, and parentheses. Results are rounded to 12
-// significant digits.
+// significant digits. Percentages are fractions (`10%` is `0.1`). Currency symbols prefix amounts
+// (`$100 * 10% = $10`), and named units follow numbers (`5 kg + 2 kg = 7 kg`). Units combine
+// and cancel in products and quotients (`10 m / 2 s = 5 m * s^-1`). Powers apply to unit suffixes
+// (`3 m^2`); use parentheses to raise an entire quantity (`(3 m)^2`). Addition and subtraction
+// require matching units. Unit labels are case-sensitive and do not perform conversions.
 
 import { readFileSync } from 'node:fs';
 
@@ -25,84 +29,163 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-// Evaluate arithmetic with numbers, which can have decimals and commas between their digits, `+`,
-// `-`, `*`, `/`, `^` for powers, and parentheses, throwing an error which describes any problem.
-function evaluate(expression: string): number {
-  const tokens = expression.match(/\d[\d,]*(?:\.\d+)?|\.\d+|\S/gu) ?? [];
+// Track each unit's exponent so multiplication and division can combine and cancel units.
+type Quantity = { amount: number; units: Map<string, number> };
+
+// Combine the dimensions of a product or quotient, dropping canceled units.
+function multiply(left: Quantity, right: Quantity, divide = false): Quantity {
+  const units = new Map(left.units);
+  for (const [unit, exponent] of right.units) {
+    const combined = (units.get(unit) ?? 0) + (divide ? -exponent : exponent);
+    if (combined === 0) {
+      units.delete(unit);
+    } else {
+      units.set(unit, combined);
+    }
+  }
+  return { amount: divide ? left.amount / right.amount : left.amount * right.amount, units };
+}
+
+// Evaluate arithmetic while preserving dimensions and treating percentages as fractions.
+function evaluate(expression: string): Quantity {
+  const tokens = expression.match(/\d[\d,]*(?:\.\d+)?|\.\d+|[\p{L}_][\p{L}\p{N}_]*|\S/gu) ?? [];
   let position = 0;
 
-  // Read a number or a parenthesized expression.
-  function primary(): number {
-    if (position >= tokens.length) {
-      throw new Error('Expected a number.');
-    }
+  // Read a number, a unit, a currency amount, or a parenthesized expression.
+  function primary(): Quantity {
     const token = tokens[position];
     position += 1;
-    if (token === '(') {
-      const value = sum();
+    let value: Quantity;
+    if (token === undefined) {
+      throw new Error('Expected a number.');
+    } else if (token === '(') {
+      value = sum();
       if (tokens[position] !== ')') {
         throw new Error('Expected `)`.');
       }
       position += 1;
-      return value;
-    }
-    if (!/^\.?\d/u.test(token)) {
+    } else if (/^\.?\d/u.test(token)) {
+      value = { amount: Number(token.replaceAll(',', '')), units: new Map() };
+    } else if (/^[\p{L}\p{Sc}_]/u.test(token)) {
+      value = { amount: 1, units: new Map([[token, 1]]) };
+      if (
+        /^\p{Sc}$/u.test(token) &&
+        (tokens[position] === '(' || /^\.?\d/u.test(tokens[position] ?? ''))
+      ) {
+        value = multiply(value, primary());
+      }
+    } else {
       throw new Error(`Unexpected \`${token}\`.`);
     }
-    return Number(token.replaceAll(',', ''));
+
+    // A postfix percent scales any primary expression, including a parenthesized sum.
+    while (tokens[position] === '%') {
+      value.amount /= 100;
+      position += 1;
+    }
+    return value;
   }
 
-  // Read a power, which groups from the right, so `2 ^ 3 ^ 2` is `2 ^ 9`.
-  function power(): number {
+  // Read right-associative powers; dimensions require a finite integer exponent.
+  function power(): Quantity {
     const base = primary();
     if (tokens[position] !== '^') {
       return base;
     }
     position += 1;
-    return base ** unary();
+    const exponent = unary();
+    if (exponent.units.size !== 0) {
+      throw new Error('An exponent must be unitless.');
+    }
+    if (base.units.size !== 0 && !Number.isSafeInteger(exponent.amount)) {
+      throw new Error('A quantity with units requires a safe integer exponent.');
+    }
+    const units = new Map<string, number>();
+    for (const [unit, dimension] of base.units) {
+      if (exponent.amount !== 0) {
+        units.set(unit, dimension * exponent.amount);
+      }
+    }
+    return { amount: base.amount ** exponent.amount, units };
   }
 
-  // Read a number with any signs before it, which apply after powers, so `-2 ^ 2` is `-4`.
-  function unary(): number {
+  // Apply signs after powers, so `-2 ^ 2` remains `-4`.
+  function unary(): Quantity {
     if (tokens[position] === '-' || tokens[position] === '+') {
       const sign = tokens[position] === '-' ? -1 : 1;
       position += 1;
-      return sign * unary();
+      const value = unary();
+      return { amount: sign * value.amount, units: value.units };
     }
     return power();
   }
 
-  // Read products and quotients.
-  function product(): number {
+  // Accept a unit suffix as multiplication, with powers binding to the unit: `3 m^2`.
+  function quantity(): Quantity {
     let value = unary();
-    while (tokens[position] === '*' || tokens[position] === '/') {
-      const operator = tokens[position];
-      position += 1;
-      value = operator === '*' ? value * unary() : value / unary();
+    while (tokens[position] !== undefined && /^[\p{L}\p{Sc}_]/u.test(tokens[position])) {
+      value = multiply(value, power());
     }
     return value;
   }
 
-  // Read sums and differences.
-  function sum(): number {
+  // Read products and quotients, treating each number and its suffix as one quantity.
+  function product(): Quantity {
+    let value = quantity();
+    while (tokens[position] === '*' || tokens[position] === '/') {
+      const operator = tokens[position];
+      position += 1;
+      value = multiply(value, quantity(), operator === '/');
+    }
+    return value;
+  }
+
+  // Only quantities with matching dimensions can be added or subtracted.
+  function sum(): Quantity {
     let value = product();
     while (tokens[position] === '+' || tokens[position] === '-') {
       const operator = tokens[position];
       position += 1;
-      value = operator === '+' ? value + product() : value - product();
+      const right = product();
+      if (
+        value.units.size !== right.units.size ||
+        [...value.units].some(([unit, exponent]) => right.units.get(unit) !== exponent)
+      ) {
+        throw new Error('Cannot add or subtract quantities with different units.');
+      }
+      value = {
+        amount: operator === '+' ? value.amount + right.amount : value.amount - right.amount,
+        units: value.units,
+      };
     }
     return value;
   }
 
-  // Read the whole expression, which must be finite, as when nothing is divided by zero.
+  // Reject trailing input, division by zero, and dimensions too large to track exactly.
   const value = sum();
   if (position < tokens.length) {
     throw new Error(`Unexpected \`${tokens[position]}\`.`);
   }
-  if (!Number.isFinite(value)) {
+  if (!Number.isFinite(value.amount)) {
     throw new Error("The result isn't a finite number.");
   }
+  if ([...value.units.values()].some((exponent) => !Number.isSafeInteger(exponent))) {
+    throw new Error('The unit exponent is too large.');
+  }
   return value;
+}
+
+// Round away floating-point noise and display simple currencies with their symbol first.
+function format(value: Quantity): string {
+  const amount = Number(value.amount.toPrecision(12));
+  const dimensions = [...value.units].toSorted(([left], [right]) => left.localeCompare(right));
+  if (dimensions.length === 1 && /^\p{Sc}$/u.test(dimensions[0][0]) && dimensions[0][1] === 1) {
+    return `${amount < 0 ? '-' : ''}${dimensions[0][0]}${Math.abs(amount)}`;
+  }
+  const suffix = dimensions
+    .map(([unit, exponent]) => `${unit}${exponent === 1 ? '' : `^${exponent}`}`)
+    .join(' * ');
+  return `${amount}${suffix ? ` ${suffix}` : ''}`;
 }
 
 // Read the lines. A block of a single line without `=` is evaluated as if it ended with one, so a
@@ -125,7 +208,7 @@ for (const [index, line] of lines.entries()) {
   }
   const expression = line.slice(0, equals).trimEnd();
   try {
-    process.stdout.write(`${expression} = ${Number(evaluate(expression).toPrecision(12))}\n`);
+    process.stdout.write(`${expression} = ${format(evaluate(expression))}\n`);
   } catch (error) {
     fail(`Line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
   }

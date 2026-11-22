@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "lint": "vp check",
+    "test": "node --test src/calc.test.ts",
     "format": "vp fmt"
   },
   "devDependencies": {
