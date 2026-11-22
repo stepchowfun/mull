@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // Run the calculator as a user would, preserving its exit status and output for assertions.
 function calculate(input: string): SpawnSyncReturns<string> {
-  return spawnSync(process.execPath, [fileURLToPath(new URL('./calc.ts', import.meta.url))], {
+  return spawnSync(process.execPath, [fileURLToPath(new URL('../src/calc.ts', import.meta.url))], {
     input,
     encoding: 'utf8',
   });

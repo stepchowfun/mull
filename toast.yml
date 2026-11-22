@@ -250,6 +250,7 @@ tasks:
     output_paths:
       - example_scripts/package.json
       - example_scripts/src
+      - example_scripts/tests
       - example_scripts/tsconfig.json
       - example_scripts/vite.config.ts
       - src
