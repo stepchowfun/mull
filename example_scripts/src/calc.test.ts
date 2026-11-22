@@ -21,6 +21,10 @@ const examples = [
   ['-2 ^ 2', '-4'],
   ['2 ^ -2', '0.25'],
   ['2,400.50 + .5', '2401'],
+  ['1e3 + 2E+2', '1200'],
+  ['1e-7 m', '1e-7 m'],
+  ['$1e21 * 10%', '$100000000000000000000'],
+  ['.5e2 kg', '50 kg'],
   ['$100 * 10%', '$10'],
   ['$100 * (1 + 10%)', '$110'],
   ['$10 - $20', '-$10'],
@@ -43,6 +47,11 @@ for (const [expression, expected] of examples) {
       const result = calculate(expression);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout, `${expression} = ${expected}\n`);
+
+      // Formatted results should also be valid inputs, including scientific notation and units.
+      const repeated = calculate(expected);
+      assert.equal(repeated.status, 0, repeated.stderr);
+      assert.equal(repeated.stdout, `${expected} = ${expected}\n`);
     }),
   );
 }
@@ -58,6 +67,8 @@ for (const expression of [
   '2 +',
   '(2',
   '2 @ 3',
+  '(m^9007199254740991 * m^2) / m^9007199254740991',
+  '(m^9007199254740991)^2 / m^9007199254740991',
 ]) {
   checks.push(
     test(`reject ${expression}`, () => {

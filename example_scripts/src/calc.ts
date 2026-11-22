@@ -14,7 +14,7 @@
 // doesn't need the `=`.
 //
 // The arithmetic can use numbers with decimals and commas between their digits, like `2,400.50`,
-// as well as `+`, `-`, `*`, `/`, `^` for powers, and parentheses. Results are rounded to 12
+// scientific notation like `1e-3`, as well as `+`, `-`, `*`, `/`, `^` for powers, and parentheses. Results are rounded to 12
 // significant digits. Percentages are fractions (`10%` is `0.1`). Currency symbols prefix amounts
 // (`$100 * 10% = $10`), and named units follow numbers (`5 kg + 2 kg = 7 kg`). Units combine
 // and cancel in products and quotients (`10 m / 2 s = 5 m * s^-1`). Powers apply to unit suffixes
@@ -32,11 +32,19 @@ function fail(message: string): never {
 // Track each unit's exponent so multiplication and division can combine and cancel units.
 type Quantity = { amount: number; units: Map<string, number> };
 
+// Reject oversized dimensions before rounding can corrupt later unit cancellation.
+function checkedExponent(exponent: number): number {
+  if (!Number.isSafeInteger(exponent)) {
+    throw new Error('The unit exponent is too large.');
+  }
+  return exponent;
+}
+
 // Combine the dimensions of a product or quotient, dropping canceled units.
 function multiply(left: Quantity, right: Quantity, divide = false): Quantity {
   const units = new Map(left.units);
   for (const [unit, exponent] of right.units) {
-    const combined = (units.get(unit) ?? 0) + (divide ? -exponent : exponent);
+    const combined = checkedExponent((units.get(unit) ?? 0) + (divide ? -exponent : exponent));
     if (combined === 0) {
       units.delete(unit);
     } else {
@@ -48,7 +56,9 @@ function multiply(left: Quantity, right: Quantity, divide = false): Quantity {
 
 // Evaluate arithmetic while preserving dimensions and treating percentages as fractions.
 function evaluate(expression: string): Quantity {
-  const tokens = expression.match(/\d[\d,]*(?:\.\d+)?|\.\d+|[\p{L}_][\p{L}\p{N}_]*|\S/gu) ?? [];
+  const tokens =
+    expression.match(/(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?|[\p{L}_][\p{L}\p{N}_]*|\S/gu) ??
+    [];
   let position = 0;
 
   // Read a number, a unit, a currency amount, or a parenthesized expression.
@@ -103,7 +113,7 @@ function evaluate(expression: string): Quantity {
     const units = new Map<string, number>();
     for (const [unit, dimension] of base.units) {
       if (exponent.amount !== 0) {
-        units.set(unit, dimension * exponent.amount);
+        units.set(unit, checkedExponent(dimension * exponent.amount));
       }
     }
     return { amount: base.amount ** exponent.amount, units };
@@ -161,16 +171,13 @@ function evaluate(expression: string): Quantity {
     return value;
   }
 
-  // Reject trailing input, division by zero, and dimensions too large to track exactly.
+  // Reject trailing input and nonfinite results, such as division by zero.
   const value = sum();
   if (position < tokens.length) {
     throw new Error(`Unexpected \`${tokens[position]}\`.`);
   }
   if (!Number.isFinite(value.amount)) {
     throw new Error("The result isn't a finite number.");
-  }
-  if ([...value.units.values()].some((exponent) => !Number.isSafeInteger(exponent))) {
-    throw new Error('The unit exponent is too large.');
   }
   return value;
 }
