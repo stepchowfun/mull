@@ -194,6 +194,7 @@ tasks:
         cd example_scripts
         npm ci
         npm run lint
+        npm test
       )
 
       # Check that the VS Code extension has the same version as Mull, since it expects the version
@@ -249,6 +250,7 @@ tasks:
     output_paths:
       - example_scripts/package.json
       - example_scripts/src
+      - example_scripts/tests
       - example_scripts/tsconfig.json
       - example_scripts/vite.config.ts
       - src
