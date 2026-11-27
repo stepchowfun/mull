@@ -130,8 +130,7 @@ struct Backend {
     supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
     supports_watched_file_registration: AtomicBool,
-    supports_work_done_progress: AtomicBool,
-    next_progress_token: AtomicUsize,
+    next_script_progress_id: OnceLock<AtomicUsize>,
 }
 
 impl Backend {
@@ -145,8 +144,7 @@ impl Backend {
             supports_file_renames: AtomicBool::new(false),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
             supports_watched_file_registration: AtomicBool::new(false),
-            supports_work_done_progress: AtomicBool::new(false),
-            next_progress_token: AtomicUsize::new(0),
+            next_script_progress_id: OnceLock::new(),
         }
     }
 
@@ -422,16 +420,14 @@ impl LanguageServer for Backend {
             Ordering::Relaxed,
         );
 
-        // Remember whether the client can show progress for scripts.
-        self.supports_work_done_progress.store(
-            params
-                .capabilities
-                .window
-                .as_ref()
-                .and_then(|capabilities| capabilities.work_done_progress)
-                .unwrap_or(false),
-            Ordering::Relaxed,
-        );
+        // Allocate script progress IDs only for clients which can show them.
+        if params
+            .capabilities
+            .window
+            .is_some_and(|window| window.work_done_progress == Some(true))
+        {
+            let _ = self.next_script_progress_id.set(AtomicUsize::new(0));
+        }
 
         // Advertise the language features implemented by this server.
         Ok(InitializeResult {
@@ -740,22 +736,17 @@ impl LanguageServer for Backend {
         };
 
         // Let progress follow the worker even if the editor abandons the formatting request.
-        let script_names = self
-            .supports_work_done_progress
-            .load(Ordering::Relaxed)
-            .then(|| {
-                let (sender, receiver) = watch::channel(String::new());
-                let token = ProgressToken::String(format!(
-                    "mull/scripts/{}",
-                    self.next_progress_token.fetch_add(1, Ordering::Relaxed),
-                ));
-                tokio::spawn(report_script_progress(self.client.clone(), token, receiver));
-                sender
-            });
+        let script_progress = self.next_script_progress_id.get().map(|next_id| {
+            let (sender, receiver) = watch::channel(String::new());
+            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let token = ProgressToken::String(format!("mull/scripts/{id}"));
+            tokio::spawn(report_script_progress(self.client.clone(), token, receiver));
+            sender
+        });
         let (edits, failures) = tokio::task::spawn_blocking(move || {
-            formatting_with_scripts_for_document(&snapshot, &baseline, |name| {
-                if let Some(script_names) = &script_names {
-                    let _ = script_names.send(name.to_owned());
+            formatting_with_scripts_for_document(&snapshot, &baseline, move |name| {
+                if let Some(script_progress) = &script_progress {
+                    let _ = script_progress.send(format!("Running {name}…"));
                 }
             })
         })
@@ -2396,10 +2387,10 @@ fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<V
 async fn report_script_progress(
     client: Client,
     token: ProgressToken,
-    mut script_names: watch::Receiver<String>,
+    mut messages: watch::Receiver<String>,
 ) {
     // Wait for a script so wikis with no scripts to run don't show progress.
-    if script_names.changed().await.is_err()
+    if messages.changed().await.is_err()
         || client
             .create_work_done_progress(token.clone())
             .await
@@ -2407,17 +2398,17 @@ async fn report_script_progress(
     {
         return;
     }
-    let name = script_names.borrow_and_update().clone();
+    let message = messages.borrow_and_update().clone();
     let progress = client
         .progress(token, "Mull")
-        .with_message(format!("Running {name}…"))
+        .with_message(message)
         .begin()
         .await;
 
     // Show the latest script if several run, until the worker drops the sender.
-    while script_names.changed().await.is_ok() {
-        let name = script_names.borrow_and_update().clone();
-        progress.report(format!("Running {name}…")).await;
+    while messages.changed().await.is_ok() {
+        let message = messages.borrow_and_update().clone();
+        progress.report(message).await;
     }
     progress.finish().await;
 }
