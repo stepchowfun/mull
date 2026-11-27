@@ -82,14 +82,16 @@ pub fn run(
     )
     .assume_completed()?
     .to_string();
-    run_formatted(wiki_path, &formatted_contents, rerun)
+    run_formatted(wiki_path, &formatted_contents, rerun, |_| {})
 }
 
-// Run the script blocks outside portals and other script blocks in a formatted wiki, as `run` does.
+// Run the script blocks outside portals and other script blocks in a formatted wiki, as `run` does,
+// reporting each block's script name when its process starts.
 pub fn run_formatted(
     wiki_path: &Path,
     formatted_contents: &str,
     rerun: bool,
+    mut script_started: impl FnMut(&str),
 ) -> Result<(String, Vec<ScriptFailure>), Vec<Error>> {
     // Read the wiki, whose blocks' bodies are already in their canonical form.
     let line_index = LineIndex::new(formatted_contents);
@@ -115,7 +117,8 @@ pub fn run_formatted(
             {
                 continue;
             }
-            match run_block(formatted_contents, &wiki, page, block, &file_root) {
+            let on_start = || script_started(&block.name);
+            match run_block(formatted_contents, &wiki, page, block, &file_root, on_start) {
                 Ok(replacement) => {
                     replacements.push((block.source_range, replacement));
                     ran.push((&page.title, index));
@@ -215,6 +218,7 @@ fn run_block(
     page: &Page,
     block: &ScriptBlock,
     file_root: &FileRoot,
+    on_start: impl FnOnce(),
 ) -> Result<String, Failure> {
     // Run the script on the block's body. Paths are made absolute, since the script runs in the
     // file root rather than the current directory.
@@ -242,6 +246,7 @@ fn run_block(
         &input,
         &absolute_file_root,
         SCRIPT_TIMEOUT,
+        on_start,
     )
     .map_err(|failure| {
         let display = script_display(file_root, &script);
@@ -378,8 +383,9 @@ fn execute(
     input: &str,
     file_root: &Path,
     timeout: Duration,
+    on_start: impl FnOnce(),
 ) -> Result<String, Failure> {
-    // Start the script.
+    // Start the script and report that it launched.
     let mut command = if cfg!(windows) {
         let mut command = Command::new("cmd");
         command.arg("/C").arg(script);
@@ -402,6 +408,7 @@ fn execute(
             };
             Failure::new(message, Some(Arc::new(error) as _))
         })?;
+    on_start();
 
     // Feed the input and collect the output on separate threads, so neither can block the other.
     let mut stdin = child
@@ -584,7 +591,7 @@ mod tests {
     use std::path::Path;
     #[cfg(unix)]
     use {
-        super::{ScriptFailure, execute, hide_hashes, lock_script_tests, run},
+        super::{ScriptFailure, execute, hide_hashes, lock_script_tests, run, run_formatted},
         crate::error::Error,
         std::{
             env, fs,
@@ -723,8 +730,16 @@ mod tests {
         let plain_script = wiki.0.join("wiki_files/scripts/plain.txt");
         fs::set_permissions(&plain_script, fs::Permissions::from_mode(0o644)).unwrap();
 
-        let (contents, failures) = wiki.run().unwrap();
-        assert_eq!(contents, fs::read_to_string(wiki.path()).unwrap());
+        // Announce the scripts that launched, including those whose output or exit status failed.
+        let path = wiki.path();
+        let source = fs::read_to_string(&path).unwrap();
+        let mut started = Vec::new();
+        let (contents, failures) = run_formatted(&path, &source, false, |name| {
+            started.push(name.to_owned());
+        })
+        .unwrap();
+        assert_eq!(started, ["fail", "bracket", "quiet"]);
+        assert_eq!(contents, source);
         let messages = failures
             .iter()
             .map(|failure| failure.error.to_string())
@@ -769,8 +784,18 @@ mod tests {
         );
         fs::write(wiki.0.join("wiki_files/runs"), "").unwrap();
 
+        // An unchanged block shouldn't announce that its script started.
         assert_eq!(wiki.run_and_save(false), 1);
-        assert_eq!(wiki.run_and_save(false), 1);
+        let path = wiki.path();
+        let source = fs::read_to_string(&path).unwrap();
+        let (contents, failures) = run_formatted(&path, &source, false, |name| {
+            panic!("The unchanged script {name} was started.");
+        })
+        .unwrap();
+        assert_eq!(contents, source);
+        assert!(failures.is_empty());
+
+        // Run an explicitly requested script and rerun it after each change.
         assert_eq!(wiki.run_and_save(true), 2);
         let source = fs::read_to_string(wiki.path()).unwrap();
         fs::write(wiki.path(), source.replace("- b", "- c")).unwrap();
@@ -825,6 +850,7 @@ mod tests {
             "",
             &wiki.0.join("wiki_files"),
             Duration::from_millis(100),
+            || {},
         )
         .unwrap_err();
         assert_eq!(failure.message, "It ran for longer than 0.1 seconds.");

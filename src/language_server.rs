@@ -29,11 +29,17 @@ use std::{
     io::{BufReader, Read},
     iter,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, atomic::AtomicBool, atomic::Ordering},
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
     vec,
 };
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tower_lsp_server::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::{Error as JsonRpcError, Result},
@@ -53,9 +59,9 @@ use tower_lsp_server::{
         InitializeParams, InitializeResult, InitializedParams, InsertTextFormat, LSPAny, Location,
         LocationLink, MarkupContent, MarkupKind, MessageType, OneOf,
         OptionalVersionedTextDocumentIdentifier, Position, PositionEncodingKind,
-        PrepareRenameResponse, Range, ReferenceParams, Registration, RenameFile, RenameOptions,
-        RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities, ServerInfo,
-        SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
+        PrepareRenameResponse, ProgressToken, Range, ReferenceParams, Registration, RenameFile,
+        RenameOptions, RenameParams, ResourceOp, ResourceOperationKind, ServerCapabilities,
+        ServerInfo, SymbolInformation, SymbolKind, TextDocumentEdit, TextDocumentIdentifier,
         TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
         TextDocumentSyncOptions, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
     },
@@ -124,6 +130,8 @@ struct Backend {
     supports_file_renames: AtomicBool,
     supports_hierarchical_document_symbols: AtomicBool,
     supports_watched_file_registration: AtomicBool,
+    supports_work_done_progress: AtomicBool,
+    next_progress_token: AtomicUsize,
 }
 
 impl Backend {
@@ -137,6 +145,8 @@ impl Backend {
             supports_file_renames: AtomicBool::new(false),
             supports_hierarchical_document_symbols: AtomicBool::new(false),
             supports_watched_file_registration: AtomicBool::new(false),
+            supports_work_done_progress: AtomicBool::new(false),
+            next_progress_token: AtomicUsize::new(0),
         }
     }
 
@@ -408,6 +418,17 @@ impl LanguageServer for Backend {
                 .as_ref()
                 .and_then(|capabilities| capabilities.did_change_watched_files.as_ref())
                 .and_then(|capabilities| capabilities.dynamic_registration)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+
+        // Remember whether the client can show progress for scripts.
+        self.supports_work_done_progress.store(
+            params
+                .capabilities
+                .window
+                .as_ref()
+                .and_then(|capabilities| capabilities.work_done_progress)
                 .unwrap_or(false),
             Ordering::Relaxed,
         );
@@ -717,8 +738,26 @@ impl LanguageServer for Backend {
         let Some(snapshot) = self.snapshot(&params.text_document.uri) else {
             return Ok(None);
         };
+
+        // Let progress follow the worker even if the editor abandons the formatting request.
+        let script_names = self
+            .supports_work_done_progress
+            .load(Ordering::Relaxed)
+            .then(|| {
+                let (sender, receiver) = watch::channel(String::new());
+                let token = ProgressToken::String(format!(
+                    "mull/scripts/{}",
+                    self.next_progress_token.fetch_add(1, Ordering::Relaxed),
+                ));
+                tokio::spawn(report_script_progress(self.client.clone(), token, receiver));
+                sender
+            });
         let (edits, failures) = tokio::task::spawn_blocking(move || {
-            formatting_with_scripts_for_document(&snapshot, &baseline)
+            formatting_with_scripts_for_document(&snapshot, &baseline, |name| {
+                if let Some(script_names) = &script_names {
+                    let _ = script_names.send(name.to_owned());
+                }
+            })
         })
         .await
         .map_err(|_| JsonRpcError::internal_error())?;
@@ -2353,12 +2392,43 @@ fn formatting_for_document(snapshot: &Snapshot, baseline: &Baseline) -> Option<V
     ))
 }
 
-// Format a wiki as formatting_for_document does, running its scripts once their blocks are
-// formatted, and return the edits along with a failure for each script block which couldn't be run.
-// An unsaved wiki has no scripts to run, so it's only formatted.
+// Show the running script once the worker starts one, and clear progress when the worker finishes.
+async fn report_script_progress(
+    client: Client,
+    token: ProgressToken,
+    mut script_names: watch::Receiver<String>,
+) {
+    // Wait for a script so wikis with no scripts to run don't show progress.
+    if script_names.changed().await.is_err()
+        || client
+            .create_work_done_progress(token.clone())
+            .await
+            .is_err()
+    {
+        return;
+    }
+    let name = script_names.borrow_and_update().clone();
+    let progress = client
+        .progress(token, "Mull")
+        .with_message(format!("Running {name}…"))
+        .begin()
+        .await;
+
+    // Show the latest script if several run, until the worker drops the sender.
+    while script_names.changed().await.is_ok() {
+        let name = script_names.borrow_and_update().clone();
+        progress.report(format!("Running {name}…")).await;
+    }
+    progress.finish().await;
+}
+
+// Format a wiki as formatting_for_document does, reporting each script that starts, and return the
+// edits along with a failure for each script block which couldn't be run. An unsaved wiki has no
+// scripts to run, so it's only formatted.
 fn formatting_with_scripts_for_document(
     snapshot: &Snapshot,
     baseline: &Baseline,
+    script_started: impl FnMut(&str),
 ) -> (Option<Vec<TextEdit>>, Vec<scripts::ScriptFailure>) {
     // Leave a wiki which can't be formatted as it is, and only format an unsaved one.
     let Some(formatted_contents) = formatted_contents(snapshot, baseline) else {
@@ -2372,7 +2442,7 @@ fn formatting_with_scripts_for_document(
     };
 
     // Run the scripts on the formatted wiki.
-    match scripts::run_formatted(wiki_path, &formatted_contents, false) {
+    match scripts::run_formatted(wiki_path, &formatted_contents, false, script_started) {
         Ok((contents, failures)) => (Some(whole_document_edits(snapshot, contents)), failures),
         Err(_errors) => (None, Vec::new()),
     }
@@ -5710,6 +5780,7 @@ mod tests {
         let (edits, failures) = formatting_with_scripts_for_document(
             &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
             &Baseline::new(),
+            |_| {},
         );
         assert_eq!(
             hide_hashes(&edits.unwrap()[0].new_text),
@@ -5725,6 +5796,7 @@ mod tests {
         let (edits, failures) = formatting_with_scripts_for_document(
             &snapshot(&untitled_uri(), source),
             &Baseline::new(),
+            |_| {},
         );
         assert_eq!(edits, Some(Vec::new()));
         assert!(failures.is_empty());
@@ -5758,6 +5830,7 @@ mod tests {
         let (edits, failures) = formatting_with_scripts_for_document(
             &snapshot(&Uri::from_file_path(wiki.path()).unwrap(), source),
             &baseline,
+            |_| {},
         );
         assert!(failures.is_empty());
         assert_eq!(
