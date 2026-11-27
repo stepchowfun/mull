@@ -420,7 +420,7 @@ impl LanguageServer for Backend {
             Ordering::Relaxed,
         );
 
-        // Allocate script progress IDs only for clients which can show them.
+        // Initialize the progress token counter for clients that support work-done progress.
         if params
             .capabilities
             .window

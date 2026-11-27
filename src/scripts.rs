@@ -372,11 +372,10 @@ fn arguments(
     arguments
 }
 
-// Run a script with arguments in the file root, with an input on its standard input, and return
-// what it prints. The operating
-// system starts it, so on Windows the program associated with its extension runs it. A script
-// which fails or prints anything but UTF-8 is reported with what it printed as errors, and one
-// which runs too long is stopped.
+// Run a script in the file root, passing input on stdin and returning its stdout. Call `on_start`
+// after a successful subprocess launch. On Windows, the program associated with the script's
+// extension runs it. Report an unsuccessful exit or non-UTF-8 stdout with the captured stderr,
+// and stop a script that exceeds its timeout.
 fn execute(
     script: &Path,
     arguments: &[String],
